@@ -1,0 +1,129 @@
+<?php
+
+use Livewire\Component;
+use Livewire\WithPagination;
+use Livewire\Attributes\Layout;
+use Livewire\Attributes\Title;
+use Livewire\Attributes\Computed;
+use App\Models\Tenant;
+
+new 
+#[Layout('superadmin.layouts.app')] // Matched your domain-driven layout path
+#[Title('Manage Tenants')]
+class extends Component {
+    use WithPagination;
+
+    public $search = '';
+
+    // Reset pagination when searching
+    public function updatedSearch()
+    {
+        $this->resetPage();
+    }
+
+    // Fetches tenants dynamically
+    #[Computed]
+    public function tenants()
+    {
+        // Added with('typeOfTenant') to eager load the relationship and prevent N+1 query issues
+        return Tenant::with('typeOfTenant')
+            ->where('name', 'like', "%{$this->search}%")
+            ->orWhere('email', 'like', "%{$this->search}%")
+            ->latest()
+            ->paginate(10);
+    }
+
+    public function deleteTenant($id)
+    {
+        $tenant = Tenant::findOrFail($id);
+        $tenant->delete();
+        
+        session()->flash('message', 'Business Location successfully deleted.');
+    }
+};
+?>
+
+<div class="p-6 sm:p-10 max-w-7xl mx-auto space-y-6">
+    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div>
+            <h1 class="text-3xl font-bold text-slate-800">Manage Businesses</h1>
+            <p class="text-slate-500">View, search, edit, and remove tourist spots from the city platform.</p>
+        </div>
+        <a href="{{ route('superadmin.tenants.create') }}" wire:navigate class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-5 rounded-xl shadow transition-colors flex items-center gap-2">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+            Register Business
+        </a>
+    </div>
+
+    @if (session()->has('message'))
+        <div class="bg-green-50 border-l-4 border-green-500 p-4 rounded-md shadow-sm">
+            <p class="text-sm text-green-700 font-medium">{{ session('message') }}</p>
+        </div>
+    @endif
+
+    <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div class="p-4 border-b border-slate-200 bg-slate-50 flex items-center">
+            <div class="relative w-full sm:w-1/3">
+                <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                    <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                </div>
+                <input type="text" wire:model.live.debounce.300ms="search" placeholder="Search by name or email..." class="w-full pl-10 rounded-lg border-slate-300 focus:ring-blue-500 text-sm py-2.5">
+            </div>
+        </div>
+        
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm whitespace-nowrap">
+                <thead class="bg-slate-50 border-b border-slate-200 text-slate-600 uppercase text-xs font-semibold">
+                    <tr>
+                        <th class="px-6 py-4">Tourist Spot / Business</th>
+                        <th class="px-6 py-4">Contact Details</th>
+                        <th class="px-6 py-4">Location</th>
+                        <th class="px-6 py-4 text-right">Actions</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-200">
+                    @forelse($this->tenants as $tenant)
+                        <tr class="hover:bg-slate-50 transition-colors">
+                            <td class="px-6 py-4">
+                                <div class="font-bold text-slate-900">{{ $tenant->name }}</div>
+                                <div class="mt-1 flex items-center gap-2">
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-indigo-100 text-indigo-700 border border-indigo-200">
+                                        {{ $tenant->typeOfTenant->type ?? 'Uncategorized' }}
+                                    </span>
+                                    <span class="text-xs text-slate-400">ID: {{ $tenant->id }}</span>
+                                </div>
+                            </td>
+                            <td class="px-6 py-4">
+                                <div class="text-slate-800 font-medium">{{ $tenant->email }}</div>
+                                <div class="text-xs text-slate-500 mt-0.5">{{ $tenant->contact_number ?? 'No contact number' }}</div>
+                            </td>
+                            <td class="px-6 py-4">
+                                <span class="truncate max-w-[200px] block text-slate-600" title="{{ $tenant->address }}">
+                                    {{ $tenant->address }}
+                                </span>
+                            </td>
+                            <td class="px-6 py-4 text-right space-x-3 font-medium">
+                                <a href="{{ route('superadmin.tenants.edit', $tenant->id) }}" wire:navigate class="text-blue-600 hover:text-blue-800 transition-colors">Edit</a>
+                                <button wire:click="deleteTenant({{ $tenant->id }})" wire:confirm="Are you sure you want to delete this business? This will also remove all their properties and bookings." class="text-red-600 hover:text-red-800 transition-colors">Delete</button>
+                            </td>
+                        </tr>
+                    @empty
+                        <tr>
+                            <td colspan="4" class="px-6 py-12 text-center">
+                                <svg class="mx-auto h-12 w-12 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
+                                <h3 class="mt-2 text-sm font-medium text-slate-900">No businesses found</h3>
+                                <p class="mt-1 text-sm text-slate-500">Get started by registering a new tourist spot.</p>
+                            </td>
+                        </tr>
+                    @endforelse
+                </tbody>
+            </table>
+        </div>
+        
+        @if($this->tenants->hasPages())
+            <div class="p-4 border-t border-slate-200 bg-slate-50">
+                {{ $this->tenants->links() }}
+            </div>
+        @endif
+    </div>
+</div>

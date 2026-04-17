@@ -1,0 +1,45 @@
+@import 'tailwindcss';
+
+
+/* Preline UI */
+@import "../../node_modules/preline/variants.css";
+@source "../../node_modules/preline/dist/*.js";
+
+/* Plugins */
+/* @plugin "@tailwindcss/forms"; */
+
+@source '.../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
+@source '..../../storage/framework/views/*.php';
+@source '../**/*.blade.php';
+@source '..../**/*.js';
+
+@theme {
+    --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+        'Segoe UI Symbol', 'Noto Color Emoji';
+}
+
+/* Adds pointer cursor to buttons */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+/* Defaults hover styles on all devices */
+@custom-variant hover (&:hover);
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+#header-link:hover, #btn-learnmore:hover{
+  background:#6E9104;
+}
+#btn-explore:hover, #btn-view:hover, #btn-reserve:hover, #customize:hover, button:hover{
+  background:#85af06 ;
+}
+#btn-cancel{
+  background-color: red;
+}
+#btn-cancel:hover{
+  background-color: rgb(255, 68, 68);
+}
