@@ -19,12 +19,16 @@ Route::livewire('/bookings', 'public::pages.bookings')->name('public.bookings');
 Route::livewire('/learn-more', 'public::pages.learnmore')->name('learnmore');
 Route::livewire('/menu-list', 'public::pages.menu-list')->name('menu-list');
 Route::livewire('/reservation', 'public::pages.reservation')->name('reservation');
+Route::livewire('/register-business', 'public::pages.register-business')->name('register_business');
 
 // Explore Map (public interactive map)
 Route::livewire('/explore/map', 'public::pages.explore-map')->name('explore.map');
 
 // Tenant Profile / Details (public view of a business)
 Route::livewire('/business/{slug}', 'public::pages.tenant-show')->name('tenant.show');
+
+// Tenant Offerings (accommodations & services for a business)
+Route::livewire('/business/{slug}/offerings', 'public::pages.business-offerings')->name('business.offerings');
 
 // Tourist Spot Details Profile (Public View)
 Route::livewire('/destination/{id}', 'public::pages.tourist-spot-details')->name('destination.details');
@@ -42,7 +46,8 @@ Route::post('/logout', function (Request $request) {
 
 // Authenticated Customer Routes (Booking, etc.)
 Route::middleware(['auth'])->group(function () {
-    Route::livewire('/booking/create/{property}', 'public::pages.create-booking')->name('booking.create');
+    // 👇 Changed {property} to {publicproperty} to bypass TenantScope for tourists
+    Route::livewire('/booking/create/{publicproperty}', 'public::pages.create-booking')->name('booking.create');
 });
 
 /*
@@ -100,10 +105,8 @@ Route::prefix('admin')->name('tenant.')->middleware([Authenticate::class, IsTena
         return view('tenant.pages.booking.show-booking', ['booking' => $booking]);
     })->name('bookings.show');
 
-    // Customers
-    Route::livewire('/customers', 'tenant::pages.customer.view-customer')->name('customers.index');
+    // Customers – only the creation form is kept
     Route::livewire('/customers/create', 'tenant::pages.customer.create-customer')->name('customers.create');
-    Route::livewire('/customers/{customer}/edit', 'tenant::pages.customer.edit-customer')->name('customers.edit');
 
     // Employees
     Route::livewire('/employees', 'tenant::pages.employee.view-employee')->name('employees.index');
@@ -127,7 +130,7 @@ Route::prefix('admin')->name('tenant.')->middleware([Authenticate::class, IsTena
 
     // Financials
     Route::livewire('/payments', 'tenant::pages.payment.view-payment')->name('payments.index');
-    Route::livewire('/payments/create', 'tenant::pages.payment.create-payment')->name('payments.create');
+    Route::livewire('/payments/create/{booking}', 'tenant::pages.payment.create-payment')->name('payments.create');
     Route::livewire('/payments/{payment}/edit', 'tenant::pages.payment.edit-payment')->name('payments.edit');
     Route::livewire('/transactions', 'tenant::pages.transaction.view-transaction')->name('transactions.index');
 
@@ -146,4 +149,7 @@ Route::prefix('admin')->name('tenant.')->middleware([Authenticate::class, IsTena
     Route::livewire('/roles', 'tenant::pages.role.view-role')->name('roles.index');
     Route::livewire('/roles/create', 'tenant::pages.role.create-role')->name('roles.create');
     Route::livewire('/roles/{index}/edit', 'tenant::pages.role.edit-role')->name('roles.edit');
+
+    // Analytics Dashboard
+    Route::livewire('/analytics', 'tenant::pages.analytics.dashboard')->name('analytics.index');
 });

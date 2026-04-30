@@ -40,6 +40,11 @@ class extends Component {
 
     public function mount(Booking $booking)
     {
+        // Ensure the booking belongs to the current tenant
+        if ($booking->tenant_id !== Auth::user()->tenant_id) {
+            abort(403, 'Unauthorized.');
+        }
+
         $this->booking = $booking;
         $this->customer_id = (string) $booking->customer_id;
         $this->check_in = $booking->check_in ? Carbon::parse($booking->check_in)->format('Y-m-d') : now()->format('Y-m-d');

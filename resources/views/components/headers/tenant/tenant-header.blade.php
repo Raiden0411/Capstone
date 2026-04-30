@@ -31,13 +31,14 @@
                     <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
                     Bookings
                 </a>
-                <a class="py-2 px-3 flex items-center text-sm font-medium rounded-lg hover:bg-slate-100 {{ request()->routeIs('tenant.customers.*') ? 'bg-lime-50 text-lime-700' : 'text-slate-600' }}" href="{{ route('tenant.customers.index') }}" wire:navigate>
-                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
-                    Customers
-                </a>
                 <a class="py-2 px-3 flex items-center text-sm font-medium rounded-lg hover:bg-slate-100 {{ request()->routeIs('tenant.services.*') ? 'bg-lime-50 text-lime-700' : 'text-slate-600' }}" href="{{ route('tenant.services.index') }}" wire:navigate>
                     <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
                     Services
+                </a>
+                {{-- Analytics (main nav) --}}
+                <a class="py-2 px-3 flex items-center text-sm font-medium rounded-lg hover:bg-slate-100 {{ request()->routeIs('tenant.analytics.*') ? 'bg-lime-50 text-lime-700' : 'text-slate-600' }}" href="{{ route('tenant.analytics.index') }}" wire:navigate>
+                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+                    Analytics
                 </a>
             </div>
 
@@ -49,12 +50,17 @@
             {{-- More Menu Dropdown (Alpine) --}}
             <div class="hidden md:block relative" x-data="{ open: false }">
                 <button @click="open = !open" type="button" class="py-2 px-3 inline-flex items-center gap-x-2 text-sm font-medium rounded-lg bg-white text-slate-700 shadow-sm align-middle hover:bg-slate-50 border border-slate-200">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
                     <span>More</span>
                     <svg :class="{ 'rotate-180': open }" class="size-4 text-slate-500 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
                 </button>
 
                 <div x-show="open" @click.away="open = false" x-transition.opacity.duration.200ms class="absolute right-0 mt-2 min-w-48 bg-white shadow-md rounded-lg p-1 border border-slate-200 z-50">
+                    {{-- Analytics (More dropdown) --}}
+                    <a class="flex items-center gap-x-3 py-2 px-3 rounded-lg text-sm text-slate-700 hover:bg-slate-100" href="{{ route('tenant.analytics.index') }}" wire:navigate>
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+                        Analytics
+                    </a>
                     <a class="flex items-center gap-x-3 py-2 px-3 rounded-lg text-sm text-slate-700 hover:bg-slate-100" href="{{ route('tenant.employees.index') }}" wire:navigate>
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
                         Employees
@@ -134,7 +140,7 @@
                 <div class="py-2 flex flex-col gap-y-2">
                     <a class="text-sm text-slate-600 hover:text-lime-600" href="{{ route('tenant.bookings.create') }}" wire:navigate>+ New Booking</a>
                     <a class="text-sm text-slate-600 hover:text-lime-600" href="{{ route('tenant.properties.create') }}" wire:navigate>+ New Property</a>
-                    <a class="text-sm text-slate-600 hover:text-lime-600" href="{{ route('tenant.customers.create') }}" wire:navigate>+ New Customer</a>
+                    <a class="text-sm text-slate-600 hover:text-lime-600" href="{{ route('tenant.customers.create') }}" wire:navigate>+ New Reservation</a>
                 </div>
             </div>
 
@@ -149,7 +155,7 @@
                 </a>
                 <a class="text-sm font-medium text-slate-600 hover:text-lime-600 flex items-center gap-1" href="{{ route('tenant.customers.create') }}" wire:navigate>
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-                    New Customer
+                    New Reservation
                 </a>
             </div>
         </div>
@@ -161,8 +167,9 @@
             <a class="block py-2 px-3 rounded-lg {{ request()->routeIs('tenant.dashboard') ? 'bg-lime-50 text-lime-700' : 'text-slate-600' }}" href="{{ route('tenant.dashboard') }}" wire:navigate>Dashboard</a>
             <a class="block py-2 px-3 rounded-lg {{ request()->routeIs('tenant.properties.*') ? 'bg-lime-50 text-lime-700' : 'text-slate-600' }}" href="{{ route('tenant.properties.index') }}" wire:navigate>Properties</a>
             <a class="block py-2 px-3 rounded-lg {{ request()->routeIs('tenant.bookings.*') ? 'bg-lime-50 text-lime-700' : 'text-slate-600' }}" href="{{ route('tenant.bookings.index') }}" wire:navigate>Bookings</a>
-            <a class="block py-2 px-3 rounded-lg {{ request()->routeIs('tenant.customers.*') ? 'bg-lime-50 text-lime-700' : 'text-slate-600' }}" href="{{ route('tenant.customers.index') }}" wire:navigate>Customers</a>
             <a class="block py-2 px-3 rounded-lg {{ request()->routeIs('tenant.services.*') ? 'bg-lime-50 text-lime-700' : 'text-slate-600' }}" href="{{ route('tenant.services.index') }}" wire:navigate>Services</a>
+            {{-- Analytics (mobile) --}}
+            <a class="block py-2 px-3 rounded-lg {{ request()->routeIs('tenant.analytics.*') ? 'bg-lime-50 text-lime-700' : 'text-slate-600' }}" href="{{ route('tenant.analytics.index') }}" wire:navigate>Analytics</a>
             <a class="block py-2 px-3 rounded-lg {{ request()->routeIs('tenant.employees.*') ? 'bg-lime-50 text-lime-700' : 'text-slate-600' }}" href="{{ route('tenant.employees.index') }}" wire:navigate>Employees</a>
             <a class="block py-2 px-3 rounded-lg {{ request()->routeIs('tenant.roles.*') ? 'bg-lime-50 text-lime-700' : 'text-slate-600' }}" href="{{ route('tenant.roles.index') }}" wire:navigate>Roles</a>
             <a class="block py-2 px-3 rounded-lg {{ request()->routeIs('tenant.property-types.*') ? 'bg-lime-50 text-lime-700' : 'text-slate-600' }}" href="{{ route('tenant.property-types.index') }}" wire:navigate>Property Types</a>

@@ -13,7 +13,7 @@ class PermissionSeeder extends Seeder
         'can_create',
         'can_update',
         'can_delete',
-        'delete spots' // Added your custom permission here from the other file!
+        'delete spots'
     ];
 
     public function run(): void

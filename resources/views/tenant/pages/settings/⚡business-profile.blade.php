@@ -6,7 +6,9 @@ use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Validate;
 use App\Models\Tenant;
+use App\Models\TenantSetting;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 new 
@@ -40,6 +42,10 @@ class extends Component {
     #[Validate('nullable|numeric')]
     public $longitude = 123.07055771888716;
 
+    // Gallery
+    public $businessPhotos = [];
+    public $newBusinessPhotos = [];
+
     public function mount()
     {
         $this->tenant = Auth::user()->tenant;
@@ -50,6 +56,11 @@ class extends Component {
         $this->email = $this->tenant->email;
         $this->latitude = $this->tenant->latitude ?? 10.900977766937142;
         $this->longitude = $this->tenant->longitude ?? 123.07055771888716;
+
+        $setting = TenantSetting::where('tenant_id', Auth::user()->tenant_id)
+            ->where('key', 'business_gallery')
+            ->first();
+        $this->businessPhotos = $setting ? $setting->value : [];
     }
 
     public function updatedName($value)
@@ -57,11 +68,28 @@ class extends Component {
         $this->slug = Str::slug($value);
     }
 
+    public function removeNewBusinessPhoto($index)
+    {
+        unset($this->newBusinessPhotos[$index]);
+        $this->newBusinessPhotos = array_values($this->newBusinessPhotos);
+    }
+
+    public function deleteBusinessPhoto($path)
+    {
+        $this->businessPhotos = array_values(array_filter($this->businessPhotos, fn($p) => $p !== $path));
+        Storage::disk('public')->delete($path);
+        TenantSetting::updateOrCreate(
+            ['tenant_id' => Auth::user()->tenant_id, 'key' => 'business_gallery'],
+            ['value' => $this->businessPhotos]
+        );
+    }
+
     public function save()
     {
         $this->validate([
             'name' => 'required|string|max:255',
             'slug' => 'required|string|max:255|unique:tenants,slug,' . $this->tenant->id,
+            'newBusinessPhotos.*' => 'nullable|image|max:5120',
         ]);
 
         $data = [
@@ -78,6 +106,16 @@ class extends Component {
             $path = $this->logo->store('tenant-logos', 'public');
             $data['logo'] = $path;
         }
+
+        // Handle new business photos
+        foreach ($this->newBusinessPhotos as $photo) {
+            $path = $photo->store('business-gallery', 'public');
+            $this->businessPhotos[] = $path;
+        }
+        TenantSetting::updateOrCreate(
+            ['tenant_id' => Auth::user()->tenant_id, 'key' => 'business_gallery'],
+            ['value' => $this->businessPhotos]
+        );
 
         $this->tenant->update($data);
 
@@ -145,7 +183,7 @@ class extends Component {
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-slate-700 mb-1">Public Email</label>
-                            <input type="email" wire:123="email" class="w-full rounded-lg border-slate-300">
+                            <input type="email" wire:model="email" class="w-full rounded-lg border-slate-300">
                         </div>
                     </div>
 
@@ -168,6 +206,34 @@ class extends Component {
                             @error('longitude') <span class="text-red-500 text-xs">{{ $message }}</span> @enderror
                         </div>
                     </div>
+                </div>
+            </div>
+
+            {{-- Business Gallery --}}
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+                <h2 class="text-lg font-bold text-slate-800 mb-4 border-b pb-2">Business Gallery</h2>
+                <p class="text-sm text-slate-500 mb-4">Upload photos of your tourist spot to showcase on your public profile.</p>
+                <input type="file" wire:model="newBusinessPhotos" multiple accept="image/*" class="w-full mb-3">
+                @error('newBusinessPhotos.*') <span class="text-red-500 text-xs mt-1 block">{{ $message }}</span> @enderror
+
+                @if(count($newBusinessPhotos) > 0)
+                    <div class="grid grid-cols-3 gap-3 mt-3">
+                        @foreach($newBusinessPhotos as $index => $photo)
+                            <div class="relative">
+                                <img src="{{ $photo->temporaryUrl() }}" class="w-full h-24 object-cover rounded-lg">
+                                <button type="button" wire:click="removeNewBusinessPhoto({{ $index }})" class="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1">&times;</button>
+                            </div>
+                        @endforeach
+                    </div>
+                @endif
+
+                <div class="grid grid-cols-3 gap-3 mt-5">
+                    @foreach($businessPhotos as $path)
+                        <div class="relative group">
+                            <img src="{{ Storage::url($path) }}" class="w-full h-24 object-cover rounded-lg border">
+                            <button type="button" wire:click="deleteBusinessPhoto('{{ $path }}')" class="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition">&times;</button>
+                        </div>
+                    @endforeach
                 </div>
             </div>
 

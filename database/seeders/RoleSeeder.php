@@ -13,7 +13,6 @@ class RoleSeeder extends Seeder
         // Create Roles
         $superAdminRole = Role::firstOrCreate(['name' => 'super-admin', 'guard_name' => 'web']);
         $tenantAdminRole = Role::firstOrCreate(['name' => 'admin', 'guard_name' => 'web']);
-        $editorRole = Role::firstOrCreate(['name' => 'editor', 'guard_name' => 'web']);
         $touristRole = Role::firstOrCreate(['name' => 'tourist', 'guard_name' => 'web']); 
 
         // Assign permissions to Tenant Admin

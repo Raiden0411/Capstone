@@ -15,7 +15,7 @@ class DatabaseSeeder extends Seeder
         // 1. Call your setup seeders
         $this->call([
             PermissionSeeder::class,
-            RoleSeeder::class,
+            RoleSeeder::class,  
         ]);
 
         // 2. Create a default Type of Tenant

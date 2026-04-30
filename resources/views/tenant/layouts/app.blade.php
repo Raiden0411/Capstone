@@ -16,6 +16,8 @@
 </head>
 
 <body class="bg-white dark:bg-black text-black dark:text-white font-sans antialiased">
+{{-- Sidebar --}}
+    {{-- <x-headers.tenant.sidebar /> --}}
 
     <x-headers.tenant.tenant-header />
 

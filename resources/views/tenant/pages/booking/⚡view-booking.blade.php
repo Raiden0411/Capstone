@@ -13,7 +13,7 @@ use Illuminate\Support\Facades\Auth;
 
 new 
 #[Layout('tenant.layouts.app')]
-#[Title('Manage Bookings')]
+#[Title('Bookings')]
 class extends Component {
     use WithPagination;
 
@@ -105,21 +105,30 @@ class extends Component {
             'completed' => Booking::where('status', 'completed')->count(),
             'cancelled' => Booking::where('status', 'cancelled')->count(),
             'revenue' => Booking::whereIn('status', ['confirmed', 'checked_in', 'completed'])->sum('total_amount'),
+            'today_arrivals' => Booking::whereDate('check_in', today())->where('status', '!=', 'cancelled')->count(),
+            'today_departures' => Booking::whereDate('check_out', today())->where('status', '!=', 'cancelled')->count(),
+            'available_rooms' => Property::where('is_active', true)->where('status', 'available')->count(),
         ];
     }
 };
 ?>
 <div class="p-6 sm:p-10 max-w-7xl mx-auto">
-    {{-- Header --}}
+    {{-- Header with actions --}}
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6 gap-4">
         <div>
             <h1 class="text-3xl font-bold text-slate-800">Bookings</h1>
-            <p class="text-slate-500">Manage reservations and guest stays.</p>
+            <p class="text-slate-500">Walk‑ins, reservations, and today's activity.</p>
         </div>
-        <a href="{{ route('tenant.bookings.create') }}" wire:navigate class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-5 rounded-lg shadow-sm transition flex items-center gap-2">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
-            New Booking
-        </a>
+        <div class="flex gap-2">
+            <a href="{{ route('tenant.bookings.create') }}" wire:navigate class="bg-green-600 hover:bg-green-700 text-white font-medium py-2.5 px-5 rounded-lg shadow-sm transition flex items-center gap-2">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                New Walk‑In
+            </a>
+            <a href="{{ route('tenant.customers.create') }}" wire:navigate class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-5 rounded-lg shadow-sm transition flex items-center gap-2">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                New Reservation
+            </a>
+        </div>
     </div>
 
     {{-- Flash Message --}}
@@ -129,6 +138,22 @@ class extends Component {
             {{ session('message') }}
         </div>
     @endif
+
+    {{-- Today's Activity Cards --}}
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <div class="bg-white rounded-xl border border-slate-200 p-4">
+            <p class="text-sm text-slate-500">Today's Arrivals</p>
+            <p class="text-2xl font-bold text-slate-800">{{ $this->stats['today_arrivals'] }}</p>
+        </div>
+        <div class="bg-white rounded-xl border border-slate-200 p-4">
+            <p class="text-sm text-slate-500">Today's Departures</p>
+            <p class="text-2xl font-bold text-slate-800">{{ $this->stats['today_departures'] }}</p>
+        </div>
+        <div class="bg-white rounded-xl border border-slate-200 p-4">
+            <p class="text-sm text-slate-500">Available Rooms</p>
+            <p class="text-2xl font-bold text-slate-800">{{ $this->stats['available_rooms'] }}</p>
+        </div>
+    </div>
 
     {{-- Stats Cards --}}
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
@@ -224,25 +249,22 @@ class extends Component {
                             </td>
                             <td class="px-6 py-4 text-right" wire:click.stop>
                                 <div class="flex items-center justify-end gap-2">
-                                    {{-- View (Show) --}}
                                     <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate class="p-1.5 text-slate-600 hover:bg-slate-100 rounded-lg" title="View Details">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                                     </a>
-                                    {{-- Edit --}}
                                     <a href="{{ route('tenant.bookings.edit', $booking->id) }}" wire:navigate class="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg" title="Edit">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
                                     </a>
-                                    {{-- Delete --}}
                                     <button wire:click="delete({{ $booking->id }})" wire:confirm="Delete this booking?" class="p-1.5 text-red-600 hover:bg-red-50 rounded-lg" title="Delete">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                                     </button>
                                 </div>
                             </td>
                         </tr>
-                        {{-- Expanded Details Row --}}
                         @if($expandedId === $booking->id)
                         <tr>
                             <td colspan="6" class="px-6 py-4 bg-slate-50 border-t border-slate-200">
+                                {{-- Expanded details --}}
                                 <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                                     {{-- Customer Details --}}
                                     <div>
@@ -331,7 +353,7 @@ class extends Component {
                                                 <div class="mt-2 text-sm">
                                                     <p><span class="text-slate-500">Total Paid:</span> ₱{{ number_format($paidAmount, 2) }}</p>
                                                     <p><span class="text-slate-500">Balance:</span> <span class="{{ $balance > 0 ? 'text-red-600' : 'text-green-600' }}">₱{{ number_format($balance, 2) }}</span></p>
-                                                    @if($balance > 0)
+                                                    @if($balance > 0 && !in_array($booking->status, ['cancelled', 'completed']))
                                                         <a href="{{ route('tenant.payments.create', ['booking' => $booking->id]) }}" wire:navigate class="mt-3 inline-flex items-center gap-1 text-sm bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg transition">
                                                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
                                                             Record Payment
@@ -340,7 +362,7 @@ class extends Component {
                                                 </div>
                                             @else
                                                 <p class="text-sm text-slate-500">No payments recorded.</p>
-                                                @if($booking->total_amount > 0)
+                                                @if($booking->total_amount > 0 && !in_array($booking->status, ['cancelled', 'completed']))
                                                     <a href="{{ route('tenant.payments.create', ['booking' => $booking->id]) }}" wire:navigate class="mt-3 inline-flex items-center gap-1 text-sm bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg transition">
                                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
                                                         Record Payment

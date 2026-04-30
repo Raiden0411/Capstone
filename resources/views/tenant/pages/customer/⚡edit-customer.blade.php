@@ -31,7 +31,13 @@ class extends Component {
 
     public function mount(Customer $customer)
     {
-        // Ensure the customer belongs to the current tenant
+        // If the customer has no tenant, let the current tenant admin adopt it
+        if (is_null($customer->tenant_id)) {
+            $customer->tenant_id = Auth::user()->tenant_id;
+            $customer->save();
+        }
+
+        // Now enforce tenant ownership
         if ($customer->tenant_id !== Auth::user()->tenant_id) {
             abort(403, 'Unauthorized.');
         }
@@ -57,7 +63,7 @@ class extends Component {
         ]);
         
         session()->flash('message', 'Customer updated successfully.');
-        return $this->redirectRoute('tenant.customers.index', navigate: true);
+        return $this->redirectRoute('tenant.bookings.index', navigate: true);
     }
 };
 ?>
@@ -100,7 +106,7 @@ class extends Component {
                 <span class="in-data-loading:hidden">Update Customer</span>
                 <span class="not-in-data-loading:hidden">Saving...</span>
             </button>
-            <a href="{{ route('tenant.customers.index') }}" wire:navigate class="border px-6 py-2 rounded-lg hover:bg-slate-50 transition">Cancel</a>
+            <a href="{{ route('tenant.bookings.index') }}" wire:navigate class="border px-6 py-2 rounded-lg hover:bg-slate-50 transition">Cancel</a>
         </div>
     </form>
 </div>
