@@ -5,6 +5,20 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
+    
+    <script>
+        const html = document.querySelector('html');
+        const isLightOrAuto = localStorage.getItem('hs_theme') === 'light' ||
+            (localStorage.getItem('hs_theme') === 'auto' && !window.matchMedia('(prefers-color-scheme: dark)').matches);
+        const isDarkOrAuto = localStorage.getItem('hs_theme') === 'dark' ||
+            (localStorage.getItem('hs_theme') === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+
+        if (isLightOrAuto && html.classList.contains('dark')) html.classList.remove('dark');
+        else if (isDarkOrAuto && html.classList.contains('light')) html.classList.remove('light');
+        else if (isDarkOrAuto && !html.classList.contains('dark')) html.classList.add('dark');
+        else if (isLightOrAuto && !html.classList.contains('light')) html.classList.add('light');
+    </script>
+
     <title><?php echo e($title ?? 'Welcome'); ?></title>
     
     <?php echo app('Illuminate\Foundation\Vite')(['resources/css/app.css', 'resources/js/app.js']); ?>
@@ -13,7 +27,7 @@
 
 </head>
 
-<body class="font-sans antialiased">
+<body class="font-sans antialiased bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100">
     <?php if (isset($component)) { $__componentOriginal6b03705b1bb6b0a0138b7a37efc303f2 = $component; } ?>
 <?php if (isset($attributes)) { $__attributesOriginal6b03705b1bb6b0a0138b7a37efc303f2 = $attributes; } ?>
 <?php $component = App\View\Components\Headers\PublicHeader::resolve([] + (isset($attributes) && $attributes instanceof Illuminate\View\ComponentAttributeBag ? $attributes->all() : [])); ?>

@@ -135,14 +135,16 @@ class extends Component {
 };
 ?>
 
-<div class="p-6 sm:p-10 max-w-7xl mx-auto">
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6 gap-4">
+<div class="p-4 sm:p-6 lg:p-10 max-w-7xl mx-auto text-gray-900 dark:text-white space-y-8">
+
+    {{-- Header & Date Range --}}
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-            <h1 class="text-3xl font-bold text-slate-800">Analytics</h1>
-            <p class="text-slate-500">Performance overview for your business.</p>
+            <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Analytics</h1>
+            <p class="text-gray-500 dark:text-slate-400 mt-1">Performance overview for your business.</p>
         </div>
-        <div class="flex items-center gap-2">
-            <select wire:model.live="dateRange" class="rounded-lg border-slate-300 text-sm">
+        <div class="flex items-center gap-2 flex-wrap">
+            <select wire:model.live="dateRange" class="rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 text-sm focus:ring-blue-500 focus:border-blue-500">
                 <option value="today">Today</option>
                 <option value="yesterday">Yesterday</option>
                 <option value="last-7">Last 7 days</option>
@@ -152,50 +154,50 @@ class extends Component {
                 <option value="custom">Custom</option>
             </select>
             @if($dateRange === 'custom')
-                <input type="date" wire:model.live="customStart" class="rounded-lg border-slate-300 text-sm">
-                <span class="text-slate-500">–</span>
-                <input type="date" wire:model.live="customEnd" class="rounded-lg border-slate-300 text-sm">
+                <input type="date" wire:model.live="customStart" class="rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 text-sm focus:ring-blue-500 focus:border-blue-500">
+                <span class="text-gray-500 dark:text-slate-400">–</span>
+                <input type="date" wire:model.live="customEnd" class="rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 text-sm focus:ring-blue-500 focus:border-blue-500">
             @endif
         </div>
     </div>
 
     {{-- KPI Cards --}}
-    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
-        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-            <p class="text-sm text-slate-500">Revenue</p>
-            <p class="text-3xl font-bold text-slate-800">₱{{ number_format($this->stats['revenue'], 2) }}</p>
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div class="rounded-xl bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-700/50 p-5 shadow-sm">
+            <p class="text-sm text-gray-500 dark:text-slate-400">Revenue</p>
+            <p class="text-3xl font-bold text-gray-900 dark:text-white">₱{{ number_format($this->stats['revenue'], 2) }}</p>
         </div>
-        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-            <p class="text-sm text-slate-500">Bookings</p>
-            <p class="text-3xl font-bold text-slate-800">{{ $this->stats['total_bookings'] }}</p>
+        <div class="rounded-xl bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-700/50 p-5 shadow-sm">
+            <p class="text-sm text-gray-500 dark:text-slate-400">Bookings</p>
+            <p class="text-3xl font-bold text-gray-900 dark:text-white">{{ $this->stats['total_bookings'] }}</p>
         </div>
-        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-            <p class="text-sm text-slate-500">Guests</p>
-            <p class="text-3xl font-bold text-slate-800">{{ $this->stats['total_guests'] }}</p>
+        <div class="rounded-xl bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-700/50 p-5 shadow-sm">
+            <p class="text-sm text-gray-500 dark:text-slate-400">Guests</p>
+            <p class="text-3xl font-bold text-gray-900 dark:text-white">{{ $this->stats['total_guests'] }}</p>
         </div>
-        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-            <p class="text-sm text-slate-500">Occupancy</p>
-            <p class="text-3xl font-bold text-slate-800">{{ $this->stats['occupancy_rate'] }}%</p>
-            <p class="text-xs text-slate-500">Avg. Booking: ₱{{ number_format($this->stats['avg_booking_value'], 2) }}</p>
+        <div class="rounded-xl bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-700/50 p-5 shadow-sm">
+            <p class="text-sm text-gray-500 dark:text-slate-400">Occupancy</p>
+            <p class="text-3xl font-bold text-gray-900 dark:text-white">{{ $this->stats['occupancy_rate'] }}%</p>
+            <p class="text-xs text-gray-500 dark:text-slate-400">Avg. Booking: ₱{{ number_format($this->stats['avg_booking_value'], 2) }}</p>
         </div>
     </div>
 
     {{-- Revenue Trend Chart + Top Services --}}
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-        <div class="lg:col-span-2 bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
-            <h3 class="text-lg font-semibold text-slate-800 mb-4">Revenue Trend</h3>
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="lg:col-span-2 rounded-xl bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-700/50 p-6 shadow-sm">
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Revenue Trend</h3>
             <canvas id="revenueChart" height="200"></canvas>
         </div>
-        <div class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
-            <h3 class="text-lg font-semibold text-slate-800 mb-4">Top Services</h3>
+        <div class="rounded-xl bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-700/50 p-6 shadow-sm">
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Top Services</h3>
             <ul class="space-y-3">
                 @forelse($this->topServices as $service)
                     <li class="flex justify-between items-center text-sm">
-                        <span class="font-medium text-slate-700">{{ $service->name }}</span>
-                        <span class="text-slate-500">x{{ $service->count }} · ₱{{ number_format($service->revenue, 2) }}</span>
+                        <span class="font-medium text-gray-700 dark:text-slate-300">{{ $service->name }}</span>
+                        <span class="text-gray-500 dark:text-slate-400">x{{ $service->count }} · ₱{{ number_format($service->revenue, 2) }}</span>
                     </li>
                 @empty
-                    <li class="text-slate-500 text-sm">No services used in this period.</li>
+                    <li class="text-gray-500 dark:text-slate-400 text-sm">No services used in this period.</li>
                 @endforelse
             </ul>
         </div>
@@ -203,29 +205,29 @@ class extends Component {
 
     {{-- Today's Activity --}}
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-            <h2 class="font-semibold mb-3">Today's Arrivals ({{ now()->format('M d') }})</h2>
-            <ul class="divide-y divide-slate-100">
+        <div class="rounded-xl bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-700/50 p-5 shadow-sm">
+            <h2 class="font-semibold text-gray-900 dark:text-white mb-3">Today's Arrivals ({{ now()->format('M d') }})</h2>
+            <ul class="divide-y divide-gray-200 dark:divide-slate-700/30">
                 @forelse($this->upcomingActivity['arrivals'] as $b)
                     <li class="py-2 flex justify-between">
-                        <span>{{ $b->customer->name }}</span>
-                        <span class="text-slate-500 text-sm">{{ $b->check_in->format('M d') }}</span>
+                        <span class="text-gray-700 dark:text-slate-300">{{ $b->customer->name }}</span>
+                        <span class="text-gray-500 dark:text-slate-400 text-sm">{{ $b->check_in->format('M d') }}</span>
                     </li>
                 @empty
-                    <li class="text-slate-500 py-2">No arrivals today.</li>
+                    <li class="text-gray-500 dark:text-slate-400 py-2">No arrivals today.</li>
                 @endforelse
             </ul>
         </div>
-        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-            <h2 class="font-semibold mb-3">Today's Departures ({{ now()->format('M d') }})</h2>
-            <ul class="divide-y divide-slate-100">
+        <div class="rounded-xl bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-700/50 p-5 shadow-sm">
+            <h2 class="font-semibold text-gray-900 dark:text-white mb-3">Today's Departures ({{ now()->format('M d') }})</h2>
+            <ul class="divide-y divide-gray-200 dark:divide-slate-700/30">
                 @forelse($this->upcomingActivity['departures'] as $b)
                     <li class="py-2 flex justify-between">
-                        <span>{{ $b->customer->name }}</span>
-                        <span class="text-slate-500 text-sm">{{ $b->check_out->format('M d') }}</span>
+                        <span class="text-gray-700 dark:text-slate-300">{{ $b->customer->name }}</span>
+                        <span class="text-gray-500 dark:text-slate-400 text-sm">{{ $b->check_out->format('M d') }}</span>
                     </li>
                 @empty
-                    <li class="text-slate-500 py-2">No departures today.</li>
+                    <li class="text-gray-500 dark:text-slate-400 py-2">No departures today.</li>
                 @endforelse
             </ul>
         </div>
@@ -237,25 +239,26 @@ class extends Component {
 <script>
     let revenueChart = null;
 
+    function getChartColors() {
+        const isDark = document.documentElement.classList.contains('dark');
+        return {
+            grid: isDark ? 'rgba(148,163,184,0.15)' : 'rgba(0,0,0,0.06)',
+            tick: isDark ? '#94a3b8' : '#6b7280',
+            line: '#818cf8',  // indigo-400
+            fill: isDark ? 'rgba(129,140,248,0.1)' : 'rgba(129,140,248,0.15)'
+        };
+    }
+
     function renderChart() {
         const canvas = document.getElementById('revenueChart');
         if (!canvas) return;
-
         const ctx = canvas.getContext('2d');
-
-        // Destroy previous chart instance
-        if (revenueChart) {
-            revenueChart.destroy();
-            revenueChart = null;
-        }
-
-        // Get data from Livewire component via $wire
-        const data = @this.revenueTrend;     // Livewire computed property
-        if (!data || Object.keys(data).length === 0) return;
-
+        if (revenueChart) revenueChart.destroy();
+        const data = @this.revenueTrend;
         const labels = Object.keys(data);
         const values = Object.values(data);
-
+        if (labels.length === 0) return;
+        const colors = getChartColors();
         revenueChart = new Chart(ctx, {
             type: 'line',
             data: {
@@ -263,8 +266,8 @@ class extends Component {
                 datasets: [{
                     label: 'Revenue (₱)',
                     data: values,
-                    borderColor: '#4f46e5',
-                    backgroundColor: 'rgba(79,70,229,0.1)',
+                    borderColor: colors.line,
+                    backgroundColor: colors.fill,
                     fill: true,
                     tension: 0.3,
                     pointRadius: 3,
@@ -272,17 +275,23 @@ class extends Component {
             },
             options: {
                 responsive: true,
-                plugins: {
-                    legend: { display: false }
-                },
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
                 scales: {
-                    y: { beginAtZero: true }
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: colors.grid },
+                        ticks: { color: colors.tick }
+                    },
+                    x: {
+                        grid: { display: false },
+                        ticks: { color: colors.tick, maxTicksLimit: 10 }
+                    }
                 }
             }
         });
     }
 
-    // Render chart on initial load and after every Livewire update
     document.addEventListener('livewire:init', () => {
         renderChart();
         Livewire.hook('morph.updated', ({ component }) => {
@@ -291,4 +300,8 @@ class extends Component {
             }
         });
     });
+
+    // Re-render on dark mode toggle
+    const observer = new MutationObserver(() => renderChart());
+    observer.observe(document.documentElement, { attributes: true });
 </script>

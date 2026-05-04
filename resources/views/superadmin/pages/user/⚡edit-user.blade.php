@@ -55,6 +55,16 @@ class extends Component {
         $this->role = $user->roles->first()?->name ?? '';
     }
 
+    /**
+     * Trim string inputs on update.
+     */
+    public function updated($property)
+    {
+        if (in_array($property, ['name', 'email'])) {
+            $this->$property = trim($this->$property);
+        }
+    }
+
     protected function rules()
     {
         return [
@@ -135,64 +145,81 @@ class extends Component {
     }
 };
 ?>
+<div>
+    {{-- Tom Select CDN (light + dark) --}}
     <link href="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/css/tom-select.css" rel="stylesheet" data-navigate-once>
+    <link href="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/css/tom-select.dark.css" rel="stylesheet" data-navigate-once>
     <script src="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/js/tom-select.complete.min.js" data-navigate-once></script>
 
-    <div class="p-6 sm:p-10 max-w-3xl mx-auto">
-        <div class="mb-6">
-            <h1 class="text-3xl font-bold text-slate-800">Edit User</h1>
-            <p class="text-slate-500">Update platform access, business assignments, or reset passwords.</p>
+    <div class="p-4 sm:p-6 lg:p-10 max-w-3xl mx-auto text-gray-900 dark:text-white space-y-6">
+
+        {{-- Flash Message --}}
+        @if (session()->has('message'))
+            <div class="p-4 bg-green-50 dark:bg-green-500/10 border-l-4 border-green-500 rounded-md shadow-sm">
+                <p class="text-sm text-green-700 dark:text-green-400 font-medium">{{ session('message') }}</p>
+            </div>
+        @endif
+
+        <div class="flex items-center justify-between">
+            <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Edit User</h1>
+            <a href="{{ route('superadmin.users.index') }}" wire:navigate class="text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-white font-medium transition-colors">
+                &larr; Back to Users
+            </a>
         </div>
 
-        <form wire:submit="update" class="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-6">
+        <form wire:submit="update" class="space-y-6 bg-white dark:bg-[#0b0f19] rounded-xl border border-gray-200 dark:border-slate-700/50 shadow-sm p-5 sm:p-6">
             {{-- Basic Info --}}
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1">Full Name</label>
-                    <input type="text" wire:model="name" class="w-full rounded-lg border-slate-300 focus:ring-blue-500 focus:border-blue-500">
-                    @error('name') <span class="text-red-500 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Full Name</label>
+                    <input type="text" wire:model="name" 
+                           class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 placeholder-gray-400 dark:placeholder-slate-500 focus:ring-blue-500 focus:border-blue-500">
+                    @error('name') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1">Email Address</label>
-                    <input type="email" wire:model="email" class="w-full rounded-lg border-slate-300 focus:ring-blue-500 focus:border-blue-500">
-                    @error('email') <span class="text-red-500 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Email Address</label>
+                    <input type="email" wire:model="email" 
+                           class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 placeholder-gray-400 dark:placeholder-slate-500 focus:ring-blue-500 focus:border-blue-500">
+                    @error('email') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             </div>
 
             {{-- Password (Optional) --}}
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1">
-                        New Password <span class="text-slate-400 font-normal">(Optional)</span>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+                        New Password <span class="text-gray-400 dark:text-slate-500 font-normal">(Optional)</span>
                     </label>
-                    <input type="password" wire:model="password" class="w-full rounded-lg border-slate-300 focus:ring-blue-500 focus:border-blue-500" placeholder="Leave blank to keep current">
-                    @error('password') <span class="text-red-500 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    <input type="password" wire:model="password" 
+                           class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 placeholder-gray-400 dark:placeholder-slate-500 focus:ring-blue-500 focus:border-blue-500" placeholder="Leave blank to keep current">
+                    @error('password') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1">Confirm New Password</label>
-                    <input type="password" wire:model="password_confirmation" class="w-full rounded-lg border-slate-300 focus:ring-blue-500 focus:border-blue-500" placeholder="••••••••">
-                    @error('password_confirmation') <span class="text-red-500 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Confirm New Password</label>
+                    <input type="password" wire:model="password_confirmation" 
+                           class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 placeholder-gray-400 dark:placeholder-slate-500 focus:ring-blue-500 focus:border-blue-500" placeholder="••••••••">
+                    @error('password_confirmation') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             </div>
 
             {{-- Tenant & Role Section --}}
-            <div class="pt-4 border-t border-slate-100">
-                <h3 class="text-lg font-medium text-slate-800 mb-4">Access & Permissions</h3>
+            <div class="pt-4 border-t border-gray-200 dark:border-slate-700/50">
+                <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Access & Permissions</h3>
                 
                 {{-- Platform User Toggle --}}
                 <div class="mb-4">
                     <label class="inline-flex items-center cursor-pointer">
                         <input type="checkbox" wire:model.live="isPlatformUser" class="sr-only peer">
-                        <div class="relative w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
-                        <span class="ms-3 text-sm font-medium text-slate-700">Platform User (No Business Affiliation)</span>
+                        <div class="relative w-11 h-6 bg-gray-200 dark:bg-slate-700 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 dark:after:border-slate-600 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                        <span class="ms-3 text-sm font-medium text-gray-700 dark:text-slate-300">Platform User (No Business Affiliation)</span>
                     </label>
-                    <p class="text-xs text-slate-500 mt-1 ml-14">Enable if this user should have global platform access without being tied to a specific business.</p>
+                    <p class="text-xs text-gray-500 dark:text-slate-400 mt-1 ml-14">Enable if this user should have global platform access without being tied to a specific business.</p>
                 </div>
 
                 {{-- Tenant Selection --}}
                 @if(!$isPlatformUser)
                 <div class="mb-4" x-data="tenantSelector()" x-init="init()">
-                    <label class="block text-sm font-medium text-slate-700 mb-1">Assign Business (Tenant)</label>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Assign Business (Tenant)</label>
                     
                     <div wire:ignore>
                         <select x-ref="select" class="w-full">
@@ -203,15 +230,14 @@ class extends Component {
                         </select>
                     </div>
                     
-                    @error('tenant_id') <span class="text-red-500 text-xs mt-1 block">{{ $message }}</span> @enderror
-                    <p class="text-xs text-slate-500 mt-1">Select the business this user belongs to.</p>
+                    @error('tenant_id') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 @endif
 
                 {{-- Role Selection --}}
                 <div>
-                    <label class="block text-sm font-medium text-slate-700 mb-1">Assign System Role</label>
-                    <select wire:model="role" class="w-full rounded-lg border-slate-300 focus:ring-blue-500 focus:border-blue-500">
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Assign System Role</label>
+                    <select wire:model="role" class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 focus:ring-blue-500 focus:border-blue-500">
                         <option value="">-- Select a Role --</option>
                         @foreach($this->roles as $roleData)
                             <option value="{{ $roleData->name }}">
@@ -224,15 +250,15 @@ class extends Component {
                             </option>
                         @endforeach
                     </select>
-                    @error('role') <span class="text-red-500 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    @error('role') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             </div>
             
             {{-- Form Actions --}}
-            <div class="flex items-center gap-3 pt-4 border-t border-slate-100">
-                <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-6 rounded-lg shadow-sm transition flex items-center gap-2 data-loading:opacity-75">
+            <div class="flex items-center gap-3 pt-4 border-t border-gray-200 dark:border-slate-700/50">
+                <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-6 rounded-xl shadow-sm transition-colors flex items-center gap-2 data-loading:opacity-75 data-loading:cursor-not-allowed">
                     <span class="in-data-loading:hidden">Update User</span>
-                    <span class="not-in-data-loading:hidden">
+                    <span class="not-in-data-loading:hidden flex items-center gap-2">
                         <svg class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
@@ -240,7 +266,7 @@ class extends Component {
                         Saving...
                     </span>
                 </button>
-                <a href="{{ route('superadmin.users.index') }}" wire:navigate class="bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 font-medium py-2.5 px-6 rounded-lg transition">
+                <a href="{{ route('superadmin.users.index') }}" wire:navigate class="bg-white dark:bg-slate-800 text-gray-700 dark:text-slate-300 border border-gray-300 dark:border-slate-600 hover:bg-gray-50 dark:hover:bg-slate-700 font-medium py-2.5 px-6 rounded-xl transition-colors">
                     Cancel
                 </a>
             </div>
@@ -263,6 +289,7 @@ class extends Component {
             initTomSelect() {
                 const tenantData = @js($this->tenants->map(fn($t) => ['id' => $t->id, 'name' => $t->name]));
                 const currentTenantId = @js($this->tenant_id);
+                const isDark = document.documentElement.classList.contains('dark');
                 
                 this.ts = new TomSelect(this.$refs.select, {
                     create: false,
@@ -272,6 +299,7 @@ class extends Component {
                     searchField: ['name'],
                     options: tenantData,
                     items: currentTenantId ? [currentTenantId] : [],
+                    className: isDark ? 'dark' : '',
                     onChange: (value) => {
                         if (value) {
                             const option = this.ts.options[value];

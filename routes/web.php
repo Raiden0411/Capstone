@@ -44,10 +44,11 @@ Route::post('/logout', function (Request $request) {
     return redirect()->route('login');
 })->name('logout');
 
-// Authenticated Customer Routes (Booking, etc.)
+// Authenticated Customer Routes (Booking, My Bookings, etc.)
 Route::middleware(['auth'])->group(function () {
-    // 👇 Changed {property} to {publicproperty} to bypass TenantScope for tourists
     Route::livewire('/booking/create/{publicproperty}', 'public::pages.create-booking')->name('booking.create');
+    // NEW: Tourist bookings history and management
+    Route::livewire('/my-bookings', 'public::pages.my-bookings')->name('my-bookings');
 });
 
 /*
@@ -62,6 +63,11 @@ Route::middleware(['auth'])->group(function () {
 Route::prefix('platform')->name('superadmin.')->middleware([Authenticate::class, IsSuperAdmin::class])->group(function () {
     // Dashboard
     Route::livewire('/dashboard', 'superadmin::pages.dashboard.dashboard-page')->name('dashboard');
+
+    // Analytics 
+    Route::livewire('/analytics', 'superadmin::pages.analytics.platform-analytics')->name('analytics');
+
+    Route::livewire('/profile', 'superadmin::pages.profile.edit-profile')->name('profile');
 
     // Global Platform Users
     Route::livewire('/users', 'superadmin::pages.user.view-user')->name('users.index');
@@ -79,9 +85,9 @@ Route::prefix('platform')->name('superadmin.')->middleware([Authenticate::class,
     Route::livewire('/roles/{role}/edit', 'superadmin::pages.role.edit-role')->name('roles.edit');
 
     // Tenant Types (Business Categories)
-    Route::livewire('/tenant-types', 'superadmin::tenant-type.view-type')->name('tenant-types.index');
-    Route::livewire('/tenant-types/create', 'superadmin::tenant-type.create-type')->name('tenant-types.create');
-    Route::livewire('/tenant-types/{type}/edit', 'superadmin::tenant-type.edit-type')->name('tenant-types.edit');
+    Route::livewire('/tenant-types', 'superadmin::pages.tenant-type.view-type')->name('tenant-types.index');
+    Route::livewire('/tenant-types/create', 'superadmin::pages.tenant-type.create-type')->name('tenant-types.create');
+    Route::livewire('/tenant-types/{type}/edit', 'superadmin::pages.tenant-type.edit-type')->name('tenant-types.edit');
 
     // Map Markers (Master Map Control)
     Route::livewire('/map-markers', 'superadmin::pages.map-marker.manage-map-markers')->name('map-markers.index');
@@ -95,11 +101,14 @@ Route::prefix('admin')->name('tenant.')->middleware([Authenticate::class, IsTena
     // Dashboard & Settings
     Route::livewire('/dashboard', 'tenant::pages.dashboard.dashboard-page')->name('dashboard');
     Route::livewire('/settings', 'tenant::pages.settings.business-profile')->name('settings.index');
+    Route::livewire('/gallery', 'tenant::pages.settings.gallery')->name('settings.gallery');
+    Route::livewire('/tourist-spot', 'tenant::pages.settings.tourist-spot-overview')->name('settings.overview');
 
     // Bookings
     Route::livewire('/bookings', 'tenant::pages.booking.view-booking')->name('bookings.index');
     Route::livewire('/bookings/create', 'tenant::pages.booking.create-booking')->name('bookings.create');
-    Route::livewire('/bookings/{id}/edit', 'tenant::pages.booking.edit-booking')->name('bookings.edit');
+    Route::livewire('/bookings/{booking}/edit', 'tenant::pages.booking.edit-booking')->name('bookings.edit'); 
+    Route::livewire('/bookings/history', 'tenant::pages.booking.history')->name('bookings.history');
     // Booking show page
     Route::get('/bookings/{booking}', function (Booking $booking) {
         return view('tenant.pages.booking.show-booking', ['booking' => $booking]);
@@ -132,7 +141,6 @@ Route::prefix('admin')->name('tenant.')->middleware([Authenticate::class, IsTena
     Route::livewire('/payments', 'tenant::pages.payment.view-payment')->name('payments.index');
     Route::livewire('/payments/create/{booking}', 'tenant::pages.payment.create-payment')->name('payments.create');
     Route::livewire('/payments/{payment}/edit', 'tenant::pages.payment.edit-payment')->name('payments.edit');
-    Route::livewire('/transactions', 'tenant::pages.transaction.view-transaction')->name('transactions.index');
 
     // PayMongo Payment Routes
     Route::get('/payments/success/{booking}', function (Booking $booking) {

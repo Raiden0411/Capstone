@@ -4,7 +4,9 @@ use Livewire\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Computed;
 use App\Models\Tenant;
+use App\Scopes\TenantScope;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Storage;
 
 new 
 #[Layout('layouts.app')] 
@@ -17,6 +19,23 @@ class extends Component {
             ->where('is_active', true)
             ->orderBy('name')
             ->get();
+    }
+
+    // Tenants that have a logo (profile picture)
+    #[Computed]
+    public function carouselTenants()
+    {
+        return $this->tenants->filter(function ($tenant) {
+            return $tenant->logo !== null;
+        })->values();
+    }
+
+    // Generate a unique key for the carousel based on the IDs and logos,
+    // so it changes whenever tenant data changes or when we navigate.
+    #[Computed]
+    public function carouselKey()
+    {
+        return md5($this->carouselTenants->pluck('id')->implode(','));
     }
 
     #[Computed]
@@ -37,91 +56,119 @@ class extends Component {
     }
 };
 ?>
-<div>
-    <!-- ========== HERO CAROUSEL ========== -->
-    <div class="w-full">
-        <div data-hs-carousel='{"loadingClasses":"opacity-0","isAutoPlay":true}' class="relative">
-            <div class="hs-carousel relative overflow-hidden w-full min-h-[70vh] md:min-h-screen bg-gray-900">
-                <div class="hs-carousel-body absolute top-0 bottom-0 start-0 flex flex-nowrap transition-transform duration-700 opacity-0">
-                    <div class="hs-carousel-slide">
-                        <div class="min-h-[70vh] md:min-h-screen flex flex-col items-center justify-end pb-20
-                            bg-[linear-gradient(to_top,rgba(0,0,0,0.75)_0%,rgba(0,0,0,0.2)_50%,rgba(0,0,0,0.1)_100%),url('https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?q=80&w=1200')]
-                            bg-cover bg-center">
-                            <p class="text-white/60 text-xs md:text-sm uppercase tracking-[0.25em] font-light mb-3">Explore the Philippines</p>
-                            <span class="text-white text-7xl md:text-9xl font-black leading-none drop-shadow-2xl" style="font-family: 'Georgia', serif;">Capstone</span>
-                            <p class="text-white/60 text-sm md:text-base font-light tracking-widest mt-4">Discover eco‑parks, resorts, and hidden gems</p>
-                        </div>
-                    </div>
-                    <div class="hs-carousel-slide">
-                        <div class="min-h-[70vh] md:min-h-screen flex flex-col items-center justify-end pb-20
-                            bg-[linear-gradient(to_top,rgba(0,0,0,0.75)_0%,rgba(0,0,0,0.2)_50%,rgba(0,0,0,0.1)_100%),url('https://images.unsplash.com/photo-1500534314209-a25ddb2bd429?q=80&w=1200')]
-                            bg-cover bg-center">
-                            <p class="text-white/60 text-xs md:text-sm uppercase tracking-[0.25em] font-light mb-3">Your next adventure awaits</p>
-                            <span class="text-white text-7xl md:text-9xl font-black leading-none drop-shadow-2xl" style="font-family: 'Georgia', serif;">Wander</span>
-                            <p class="text-white/60 text-sm md:text-base font-light tracking-widest mt-4">Curated stays &amp; unforgettable experiences</p>
-                        </div>
-                    </div>
-                    <div class="hs-carousel-slide">
-                        <div class="min-h-[70vh] md:min-h-screen flex flex-col items-center justify-end pb-20
-                            bg-[linear-gradient(to_top,rgba(0,0,0,0.75)_0%,rgba(0,0,0,0.2)_50%,rgba(0,0,0,0.1)_100%),url('https://images.unsplash.com/photo-1544731612-de7f96ffe55f?q=80&w=1200')]
-                            bg-cover bg-center">
-                            <p class="text-white/60 text-xs md:text-sm uppercase tracking-[0.25em] font-light mb-3">Travel with ease</p>
-                            <span class="text-white text-7xl md:text-9xl font-black leading-none drop-shadow-2xl" style="font-family: 'Georgia', serif;">Local</span>
-                            <p class="text-white/60 text-sm md:text-base font-light tracking-widest mt-4">Hotels, inns, and resorts – all in one place</p>
-                        </div>
+
+<div class="bg-[#F7F6F1] dark:bg-[#0a0f1e] transition-colors duration-300">
+    <!-- ========== DYNAMIC HERO CAROUSEL (USING LOGO) ========== -->
+    <div class="w-full"
+         x-data="{
+            initCarousel: function() {
+                const container = this.$el.querySelector('[data-hs-carousel]');
+                if (container && window.HSCarousel) {
+                    if (container._hsCarousel) container._hsCarousel.destroy();
+                    new window.HSCarousel(container, JSON.parse(container.getAttribute('data-hs-carousel')));
+                }
+            }
+         }"
+         x-init="
+            $nextTick(() => initCarousel());
+            document.addEventListener('livewire:navigated', () => { $nextTick(() => initCarousel()); });
+         ">
+        <div wire:key="carousel-key-{{ $this->carouselKey }}">
+            <div data-hs-carousel='{"loadingClasses":"opacity-0","isAutoPlay":true}' class="relative">
+                <div class="hs-carousel relative overflow-hidden w-full h-[60vh] md:h-screen bg-gray-100 dark:bg-slate-900">
+                    <div class="hs-carousel-body absolute top-0 bottom-0 start-0 flex flex-nowrap transition-transform duration-700 opacity-0">
+                        @forelse ($this->carouselTenants as $tenant)
+                            @php
+                                $logoUrl = $tenant->logo ? Storage::url($tenant->logo) : asset('images/default-logo.jpg');
+                                $tagline = $tenant->typeOfTenant->type ?? 'Discover';
+                                $shortDescription = Str::limit($tenant->address ?? "Experience the beauty of {$tenant->name}", 120);
+                            @endphp
+                            <div class="hs-carousel-slide">
+                                <div class="h-full flex flex-col bg-cover bg-center bg-no-repeat"
+                                     style="background-image: linear-gradient(rgba(0,0,0,0.4), rgba(0,0,0,0.8)), url('{{ $logoUrl }}');">
+                                    <div class="mt-auto w-full md:max-w-2xl ps-8 pb-12 md:ps-16 md:pb-20">
+                                        <span class="block text-white font-medium tracking-widest uppercase text-sm mb-2">{{ $tagline }}</span>
+                                        <span class="block text-white text-3xl md:text-6xl font-bold leading-tight">{{ $tenant->name }}</span>
+                                        <p class="text-white/90 text-sm md:text-base mt-3 max-w-md">{{ $shortDescription }}</p>
+                                        <div class="mt-8">
+                                            <a class="py-3 px-8 inline-flex items-center gap-x-2 text-sm font-semibold rounded-xl bg-white text-gray-800 dark:bg-slate-800 dark:text-white hover:bg-gray-100 dark:hover:bg-slate-700 transition-all focus:outline-none" href="{{ route('tenant.show', $tenant->slug) }}" wire:navigate>
+                                                Explore {{ $tenant->name }}
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        @empty
+                            {{-- Fallback slide --}}
+                            <div class="hs-carousel-slide">
+                                <div class="h-full flex flex-col bg-[linear-gradient(rgba(0,0,0,0.4),rgba(0,0,0,0.8)),url('https://images.pexels.com/photos/37129973/pexels-photo-37129973.jpeg')] bg-cover bg-center bg-no-repeat">
+                                    <div class="mt-auto w-full md:max-w-2xl ps-8 pb-12 md:ps-16 md:pb-20">
+                                        <span class="block text-white font-medium tracking-widest uppercase text-sm mb-2">Welcome</span>
+                                        <span class="block text-white text-3xl md:text-6xl font-bold leading-tight">Discover Victorias</span>
+                                        <p class="text-white/90 text-sm md:text-base mt-3 max-w-md">Explore beautiful destinations, nature escapes, and cultural heritage.</p>
+                                        <div class="mt-8">
+                                            <a class="py-3 px-8 inline-flex items-center gap-x-2 text-sm font-semibold rounded-xl bg-white text-gray-800 dark:bg-slate-800 dark:text-white hover:bg-gray-100 dark:hover:bg-slate-700 transition-all focus:outline-none" href="{{ route('explore.map') }}" wire:navigate>
+                                                Start Exploring
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        @endforelse
                     </div>
                 </div>
-            </div>
-            <button type="button" class="hs-carousel-prev hs-carousel-disabled:opacity-50 disabled:pointer-events-none absolute inset-y-0 start-0 inline-flex justify-center items-center w-16 h-full text-white hover:bg-white/10 focus:outline-none transition-colors">
-                <svg class="shrink-0 size-8" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-                <span class="sr-only">Previous</span>
-            </button>
-            <button type="button" class="hs-carousel-next hs-carousel-disabled:opacity-50 disabled:pointer-events-none absolute inset-y-0 end-0 inline-flex justify-center items-center w-16 h-full text-white hover:bg-white/10 focus:outline-none transition-colors">
-                <span class="sr-only">Next</span>
-                <svg class="shrink-0 size-8" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-            </button>
-            <div class="hs-carousel-pagination flex justify-center absolute bottom-6 start-0 end-0 space-x-3">
-                <span class="hs-carousel-active:bg-white hs-carousel-active:border-white size-3 border-2 border-white/50 rounded-full cursor-pointer transition-all"></span>
-                <span class="hs-carousel-active:bg-white hs-carousel-active:border-white size-3 border-2 border-white/50 rounded-full cursor-pointer transition-all"></span>
-                <span class="hs-carousel-active:bg-white hs-carousel-active:border-white size-3 border-2 border-white/50 rounded-full cursor-pointer transition-all"></span>
+
+                {{-- Carousel Controls --}}
+                <button type="button" class="hs-carousel-prev hs-carousel-disabled:opacity-50 disabled:pointer-events-none absolute inset-y-0 start-0 inline-flex justify-center items-center w-16 h-full text-white hover:bg-white/10 focus:outline-none transition-colors">
+                    <svg class="shrink-0 size-8" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+                    <span class="sr-only">Previous</span>
+                </button>
+                <button type="button" class="hs-carousel-next hs-carousel-disabled:opacity-50 disabled:pointer-events-none absolute inset-y-0 end-0 inline-flex justify-center items-center w-16 h-full text-white hover:bg-white/10 focus:outline-none transition-colors">
+                    <span class="sr-only">Next</span>
+                    <svg class="shrink-0 size-8" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+                </button>
+
+                {{-- Dynamic Pagination Dots --}}
+                <div class="hs-carousel-pagination flex justify-center absolute bottom-6 start-0 end-0 space-x-3">
+                    @for ($i = 0; $i < max(1, $this->carouselTenants->count()); $i++)
+                        <span class="hs-carousel-active:bg-white hs-carousel-active:border-white size-3 border-2 border-white/50 rounded-full cursor-pointer transition-all"></span>
+                    @endfor
+                </div>
             </div>
         </div>
     </div>
 
-    <!-- ========== DESTINATIONS GRID ========== -->
-    <section class="py-20 bg-[#1B261D]">
+    <!-- ========== POPULAR DESTINATIONS (unchanged) ========== -->
+    <section class="py-20 bg-[#F7F6F1] dark:bg-[#0b0f19] transition-colors duration-300">
         <div class="max-w-[85rem] mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex flex-col md:flex-row md:justify-between md:items-end mb-10 gap-8">
+            <div class="flex flex-wrap justify-between items-end mb-8 gap-6">
                 <div>
-                    <p class="text-[#C9A84C] font-bold tracking-[0.2em] uppercase text-xs mb-2">Curated Experiences</p>
-                    <h2 class="text-4xl md:text-5xl font-extrabold text-white tracking-tight leading-tight">Popular Destinations</h2>
+                    <p class="text-[#7E8A74] dark:text-slate-400 font-bold tracking-[0.2em] uppercase text-xs mb-2">Curated Experiences</p>
+                    <h2 class="text-4xl md:text-5xl font-extrabold text-[#1B261D] dark:text-white tracking-tight leading-tight">Popular Destinations</h2>
                 </div>
-                <a href="{{ route('explore.map') }}" wire:navigate class="py-3 px-7 inline-flex items-center gap-x-2 text-sm font-semibold rounded-full bg-[#C9A84C] text-[#1B261D] hover:bg-[#b8963e] transition-colors duration-200 focus:outline-none">
-                    View Map
+                <a href="{{ route('explore.map') }}" wire:navigate class="py-3 px-7 inline-flex items-center gap-x-2 text-sm font-semibold rounded-full bg-[#1B261D] dark:bg-blue-600 text-white hover:bg-[#2d4a35] dark:hover:bg-blue-700 transition-colors duration-200 focus:outline-none">
+                    View All Sites
                     <svg class="size-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3"/></svg>
                 </a>
             </div>
-
             <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
                 @foreach ($this->tenants as $tenant)
-                    <div class="group flex flex-col bg-white rounded-3xl overflow-hidden shadow-md hover:shadow-2xl transition-all duration-500 hover:-translate-y-1.5">
+                    @php
+                        $cardImage = $tenant->logo ? Storage::url($tenant->logo) : 'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?q=80&w=800';
+                    @endphp
+                    <div class="group flex flex-col bg-white dark:bg-slate-800 rounded-3xl overflow-hidden shadow-sm hover:shadow-xl dark:hover:shadow-slate-900/50 transition-all duration-500 hover:-translate-y-1.5">
                         <div class="relative h-56 overflow-hidden">
-                            <img src="{{ $tenant->logo ? Storage::url($tenant->logo) : 'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?q=80&w=800' }}"
-                                 alt="{{ $tenant->name }}"
-                                 class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700"
-                                 loading="lazy">
-                            <span class="absolute top-4 left-4 bg-[#2d7a52]/90 text-white px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider">
+                            <img src="{{ $cardImage }}" alt="{{ $tenant->name }}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" loading="lazy" onerror="this.src='https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?q=80&w=800'">
+                            <span class="absolute top-4 left-4 bg-[#2d7a52]/90 dark:bg-blue-600/90 text-white px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider">
                                 {{ $tenant->typeOfTenant->type ?? 'Stay' }}
                             </span>
                         </div>
-                        <div class="flex flex-col flex-1 p-6 bg-white">
-                            <h3 class="text-lg font-extrabold text-[#1B261D] leading-snug mb-2">{{ $tenant->name }}</h3>
-                            <p class="text-sm text-[#4A554E] leading-relaxed mb-6 flex-1">
-                                {{ Str::limit($tenant->address, 100) }}
-                            </p>
-                            <div class="flex justify-between items-center gap-2 pt-4 border-t border-[#f0efe8]">
-                                <span class="text-[11px] text-[#7E8A74] font-semibold">{{ $tenant->contact_number }}</span>
-                                <a href="{{ route('tenant.show', $tenant->slug) }}" wire:navigate class="shrink-0 py-2 px-5 text-xs font-bold rounded-full border-2 border-[#C9A84C] text-[#C9A84C] hover:bg-[#C9A84C] hover:text-[#1B261D] transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-[#C9A84C]/30">
+                        <div class="flex flex-col flex-1 p-6">
+                            <h3 class="text-lg font-extrabold text-[#1B261D] dark:text-white leading-snug mb-2">{{ $tenant->name }}</h3>
+                            <p class="text-sm text-[#4A554E] dark:text-slate-400 leading-relaxed mb-6 flex-1">{{ Str::limit($tenant->address, 100) }}</p>
+                            <div class="flex justify-between items-center gap-2 pt-4 border-t border-[#f0efe8] dark:border-slate-700">
+                                <span class="text-[11px] text-[#7E8A74] dark:text-slate-500 font-semibold">{{ $tenant->contact_number }}</span>
+                                <a href="{{ route('tenant.show', $tenant->slug) }}" wire:navigate class="shrink-0 py-2 px-5 text-xs font-bold rounded-full border-2 border-[#1B261D] dark:border-blue-400 text-[#1B261D] dark:text-blue-400 hover:bg-[#1B261D] dark:hover:bg-blue-600 hover:text-white dark:hover:text-white transition-all duration-200 focus:outline-none">
                                     Explore
                                 </a>
                             </div>
@@ -136,33 +183,51 @@ class extends Component {
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
-    <section class="py-12 lg:py-20 bg-[#1B261D]">
+    <style>
+        .leaflet-container { background: #162019 !important; border-radius: 1rem; }
+        .dark .leaflet-container { background: #0f172a !important; }
+        .leaflet-popup-content-wrapper { background: #2d4a35 !important; color: white !important; border-radius: 0.5rem !important; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3) !important; }
+        .dark .leaflet-popup-content-wrapper { background: #1e293b !important; }
+        .leaflet-popup-tip { background: #2d4a35 !important; }
+        .dark .leaflet-popup-tip { background: #1e293b !important; }
+        .leaflet-popup-content { color: #e8f5ec !important; font-size: 13px !important; margin: 12px !important; }
+        .dark .leaflet-popup-content { color: #cbd5e1 !important; }
+        .leaflet-control-zoom a { background: #1B261D !important; color: #8fc99a !important; border-color: rgba(255,255,255,0.1) !important; }
+        .dark .leaflet-control-zoom a { background: #334155 !important; color: #94a3b8 !important; }
+        .leaflet-control-attribution { background: rgba(0,0,0,0.4) !important; color: rgba(255,255,255,0.3) !important; font-size: 10px !important; }
+        .leaflet-control-attribution a { color: rgba(255,255,255,0.4) !important; }
+        .custom-pin { display: flex; align-items: center; justify-content: center; }
+        .pin-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; }
+    </style>
+
+    <section class="py-12 lg:py-20 bg-[#1B261D] dark:bg-[#0b0f19] transition-colors duration-300">
         <div class="max-w-[85rem] mx-auto px-4 sm:px-6 lg:px-8">
             <div class="grid lg:grid-cols-5 gap-10 items-start">
                 <div class="lg:col-span-3 order-2 lg:order-1">
-                    <p class="text-[#8fc99a] font-bold tracking-[0.2em] uppercase text-xs mb-2 flex items-center gap-2">
-                        <span class="inline-block w-5 h-px bg-[#8fc99a]"></span>
+                    <p class="text-[#8fc99a] dark:text-slate-400 font-bold tracking-[0.2em] uppercase text-xs mb-2 flex items-center gap-2">
+                        <span class="inline-block w-5 h-px bg-[#8fc99a] dark:bg-slate-500"></span>
                         Explore the Region
                     </p>
                     <h3 class="text-3xl font-extrabold text-white mb-5 leading-snug">Interactive Map</h3>
-                    <div id="map" style="width:100%; height:450px;" class="rounded-2xl border border-white/10 overflow-hidden shadow-2xl"></div>
+                    <div id="map" class="w-full h-[450px] lg:h-[500px] rounded-2xl border border-white/10 dark:border-slate-700/50 overflow-hidden shadow-2xl"></div>
                 </div>
-
                 <div class="lg:col-span-2 pt-2 order-1 lg:order-2">
-                    <p class="text-white/40 text-[10px] font-bold tracking-widest uppercase mb-4">Nearby Destinations</p>
+                    <p class="text-white/40 dark:text-slate-500 text-[10px] font-bold tracking-widest uppercase mb-4">Nearby Destinations</p>
                     <div id="location-list" class="flex flex-col gap-2 mb-8">
                         @foreach ($this->mapLocations() as $index => $loc)
-                            <button onclick="focusLocation({{ $index }})" class="group flex items-center gap-3 bg-white/5 hover:bg-white/10 border border-white/8 rounded-xl px-4 py-3 cursor-pointer transition-all duration-200 text-left w-full focus:outline-none focus:ring-1 focus:ring-opacity-50">
+                            <button onclick="focusLocation({{ $index }})" class="group flex items-center gap-3 bg-white/5 hover:bg-white/10 dark:bg-slate-800/50 dark:hover:bg-slate-800 border border-white/8 dark:border-slate-700 rounded-xl px-4 py-3 cursor-pointer transition-all duration-200 text-left w-full focus:outline-none focus:ring-1 focus:ring-opacity-50">
                                 <span class="size-2.5 rounded-full shrink-0" style="background: {{ $loc['color'] }}"></span>
                                 <div class="flex-1 min-w-0">
-                                    <p class="text-[13px] text-white/80 font-semibold truncate">{{ $loc['name'] }}</p>
+                                    <p class="text-[13px] text-white/80 dark:text-slate-300 font-semibold truncate">{{ $loc['name'] }}</p>
                                 </div>
-                                <span class="text-[11px] text-white/35 font-medium shrink-0">{{ $loc['type'] }}</span>
+                                <span class="text-[11px] text-white/35 dark:text-slate-500 font-medium shrink-0">{{ $loc['type'] }}</span>
                             </button>
                         @endforeach
                     </div>
-                    <a href="{{ route('explore.map') }}" wire:navigate
-                       class="inline-flex items-center gap-x-2 py-3 px-6 text-sm font-semibold rounded-full bg-white text-[#1B261D] hover:bg-[#e8f5ec] transition-colors duration-200 focus:outline-none">
+                    <p class="text-[#9CA8A3] dark:text-slate-400 text-sm leading-relaxed mb-6">
+                        Click on any map pin or the locations above to discover historical sites and nature escapes. Plan your full‑day route in minutes.
+                    </p>
+                    <a href="{{ route('explore.map') }}" wire:navigate class="inline-flex items-center gap-x-2 py-3 px-6 text-sm font-semibold rounded-full bg-white dark:bg-blue-600 text-[#1B261D] dark:text-white hover:bg-[#e8f5ec] dark:hover:bg-blue-700 transition-colors duration-200 focus:outline-none">
                         Explore Full Map
                         <svg class="size-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3"/></svg>
                     </a>
@@ -171,60 +236,99 @@ class extends Component {
         </div>
     </section>
 
-    <script>
-        (function() {
-            function initMap() {
-                var mapEl = document.getElementById('map');
-                if (!mapEl) return;
-                mapEl.innerHTML = '';
-
-                const locations = @json($this->mapLocations());
-
-                const defaultCenter = locations.length > 0
-                    ? [locations[0].lat, locations[0].lng]
-                    : [12.8797, 121.7740];
-
-                const map = L.map('map', {
-                    center: defaultCenter,
-                    zoom: locations.length === 0 ? 6 : (locations.length === 1 ? 15 : 10),
-                    zoomControl: true
-                });
-
-                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                }).addTo(map);
-
-                window.addEventListener('load', function() { map.invalidateSize(); });
-                setTimeout(function() { map.invalidateSize(); }, 500);
-
-                const markers = [];
-                locations.forEach((loc, index) => {
-                    const color = loc.color || `hsl(${(index * 137) % 360}, 65%, 55%)`;
-                    const marker = L.circleMarker([loc.lat, loc.lng], {
-                        radius: 8,
-                        fillColor: color,
-                        color: '#ffffff',
-                        weight: 2,
-                        opacity: 1,
-                        fillOpacity: 0.9
-                    }).addTo(map);
-                    marker.bindPopup(`<strong>${loc.name}</strong><br/>${loc.type}<br/><a href="/business/${loc.slug}" class="text-blue-500 underline" wire:navigate>Visit business</a>`);
-                    markers.push(marker);
-                });
-
-                window.focusLocation = function(index) {
-                    if (index < 0 || index >= locations.length) return;
-                    const loc = locations[index];
-                    map.flyTo([loc.lat, loc.lng], 15, { duration: 1.5 });
-                    setTimeout(() => markers[index].openPopup(), 1200);
-                };
-            }
-
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', initMap);
-            } else {
-                initMap();
-            }
-        })();
-    </script>
+    <!-- ========== CTA BANNER ========== -->
+    <section class="relative py-24 overflow-hidden bg-[#F7F6F1] dark:bg-[#0b0f19] transition-colors duration-300">
+        <div class="absolute inset-0 opacity-60 dark:opacity-30" style="background-image: radial-gradient(circle, rgba(27,38,29,0.07) 1px, transparent 1px); background-size: 28px 28px;"></div>
+        <div class="relative max-w-2xl mx-auto px-4 text-center">
+            <p class="text-[#7E8A74] dark:text-slate-400 font-bold tracking-[0.2em] uppercase text-xs mb-3">Ready to Visit?</p>
+            <h2 class="text-4xl md:text-5xl font-extrabold text-[#1B261D] dark:text-white tracking-tight leading-tight mb-4">Plan your perfect day in Victorias</h2>
+            <p class="text-[#4A554E] dark:text-slate-400 text-base md:text-lg leading-relaxed mb-8 max-w-lg mx-auto">
+                Whether you're chasing history, flavors, or fresh air — let us help you build an itinerary that fits your pace.
+            </p>
+            <a href="{{ route('explore.map') }}" wire:navigate class="py-3 px-8 inline-flex items-center gap-x-2 text-sm font-semibold rounded-full bg-[#1B261D] dark:bg-blue-600 text-white hover:bg-[#2d4a35] dark:hover:bg-blue-700 transition-colors duration-200 focus:outline-none">
+                Explore Now
+                <svg class="size-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3"/></svg>
+            </a>
+        </div>
+    </section>
 </div>
+
+<!-- Initialise carousel and map on load and after Livewire navigation -->
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        function initCarousel() {
+            const carouselEl = document.querySelector('[data-hs-carousel]');
+            if (carouselEl && window.HSCarousel) {
+                if (carouselEl._hsCarousel) carouselEl._hsCarousel.destroy();
+                new window.HSCarousel(carouselEl, JSON.parse(carouselEl.getAttribute('data-hs-carousel')));
+            }
+        }
+
+        function initMap() {
+            if (window.mapInitialized) return;
+            const mapEl = document.getElementById('map');
+            if (!mapEl || mapEl.innerHTML !== '') return;
+
+            const locations = @json($this->mapLocations());
+            const defaultCenter = locations.length > 0 ? [locations[0].lat, locations[0].lng] : [10.9000, 123.0100];
+
+            window.map = L.map('map', {
+                center: defaultCenter,
+                zoom: locations.length === 0 ? 6 : (locations.length === 1 ? 15 : 10),
+                zoomControl: true
+            });
+            window.tileLayer = L.tileLayer('', { maxZoom: 19 }).addTo(window.map);
+            function updateTileLayer() {
+                if (!window.tileLayer) return;
+                const isDark = document.documentElement.classList.contains('dark');
+                const tileUrl = isDark
+                    ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+                    : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
+                window.tileLayer.setUrl(tileUrl);
+                window.tileLayer.options.attribution = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/">CARTO</a>';
+            }
+            updateTileLayer();
+            const observer = new MutationObserver(() => updateTileLayer());
+            observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+
+            window.markers = [];
+            locations.forEach((loc, index) => {
+                const icon = L.divIcon({
+                    className: 'custom-pin',
+                    html: `<div class="pin-dot" style="background: ${loc.color}; box-shadow: 0 0 10px ${loc.color};"></div>`,
+                    iconSize: [20, 20],
+                    iconAnchor: [10, 10]
+                });
+                const marker = L.marker([loc.lat, loc.lng], { icon: icon })
+                    .bindPopup(`<strong>${loc.name}</strong><br/>${loc.type}<br/><a href="/business/${loc.slug}" class="text-blue-400 underline" wire:navigate>Visit business</a>`)
+                    .addTo(window.map);
+                window.markers.push(marker);
+            });
+            window.focusLocation = function(idx) {
+                if (idx < 0 || idx >= locations.length) return;
+                const loc = locations[idx];
+                window.map.flyTo([loc.lat, loc.lng], 15, { duration: 1.5 });
+                setTimeout(() => window.markers[idx].openPopup(), 1200);
+            };
+            window.mapInitialized = true;
+            setTimeout(() => window.map.invalidateSize(), 200);
+        }
+
+        initCarousel();
+        initMap();
+
+        // Re-run after Livewire navigation
+        document.addEventListener('livewire:navigated', () => {
+            setTimeout(() => {
+                initCarousel();
+                if (window.mapInitialized) {
+                    window.mapInitialized = false;
+                    initMap();
+                } else {
+                    initMap();
+                }
+                if (window.map) window.map.invalidateSize();
+            }, 150);
+        });
+    });
+</script>

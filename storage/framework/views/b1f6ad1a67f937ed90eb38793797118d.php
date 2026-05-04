@@ -4,6 +4,7 @@ use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Validate;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Http\Request;
 ?>
 
 <div>
@@ -84,7 +85,6 @@ use Illuminate\Support\Facades\Auth;
                     New here?
                     <a href="<?php echo e(route('register')); ?>" class="font-medium text-green-700 decoration-2 hover:underline focus:outline-none focus:underline dark:text-green-500">Create an account</a>
                 </p>
-                
                 <p class="mt-1 text-sm text-gray-500 dark:text-neutral-400">
                     Own a tourist spot?
                     <a href="<?php echo e(route('register_business')); ?>" wire:navigate class="font-medium text-green-700 decoration-2 hover:underline focus:outline-none focus:underline dark:text-green-500">Register your business</a>
@@ -92,7 +92,6 @@ use Illuminate\Support\Facades\Auth;
 
                 
                 <form wire:submit="login" class="space-y-4 mt-6">
-                    
                     <div>
                         <label for="email" class="block text-sm font-medium mb-2 text-gray-700 dark:text-neutral-300">Email Address</label>
                         <input type="email" id="email" wire:model="email" placeholder="example@email.com" class="py-3 px-4 block w-full border-gray-200 rounded-lg text-sm focus:border-green-700 focus:ring-green-700 disabled:opacity-50 disabled:pointer-events-none dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400 dark:placeholder-neutral-500 dark:focus:ring-neutral-600">
@@ -106,7 +105,6 @@ endif;
 unset($__errorArgs, $__bag); ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
                     </div>
 
-                    
                     <div>
                         <label for="password" class="block text-sm font-medium mb-2 text-gray-700 dark:text-neutral-300">Password</label>
                         <input type="password" id="password" wire:model="password" placeholder="Enter your password" class="py-3 px-4 block w-full border-gray-200 rounded-lg text-sm focus:border-green-700 focus:ring-green-700 disabled:opacity-50 disabled:pointer-events-none dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400 dark:placeholder-neutral-500 dark:focus:ring-neutral-600">
@@ -120,13 +118,11 @@ endif;
 unset($__errorArgs, $__bag); ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
                     </div>
 
-                    
                     <div class="flex items-center gap-x-3">
                         <input type="checkbox" id="remember" wire:model="remember" class="shrink-0 mt-0.5 border-gray-200 rounded text-green-700 focus:ring-green-700 dark:bg-neutral-800 dark:border-neutral-700 dark:checked:bg-green-700 dark:checked:border-green-700 dark:focus:ring-offset-gray-800">
                         <label for="remember" class="text-sm text-gray-600 dark:text-neutral-400">Remember me</label>
                     </div>
 
-                    
                     <button type="submit" wire:loading.attr="disabled" class="w-full py-3 px-4 inline-flex justify-center items-center gap-x-2 text-sm font-semibold rounded-lg border border-transparent bg-green-900 text-white hover:bg-green-800 focus:outline-none focus:ring-2 focus:ring-green-700 focus:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none transition-colors dark:focus:ring-offset-neutral-800">
                         <span wire:loading.remove>Sign In</span>
                         <span wire:loading class="inline-flex items-center gap-x-2">

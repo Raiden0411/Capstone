@@ -5,6 +5,7 @@ use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Validate;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Http\Request;
 
 new 
 #[Layout('layouts.app')] 
@@ -18,6 +19,20 @@ class extends Component {
     public $password = '';
 
     public $remember = false;
+
+    public $redirectUrl = '/';  // default fallback
+
+    public function mount(Request $request)
+    {
+        // Capture the redirect parameter from the URL query string
+        $redirect = $request->query('redirect');
+        if ($redirect && filter_var($redirect, FILTER_VALIDATE_URL)) {
+            // Only allow relative URLs or fully qualified URLs that belong to our app (security)
+            // For simplicity, we'll just store the raw string and redirect later.
+            // Livewire's redirect() will handle internal URLs correctly.
+            $this->redirectUrl = $redirect;
+        }
+    }
 
     public function login()
     {
@@ -35,6 +50,12 @@ class extends Component {
 
             session()->regenerate();
 
+            // If a redirect URL was provided, use it (except for super‑admins or admins? but we respect the redirect)
+            if ($this->redirectUrl && $this->redirectUrl !== '/') {
+                return redirect()->to($this->redirectUrl);
+            }
+
+            // Otherwise fall back to role-based redirects
             if ($user->hasRole('super-admin')) {
                 return $this->redirectRoute('superadmin.dashboard', navigate: true);
             }
@@ -54,7 +75,7 @@ class extends Component {
     <div class="min-h-screen bg-gray-50 flex items-center justify-center p-4 dark:bg-neutral-900">
         <div class="w-full max-w-4xl bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden flex dark:bg-neutral-800 dark:border-neutral-700">
 
-            {{-- ── LEFT: MAP PANEL ── --}}
+            {{-- Left map panel (unchanged) --}}
             <div class="hidden lg:block relative flex-1 bg-green-50 overflow-hidden dark:bg-neutral-700/30">
                 <svg class="absolute inset-0 w-full h-full" viewBox="0 0 480 620" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice">
                     <rect x="28"  y="22"  width="98"  height="62" rx="6" fill="#bbdabb" opacity=".65"/>
@@ -106,7 +127,7 @@ class extends Component {
                 </div>
             </div>
 
-            {{-- ── RIGHT: FORM PANEL ── --}}
+            {{-- Right form panel --}}
             <div class="w-full lg:max-w-md p-8 sm:p-10 relative">
                 <div class="absolute top-4 right-4">
                     <button type="button" class="size-8 inline-flex items-center justify-center gap-x-2 rounded-full text-gray-400 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-300 transition dark:text-neutral-500 dark:hover:bg-neutral-700 dark:focus:ring-neutral-600">
@@ -128,7 +149,6 @@ class extends Component {
                     New here?
                     <a href="{{ route('register') }}" class="font-medium text-green-700 decoration-2 hover:underline focus:outline-none focus:underline dark:text-green-500">Create an account</a>
                 </p>
-                {{-- Register business link (using underscore route name) --}}
                 <p class="mt-1 text-sm text-gray-500 dark:text-neutral-400">
                     Own a tourist spot?
                     <a href="{{ route('register_business') }}" wire:navigate class="font-medium text-green-700 decoration-2 hover:underline focus:outline-none focus:underline dark:text-green-500">Register your business</a>
@@ -136,27 +156,23 @@ class extends Component {
 
                 {{-- Form --}}
                 <form wire:submit="login" class="space-y-4 mt-6">
-                    {{-- Email --}}
                     <div>
                         <label for="email" class="block text-sm font-medium mb-2 text-gray-700 dark:text-neutral-300">Email Address</label>
                         <input type="email" id="email" wire:model="email" placeholder="example@email.com" class="py-3 px-4 block w-full border-gray-200 rounded-lg text-sm focus:border-green-700 focus:ring-green-700 disabled:opacity-50 disabled:pointer-events-none dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400 dark:placeholder-neutral-500 dark:focus:ring-neutral-600">
                         @error('email') <p class="mt-2 text-xs text-red-600 dark:text-red-500">{{ $message }}</p> @enderror
                     </div>
 
-                    {{-- Password --}}
                     <div>
                         <label for="password" class="block text-sm font-medium mb-2 text-gray-700 dark:text-neutral-300">Password</label>
                         <input type="password" id="password" wire:model="password" placeholder="Enter your password" class="py-3 px-4 block w-full border-gray-200 rounded-lg text-sm focus:border-green-700 focus:ring-green-700 disabled:opacity-50 disabled:pointer-events-none dark:bg-neutral-900 dark:border-neutral-700 dark:text-neutral-400 dark:placeholder-neutral-500 dark:focus:ring-neutral-600">
                         @error('password') <p class="mt-2 text-xs text-red-600 dark:text-red-500">{{ $message }}</p> @enderror
                     </div>
 
-                    {{-- Remember me --}}
                     <div class="flex items-center gap-x-3">
                         <input type="checkbox" id="remember" wire:model="remember" class="shrink-0 mt-0.5 border-gray-200 rounded text-green-700 focus:ring-green-700 dark:bg-neutral-800 dark:border-neutral-700 dark:checked:bg-green-700 dark:checked:border-green-700 dark:focus:ring-offset-gray-800">
                         <label for="remember" class="text-sm text-gray-600 dark:text-neutral-400">Remember me</label>
                     </div>
 
-                    {{-- Submit --}}
                     <button type="submit" wire:loading.attr="disabled" class="w-full py-3 px-4 inline-flex justify-center items-center gap-x-2 text-sm font-semibold rounded-lg border border-transparent bg-green-900 text-white hover:bg-green-800 focus:outline-none focus:ring-2 focus:ring-green-700 focus:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none transition-colors dark:focus:ring-offset-neutral-800">
                         <span wire:loading.remove>Sign In</span>
                         <span wire:loading class="inline-flex items-center gap-x-2">

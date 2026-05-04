@@ -21,7 +21,6 @@ new
 #[Layout('tenant.layouts.app')]
 #[Title('New Reservation')]
 class extends Component {
-    // Customer fields
     #[Validate('required|string|max:255')]
     public $customerName = '';
     
@@ -32,7 +31,6 @@ class extends Component {
     public $customerAddress = '';
     public $customerNotes = '';
 
-    // Booking dates
     #[Validate('required|date|after_or_equal:today')]
     public $check_in;
     
@@ -44,11 +42,9 @@ class extends Component {
     public $selectedProperties = [];
     public $selectedServices = [];
     
-    // Payment
     #[Validate('required|in:cash,card,gcash,paymaya')]
     public $payment_method = 'cash';
     
-    public $reference_number = '';
     public $createdBookingId = null;
 
     public function mount()
@@ -56,6 +52,14 @@ class extends Component {
         $this->check_in = now()->format('Y-m-d');
         $this->check_out = now()->addDay()->format('Y-m-d');
         $this->generateBookingReference();
+    }
+
+    public function updated($field)
+    {
+        $trimFields = ['customerName', 'customerPhone', 'customerEmail', 'customerAddress', 'customerNotes'];
+        if (in_array($field, $trimFields)) {
+            $this->$field = trim($this->$field);
+        }
     }
 
     public function generateBookingReference()
@@ -71,50 +75,29 @@ class extends Component {
         $this->calculateTotal();
     }
 
-    public function updatedCheckOut() { $this->calculateTotal(); }
-
-    public function addProperty($propertyId, $price)
+    public function updatedCheckOut()
     {
-        if (!isset($this->selectedProperties[$propertyId])) {
+        $this->calculateTotal();
+    }
+
+    // Toggle a property on/off (no quantity)
+    public function toggleProperty($propertyId, $price)
+    {
+        if (isset($this->selectedProperties[$propertyId])) {
+            unset($this->selectedProperties[$propertyId]);
+        } else {
             $this->selectedProperties[$propertyId] = ['quantity' => 1, 'price' => $price];
         }
         $this->calculateTotal();
     }
 
-    public function removeProperty($propertyId)
-    {
-        unset($this->selectedProperties[$propertyId]);
-        $this->calculateTotal();
-    }
-
-    public function updatePropertyQuantity($propertyId, $quantity)
-    {
-        if (isset($this->selectedProperties[$propertyId])) {
-            $this->selectedProperties[$propertyId]['quantity'] = max(1, (int)$quantity);
-        }
-        $this->calculateTotal();
-    }
-
-    public function addService($serviceId, $price)
-    {
-        if (!isset($this->selectedServices[$serviceId])) {
-            $this->selectedServices[$serviceId] = ['quantity' => 1, 'price' => $price];
-        } else {
-            $this->selectedServices[$serviceId]['quantity']++;
-        }
-        $this->calculateTotal();
-    }
-
-    public function removeService($serviceId)
-    {
-        unset($this->selectedServices[$serviceId]);
-        $this->calculateTotal();
-    }
-
-    public function updateServiceQuantity($serviceId, $quantity)
+    // Toggle a service on/off (no quantity)
+    public function toggleService($serviceId, $price)
     {
         if (isset($this->selectedServices[$serviceId])) {
-            $this->selectedServices[$serviceId]['quantity'] = max(1, (int)$quantity);
+            unset($this->selectedServices[$serviceId]);
+        } else {
+            $this->selectedServices[$serviceId] = ['quantity' => 1, 'price' => $price];
         }
         $this->calculateTotal();
     }
@@ -138,23 +121,31 @@ class extends Component {
 
     public function getAvailablePropertiesProperty()
     {
-        if (!$this->check_in || !$this->check_out) return collect();
+        if (!$this->check_in || !$this->check_out) {
+            return collect();
+        }
 
         $checkIn = $this->check_in;
         $checkOut = $this->check_out;
-        return Property::where('is_active', true)
+
+        $properties = Property::with('images')
+            ->where('is_active', true)
             ->where('status', 'available')
             ->orderBy('name')
-            ->get()
-            ->filter(function ($property) use ($checkIn, $checkOut) {
-                $hasConflict = BookingItem::where('property_id', $property->id)
-                    ->whereHas('booking', function ($q) use ($checkIn, $checkOut) {
-                        $q->whereNotIn('status', ['cancelled', 'completed'])
-                            ->where('check_in', '<', $checkOut)
-                            ->where('check_out', '>', $checkIn);
-                    })->exists();
-                return !$hasConflict;
-            })->values();
+            ->get();
+
+        $available = $properties->filter(function ($property) use ($checkIn, $checkOut) {
+            $hasConflict = BookingItem::where('property_id', $property->id)
+                ->whereHas('booking', function ($query) use ($checkIn, $checkOut) {
+                    $query->whereNotIn('status', ['cancelled', 'completed'])
+                        ->where('check_in', '<', $checkOut)
+                        ->where('check_out', '>', $checkIn);
+                })
+                ->exists();
+            return !$hasConflict;
+        });
+
+        return $available->values();
     }
 
     public function getAvailableServicesProperty()
@@ -169,13 +160,7 @@ class extends Component {
             return;
         }
 
-        $this->validate([
-            'customerName' => 'required|string|max:255',
-            'customerPhone' => 'required|string|max:20',
-            'check_in' => 'required|date|after_or_equal:today',
-            'check_out' => 'required|date|after:check_in',
-            'payment_method' => 'required|in:cash,card,gcash,paymaya',
-        ]);
+        $this->validate();
 
         if (!$this->booking_reference) {
             $this->generateBookingReference();
@@ -184,21 +169,21 @@ class extends Component {
         DB::transaction(function () {
             $customer = Customer::create([
                 'tenant_id' => Auth::user()->tenant_id,
-                'name' => $this->customerName,
-                'phone' => $this->customerPhone,
-                'email' => $this->customerEmail ?: null,
-                'address' => $this->customerAddress ?: null,
-                'notes' => $this->customerNotes ?: null,
+                'name'      => $this->customerName,
+                'phone'     => $this->customerPhone,
+                'email'     => $this->customerEmail ?: null,
+                'address'   => $this->customerAddress ?: null,
+                'notes'     => $this->customerNotes ?: null,
             ]);
 
             $booking = Booking::create([
-                'tenant_id' => Auth::user()->tenant_id,
-                'customer_id' => $customer->id,
-                'booking_reference' => $this->booking_reference,
-                'check_in' => $this->check_in,
-                'check_out' => $this->check_out,
-                'total_amount' => $this->totalAmount,
-                'status' => 'pending',
+                'tenant_id'          => Auth::user()->tenant_id,
+                'customer_id'        => $customer->id,
+                'booking_reference'  => $this->booking_reference,
+                'check_in'           => $this->check_in,
+                'check_out'          => $this->check_out,
+                'total_amount'       => $this->totalAmount,
+                'status'             => 'pending',
             ]);
 
             $nights = Carbon::parse($this->check_in)->diffInDays($this->check_out);
@@ -206,42 +191,47 @@ class extends Component {
 
             foreach ($this->selectedProperties as $propertyId => $item) {
                 BookingItem::create([
-                    'tenant_id' => Auth::user()->tenant_id,
-                    'booking_id' => $booking->id,
+                    'tenant_id'   => Auth::user()->tenant_id,
+                    'booking_id'  => $booking->id,
                     'property_id' => $propertyId,
-                    'price' => $item['price'],
-                    'quantity' => $item['quantity'],
-                    'subtotal' => $item['price'] * $item['quantity'] * $nights,
+                    'price'       => $item['price'],
+                    'quantity'    => $item['quantity'],
+                    'subtotal'    => $item['price'] * $item['quantity'] * $nights,
                 ]);
             }
 
             foreach ($this->selectedServices as $serviceId => $item) {
                 BookingService::create([
-                    'tenant_id' => Auth::user()->tenant_id,
+                    'tenant_id'  => Auth::user()->tenant_id,
                     'booking_id' => $booking->id,
                     'service_id' => $serviceId,
-                    'quantity' => $item['quantity'],
-                    'subtotal' => $item['price'] * $item['quantity'],
+                    'quantity'   => $item['quantity'],
+                    'subtotal'   => $item['price'] * $item['quantity'],
                 ]);
             }
 
             $this->createdBookingId = $booking->id;
 
+            // Cash = paid immediately + auto‑confirm
             if ($this->payment_method === 'cash') {
                 Payment::create([
-                    'tenant_id' => Auth::user()->tenant_id,
-                    'booking_id' => $booking->id,
-                    'amount' => $this->totalAmount,
-                    'payment_method' => 'cash',
-                    'payment_status' => 'paid',
-                    'reference_number' => $this->reference_number,
-                    'paid_at' => now(),
+                    'tenant_id'        => Auth::user()->tenant_id,
+                    'booking_id'       => $booking->id,
+                    'amount'           => $this->totalAmount,
+                    'payment_method'   => 'cash',
+                    'payment_status'   => 'paid',
+                    'paid_at'          => now(),
                 ]);
+
+                $totalPaid = $booking->payments()->where('payment_status', 'paid')->sum('amount');
+                if ($totalPaid >= $booking->total_amount && $booking->status === 'pending') {
+                    $booking->update(['status' => 'confirmed']);
+                }
             }
         });
 
         if ($this->payment_method === 'cash') {
-            session()->flash('message', 'Reservation created and payment recorded.');
+            session()->flash('message', 'Reservation created and confirmed with cash payment.');
             return $this->redirectRoute('tenant.bookings.show', ['booking' => $this->createdBookingId], navigate: true);
         } else {
             return $this->initiateOnlinePayment();
@@ -255,15 +245,15 @@ class extends Component {
 
         $payMongo = app(PayMongoService::class);
         $session = $payMongo->createCheckoutSession([
-            'customer_name' => $customer->name,
-            'customer_email' => $customer->email ?? 'guest@example.com',
-            'customer_phone' => $customer->phone,
-            'amount' => $this->totalAmount,
-            'description' => "Booking #{$booking->booking_reference}",
-            'item_name' => 'Accommodation Payment',
-            'success_url' => route('tenant.payments.success', ['booking' => $booking->id]),
-            'cancel_url' => route('tenant.payments.cancel', ['booking' => $booking->id]),
-            'metadata' => ['booking_id' => $booking->id, 'tenant_id' => Auth::user()->tenant_id],
+            'customer_name'   => $customer->name,
+            'customer_email'  => $customer->email ?? 'guest@example.com',
+            'customer_phone'  => $customer->phone,
+            'amount'          => $this->totalAmount,
+            'description'     => "Booking #{$booking->booking_reference}",
+            'item_name'       => 'Accommodation Payment',
+            'success_url'     => route('tenant.payments.success', ['booking' => $booking->id]),
+            'cancel_url'      => route('tenant.payments.cancel', ['booking' => $booking->id]),
+            'metadata'        => ['booking_id' => $booking->id, 'tenant_id' => Auth::user()->tenant_id],
             'payment_method_types' => [$this->payment_method],
         ]);
 
@@ -273,11 +263,11 @@ class extends Component {
         }
 
         Payment::create([
-            'tenant_id' => Auth::user()->tenant_id,
-            'booking_id' => $booking->id,
-            'amount' => $this->totalAmount,
-            'payment_method' => $this->payment_method,
-            'payment_status' => 'unpaid',
+            'tenant_id'           => Auth::user()->tenant_id,
+            'booking_id'          => $booking->id,
+            'amount'              => $this->totalAmount,
+            'payment_method'      => $this->payment_method,
+            'payment_status'      => 'unpaid',
             'paymongo_session_id' => $session['data']['id'],
         ]);
 
@@ -285,164 +275,225 @@ class extends Component {
     }
 };
 ?>
-<div class="p-6 max-w-7xl mx-auto">
-    <h1 class="text-2xl font-bold mb-6">New Reservation</h1>
+
+<div class="p-4 sm:p-6 lg:p-10 max-w-7xl mx-auto text-gray-900 dark:text-white space-y-6">
+
+    <div class="flex items-center justify-between">
+        <div>
+            <h1 class="text-2xl sm:text-3xl font-bold">New Reservation</h1>
+            <p class="text-gray-500 dark:text-slate-400 mt-1">Create a full guest profile with stay details.</p>
+        </div>
+        <a href="{{ route('tenant.bookings.index') }}" wire:navigate class="text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-white font-medium transition-colors">
+            &larr; Back to Bookings
+        </a>
+    </div>
 
     @if (session()->has('error'))
-        <div class="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">{{ session('error') }}</div>
+        <div class="p-4 bg-red-50 dark:bg-red-500/10 border-l-4 border-red-500 rounded-md shadow-sm">
+            <p class="text-sm text-red-700 dark:text-red-400 font-medium">{{ session('error') }}</p>
+        </div>
     @endif
 
     <form wire:submit="submit" class="space-y-6">
-        {{-- Guest Information --}}
-        <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+        {{-- Guest Information (full reservation profile) --}}
+        <div class="bg-white dark:bg-[#0b0f19] rounded-xl border border-gray-200 dark:border-slate-700/50 shadow-sm p-5 sm:p-6">
             <h2 class="text-lg font-semibold mb-4">Guest Information</h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-sm font-medium mb-1">Full Name *</label>
-                    <input type="text" wire:model="customerName" class="w-full rounded-lg border-slate-300" placeholder="Guest name">
-                    @error('customerName') <span class="text-red-500 text-xs">{{ $message }}</span> @enderror
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Full Name *</label>
+                    <input type="text" wire:model="customerName" class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 placeholder-gray-400 dark:placeholder-slate-500 focus:ring-blue-500 focus:border-blue-500" placeholder="Guest name">
+                    @error('customerName') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
-                    <label class="block text-sm font-medium mb-1">Phone *</label>
-                    <input type="text" wire:model="customerPhone" class="w-full rounded-lg border-slate-300" placeholder="Contact number">
-                    @error('customerPhone') <span class="text-red-500 text-xs">{{ $message }}</span> @enderror
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Phone *</label>
+                    <input type="text" wire:model="customerPhone" class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 placeholder-gray-400 dark:placeholder-slate-500 focus:ring-blue-500 focus:border-blue-500" placeholder="Contact number">
+                    @error('customerPhone') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
-                    <label class="block text-sm font-medium mb-1">Email</label>
-                    <input type="email" wire:model="customerEmail" class="w-full rounded-lg border-slate-300" placeholder="Email address">
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Email</label>
+                    <input type="email" wire:model="customerEmail" class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 placeholder-gray-400 dark:placeholder-slate-500 focus:ring-blue-500 focus:border-blue-500" placeholder="Email address">
                 </div>
                 <div>
-                    <label class="block text-sm font-medium mb-1">Address</label>
-                    <input type="text" wire:model="customerAddress" class="w-full rounded-lg border-slate-300" placeholder="Residential address">
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Address</label>
+                    <input type="text" wire:model="customerAddress" class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 placeholder-gray-400 dark:placeholder-slate-500 focus:ring-blue-500 focus:border-blue-500" placeholder="Residential address">
                 </div>
                 <div class="md:col-span-2">
-                    <label class="block text-sm font-medium mb-1">Notes</label>
-                    <textarea wire:model="customerNotes" rows="2" class="w-full rounded-lg border-slate-300" placeholder="Special requests..."></textarea>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Notes</label>
+                    <textarea wire:model="customerNotes" rows="2" class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 placeholder-gray-400 dark:placeholder-slate-500 focus:ring-blue-500 focus:border-blue-500" placeholder="Special requests..."></textarea>
                 </div>
             </div>
         </div>
 
         {{-- Dates & Reference --}}
-        <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+        <div class="bg-white dark:bg-[#0b0f19] rounded-xl border border-gray-200 dark:border-slate-700/50 shadow-sm p-5 sm:p-6">
             <h2 class="text-lg font-semibold mb-4">Stay Details</h2>
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
-                    <label class="block text-sm font-medium mb-1">Check‑in *</label>
-                    <input type="date" wire:model.live="check_in" class="w-full rounded-lg border-slate-300">
-                    @error('check_in') <span class="text-red-500 text-sm">{{ $message }}</span> @enderror
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Check‑in *</label>
+                    <input type="date" wire:model.live="check_in" class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 focus:ring-blue-500 focus:border-blue-500">
+                    @error('check_in') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
-                    <label class="block text-sm font-medium mb-1">Check‑out *</label>
-                    <input type="date" wire:model.live="check_out" class="w-full rounded-lg border-slate-300">
-                    @error('check_out') <span class="text-red-500 text-sm">{{ $message }}</span> @enderror
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Check‑out *</label>
+                    <input type="date" wire:model.live="check_out" class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 focus:ring-blue-500 focus:border-blue-500">
+                    @error('check_out') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
-                    <label class="block text-sm font-medium mb-1">Booking Ref</label>
-                    <input type="text" wire:model="booking_reference" class="w-full rounded-lg border-slate-300 bg-slate-50" readonly>
-                    <button type="button" wire:click="generateBookingReference" class="text-xs text-blue-600 mt-1">Generate New</button>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Booking Ref</label>
+                    <input type="text" wire:model="booking_reference" class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-300 cursor-not-allowed" readonly>
+                    <button type="button" wire:click="generateBookingReference" class="text-xs text-blue-600 dark:text-blue-400 hover:underline mt-1">Generate New</button>
                 </div>
             </div>
         </div>
 
-        {{-- Property & Service Selection --}}
-        <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
-            <h2 class="text-lg font-semibold mb-4">Select Room(s)</h2>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                @forelse($this->availableProperties as $property)
-                    <div class="border rounded-lg p-3 flex justify-between items-center">
-                        <div>
-                            <p class="font-medium">{{ $property->name }}</p>
-                            <p class="text-sm text-slate-500">₱{{ number_format($property->price, 2) }} / night • Cap: {{ $property->capacity }}</p>
+        {{-- Property Card Grid --}}
+        <div class="bg-white dark:bg-[#0b0f19] rounded-xl border border-gray-200 dark:border-slate-700/50 shadow-sm p-5 sm:p-6">
+            <h2 class="text-lg font-semibold mb-6">Select Room(s) — Tap to add</h2>
+
+            @if(count($this->availableProperties) > 0)
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                    @foreach($this->availableProperties as $property)
+                        @php
+                            $isSelected = isset($selectedProperties[$property->id]);
+                            $firstImg = $property->images->first();
+                        @endphp
+                        <div class="relative group cursor-pointer rounded-2xl border-2 transition-all duration-200
+                                    {{ $isSelected ? 'border-emerald-500 dark:border-emerald-400 ring-2 ring-emerald-200 dark:ring-emerald-500/30' : 'border-gray-200 dark:border-slate-700/50 hover:border-blue-400 dark:hover:border-blue-400' }}"
+                             wire:click="toggleProperty({{ $property->id }}, {{ $property->price }})">
+                            <div class="aspect-4/4 overflow-hidden rounded-t-2xl">
+                                <img class="size-full object-cover"
+                                     src="{{ $firstImg ? Storage::url($firstImg->image_path) : asset('images/placeholder-room.jpg') }}"
+                                     alt="{{ $property->name }}">
+                            </div>
+                            <div class="p-4">
+                                <h3 class="font-medium text-gray-900 dark:text-white">{{ $property->name }}</h3>
+                                <p class="mt-1 text-sm text-gray-500 dark:text-slate-400">
+                                    ₱{{ number_format($property->price, 2) }} / night
+                                </p>
+                                <p class="text-xs text-gray-400 dark:text-slate-500 mt-1">Capacity: {{ $property->capacity }} persons</p>
+                            </div>
+                            @if($isSelected)
+                                <div class="absolute top-3 right-3 bg-emerald-600 text-white rounded-full p-1 shadow">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                                </div>
+                            @endif
                         </div>
-                        <button type="button" wire:click="addProperty({{ $property->id }}, {{ $property->price }})" class="text-blue-600 hover:bg-blue-50 px-3 py-1 rounded">Add</button>
-                    </div>
-                @empty
-                    <p class="text-slate-500 col-span-2">No available rooms for selected dates.</p>
-                @endforelse
-            </div>
-            @if(count($selectedProperties))
-                <h3 class="font-medium mb-2">Selected Rooms</h3>
-                <table class="w-full text-sm">
-                    <thead><tr class="text-slate-500"><th class="text-left">Room</th><th>Price</th><th>Qty</th><th>Subtotal</th><th></th></tr></thead>
-                    <tbody>
-                        @foreach($selectedProperties as $id => $item)
-                            @php 
-                                $property = $this->availableProperties->firstWhere('id', $id) ?? App\Models\Property::find($id);
-                                $nights = Carbon::parse($check_in)->diffInDays($check_out);
-                                $nights = max(1, $nights);
-                            @endphp
-                            <tr>
-                                <td>{{ $property->name ?? 'Room' }}</td>
-                                <td>₱{{ number_format($item['price'], 2) }}</td>
-                                <td><input type="number" wire:model.live="selectedProperties.{{ $id }}.quantity" min="1" class="w-16 border rounded text-center"></td>
-                                <td>₱{{ number_format($item['price'] * $item['quantity'] * $nights, 2) }}</td>
-                                <td><button type="button" wire:click="removeProperty({{ $id }})" class="text-red-500">&times;</button></td>
-                            </tr>
-                        @endforeach
-                    </tbody>
-                </table>
+                    @endforeach
+                </div>
+            @else
+                <p class="text-gray-500 dark:text-slate-400 text-center py-8">No available rooms for selected dates.</p>
+            @endif
+
+            {{-- Selected Rooms --}}
+            @if(count($selectedProperties) > 0)
+                <div class="mt-8 space-y-3">
+                    <h3 class="font-medium text-gray-900 dark:text-white mb-4">Selected Rooms</h3>
+                    @foreach($selectedProperties as $id => $item)
+                        @php
+                            $prop = $this->availableProperties->firstWhere('id', $id) ?? App\Models\Property::find($id);
+                            $nights = Carbon::parse($check_in)->diffInDays($check_out);
+                            $nights = max(1, $nights);
+                            $roomTotal = $item['price'] * $item['quantity'] * $nights;
+                        @endphp
+                        <div class="flex items-center gap-4 p-3 bg-gray-50 dark:bg-slate-800/50 rounded-xl border border-gray-200 dark:border-slate-700/50">
+                            <div class="w-12 h-12 rounded-lg overflow-hidden bg-gray-100 dark:bg-slate-700 shrink-0">
+                                @if($prop && $prop->images->isNotEmpty())
+                                    <img src="{{ Storage::url($prop->images->first()->image_path) }}" class="w-full h-full object-cover" alt="{{ $prop->name }}">
+                                @else
+                                    <div class="w-full h-full flex items-center justify-center text-gray-400 dark:text-slate-500">
+                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
+                                    </div>
+                                @endif
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <p class="font-medium text-gray-900 dark:text-white truncate">{{ $prop->name ?? 'Room' }}</p>
+                                <p class="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
+                                    ₱{{ number_format($item['price'], 2) }} / night · {{ $nights }} nights
+                                </p>
+                                <p class="text-sm font-semibold text-gray-900 dark:text-white mt-1">₱{{ number_format($roomTotal, 2) }}</p>
+                            </div>
+                            <button type="button" wire:click="toggleProperty({{ $id }}, {{ $item['price'] }})" 
+                                    class="p-1 text-gray-400 dark:text-slate-500 hover:text-red-500" title="Remove room">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                            </button>
+                        </div>
+                    @endforeach
+                </div>
             @endif
         </div>
 
-        <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+        {{-- Add‑On Services (toggle, no quantity) --}}
+        <div class="bg-white dark:bg-[#0b0f19] rounded-xl border border-gray-200 dark:border-slate-700/50 shadow-sm p-5 sm:p-6">
             <h2 class="text-lg font-semibold mb-4">Add‑On Services</h2>
             <div class="flex flex-wrap gap-2 mb-4">
                 @foreach($this->availableServices as $service)
-                    <button type="button" wire:click="addService({{ $service->id }}, {{ $service->price }})" class="border rounded-full px-4 py-2 text-sm hover:bg-slate-50">
+                    @php $isServiceSelected = isset($selectedServices[$service->id]); @endphp
+                    <button type="button" wire:click="toggleService({{ $service->id }}, {{ $service->price }})"
+                            class="border rounded-full px-4 py-2 text-sm transition-colors
+                                   {{ $isServiceSelected 
+                                      ? 'bg-blue-100 dark:bg-blue-500/20 border-blue-300 dark:border-blue-500/50 text-blue-800 dark:text-blue-400'
+                                      : 'border-gray-300 dark:border-slate-600 hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-slate-300' }}">
                         {{ $service->name }} (₱{{ number_format($service->price, 2) }})
                     </button>
                 @endforeach
             </div>
-            @if(count($selectedServices))
-                <table class="w-full text-sm">
-                    <thead><tr class="text-slate-500"><th>Service</th><th>Price</th><th>Qty</th><th>Subtotal</th><th></th></tr></thead>
-                    <tbody>
-                        @foreach($selectedServices as $id => $item)
-                            @php $service = App\Models\Service::find($id); @endphp
-                            <tr>
-                                <td>{{ $service->name }}</td>
-                                <td>₱{{ number_format($item['price'], 2) }}</td>
-                                <td><input type="number" wire:model.live="selectedServices.{{ $id }}.quantity" min="1" class="w-16 border rounded text-center"></td>
-                                <td>₱{{ number_format($item['price'] * $item['quantity'], 2) }}</td>
-                                <td><button type="button" wire:click="removeService({{ $id }})" class="text-red-500">&times;</button></td>
-                            </tr>
-                        @endforeach
-                    </tbody>
-                </table>
+
+            @if(count($selectedServices) > 0)
+                <div class="space-y-2">
+                    @foreach($selectedServices as $id => $item)
+                        @php $service = App\Models\Service::find($id); @endphp
+                        <div class="flex items-center gap-3 p-3 bg-gray-50 dark:bg-slate-800/50 rounded-xl border border-gray-200 dark:border-slate-700/50">
+                            <div class="flex-1">
+                                <p class="font-medium text-gray-900 dark:text-white">{{ $service->name ?? 'Service' }}</p>
+                                <p class="text-xs text-gray-500 dark:text-slate-400">₱{{ number_format($item['price'], 2) }}</p>
+                            </div>
+                            <p class="text-sm font-semibold text-gray-900 dark:text-white w-20 text-right">₱{{ number_format($item['price'], 2) }}</p>
+                            <button type="button" wire:click="toggleService({{ $id }}, {{ $item['price'] }})" class="p-1 text-gray-400 dark:text-slate-500 hover:text-red-500" title="Remove service">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                            </button>
+                        </div>
+                    @endforeach
+                </div>
             @endif
         </div>
 
-        {{-- Payment --}}
-        <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+        {{-- Payment Method --}}
+        <div class="bg-white dark:bg-[#0b0f19] rounded-xl border border-gray-200 dark:border-slate-700/50 shadow-sm p-5 sm:p-6">
             <h2 class="text-lg font-semibold mb-4">Payment</h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-sm font-medium mb-1">Payment Method *</label>
-                    <select wire:model.live="payment_method" class="w-full rounded-lg border-slate-300">
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Payment Method *</label>
+                    <select wire:model.live="payment_method" class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 focus:ring-blue-500 focus:border-blue-500">
                         <option value="cash">Cash</option>
                         <option value="card">Credit/Debit Card</option>
                         <option value="gcash">GCash</option>
                         <option value="paymaya">PayMaya</option>
                     </select>
-                    @error('payment_method') <span class="text-red-500 text-xs">{{ $message }}</span> @enderror
+                    @error('payment_method') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
-                @if($payment_method === 'cash')
-                <div>
-                    <label class="block text-sm font-medium mb-1">Reference (Optional)</label>
-                    <input type="text" wire:model="reference_number" class="w-full rounded-lg border-slate-300" placeholder="e.g. Receipt #">
-                </div>
-                @endif
+                {{-- Reference field removed entirely --}}
             </div>
         </div>
 
         {{-- Total & Actions --}}
-        <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6 flex justify-between items-center">
+        <div class="bg-white dark:bg-[#0b0f19] rounded-xl border border-gray-200 dark:border-slate-700/50 shadow-sm p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <span class="text-xl font-bold">Total: ₱{{ number_format($totalAmount, 2) }}</span>
             <div class="flex gap-3">
-                <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg">
-                    {{ $payment_method === 'cash' ? 'Complete Reservation' : 'Proceed to Pay' }}
+                <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-6 rounded-xl shadow-sm transition-colors flex items-center gap-2 data-loading:opacity-75 data-loading:cursor-not-allowed">
+                    <span class="in-data-loading:hidden">
+                        {{ $payment_method === 'cash' ? 'Complete Reservation' : 'Proceed to Pay' }}
+                    </span>
+                    <span class="not-in-data-loading:hidden flex items-center gap-2">
+                        <svg class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Processing...
+                    </span>
                 </button>
-                <a href="{{ route('tenant.bookings.index') }}" wire:navigate class="border px-6 py-2 rounded-lg hover:bg-slate-50">Cancel</a>
+                <a href="{{ route('tenant.bookings.index') }}" wire:navigate class="border border-gray-300 dark:border-slate-600 text-gray-700 dark:text-slate-300 hover:bg-gray-50 dark:hover:bg-slate-800 font-medium py-2.5 px-6 rounded-xl transition-colors">
+                    Cancel
+                </a>
             </div>
         </div>
     </form>

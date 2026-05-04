@@ -6,6 +6,7 @@ use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
 use App\Models\Tenant;
 use App\Scopes\TenantScope;
+use Illuminate\Support\Facades\Storage;
 
 new 
 #[Layout('layouts.app')]
@@ -16,6 +17,42 @@ class extends Component {
     public function mount($slug)
     {
         $this->tenant = Tenant::where('slug', $slug)->firstOrFail();
+    }
+
+    #[Computed]
+    public function coverPhoto()
+    {
+        $setting = $this->tenant->settings()
+            ->withoutGlobalScope(TenantScope::class)
+            ->where('key', 'spot_cover')
+            ->first();
+        return $setting ? $setting->value : null;
+    }
+
+    #[Computed]
+    public function description()
+    {
+        $setting = $this->tenant->settings()
+            ->withoutGlobalScope(TenantScope::class)
+            ->where('key', 'spot_description')
+            ->first();
+        return $setting ? $setting->value : '';
+    }
+
+    #[Computed]
+    public function tags()
+    {
+        $setting = $this->tenant->settings()
+            ->withoutGlobalScope(TenantScope::class)
+            ->where('key', 'spot_tags')
+            ->first();
+        return $setting ? $setting->value : '';
+    }
+
+    #[Computed]
+    public function tagArray()
+    {
+        return array_filter(array_map('trim', explode(',', $this->tags)));
     }
 
     #[Computed]
@@ -52,149 +89,225 @@ class extends Component {
             ->first();
         return $setting ? $setting->value : [];
     }
-}
+
+    // Gallery headings (displayed on public page)
+    #[Computed]
+    public function gallerySubtitle()
+    {
+        $setting = $this->tenant->settings()
+            ->withoutGlobalScope(TenantScope::class)
+            ->where('key', 'gallery_subtitle')
+            ->first();
+        return $setting ? $setting->value : '';
+    }
+
+    #[Computed]
+    public function galleryTitle()
+    {
+        $setting = $this->tenant->settings()
+            ->withoutGlobalScope(TenantScope::class)
+            ->where('key', 'gallery_title')
+            ->first();
+        return $setting ? $setting->value : '';
+    }
+
+    #[Computed]
+    public function footerTitle()
+    {
+        $setting = $this->tenant->settings()
+            ->withoutGlobalScope(TenantScope::class)
+            ->where('key', 'footer_title')
+            ->first();
+        return $setting ? $setting->value : '';
+    }
+
+    #[Computed]
+    public function footerDescription()
+    {
+        $setting = $this->tenant->settings()
+            ->withoutGlobalScope(TenantScope::class)
+            ->where('key', 'footer_description')
+            ->first();
+        return $setting ? $setting->value : '';
+    }
+
+    #[Computed]
+    public function footerThumb1()
+    {
+        $setting = $this->tenant->settings()
+            ->withoutGlobalScope(TenantScope::class)
+            ->where('key', 'footer_thumb_1')
+            ->first();
+        return $setting ? $setting->value : '';
+    }
+
+    #[Computed]
+    public function footerThumb2()
+    {
+        $setting = $this->tenant->settings()
+            ->withoutGlobalScope(TenantScope::class)
+            ->where('key', 'footer_thumb_2')
+            ->first();
+        return $setting ? $setting->value : '';
+    }
+
+    #[Computed]
+    public function footerBackground()
+    {
+        $setting = $this->tenant->settings()
+            ->withoutGlobalScope(TenantScope::class)
+            ->where('key', 'footer_background')
+            ->first();
+        return $setting ? $setting->value : '';
+    }
+};
 ?>
 
-<div class="min-h-screen bg-white" x-data="{ previewImage: null }">
-    {{-- Image Preview Modal --}}
-    <div x-show="previewImage" x-cloak class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80" @click.self="previewImage = null" @keydown.escape.window="previewImage = null">
+<div class="antialiased overflow-x-hidden bg-white dark:bg-black transition-colors duration-300"
+     x-data="{ previewImage: null }">
+
+    {{-- Lightbox modal --}}
+    <div x-show="previewImage" x-cloak class="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" @click.self="previewImage = null" @keydown.escape.window="previewImage = null">
         <div class="relative max-w-5xl max-h-[90vh]">
-            <button @click="previewImage = null" class="absolute -top-10 right-0 text-white hover:text-gray-300 text-sm font-medium">Close</button>
-            <img :src="previewImage" class="max-w-full max-h-[85vh] rounded-xl shadow-2xl border-4 border-white">
+            <button @click="previewImage = null" class="absolute -top-12 right-0 text-white hover:text-gray-300 text-sm">Close</button>
+            <img :src="previewImage" class="rounded-2xl shadow-2xl max-h-[85vh] w-auto" alt="Enlarged view">
         </div>
     </div>
 
-    {{-- Hero / Cover Section --}}
-    <div class="bg-white border-b border-slate-100">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 lg:py-16">
-            <div class="flex flex-col lg:flex-row gap-10 items-start">
-                
-                {{-- Business Info --}}
-                <div class="flex-1 w-full">
-                    <div class="flex items-center gap-6 mb-6">
-                        <div class="shrink-0">
-                            @if($tenant->logo)
-                                <img src="{{ asset('storage/' . $tenant->logo) }}" alt="{{ $tenant->name }}" class="h-28 w-28 object-cover rounded-2xl border border-slate-200 shadow-sm">
-                            @else
-                                <div class="h-28 w-28 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white font-bold text-4xl shadow-sm">
-                                    {{ substr($tenant->name, 0, 1) }}
-                                </div>
-                            @endif
-                        </div>
-                        <div>
-                            <div class="flex items-center gap-3 mb-2">
-                                <h1 class="text-4xl font-bold text-slate-900 tracking-tight">{{ $tenant->name }}</h1>
-                                <span class="px-3 py-1 text-xs font-semibold uppercase tracking-wider rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200/60">
-                                    {{ $tenant->typeOfTenant->type ?? 'Business' }}
-                                </span>
-                            </div>
-                            <div class="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-slate-600">
-                                @if($tenant->address)
-                                <div class="flex items-center gap-1.5">
-                                    <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                                    <span>{{ $tenant->address }}</span>
-                                </div>
-                                @endif
-                                @if($tenant->contact_number)
-                                <div class="flex items-center gap-1.5">
-                                    <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/></svg>
-                                    <span>{{ $tenant->contact_number }}</span>
-                                </div>
-                                @endif
-                                @if($tenant->email)
-                                <div class="flex items-center gap-1.5">
-                                    <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
-                                    <a href="mailto:{{ $tenant->email }}" class="hover:text-blue-600 transition-colors">{{ $tenant->email }}</a>
-                                </div>
-                                @endif
-                            </div>
-                        </div>
-                    </div>
+    {{-- HERO SECTION --}}
+    <section class="relative min-h-screen flex flex-col justify-between pt-8 pb-12 bg-white dark:bg-black">
+        <div class="absolute inset-0 z-0">
+            @if($this->coverPhoto)
+                <img src="{{ Storage::url($this->coverPhoto) }}" class="w-full h-full object-cover object-center" alt="{{ $tenant->name }} cover" loading="eager">
+            @else
+                <div class="w-full h-full bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-800 dark:to-gray-900"></div>
+            @endif
+        </div>
+        <div class="absolute inset-0 bg-black/30 dark:bg-black/60 bg-gradient-to-b from-black/20 via-transparent to-black/50 dark:from-black/60 dark:via-transparent dark:to-black/90 z-1"></div>
 
-                    {{-- Actions --}}
-                    <div class="flex flex-wrap gap-3 mt-8">
-                        @if($this->properties->isNotEmpty())
-                            @auth
-                                <a href="{{ route('business.offerings', $tenant->slug) }}" class="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-5 rounded-xl shadow-sm hover:shadow transition-all duration-200">
-                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                                    Book Now
-                                </a>
-                            @else
-                                <a href="{{ route('login') }}" class="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-5 rounded-xl shadow-sm transition-all duration-200">
-                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                                    Login to Book
-                                </a>
-                            @endauth
-                        @endif
-                        @if($tenant->latitude && $tenant->longitude)
-                        <a href="https://www.google.com/maps/search/?api=1&query={{ $tenant->latitude }},{{ $tenant->longitude }}" target="_blank" class="inline-flex items-center gap-2 bg-white border border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 font-medium py-2.5 px-5 rounded-xl shadow-sm transition-all duration-200">
-                            <svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
-                            Get Directions
-                        </a>
-                        @endif
-                    </div>
-                </div>
+        @if(count($this->tagArray) > 0)
+            <nav class="relative z-10 px-6 md:px-12 flex justify-between items-center text-sm font-semibold tracking-wide">
+                <div class="w-2.5 h-2.5"></div>
+                <ul class="hidden md:flex gap-16 text-white">
+                    @foreach($this->tagArray as $index => $tag)
+                        <li wire:key="tag-{{ $index }}">
+                            <a href="#" 
+                               class="{{ $index === 0 ? 'border-b-2 border-red-500 pb-1 text-white' : 'hover:text-gray-300 transition-colors text-white' }}">
+                                {{ $tag }}
+                            </a>
+                        </li>
+                    @endforeach
+                </ul>
+                <div class="w-32 border-t border-white/30 hidden md:block"></div>
+            </nav>
+        @endif
 
-                {{-- Map (if coordinates) --}}
-                @if($tenant->latitude && $tenant->longitude)
-                <div class="w-full lg:w-80 shrink-0">
-                    <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                        <div class="px-4 py-3 border-b border-slate-100 bg-slate-50/80">
-                            <h3 class="font-semibold text-slate-800 text-sm flex items-center gap-2">
-                                <svg class="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                                Location
-                            </h3>
-                        </div>
-                        <div class="h-48 w-full relative z-0"
-                             x-data="{ 
-                                init() { 
-                                    let check = setInterval(() => {
-                                        if (typeof L !== 'undefined') {
-                                            clearInterval(check);
-                                            delete L.Icon.Default.prototype._getIconUrl;
-                                            L.Icon.Default.mergeOptions({
-                                                iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
-                                                iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
-                                                shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
-                                            });
-                                            let map = L.map($refs.miniMap).setView([{{ $tenant->latitude }}, {{ $tenant->longitude }}], 14);
-                                            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { 
-                                                maxZoom: 19,
-                                                attribution: '&copy; <a href=&quot;https://www.openstreetmap.org/copyright&quot;>OpenStreetMap</a>'
-                                            }).addTo(map);
-                                            L.marker([{{ $tenant->latitude }}, {{ $tenant->longitude }}]).addTo(map);
-                                            setTimeout(() => map.invalidateSize(), 100);
-                                        }
-                                    }, 100);
-                                }
-                             }">
-                            <div wire:ignore x-ref="miniMap" class="h-full w-full"></div>
-                        </div>
-                    </div>
-                </div>
-                @endif
+        <div class="relative z-10 px-6 md:px-12 mt-20 flex-grow">
+            <div class="max-w-4xl">
+                <h1 class="text-6xl sm:text-7xl md:text-8xl lg:text-9xl font-black leading-[1.1] tracking-tight text-white">
+                    {{ $tenant->name }}
+                </h1>
+                <div class="w-24 h-1 bg-red-500 mt-6"></div>
             </div>
         </div>
-    </div>
 
-    {{-- PHOTO GALLERY --}}
+        <div class="relative z-10 px-6 md:px-12 flex flex-col gap-6 w-full max-w-5xl">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-12 text-sm text-white/90 leading-relaxed">
+                @php
+                    $descParagraphs = array_filter(array_map('trim', explode("\n", $this->description)));
+                    $descParagraphs = array_pad($descParagraphs, 3, '');
+                @endphp
+                @foreach($descParagraphs as $i => $para)
+                    <p wire:key="desc-{{ $i }}" class="break-words whitespace-normal">{{ $para ?: '' }}</p>
+                @endforeach
+            </div>
+        </div>
+
+        <div class="relative z-10 px-6 md:px-12 mt-8 flex flex-wrap gap-3">
+            @auth
+                <a href="{{ route('business.offerings', $tenant->slug) }}" 
+                   class="inline-flex items-center gap-2 bg-blue-600 dark:bg-red-600 hover:bg-blue-700 dark:hover:bg-red-700 text-white font-medium py-2.5 px-5 rounded-full shadow-sm transition-all duration-200">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                    Book Now
+                </a>
+            @else
+                @php
+                    $returnUrl = url()->current();
+                    $loginUrl = route('login', ['redirect' => $returnUrl]);
+                @endphp
+                <a href="{{ $loginUrl }}" 
+                   class="inline-flex items-center gap-2 bg-blue-600 dark:bg-red-600 hover:bg-blue-700 dark:hover:bg-red-700 text-white font-medium py-2.5 px-5 rounded-full shadow-sm transition-all duration-200">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                    Book
+                </a>
+            @endauth
+        </div>
+    </section>
+
+    {{-- GALLERY SECTION with subtitle and title --}}
     @if(!empty($this->galleryImages()))
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        <div class="mb-8">
-            <h2 class="text-2xl font-bold text-slate-900">Photo Gallery</h2>
-            <p class="text-slate-500 text-sm mt-1">Take a look around before you visit</p>
-        </div>
-        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-            @foreach($this->galleryImages() as $imagePath)
-                <div class="aspect-square overflow-hidden rounded-xl cursor-pointer relative group shadow-sm"
-                     @click="previewImage = '{{ Storage::url($imagePath) }}'">
-                    <img src="{{ Storage::url($imagePath) }}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300">
-                    <div class="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
-                        <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v6m4-6v6"/></svg>
+        <section class="bg-white dark:bg-black py-24 px-6 md:px-12 relative">
+            <div class="max-w-7xl mx-auto">
+                {{-- Gallery Headings --}}
+                @if($this->gallerySubtitle || $this->galleryTitle)
+                    <div class="text-center mb-12">
+                        @if($this->gallerySubtitle)
+                            <p class="text-gray-300 text-sm tracking-wider mb-2">{{ $this->gallerySubtitle }}</p>
+                        @endif
+                        @if($this->galleryTitle)
+                            <h2 class="text-3xl md:text-4xl font-bold text-white">{{ $this->galleryTitle }}</h2>
+                        @endif
                     </div>
+                @endif
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                    @foreach($this->galleryImages() as $index => $imagePath)
+                        <div wire:key="gallery-{{ $index }}" class="group cursor-pointer">
+                            <div class="w-full h-[350px] overflow-hidden rounded-sm relative bg-gray-100 dark:bg-gray-800">
+                                <img src="{{ Storage::url($imagePath) }}" 
+                                     class="w-full h-full object-cover grayscale-[30%] group-hover:grayscale-0 group-hover:scale-105 transition-all duration-500" 
+                                     @click="previewImage = '{{ Storage::url($imagePath) }}'" 
+                                     alt="{{ $tenant->name }} gallery image" 
+                                     loading="lazy">
+                            </div>
+                        </div>
+                    @endforeach
                 </div>
-            @endforeach
-        </div>
-    </div>
+            </div>
+        </section>
+    @endif
+
+    {{-- FOOTER SECTION --}}
+    @if($this->footerTitle || $this->footerDescription || $this->footerThumb1 || $this->footerThumb2)
+        <section class="relative h-[80vh] bg-cover bg-center flex items-end pb-12 px-6 md:px-12"
+            @if($this->footerBackground) style="background-image: url('{{ Storage::url($this->footerBackground) }}'); background-size: cover; background-position: center;" @else style="background-image: linear-gradient(to bottom right, #0a0a2a, #1a1a3a);" @endif>
+            <div class="absolute inset-0 bg-black/40 dark:bg-black/70 bg-gradient-to-r from-black/70 to-transparent"></div>
+
+            <div class="relative z-10 w-full flex flex-col md:flex-row justify-between items-start md:items-end gap-8">
+                <div class="max-w-md">
+                    @if($this->footerTitle)
+                        <h2 class="text-4xl md:text-5xl font-extrabold leading-tight mb-8 whitespace-pre-line text-white">{{ $this->footerTitle }}</h2>
+                    @endif
+                    @if($this->footerDescription)
+                        <p class="text-sm text-white/80 leading-relaxed pr-8 break-words">{{ $this->footerDescription }}</p>
+                    @endif
+                </div>
+
+                @if($this->footerThumb1 || $this->footerThumb2)
+                    <div class="flex gap-4">
+                        @if($this->footerThumb1)
+                            <div class="w-48 h-28 overflow-hidden rounded-sm group cursor-pointer border border-white/20">
+                                <img src="{{ Storage::url($this->footerThumb1) }}" class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" alt="Footer image 1" loading="lazy">
+                            </div>
+                        @endif
+                        @if($this->footerThumb2)
+                            <div class="w-48 h-28 overflow-hidden rounded-sm group cursor-pointer border border-white/20">
+                                <img src="{{ Storage::url($this->footerThumb2) }}" class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" alt="Footer image 2" loading="lazy">
+                            </div>
+                        @endif
+                    </div>
+                @endif
+            </div>
+        </section>
     @endif
 </div>

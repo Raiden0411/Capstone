@@ -53,13 +53,43 @@ class extends Component {
         return TypeOfTenant::all();
     }
 
-    public function messages()
+    /**
+     * Custom validation messages.
+     */
+    public function messages(): array
     {
         return [
             'email.unique' => 'This email is already registered. Please use a different email address.',
+            'slug.regex'   => 'The slug may only contain lowercase letters, numbers, and hyphens.',
         ];
     }
 
+    /**
+     * Sanitize all string inputs before validation: trim and strip HTML tags.
+     */
+    protected function sanitize(): void
+    {
+        $fields = ['name', 'address', 'contact_number', 'admin_name', 'email'];
+        foreach ($fields as $field) {
+            if (is_string($this->$field)) {
+                $this->$field = trim(strip_tags($this->$field));
+            }
+        }
+        // Slug is auto‑generated, but ensure it's clean
+        $this->slug = Str::slug($this->name);
+    }
+
+    /**
+     * Auto‑update slug when name changes.
+     */
+    public function updatedName($value)
+    {
+        $this->slug = Str::slug(trim($value));
+    }
+
+    /**
+     * Trim any input on update (runs after property update but before sanitization).
+     */
     public function updated($property)
     {
         if (in_array($property, ['name', 'address', 'contact_number', 'admin_name', 'email'])) {
@@ -67,13 +97,9 @@ class extends Component {
         }
     }
 
-    public function updatedName($value)
-    {
-        $this->slug = Str::slug(trim($value));
-    }
-
     public function save()
     {
+        $this->sanitize();  // Clean all inputs first
         $this->validate();
 
         DB::transaction(function () {
@@ -107,13 +133,21 @@ class extends Component {
 ?>
 
 <div>
-    <div class="p-6 sm:p-10 max-w-7xl mx-auto">
-        <div class="mb-6 flex justify-between items-center">
-            <div>
-                <h1 class="text-3xl font-bold text-slate-800">Register New Business</h1>
-                <p class="text-slate-500">Add a new business location and setup their admin account.</p>
+    <div class="p-4 sm:p-6 lg:p-10 max-w-7xl mx-auto text-gray-900 dark:text-white">
+
+        {{-- Flash Message --}}
+        @if (session()->has('message'))
+            <div class="mb-6 bg-green-50 dark:bg-green-500/10 border-l-4 border-green-500 p-4 rounded-md shadow-sm">
+                <p class="text-sm text-green-700 dark:text-green-400 font-medium">{{ session('message') }}</p>
             </div>
-            <a href="{{ route('superadmin.tenants.index') }}" wire:navigate class="text-slate-500 hover:text-slate-700 font-medium">
+        @endif
+
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+            <div>
+                <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Register New Business</h1>
+                <p class="text-gray-500 dark:text-slate-400 mt-1">Add a new business location and setup their admin account.</p>
+            </div>
+            <a href="{{ route('superadmin.tenants.index') }}" wire:navigate class="text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-white font-medium transition-colors">
                 &larr; Back to Tenants
             </a>
         </div>
@@ -121,92 +155,106 @@ class extends Component {
         <form wire:submit="save" class="grid grid-cols-1 lg:grid-cols-2 gap-8">
             {{-- Left Column: Form Fields --}}
             <div class="space-y-6">
-                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
-                    <h2 class="text-lg font-bold text-slate-800 mb-4 border-b pb-2">Business Details</h2>
+                {{-- Business Details Card --}}
+                <div class="bg-white dark:bg-[#0b0f19] rounded-xl border border-gray-200 dark:border-slate-700/50 shadow-sm p-5 sm:p-6">
+                    <h2 class="text-lg font-bold text-gray-900 dark:text-white mb-4 border-b border-gray-200 dark:border-slate-700/50 pb-2">Business Details</h2>
                     
                     <div class="grid grid-cols-1 gap-4">
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
-                                <label class="block text-sm font-medium text-slate-700 mb-1">Business Name</label>
-                                <input type="text" wire:model.live.debounce.300ms="name" class="w-full rounded-lg border-slate-300 focus:ring-blue-500">
-                                @error('name') <span class="text-red-500 text-xs">{{ $message }}</span> @enderror
+                                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Business Name</label>
+                                <input type="text" wire:model.live.debounce.300ms="name" 
+                                       class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 placeholder-gray-400 dark:placeholder-slate-500 focus:ring-blue-500 focus:border-blue-500">
+                                @error('name') <span class="text-red-500 dark:text-red-400 text-xs">{{ $message }}</span> @enderror
                             </div>
                             
                             <div>
-                                <label class="block text-sm font-medium text-slate-700 mb-1">URL Slug</label>
-                                <input type="text" wire:model="slug" readonly class="w-full rounded-lg border-slate-300 bg-slate-50 text-slate-600 focus:ring-blue-500" placeholder="auto-generated-slug">
-                                @error('slug') <span class="text-red-500 text-xs">{{ $message }}</span> @enderror
+                                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">URL Slug</label>
+                                <input type="text" wire:model="slug" readonly 
+                                       class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-300 cursor-not-allowed focus:ring-blue-500" placeholder="auto-generated-slug">
+                                @error('slug') <span class="text-red-500 dark:text-red-400 text-xs">{{ $message }}</span> @enderror
                             </div>
                         </div>
 
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
-                                <label class="block text-sm font-medium text-slate-700 mb-1">Tenant Type</label>
-                                <select wire:model="type_of_tenant_id" class="w-full rounded-lg border-slate-300 focus:ring-blue-500 bg-white">
+                                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Tenant Type</label>
+                                <select wire:model="type_of_tenant_id" 
+                                        class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 focus:ring-blue-500 focus:border-blue-500">
                                     <option value="">-- Select Type --</option>
                                     @foreach($this->tenantTypes as $type)
                                         <option value="{{ $type->id }}">{{ $type->type }}</option>
                                     @endforeach
                                 </select>
-                                @error('type_of_tenant_id') <span class="text-red-500 text-xs">{{ $message }}</span> @enderror
+                                @error('type_of_tenant_id') <span class="text-red-500 dark:text-red-400 text-xs">{{ $message }}</span> @enderror
                             </div>
 
                             <div>
-                                <label class="block text-sm font-medium text-slate-700 mb-1">Contact Number</label>
-                                <input type="text" wire:model="contact_number" class="w-full rounded-lg border-slate-300 focus:ring-blue-500">
-                                @error('contact_number') <span class="text-red-500 text-xs">{{ $message }}</span> @enderror
+                                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Contact Number</label>
+                                <input type="text" wire:model="contact_number" 
+                                       class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 placeholder-gray-400 dark:placeholder-slate-500 focus:ring-blue-500 focus:border-blue-500">
+                                @error('contact_number') <span class="text-red-500 dark:text-red-400 text-xs">{{ $message }}</span> @enderror
                             </div>
                         </div>
 
                         <div>
-                            <label class="block text-sm font-medium text-slate-700 mb-1">Headquarters Address</label>
-                            <input type="text" wire:model="address" class="w-full rounded-lg border-slate-300 focus:ring-blue-500" placeholder="Street, City, Province">
-                            @error('address') <span class="text-red-500 text-xs">{{ $message }}</span> @enderror
+                            <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Headquarters Address</label>
+                            <input type="text" wire:model="address" 
+                                   class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 placeholder-gray-400 dark:placeholder-slate-500 focus:ring-blue-500 focus:border-blue-500" placeholder="Street, City, Province">
+                            @error('address') <span class="text-red-500 dark:text-red-400 text-xs">{{ $message }}</span> @enderror
                         </div>
 
-                        {{-- Coordinates with auto-select on focus --}}
+                        {{-- Coordinates --}}
                         <div class="grid grid-cols-2 gap-4">
                             <div>
-                                <label class="block text-sm font-medium text-slate-700 mb-1">Latitude</label>
-                                <input type="text" wire:model.live="latitude" onfocus="this.select()" class="w-full rounded-lg border-slate-300 focus:ring-blue-500 focus:border-blue-500">
-                                @error('latitude') <span class="text-red-500 text-xs">{{ $message }}</span> @enderror
+                                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Latitude</label>
+                                <input type="text" wire:model.live="latitude" onfocus="this.select()" 
+                                       class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 focus:ring-blue-500 focus:border-blue-500">
+                                @error('latitude') <span class="text-red-500 dark:text-red-400 text-xs">{{ $message }}</span> @enderror
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-slate-700 mb-1">Longitude</label>
-                                <input type="text" wire:model.live="longitude" onfocus="this.select()" class="w-full rounded-lg border-slate-300 focus:ring-blue-500 focus:border-blue-500">
-                                @error('longitude') <span class="text-red-500 text-xs">{{ $message }}</span> @enderror
+                                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Longitude</label>
+                                <input type="text" wire:model.live="longitude" onfocus="this.select()" 
+                                       class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 focus:ring-blue-500 focus:border-blue-500">
+                                @error('longitude') <span class="text-red-500 dark:text-red-400 text-xs">{{ $message }}</span> @enderror
                             </div>
                         </div>
                     </div>
                 </div>
 
-                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
-                    <h2 class="text-lg font-bold text-slate-800 mb-4 border-b pb-2">Admin Account Setup</h2>
-                    <p class="text-sm text-slate-500 mb-4">This creates the login account for the business owner.</p>
+                {{-- Admin Account Card --}}
+                <div class="bg-white dark:bg-[#0b0f19] rounded-xl border border-gray-200 dark:border-slate-700/50 shadow-sm p-5 sm:p-6">
+                    <h2 class="text-lg font-bold text-gray-900 dark:text-white mb-4 border-b border-gray-200 dark:border-slate-700/50 pb-2">Admin Account Setup</h2>
+                    <p class="text-sm text-gray-500 dark:text-slate-400 mb-4">This creates the login account for the business owner.</p>
                     
                     <div class="grid grid-cols-1 gap-4">
                         <div>
-                            <label class="block text-sm font-medium text-slate-700 mb-1">Admin Full Name</label>
-                            <input type="text" wire:model="admin_name" class="w-full rounded-lg border-slate-300 focus:ring-blue-500" placeholder="e.g. John Doe">
-                            @error('admin_name') <span class="text-red-500 text-xs">{{ $message }}</span> @enderror
+                            <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Admin Full Name</label>
+                            <input type="text" wire:model="admin_name" 
+                                   class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 placeholder-gray-400 dark:placeholder-slate-500 focus:ring-blue-500 focus:border-blue-500" placeholder="e.g. John Doe">
+                            @error('admin_name') <span class="text-red-500 dark:text-red-400 text-xs">{{ $message }}</span> @enderror
                         </div>
 
                         <div>
-                            <label class="block text-sm font-medium text-slate-700 mb-1">Login Email</label>
-                            <input type="email" wire:model="email" class="w-full rounded-lg border-slate-300 focus:ring-blue-500" placeholder="admin@business.com">
-                            <p class="text-xs text-slate-400 mt-1">This email acts as both the public contact and the admin's login ID.</p>
-                            @error('email') <span class="text-red-500 text-xs">{{ $message }}</span> @enderror
+                            <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Login Email</label>
+                            <input type="email" wire:model="email" 
+                                   class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 placeholder-gray-400 dark:placeholder-slate-500 focus:ring-blue-500 focus:border-blue-500" placeholder="admin@business.com">
+                            <p class="text-xs text-gray-400 dark:text-slate-500 mt-1">This email acts as both the public contact and the admin's login ID.</p>
+                            @error('email') <span class="text-red-500 dark:text-red-400 text-xs">{{ $message }}</span> @enderror
                         </div>
 
                         <div>
-                            <label class="block text-sm font-medium text-slate-700 mb-1">Initial Password</label>
-                            <input type="password" wire:model="password" class="w-full rounded-lg border-slate-300 focus:ring-blue-500" placeholder="••••••••">
-                            @error('password') <span class="text-red-500 text-xs">{{ $message }}</span> @enderror
+                            <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Initial Password</label>
+                            <input type="password" wire:model="password" 
+                                   class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 placeholder-gray-400 dark:placeholder-slate-500 focus:ring-blue-500 focus:border-blue-500" placeholder="••••••••">
+                            @error('password') <span class="text-red-500 dark:text-red-400 text-xs">{{ $message }}</span> @enderror
                         </div>
                     </div>
                 </div>
 
-                <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-xl shadow-md transition-all flex items-center justify-center gap-2 data-loading:opacity-75 data-loading:cursor-not-allowed">
+                {{-- Submit Button --}}
+                <button type="submit" 
+                        class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-xl shadow-md transition-all flex items-center justify-center gap-2 data-loading:opacity-75 data-loading:cursor-not-allowed">
                     <span class="in-data-loading:hidden">Register Business & Admin</span>
                     <span class="not-in-data-loading:hidden flex items-center gap-2">
                         <svg class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
