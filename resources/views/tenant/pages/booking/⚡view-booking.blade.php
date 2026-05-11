@@ -17,42 +17,39 @@ new
 class extends Component {
     use WithPagination;
 
-    public string $search = '';
-    public string $statusFilter = '';
-    public string $dateRange = '';
-    public ?int $customerFilter = null;
-    public ?int $expandedId = null;
+    public string $search        = '';
+    public string $statusFilter  = '';
+    public string $dateRange     = '';
+    public ?int   $customerFilter = null;
+    public ?int   $expandedId    = null;
 
-    public int $paymentDeadlineHours = 3;
+    public int $paymentDeadlineHours = 24;
 
-    public function booted()
+    public function mount()
     {
+        if (defined('App\Models\Booking::PAYMENT_DEADLINE_HOURS')) {
+            $this->paymentDeadlineHours = Booking::PAYMENT_DEADLINE_HOURS;
+        }
         $this->cancelOverdueBookings();
     }
 
     protected function cancelOverdueBookings(): void
     {
-        $overdue = Booking::where('status', 'pending')
+        $candidates = Booking::where('status', 'pending')
             ->where('tenant_id', Auth::user()->tenant_id)
-            ->where('created_at', '<=', now()->subHours($this->paymentDeadlineHours))
             ->get();
 
-        foreach ($overdue as $booking) {
-            $paid = $booking->payments()->where('payment_status', 'paid')->sum('amount');
-            if ($paid >= $booking->total_amount) {
-                continue;
-            }
-
-            $propertyIds = $booking->items()->pluck('property_id')->unique();
+        foreach ($candidates as $booking) {
+            if (!$booking->isOverdue()) continue;
+            $propertyIds = $booking->items()->pluck('property_id')->unique()->values()->toArray();
             Property::whereIn('id', $propertyIds)->update(['status' => 'available']);
-
             $booking->update(['status' => 'cancelled']);
         }
     }
 
-    public function updatingSearch() { $this->resetPage(); }
-    public function updatingStatusFilter() { $this->resetPage(); }
-    public function updatingDateRange() { $this->resetPage(); }
+    public function updatingSearch()         { $this->resetPage(); }
+    public function updatingStatusFilter()   { $this->resetPage(); }
+    public function updatingDateRange()      { $this->resetPage(); }
     public function updatingCustomerFilter() { $this->resetPage(); }
 
     public function toggleExpand(int $id)
@@ -65,9 +62,21 @@ class extends Component {
         $booking = Booking::where('id', $id)
             ->where('tenant_id', Auth::user()->tenant_id)
             ->firstOrFail();
-        $bookingRef = $booking->booking_reference;
+        $ref = $booking->booking_reference;
         $booking->delete();
-        session()->flash('message', "Booking #{$bookingRef} deleted.");
+        session()->flash('message', "Booking #{$ref} deleted.");
+    }
+
+    public function getAllowedStatuses(Booking $booking): array
+    {
+        $current = $booking->status;
+        if (in_array($current, ['completed', 'cancelled'])) return [];
+        return match ($current) {
+            'pending'    => ['confirmed', 'cancelled'],
+            'confirmed'  => ['checked_in', 'cancelled'],
+            'checked_in' => ['completed', 'cancelled'],
+            default      => [],
+        };
     }
 
     public function updateStatus(int $id, string $status)
@@ -76,36 +85,28 @@ class extends Component {
             ->where('tenant_id', Auth::user()->tenant_id)
             ->firstOrFail();
 
-        $validTransitions = [
-            'pending'   => ['confirmed', 'cancelled'],
-            'confirmed' => ['checked_in', 'cancelled'],
-            'checked_in'=> ['completed', 'cancelled'],
-        ];
-
-        $current = $booking->status;
-
-        if (isset($validTransitions[$current]) && !in_array($status, $validTransitions[$current])) {
-            session()->flash('error', "Cannot change status from '{$current}' to '{$status}'.");
+        $allowed = $this->getAllowedStatuses($booking);
+        if (!in_array($status, $allowed)) {
+            session()->flash('error', "Cannot change status from '{$booking->status}' to '{$status}'.");
             return;
         }
-
-        if ($current === 'pending' && $status === 'confirmed') {
+        if ($booking->status === 'pending' && $status === 'confirmed') {
             $totalPaid = $booking->payments()->where('payment_status', 'paid')->sum('amount');
             if ($totalPaid < $booking->total_amount) {
-                session()->flash('error', 'Payment must be completed before confirming the booking.');
+                session()->flash('error', 'Payment must be completed before confirming.');
                 return;
             }
         }
-
-        $oldStatus = $current;
+        $oldStatus = $booking->status;
         $booking->update(['status' => $status]);
-
         if (in_array($status, ['completed', 'cancelled']) && !in_array($oldStatus, ['completed', 'cancelled'])) {
-            $propertyIds = $booking->items()->pluck('property_id')->unique();
+            $propertyIds = $booking->items()->pluck('property_id')->unique()->toArray();
             Property::whereIn('id', $propertyIds)->update(['status' => 'available']);
         }
-
         session()->flash('message', "Booking #{$booking->booking_reference} marked as {$status}.");
+
+        // resetPage() re‑runs the bookings query → row vanishes without full refresh
+        $this->resetPage();
     }
 
     public function clearFilters()
@@ -116,14 +117,7 @@ class extends Component {
 
     public function isOverdue(Booking $booking): bool
     {
-        if ($booking->status !== 'pending') {
-            return false;
-        }
-        $paid = $booking->payments()->where('payment_status', 'paid')->sum('amount');
-        if ($paid >= $booking->total_amount) {
-            return false;
-        }
-        return $booking->created_at->diffInHours(now()) >= $this->paymentDeadlineHours;
+        return $booking->isOverdue();
     }
 
     #[Computed]
@@ -137,289 +131,316 @@ class extends Component {
     {
         return Booking::with(['customer', 'items.property', 'services.service', 'payments'])
             ->whereNotIn('status', ['completed', 'cancelled'])
-            ->when($this->search, function ($query) {
-                $query->where(function ($q) {
-                    $q->where('booking_reference', 'like', '%' . $this->search . '%')
-                      ->orWhereHas('customer', fn($c) => $c->where('name', 'like', '%' . $this->search . '%'));
-                });
-            })
+            ->when($this->search, fn($q) => $q->where(fn($q2) =>
+                $q2->where('booking_reference', 'like', '%'.$this->search.'%')
+                   ->orWhereHas('customer', fn($c) => $c->where('name', 'like', '%'.$this->search.'%'))
+            ))
             ->when($this->statusFilter, fn($q) => $q->where('status', $this->statusFilter))
             ->when($this->customerFilter, fn($q) => $q->where('customer_id', $this->customerFilter))
-            ->when($this->dateRange, function ($query) {
+            ->when($this->dateRange, function ($q) {
                 $dates = explode(' to ', $this->dateRange);
                 if (count($dates) === 2) {
-                    $query->whereBetween('check_in', [Carbon::parse($dates[0]), Carbon::parse($dates[1])]);
+                    $q->whereBetween('check_in', [Carbon::parse($dates[0]), Carbon::parse($dates[1])]);
                 }
             })
             ->orderBy('check_in', 'desc')
-            ->paginate(10);
+            ->paginate(12);
     }
 
     #[Computed]
     public function stats()
     {
+        $tid = Auth::user()->tenant_id;
         return [
-            'total' => Booking::whereNotIn('status', ['completed', 'cancelled'])->count(),
-            'pending' => Booking::where('status', 'pending')->count(),
-            'confirmed' => Booking::where('status', 'confirmed')->count(),
-            'checked_in' => Booking::where('status', 'checked_in')->count(),
-            'overdue' => Booking::where('status', 'pending')
-                ->where('created_at', '<=', now()->subHours($this->paymentDeadlineHours))
-                ->count(),
-            'revenue' => Booking::whereIn('status', ['confirmed', 'checked_in'])->sum('total_amount'),
-            'today_arrivals' => Booking::whereDate('check_in', today())->where('status', '!=', 'cancelled')->count(),
-            'today_departures' => Booking::whereDate('check_out', today())->where('status', '!=', 'cancelled')->count(),
-            'available' => Property::where('is_active', true)->where('status', 'available')->count(),
+            'total'            => Booking::where('tenant_id', $tid)->whereNotIn('status', ['completed', 'cancelled'])->count(),
+            'pending'          => Booking::where('tenant_id', $tid)->where('status', 'pending')->count(),
+            'confirmed'        => Booking::where('tenant_id', $tid)->where('status', 'confirmed')->count(),
+            'checked_in'       => Booking::where('tenant_id', $tid)->where('status', 'checked_in')->count(),
+            'overdue'          => Booking::where('tenant_id', $tid)->where('status', 'pending')
+                                    ->where('created_at', '<=', now()->subHours($this->paymentDeadlineHours))->count(),
+            'revenue'          => Booking::where('tenant_id', $tid)->whereIn('status', ['confirmed', 'checked_in'])->sum('total_amount'),
+            'today_arrivals'   => Booking::where('tenant_id', $tid)->whereDate('check_in', today())->where('status', '!=', 'cancelled')->count(),
+            'today_departures' => Booking::where('tenant_id', $tid)->whereDate('check_out', today())->where('status', '!=', 'cancelled')->count(),
+            'available'        => Property::where('tenant_id', $tid)->where('is_active', true)->where('status', 'available')->count(),
         ];
     }
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-10 max-w-7xl mx-auto text-gray-900 dark:text-white space-y-6">
+@push('styles')
+<style>
+    select option {
+        background-color: #1e293b;
+        color: #e2e8f0;
+    }
+</style>
+@endpush
 
-    {{-- Header --}}
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+<div class="p-4 sm:p-6 lg:p-8 max-w-[1440px] mx-auto space-y-6">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-6">
         <div>
-            <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Active Bookings</h1>
-            <p class="text-gray-500 dark:text-slate-400 mt-1">All upcoming stays. Unpaid bookings are auto‑cancelled after {{ $paymentDeadlineHours }} hours.</p>
+            <p class="text-xs font-semibold uppercase tracking-[0.22em] text-brand-400 flex items-center gap-2 mb-2">
+                <span class="w-4 h-px bg-brand-400"></span>Management
+            </p>
+            <h1 class="font-display text-3xl md:text-4xl font-bold text-white">
+                Active <em class="italic text-brand-400">Bookings</em>
+            </h1>
+            <p class="text-sm text-white/50 mt-1">
+                Unpaid bookings auto‑cancel after {{ $paymentDeadlineHours }}h · {{ now()->format('l, M d Y') }}
+            </p>
         </div>
-        <div class="flex gap-2">
-            <a href="{{ route('tenant.bookings.create') }}" wire:navigate class="bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2.5 px-5 rounded-xl shadow-sm transition-colors flex items-center gap-2">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-                New Walk‑In
+        <div class="flex gap-3 flex-wrap items-center">
+            <a href="{{ route('tenant.bookings.history') }}" wire:navigate
+               class="glass px-4 py-2 rounded-xl text-sm font-semibold text-white/60 hover:bg-white/10 hover:text-white transition flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                View History
             </a>
-            <a href="{{ route('tenant.customers.create') }}" wire:navigate class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-5 rounded-xl shadow-sm transition-colors flex items-center gap-2">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+            <div class="glass px-4 py-2 rounded-xl text-sm font-semibold text-brand-400 flex items-center gap-2">
+                <span class="text-xs uppercase tracking-wider text-white/50">Live Revenue</span>
+                ₱{{ number_format($this->stats['revenue'], 0) }}
+            </div>
+            <a href="{{ route('tenant.bookings.create') }}" wire:navigate
+               class="glass px-4 py-2 rounded-xl text-sm font-semibold text-white/80 hover:bg-white/10 transition">
+                Walk‑In
+            </a>
+            <a href="{{ route('tenant.customers.create') }}" wire:navigate
+               class="px-5 py-2.5 rounded-xl bg-brand-600 hover:bg-brand-500 text-white text-sm font-semibold shadow-lg shadow-brand-500/20 transition hover:scale-105">
                 New Reservation
             </a>
         </div>
     </div>
 
-    {{-- Flash Messages --}}
-    @if (session()->has('message'))
-        <div class="p-4 bg-green-50 dark:bg-green-500/10 border-l-4 border-green-500 rounded-md shadow-sm">
-            <p class="text-sm text-green-700 dark:text-green-400 font-medium">{{ session('message') }}</p>
+    @if(session()->has('message'))
+        <div class="glass-card border-l-4 border-l-brand-400 p-4 text-sm text-white/80 flex items-center gap-3">
+            ✔ {{ session('message') }}
         </div>
     @endif
-    @if (session()->has('error'))
-        <div class="p-4 bg-red-50 dark:bg-red-500/10 border-l-4 border-red-500 rounded-md shadow-sm">
-            <p class="text-sm text-red-700 dark:text-red-400 font-medium">{{ session('error') }}</p>
+    @if(session()->has('error'))
+        <div class="glass-card border-l-4 border-l-red-400 p-4 text-sm text-white/80 flex items-center gap-3">
+            ✖ {{ session('error') }}
         </div>
     @endif
 
-    {{-- Today's Activity Cards --}}
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div class="rounded-xl bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-700/50 p-5 shadow-sm">
-            <p class="text-sm text-gray-500 dark:text-slate-400">Today's Arrivals</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white">{{ $this->stats['today_arrivals'] }}</p>
-        </div>
-        <div class="rounded-xl bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-700/50 p-5 shadow-sm">
-            <p class="text-sm text-gray-500 dark:text-slate-400">Today's Departures</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white">{{ $this->stats['today_departures'] }}</p>
-        </div>
-        <div class="rounded-xl bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-700/50 p-5 shadow-sm">
-            <p class="text-sm text-gray-500 dark:text-slate-400">Available Properties</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white">{{ $this->stats['available'] }}</p>
-        </div>
-    </div>
-
-    {{-- Status Summary --}}
-    <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
-        <div class="rounded-lg bg-white dark:bg-[#0b0f19] border border-gray-200 dark:border-slate-700/50 p-3 text-center">
-            <p class="text-xs text-gray-500 dark:text-slate-400">All Active</p>
-            <p class="text-xl font-bold">{{ $this->stats['total'] }}</p>
-        </div>
-        <div class="rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 p-3 text-center">
-            <p class="text-xs text-amber-700 dark:text-amber-400">Pending</p>
-            <p class="text-xl font-bold text-amber-700 dark:text-amber-400">{{ $this->stats['pending'] }}</p>
-        </div>
-        <div class="rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 p-3 text-center">
-            <p class="text-xs text-red-700 dark:text-red-400">Overdue</p>
-            <p class="text-xl font-bold text-red-700 dark:text-red-400">{{ $this->stats['overdue'] }}</p>
-        </div>
-        <div class="rounded-lg bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 p-3 text-center">
-            <p class="text-xs text-blue-700 dark:text-blue-400">Confirmed</p>
-            <p class="text-xl font-bold text-blue-700 dark:text-blue-400">{{ $this->stats['confirmed'] }}</p>
-        </div>
-        <div class="rounded-lg bg-purple-50 dark:bg-purple-500/10 border border-purple-200 dark:border-purple-500/30 p-3 text-center">
-            <p class="text-xs text-purple-700 dark:text-purple-400">Checked In</p>
-            <p class="text-xl font-bold text-purple-700 dark:text-purple-400">{{ $this->stats['checked_in'] }}</p>
-        </div>
-    </div>
-
-    {{-- Filters --}}
-    <div class="bg-white dark:bg-[#0b0f19] rounded-xl border border-gray-200 dark:border-slate-700/50 p-4">
-        <div class="flex flex-col md:flex-row gap-3">
-            <div class="relative flex-1">
-                <input type="text" wire:model.live.debounce.300ms="search" placeholder="Search by ref or customer..." 
-                       class="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 placeholder-gray-400 dark:placeholder-slate-500 rounded-lg focus:ring-blue-500">
-                <svg class="absolute left-3 top-2.5 w-5 h-5 text-gray-400 dark:text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+    @php $s = $this->stats; @endphp
+    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+        @foreach([
+            ['Today Arrivals', $s['today_arrivals'], 'emerald'],
+            ['Today Departures', $s['today_departures'], 'rose'],
+            ['Pending', $s['pending'], 'amber'],
+            ['Confirmed', $s['confirmed'], 'blue'],
+            ['Checked In', $s['checked_in'], 'purple'],
+            ['Available', $s['available'], 'indigo'],
+            ['Overdue', $s['overdue'], 'red'],
+            ['Revenue', '₱'.number_format($s['revenue'],0), 'brand'],
+        ] as [$label, $value, $color])
+            <div class="glass-card !rounded-xl p-4">
+                <span class="text-xs font-semibold uppercase tracking-wider text-white/50">{{ $label }}</span>
+                <div class="flex items-end justify-between mt-2">
+                    <span class="text-2xl font-bold text-white">{{ $value }}</span>
+                    <span class="w-2 h-2 rounded-full bg-{{ $color }}-400"></span>
+                </div>
             </div>
-            <div class="flex flex-wrap gap-2">
-                <select wire:model.live="statusFilter" class="px-3 py-2 border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 rounded-lg text-sm focus:ring-blue-500">
-                    <option value="">All Status</option>
-                    <option value="pending">Pending</option>
-                    <option value="confirmed">Confirmed</option>
-                    <option value="checked_in">Checked In</option>
-                </select>
-                <select wire:model.live="customerFilter" class="px-3 py-2 border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 rounded-lg text-sm focus:ring-blue-500">
-                    <option value="">All Customers</option>
-                    @foreach($this->customers as $customer)
-                        <option value="{{ $customer->id }}">{{ $customer->name }}</option>
-                    @endforeach
-                </select>
-                <input type="text" wire:model.live="dateRange" placeholder="Check-in date range" class="px-3 py-2 border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 rounded-lg text-sm w-56 focus:ring-blue-500" />
-                @if($search || $statusFilter || $dateRange || $customerFilter)
-                    <button wire:click="clearFilters" class="px-3 py-2 text-sm text-gray-600 dark:text-slate-400 hover:text-gray-800 dark:hover:text-white border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors">Clear</button>
+        @endforeach
+    </div>
+
+    <div class="glass-card !rounded-xl p-4 flex flex-wrap gap-4 items-center">
+        <div class="relative flex-1 min-w-[200px]">
+            <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+            <input type="text" wire:model.live.debounce.300ms="search"
+                   class="w-full bg-white/5 border border-white/10 rounded-xl py-2.5 pl-10 pr-4 text-sm text-white placeholder-white/30 focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
+                   placeholder="Search reference or guest…">
+        </div>
+        <select wire:model.live="customerFilter"
+                class="bg-slate-800 border border-white/10 rounded-xl py-2.5 px-4 text-sm text-white focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
+            <option value="">All Guests</option>
+            @foreach($this->customers as $customer)
+                <option value="{{ $customer->id }}">{{ $customer->name }}</option>
+            @endforeach
+        </select>
+        <input type="text" wire:model.live="dateRange"
+               class="bg-white/5 border border-white/10 rounded-xl py-2.5 px-4 text-sm text-white/80 placeholder-white/30 w-44 focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
+               placeholder="Check‑in range…">
+        @if($search || $statusFilter || $dateRange || $customerFilter)
+            <button wire:click="clearFilters"
+                    class="px-4 py-2 rounded-xl border border-white/20 text-white/60 hover:bg-white/10 text-xs font-semibold uppercase tracking-wider transition">
+                ✕ Clear
+            </button>
+        @endif
+    </div>
+
+    <div class="flex flex-wrap gap-2">
+        @foreach(['' => 'All', 'pending' => 'Pending', 'confirmed' => 'Confirmed', 'checked_in' => 'Checked In'] as $val => $label)
+            <button wire:click="$set('statusFilter','{{ $val }}')" wire:key="pill-{{ $val }}"
+                    class="px-4 py-1.5 rounded-full text-xs font-semibold uppercase tracking-wider transition border
+                           {{ $statusFilter === $val ? 'bg-brand-600 border-brand-600 text-white' : 'border-white/20 text-white/50 hover:border-brand-400 hover:text-white' }}">
+                {{ $label }}
+                @if($val === 'pending' && $s['pending'] > 0)
+                    <span class="ml-2 bg-brand-500/20 text-brand-400 px-1.5 py-0.5 rounded-full text-xs">{{ $s['pending'] }}</span>
+                @elseif($val === 'confirmed')
+                    <span class="ml-2 bg-brand-500/20 text-brand-400 px-1.5 py-0.5 rounded-full text-xs">{{ $s['confirmed'] }}</span>
+                @elseif($val === 'checked_in')
+                    <span class="ml-2 bg-brand-500/20 text-brand-400 px-1.5 py-0.5 rounded-full text-xs">{{ $s['checked_in'] }}</span>
                 @endif
+            </button>
+        @endforeach
+        @if($s['overdue'] > 0)
+            <div class="px-4 py-1.5 rounded-full bg-red-500/10 border border-red-400/30 text-red-400 text-xs font-semibold uppercase tracking-wider flex items-center gap-1">
+                ⚠ {{ $s['overdue'] }} Overdue
             </div>
-        </div>
+        @endif
     </div>
 
-    {{-- Bookings Table --}}
-    <div class="bg-white dark:bg-[#0b0f19] rounded-xl border border-gray-200 dark:border-slate-700/50 shadow-sm overflow-hidden">
+    <div class="glass-card !rounded-xl overflow-hidden">
         <div class="overflow-x-auto">
-            <table class="w-full text-left">
-                <thead class="bg-gray-50 dark:bg-slate-800/50 border-b border-gray-200 dark:border-slate-700/50">
-                    <tr>
-                        <th class="px-6 py-4 text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase">Ref</th>
-                        <th class="px-6 py-4 text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase">Customer</th>
-                        <th class="px-6 py-4 text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase">Check In/Out</th>
-                        <th class="px-6 py-4 text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase">Total</th>
-                        <th class="px-6 py-4 text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase">Status</th>
-                        <th class="px-6 py-4 text-right text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase">Actions</th>
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="border-b border-white/10">
+                        <th class="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider text-white/40">Booking Ref</th>
+                        <th class="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider text-white/40">Guest</th>
+                        <th class="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider text-white/40 hidden md:table-cell">Stay</th>
+                        <th class="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider text-white/40 hidden md:table-cell">Amount</th>
+                        <th class="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider text-white/40">Status</th>
+                        <th class="px-6 py-4 text-right text-xs font-semibold uppercase tracking-wider text-white/40">Actions</th>
                     </tr>
                 </thead>
-                <tbody class="divide-y divide-gray-200 dark:divide-slate-700/30 text-gray-700 dark:text-slate-300">
+                <tbody class="divide-y divide-white/5">
                     @forelse($this->bookings as $booking)
                         @php
-                            $isOverdue = $this->isOverdue($booking);
-                            $isToday = $booking->check_in && $booking->check_in->isToday();
-                            $isReservation = $booking->customer && ($booking->customer->email || $booking->customer->address);
-                            $stayDuration = $booking->check_in && $booking->check_out
-                                ? max(1, $booking->check_in->diffInDays($booking->check_out))
-                                : 0;
-                            $minutesRemaining = max(0, ($this->paymentDeadlineHours * 60) - $booking->created_at->diffInMinutes(now()));
+                            $isOverdue = $booking->isOverdue();
+                            $isToday = $booking->check_in?->isToday();
+                            $nights = ($booking->check_in && $booking->check_out) ? max(1, $booking->check_in->diffInDays($booking->check_out)) : 0;
+                            $minsLeft = max(0, ($paymentDeadlineHours * 60) - $booking->created_at->diffInMinutes(now()));
+                            $allowed = $this->getAllowedStatuses($booking);
+                            $paid = $booking->payments->where('payment_status','paid')->sum('amount');
+                            $balance = $booking->total_amount - $paid;
                         @endphp
-                        <tr class="hover:bg-gray-50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer {{ $isOverdue ? 'bg-red-50 dark:bg-red-500/5' : '' }}"
+                        <tr wire:key="row-{{ $booking->id }}"
+                            class="hover:bg-white/5 transition cursor-pointer {{ $isOverdue ? 'bg-red-500/5' : '' }} {{ $expandedId === $booking->id ? 'bg-white/10' : '' }}"
                             wire:click="toggleExpand({{ $booking->id }})">
-                            <td class="px-6 py-4 font-mono text-sm">
-                                {{ $booking->booking_reference }}
-                                @if($isToday)
-                                    <span class="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-green-100 dark:bg-green-500/20 text-green-800 dark:text-green-400">Today</span>
-                                @endif
-                                @if($isReservation)
-                                    <span class="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-indigo-100 dark:bg-indigo-500/20 text-indigo-800 dark:text-indigo-400">Reservation</span>
-                                @endif
+                            <td class="px-6 py-4">
+                                <span class="font-mono text-sm font-semibold text-brand-400">{{ $booking->booking_reference }}</span>
+                                @if($isToday)<span class="ml-2 text-[10px] bg-brand-500/20 text-brand-400 px-1.5 py-0.5 rounded-full">Today</span>@endif
                             </td>
-                            <td class="px-6 py-4 text-sm">{{ $booking->customer->name ?? 'N/A' }}</td>
-                            <td class="px-6 py-4 text-sm">
-                                {{ $booking->check_in?->format('M d, Y') ?? '—' }}
-                                @if($booking->check_out && $booking->check_out->greaterThan($booking->check_in))
-                                    → {{ $booking->check_out->format('M d, Y') }}
-                                @endif
-                                @if($stayDuration > 0)
-                                    <div class="text-xs text-gray-500 dark:text-slate-400">{{ $stayDuration }} {{ $stayDuration === 1 ? 'day' : 'days' }}</div>
-                                @endif
-                            </td>
-                            <td class="px-6 py-4 text-sm font-medium">₱{{ number_format($booking->total_amount, 2) }}</td>
-                            <td class="px-6 py-4" wire:click.stop>
-                                <div class="flex items-center gap-2">
-                                    <select wire:change="updateStatus({{ $booking->id }}, $event.target.value)" class="text-xs rounded-full px-2 py-1 border-0 font-medium
-                                        {{ $booking->status === 'pending' ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-400' : '' }}
-                                        {{ $booking->status === 'confirmed' ? 'bg-blue-100 dark:bg-blue-500/20 text-blue-800 dark:text-blue-400' : '' }}
-                                        {{ $booking->status === 'checked_in' ? 'bg-purple-100 dark:bg-purple-500/20 text-purple-800 dark:text-purple-400' : '' }}">
-                                        <option value="pending" {{ $booking->status === 'pending' ? 'selected' : '' }}>Pending</option>
-                                        <option value="confirmed" {{ $booking->status === 'confirmed' ? 'selected' : '' }}>Confirmed</option>
-                                        <option value="checked_in" {{ $booking->status === 'checked_in' ? 'selected' : '' }}>Checked In</option>
-                                        <option value="completed" {{ $booking->status === 'completed' ? 'selected' : '' }}>Completed</option>
-                                        <option value="cancelled" {{ $booking->status === 'cancelled' ? 'selected' : '' }}>Cancelled</option>
-                                    </select>
-                                    {{-- Payment timer / overdue badge --}}
-                                    @if($booking->status === 'pending')
-                                        @php $paid = $booking->payments->where('payment_status', 'paid')->sum('amount'); @endphp
-                                        @if($paid < $booking->total_amount)
-                                            @if($isOverdue)
-                                                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 dark:bg-red-500/20 text-red-800 dark:text-red-400">
-                                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                                                    Overdue
-                                                </span>
-                                            @else
-                                                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 dark:bg-amber-500/10 text-amber-800 dark:text-amber-400"
-                                                      title="{{ floor($minutesRemaining / 60) }}h {{ $minutesRemaining % 60 }}m remaining">
-                                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                                                    {{ floor($minutesRemaining / 60) }}h {{ $minutesRemaining % 60 }}m
-                                                </span>
-                                            @endif
-                                        @endif
-                                    @endif
+                            <td class="px-6 py-4">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-8 h-8 rounded-full bg-brand-500/20 flex items-center justify-center text-brand-400 font-semibold text-sm">
+                                        {{ strtoupper(substr($booking->customer->name ?? 'G', 0, 1)) }}
+                                    </div>
+                                    <div>
+                                        <p class="font-medium text-white">{{ $booking->customer->name ?? 'Walk‑in Guest' }}</p>
+                                        <p class="text-xs text-white/40">{{ $booking->customer->phone ?? $booking->customer->email ?? '—' }}</p>
+                                    </div>
                                 </div>
+                            </td>
+                            <td class="px-6 py-4 hidden md:table-cell">
+                                <p class="text-white/80">{{ $booking->check_in?->format('M d') ?? '—' }} → {{ $booking->check_out?->format('M d, Y') ?? '—' }}</p>
+                                @if($nights > 0)<p class="text-xs text-white/40">{{ $nights }} night{{ $nights != 1 ? 's' : '' }}</p>@endif
+                            </td>
+                            <td class="px-6 py-4 hidden md:table-cell">
+                                <p class="font-semibold text-white">₱{{ number_format($booking->total_amount, 0) }}</p>
+                                @if($balance > 0)
+                                    <p class="text-xs text-red-400">₱{{ number_format($balance,0) }} due</p>
+                                @else
+                                    <p class="text-xs text-brand-400">Paid ✓</p>
+                                @endif
+                            </td>
+                            <td class="px-6 py-4" wire:click.stop>
+                                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold uppercase tracking-wider
+                                    {{ $booking->status === 'pending' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : '' }}
+                                    {{ $booking->status === 'confirmed' ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' : '' }}
+                                    {{ $booking->status === 'checked_in' ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' : '' }}
+                                    {{ $booking->status === 'completed' ? 'bg-gray-500/20 text-gray-300 border border-gray-500/30' : '' }}
+                                    {{ $booking->status === 'cancelled' ? 'bg-red-500/20 text-red-300 border border-red-500/30' : '' }}">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-current"></span>
+                                    {{ ucfirst(str_replace('_', ' ', $booking->status)) }}
+                                </span>
+                                @if(!empty($allowed))
+                                    <select x-data="{}"
+                                            x-on:change="$wire.updateStatus({{ $booking->id }}, $event.target.value)"
+                                            @click.stop
+                                            class="mt-1 bg-slate-800 border border-white/10 rounded-md py-1 px-2 text-xs text-white focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition appearance-none">
+                                        <option value="">Move to…</option>
+                                        @foreach($allowed as $next)
+                                            <option value="{{ $next }}">→ {{ ucfirst(str_replace('_',' ',$next)) }}</option>
+                                        @endforeach
+                                    </select>
+                                @endif
+                                @if($booking->status === 'pending' && $balance > 0)
+                                    <p class="mt-1 text-xs flex items-center gap-1 {{ $isOverdue ? 'text-red-400' : 'text-amber-400' }}">
+                                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                        {{ $isOverdue ? 'Overdue' : floor($minsLeft/60).'h '.($minsLeft%60).'m left' }}
+                                    </p>
+                                @endif
                             </td>
                             <td class="px-6 py-4 text-right" wire:click.stop>
-                                <div class="flex items-center justify-end gap-2">
-                                    <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate class="p-1.5 text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-lg" title="View Details">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
-                                    </a>
-                                    <a href="{{ route('tenant.bookings.edit', $booking->id) }}" wire:navigate class="p-1.5 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10 rounded-lg" title="Edit">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                                    </a>
-                                    <button wire:click="delete({{ $booking->id }})" wire:confirm="Delete this booking?" class="p-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-lg" title="Delete">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                                    </button>
+                                <div class="flex items-center justify-end gap-1">
+                                    <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate title="View" class="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg></a>
+                                    <a href="{{ route('tenant.bookings.edit', $booking->id) }}" wire:navigate title="Edit" class="p-1.5 rounded-lg text-blue-400 hover:text-white hover:bg-blue-500/20"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg></a>
+                                    <button wire:click="delete({{ $booking->id }})" wire:confirm="Delete booking #{{ $booking->booking_reference }}?" title="Delete" class="p-1.5 rounded-lg text-red-400 hover:text-white hover:bg-red-500/20"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
+                                    <button wire:click="toggleExpand({{ $booking->id }})" title="Details" class="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10"><svg class="w-4 h-4 transition-transform {{ $expandedId === $booking->id ? 'rotate-180' : '' }}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg></button>
                                 </div>
                             </td>
                         </tr>
+
                         @if($expandedId === $booking->id)
-                        <tr>
-                            <td colspan="6" class="px-6 py-4 bg-gray-50 dark:bg-slate-800/50 border-t border-gray-200 dark:border-slate-700/30">
-                                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                                    <div>
-                                        <h4 class="font-semibold mb-2">Customer</h4>
-                                        @php $customer = $booking->customer; @endphp
-                                        @if($customer)
-                                            <div class="space-y-1 text-sm">
-                                                <p>{{ $customer->name }}</p>
-                                                <p>{{ $customer->phone ?? '—' }}</p>
-                                                <p>{{ $customer->email ?? '—' }}</p>
-                                                <p>{{ $customer->address ?? '—' }}</p>
+                            <tr wire:key="drawer-{{ $booking->id }}">
+                                <td colspan="6" class="p-0 bg-white/5 border-b border-white/5">
+                                    <div class="p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
+                                        <div>
+                                            <h4 class="text-xs font-semibold uppercase tracking-wider text-brand-400 mb-3">Guest Details</h4>
+                                            @if($booking->customer)
+                                                @foreach(['Name' => $booking->customer->name, 'Phone' => $booking->customer->phone, 'Email' => $booking->customer->email, 'Address' => $booking->customer->address] as $k => $v)
+                                                    <div class="flex justify-between py-1 text-sm"><span class="text-white/50">{{ $k }}</span><span class="text-white/80">{{ $v ?? '—' }}</span></div>
+                                                @endforeach
+                                            @else
+                                                <p class="text-sm text-white/50">Walk‑in · no profile</p>
+                                            @endif
+                                        </div>
+                                        <div>
+                                            <h4 class="text-xs font-semibold uppercase tracking-wider text-brand-400 mb-3">Items Booked</h4>
+                                            @foreach($booking->items as $item)
+                                                <div class="flex justify-between py-1 text-sm"><span class="text-white/70">{{ $item->property->name ?? 'Unknown' }} ×{{ $item->quantity }}</span><span class="text-white/80">₱{{ number_format($item->subtotal,0) }}</span></div>
+                                            @endforeach
+                                            @foreach($booking->services as $bs)
+                                                <div class="flex justify-between py-1 text-sm"><span class="text-white/50">+ {{ $bs->service->name ?? '?' }} ×{{ $bs->quantity }}</span><span class="text-white/50">₱{{ number_format($bs->subtotal,0) }}</span></div>
+                                            @endforeach
+                                            <div class="flex justify-between py-1 text-sm border-t border-white/10 mt-2 pt-2 font-semibold"><span>Total</span><span class="text-brand-400">₱{{ number_format($booking->total_amount, 2) }}</span></div>
+                                        </div>
+                                        <div>
+                                            <h4 class="text-xs font-semibold uppercase tracking-wider text-brand-400 mb-3">Payment</h4>
+                                            @php $paidPct = $booking->total_amount > 0 ? min(100, ($paid / $booking->total_amount) * 100) : 0; @endphp
+                                            <div class="flex justify-between py-1 text-sm"><span class="text-white/50">Paid</span><span class="text-brand-400">₱{{ number_format($paid, 2) }}</span></div>
+                                            <div class="flex justify-between py-1 text-sm"><span class="text-white/50">Balance</span><span class="{{ $balance > 0 ? 'text-red-400' : 'text-brand-400' }}">{{ $balance > 0 ? '₱'.number_format($balance,2) : 'Settled ✓' }}</span></div>
+                                            <div class="w-full h-1.5 bg-white/10 rounded-full mt-2 overflow-hidden">
+                                                <div class="h-full rounded-full transition-all duration-500" style="width: {{ $paidPct }}%; background: {{ $paidPct >= 100 ? '#22c55e' : '#f59e0b' }};"></div>
                                             </div>
-                                        @else
-                                            <p class="text-sm text-gray-500 dark:text-slate-400">No customer data.</p>
-                                        @endif
+                                            <p class="text-xs text-white/40 mt-1">{{ round($paidPct) }}% paid</p>
+                                            @if($balance > 0)
+                                                <a href="{{ route('tenant.payments.create', ['booking' => $booking->id]) }}" wire:navigate class="inline-flex items-center gap-2 mt-3 px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-500 text-white text-sm font-semibold transition shadow-lg shadow-brand-500/20">
+                                                    Record Payment
+                                                </a>
+                                            @endif
+                                        </div>
                                     </div>
-                                    <div>
-                                        <h4 class="font-semibold mb-2">Properties</h4>
-                                        @foreach($booking->items as $item)
-                                            <div class="flex justify-between text-sm">
-                                                <span>{{ $item->property->name ?? 'Unknown' }} (x{{ $item->quantity }})</span>
-                                                <span>₱{{ number_format($item->subtotal, 2) }}</span>
-                                            </div>
-                                        @endforeach
-                                    </div>
-                                    <div>
-                                        <h4 class="font-semibold mb-2">Payments</h4>
-                                        @php
-                                            $paid = $booking->payments->where('payment_status', 'paid')->sum('amount');
-                                            $balance = $booking->total_amount - $paid;
-                                        @endphp
-                                        <p class="text-sm">Paid: ₱{{ number_format($paid, 2) }}</p>
-                                        <p class="text-sm">Balance: <span class="{{ $balance > 0 ? 'text-red-600' : 'text-green-600' }}">₱{{ number_format($balance, 2) }}</span></p>
-                                        @if($balance > 0)
-                                            <a href="{{ route('tenant.payments.create', ['booking' => $booking->id]) }}" wire:navigate class="mt-2 inline-flex items-center gap-1 text-sm bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg">Record Payment</a>
-                                        @endif
-                                    </div>
-                                </div>
-                            </td>
-                        </tr>
+                                </td>
+                            </tr>
                         @endif
                     @empty
-                        <tr><td colspan="6" class="px-6 py-12 text-center text-gray-500 dark:text-slate-400">No active bookings.</td></tr>
+                        <tr>
+                            <td colspan="6" class="px-6 py-12 text-center text-white/40">
+                                <svg class="w-12 h-12 mx-auto mb-3 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                <p class="text-lg font-display italic">No active bookings found.</p>
+                                <p class="text-sm mt-1">Try adjusting your filters or create a new reservation.</p>
+                            </td>
+                        </tr>
                     @endforelse
                 </tbody>
             </table>
         </div>
         @if($this->bookings->hasPages())
-            <div class="px-6 py-4 border-t border-gray-200 dark:border-slate-700/50 bg-gray-50 dark:bg-slate-800/50">{{ $this->bookings->links() }}</div>
+            <div class="p-4 border-t border-white/10">
+                {{ $this->bookings->links() }}
+            </div>
         @endif
     </div>
 </div>

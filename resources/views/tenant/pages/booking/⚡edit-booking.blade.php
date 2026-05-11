@@ -40,7 +40,6 @@ class extends Component {
 
     public function mount(Booking $booking)
     {
-        // Ensure the booking belongs to the current tenant
         if ($booking->tenant_id !== Auth::user()->tenant_id) {
             abort(403, 'Unauthorized.');
         }
@@ -74,11 +73,9 @@ class extends Component {
     public function updatedCheckIn() { $this->calculateTotal(); }
     public function updatedCheckOut() { $this->calculateTotal(); }
 
-    // Toggle a property on/off (no quantity)
     public function toggleProperty($propertyId, $price)
     {
         if (isset($this->selectedProperties[$propertyId])) {
-            // Remove existing BookingItem if it had an ID
             if (isset($this->selectedProperties[$propertyId]['id'])) {
                 BookingItem::find($this->selectedProperties[$propertyId]['id'])?->delete();
             }
@@ -89,7 +86,6 @@ class extends Component {
         $this->calculateTotal();
     }
 
-    // Toggle a service on/off (no quantity)
     public function toggleService($serviceId, $price)
     {
         if (isset($this->selectedServices[$serviceId])) {
@@ -235,67 +231,82 @@ class extends Component {
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-10 max-w-7xl mx-auto text-gray-900 dark:text-white space-y-6">
+@push('styles')
+<style>
+    /* Fix invisible options in glass-style selects */
+    select option {
+        background: #1e293b;
+        color: #e2e8f0;
+    }
+</style>
+@endpush
+
+<div class="p-4 sm:p-6 lg:p-10 max-w-7xl mx-auto space-y-6">
 
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-            <h1 class="text-2xl sm:text-3xl font-bold">Edit Booking #{{ $booking->booking_reference }}</h1>
-            <p class="text-gray-500 dark:text-slate-400 mt-1">Modify customer, dates, properties, and services.</p>
+            <h1 class="text-2xl sm:text-3xl font-bold text-white">Edit Booking #{{ $booking->booking_reference }}</h1>
+            <p class="text-white/60 mt-1">Modify customer, dates, properties, and services.</p>
         </div>
-        <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate class="text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-white font-medium transition-colors">
+        <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate class="text-white/50 hover:text-white font-medium transition-colors">
             &larr; Back to Booking
         </a>
     </div>
 
     @if (session()->has('error'))
-        <div class="p-4 bg-red-50 dark:bg-red-500/10 border-l-4 border-red-500 rounded-md shadow-sm">
-            <p class="text-sm text-red-700 dark:text-red-400 font-medium">{{ session('error') }}</p>
+        <div class="glass-card border-l-4 border-l-red-400 p-4 text-sm text-white/80 flex items-center gap-3">
+            <svg class="w-4 h-4 text-red-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.293 10.293a1 1 0 011.414 0L12 10.586l.293-.293a1 1 0 111.414 1.414L13.414 12l.293.293a1 1 0 01-1.414 1.414L12 13.414l-.293.293a1 1 0 01-1.414-1.414L10.586 12l-.293-.293a1 1 0 010-1.414z"/></svg>
+            {{ session('error') }}
         </div>
     @endif
 
     <form wire:submit="update" class="space-y-6">
         {{-- Customer Selection --}}
-        <div class="bg-white dark:bg-[#0b0f19] rounded-xl border border-gray-200 dark:border-slate-700/50 shadow-sm p-5 sm:p-6">
-            <h2 class="text-lg font-semibold mb-4">Customer Information</h2>
-            <select wire:model="customer_id" class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 focus:ring-blue-500 focus:border-blue-500">
+        <div class="glass-card !rounded-xl p-5 sm:p-6">
+            <h2 class="text-lg font-semibold text-white mb-4">Customer Information</h2>
+            <select wire:model="customer_id"
+                    class="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-sm text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition appearance-none">
                 <option value="">-- Select Customer --</option>
                 @foreach($this->customers as $customer)
                     <option value="{{ $customer->id }}">{{ $customer->name }} ({{ $customer->phone }})</option>
                 @endforeach
             </select>
-            @error('customer_id') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+            @error('customer_id') <span class="text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
         </div>
 
         {{-- Dates & Status --}}
-        <div class="bg-white dark:bg-[#0b0f19] rounded-xl border border-gray-200 dark:border-slate-700/50 shadow-sm p-5 sm:p-6">
+        <div class="glass-card !rounded-xl p-5 sm:p-6">
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Check-in Date</label>
-                    <input type="date" wire:model.live="check_in" class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 focus:ring-blue-500 focus:border-blue-500">
-                    @error('check_in') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    <label class="block text-sm font-medium text-white/70 mb-1">Check-in Date</label>
+                    <input type="date" wire:model.live="check_in"
+                           class="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-sm text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
+                    @error('check_in') <span class="text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Check-out Date</label>
-                    <input type="date" wire:model.live="check_out" class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 focus:ring-blue-500 focus:border-blue-500">
-                    @error('check_out') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    <label class="block text-sm font-medium text-white/70 mb-1">Check-out Date</label>
+                    <input type="date" wire:model.live="check_out"
+                           class="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-sm text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
+                    @error('check_out') <span class="text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Status</label>
-                    <select wire:model="status" class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 focus:ring-blue-500 focus:border-blue-500">
+                    <label class="block text-sm font-medium text-white/70 mb-1">Status</label>
+                    <select wire:model="status"
+                            class="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-sm text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition appearance-none">
                         <option value="pending">Pending</option>
                         <option value="confirmed">Confirmed</option>
                         <option value="checked_in">Checked In</option>
                         <option value="completed">Completed</option>
                         <option value="cancelled">Cancelled</option>
                     </select>
-                    @error('status') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    @error('status') <span class="text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             </div>
         </div>
 
         {{-- Property Card Grid --}}
-        <div class="bg-white dark:bg-[#0b0f19] rounded-xl border border-gray-200 dark:border-slate-700/50 shadow-sm p-5 sm:p-6">
-            <h2 class="text-lg font-semibold mb-6">Select Room(s) — Tap to add</h2>
+        <div class="glass-card !rounded-xl p-5 sm:p-6">
+            <h2 class="text-lg font-semibold text-white mb-6">Select Room(s) — Tap to add</h2>
 
             @if(count($this->availableProperties) > 0)
                 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -304,23 +315,23 @@ class extends Component {
                             $isSelected = isset($selectedProperties[$property->id]);
                             $firstImg = $property->images->first();
                         @endphp
-                        <div class="relative group cursor-pointer rounded-2xl border-2 transition-all duration-200
-                                    {{ $isSelected ? 'border-emerald-500 dark:border-emerald-400 ring-2 ring-emerald-200 dark:ring-emerald-500/30' : 'border-gray-200 dark:border-slate-700/50 hover:border-blue-400 dark:hover:border-blue-400' }}"
+                        <div class="relative group cursor-pointer rounded-2xl border-2 transition-all duration-200 overflow-hidden
+                                    {{ $isSelected ? 'border-brand-400 ring-2 ring-brand-500/30' : 'border-white/10 hover:border-brand-400/50' }}"
                              wire:click="toggleProperty({{ $property->id }}, {{ $property->price }})">
                             <div class="aspect-4/4 overflow-hidden rounded-t-2xl">
-                                <img class="size-full object-cover"
+                                <img class="size-full object-cover group-hover:scale-105 transition duration-700"
                                      src="{{ $firstImg ? Storage::url($firstImg->image_path) : asset('images/placeholder-room.jpg') }}"
                                      alt="{{ $property->name }}">
                             </div>
                             <div class="p-4">
-                                <h3 class="font-medium text-gray-900 dark:text-white">{{ $property->name }}</h3>
-                                <p class="mt-1 text-sm text-gray-500 dark:text-slate-400">
+                                <h3 class="font-medium text-white">{{ $property->name }}</h3>
+                                <p class="mt-1 text-sm text-white/60">
                                     ₱{{ number_format($property->price, 2) }} / night
                                 </p>
-                                <p class="text-xs text-gray-400 dark:text-slate-500 mt-1">Capacity: {{ $property->capacity }} persons</p>
+                                <p class="text-xs text-white/40 mt-1">Capacity: {{ $property->capacity }} persons</p>
                             </div>
                             @if($isSelected)
-                                <div class="absolute top-3 right-3 bg-emerald-600 text-white rounded-full p-1 shadow">
+                                <div class="absolute top-3 right-3 bg-brand-600 text-white rounded-full p-1 shadow">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
                                 </div>
                             @endif
@@ -328,13 +339,13 @@ class extends Component {
                     @endforeach
                 </div>
             @else
-                <p class="text-gray-500 dark:text-slate-400 text-center py-8">No available rooms for selected dates.</p>
+                <p class="text-white/50 text-center py-8">No available rooms for selected dates.</p>
             @endif
 
             {{-- Selected Rooms --}}
             @if(count($selectedProperties) > 0)
                 <div class="mt-8 space-y-3">
-                    <h3 class="font-medium text-gray-900 dark:text-white mb-4">Selected Rooms</h3>
+                    <h3 class="font-medium text-white mb-4">Selected Rooms</h3>
                     @foreach($selectedProperties as $id => $item)
                         @php
                             $prop = $this->availableProperties->firstWhere('id', $id) ?? App\Models\Property::find($id);
@@ -342,25 +353,25 @@ class extends Component {
                             $nights = max(1, $nights);
                             $roomTotal = $item['price'] * $item['quantity'] * $nights;
                         @endphp
-                        <div class="flex items-center gap-4 p-3 bg-gray-50 dark:bg-slate-800/50 rounded-xl border border-gray-200 dark:border-slate-700/50">
-                            <div class="w-12 h-12 rounded-lg overflow-hidden bg-gray-100 dark:bg-slate-700 shrink-0">
+                        <div class="flex items-center gap-4 p-3 bg-white/5 rounded-xl border border-white/10">
+                            <div class="w-12 h-12 rounded-lg overflow-hidden bg-white/10 shrink-0">
                                 @if($prop && $prop->images->isNotEmpty())
                                     <img src="{{ Storage::url($prop->images->first()->image_path) }}" class="w-full h-full object-cover" alt="{{ $prop->name }}">
                                 @else
-                                    <div class="w-full h-full flex items-center justify-center text-gray-400 dark:text-slate-500">
+                                    <div class="w-full h-full flex items-center justify-center text-white/30">
                                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
                                     </div>
                                 @endif
                             </div>
                             <div class="flex-1 min-w-0">
-                                <p class="font-medium text-gray-900 dark:text-white truncate">{{ $prop->name ?? 'Room' }}</p>
-                                <p class="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
+                                <p class="font-medium text-white truncate">{{ $prop->name ?? 'Room' }}</p>
+                                <p class="text-xs text-white/50 mt-0.5">
                                     ₱{{ number_format($item['price'], 2) }} / night · {{ $nights }} nights
                                 </p>
-                                <p class="text-sm font-semibold text-gray-900 dark:text-white mt-1">₱{{ number_format($roomTotal, 2) }}</p>
+                                <p class="text-sm font-semibold text-white mt-1">₱{{ number_format($roomTotal, 2) }}</p>
                             </div>
                             <button type="button" wire:click="toggleProperty({{ $id }}, {{ $item['price'] }})" 
-                                    class="p-1 text-gray-400 dark:text-slate-500 hover:text-red-500" title="Remove room">
+                                    class="p-1 text-white/40 hover:text-red-400 transition" title="Remove room">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                             </button>
                         </div>
@@ -370,16 +381,16 @@ class extends Component {
         </div>
 
         {{-- Add‑On Services (toggle, no quantity) --}}
-        <div class="bg-white dark:bg-[#0b0f19] rounded-xl border border-gray-200 dark:border-slate-700/50 shadow-sm p-5 sm:p-6">
-            <h2 class="text-lg font-semibold mb-4">Add‑On Services</h2>
+        <div class="glass-card !rounded-xl p-5 sm:p-6">
+            <h2 class="text-lg font-semibold text-white mb-4">Add‑On Services</h2>
             <div class="flex flex-wrap gap-2 mb-4">
                 @foreach($this->availableServices as $service)
                     @php $isServiceSelected = isset($selectedServices[$service->id]); @endphp
                     <button type="button" wire:click="toggleService({{ $service->id }}, {{ $service->price }})"
                             class="border rounded-full px-4 py-2 text-sm transition-colors
                                    {{ $isServiceSelected 
-                                      ? 'bg-blue-100 dark:bg-blue-500/20 border-blue-300 dark:border-blue-500/50 text-blue-800 dark:text-blue-400'
-                                      : 'border-gray-300 dark:border-slate-600 hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-700 dark:text-slate-300' }}">
+                                      ? 'bg-brand-500/20 border-brand-400/50 text-brand-300'
+                                      : 'border-white/10 hover:bg-white/5 text-white/70' }}">
                         {{ $service->name }} (₱{{ number_format($service->price, 2) }})
                     </button>
                 @endforeach
@@ -389,13 +400,13 @@ class extends Component {
                 <div class="space-y-2">
                     @foreach($selectedServices as $id => $item)
                         @php $service = App\Models\Service::find($id); @endphp
-                        <div class="flex items-center gap-3 p-3 bg-gray-50 dark:bg-slate-800/50 rounded-xl border border-gray-200 dark:border-slate-700/50">
+                        <div class="flex items-center gap-3 p-3 bg-white/5 rounded-xl border border-white/10">
                             <div class="flex-1">
-                                <p class="font-medium text-gray-900 dark:text-white">{{ $service->name ?? 'Service' }}</p>
-                                <p class="text-xs text-gray-500 dark:text-slate-400">₱{{ number_format($item['price'], 2) }}</p>
+                                <p class="font-medium text-white">{{ $service->name ?? 'Service' }}</p>
+                                <p class="text-xs text-white/50">₱{{ number_format($item['price'], 2) }}</p>
                             </div>
-                            <p class="text-sm font-semibold text-gray-900 dark:text-white w-20 text-right">₱{{ number_format($item['price'], 2) }}</p>
-                            <button type="button" wire:click="toggleService({{ $id }}, {{ $item['price'] }})" class="p-1 text-gray-400 dark:text-slate-500 hover:text-red-500" title="Remove service">
+                            <p class="text-sm font-semibold text-white w-20 text-right">₱{{ number_format($item['price'], 2) }}</p>
+                            <button type="button" wire:click="toggleService({{ $id }}, {{ $item['price'] }})" class="p-1 text-white/40 hover:text-red-400 transition" title="Remove service">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                             </button>
                         </div>
@@ -405,12 +416,14 @@ class extends Component {
         </div>
 
         {{-- Total & Submit --}}
-        <div class="bg-white dark:bg-[#0b0f19] rounded-xl border border-gray-200 dark:border-slate-700/50 shadow-sm p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-            <span class="text-xl font-bold">Total: ₱{{ number_format($totalAmount, 2) }}</span>
+        <div class="glass-card !rounded-xl p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <span class="text-xl font-bold text-white">Total: ₱{{ number_format($totalAmount, 2) }}</span>
             <div class="flex gap-3">
-                <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-6 rounded-xl shadow-sm transition-colors flex items-center gap-2 data-loading:opacity-75 data-loading:cursor-not-allowed">
-                    <span class="in-data-loading:hidden">Update Booking</span>
-                    <span class="not-in-data-loading:hidden flex items-center gap-2">
+                <button type="submit" 
+                        wire:loading.attr="disabled"
+                        class="bg-brand-600 hover:bg-brand-500 text-white font-semibold py-3 px-8 rounded-xl shadow-lg shadow-brand-500/20 transition hover:scale-105 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                    <span wire:loading.remove>Update Booking</span>
+                    <span wire:loading class="flex items-center gap-2">
                         <svg class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
@@ -418,7 +431,8 @@ class extends Component {
                         Saving...
                     </span>
                 </button>
-                <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate class="border border-gray-300 dark:border-slate-600 text-gray-700 dark:text-slate-300 hover:bg-gray-50 dark:hover:bg-slate-800 font-medium py-2.5 px-6 rounded-xl transition-colors">
+                <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate 
+                   class="glass px-6 py-3 rounded-xl text-white/80 hover:bg-white/10 font-medium transition">
                     Cancel
                 </a>
             </div>

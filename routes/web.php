@@ -15,10 +15,9 @@ use App\Models\Booking;
 */
 Route::livewire('/', 'public::pages.index')->name('home');
 Route::livewire('/about', 'public::pages.about')->name('about');
-Route::livewire('/bookings', 'public::pages.bookings')->name('public.bookings');
-Route::livewire('/learn-more', 'public::pages.learnmore')->name('learnmore');
-Route::livewire('/menu-list', 'public::pages.menu-list')->name('menu-list');
-Route::livewire('/reservation', 'public::pages.reservation')->name('reservation');
+Route::livewire('/contact', 'public::pages.learnmore')->name('learnmore');
+Route::livewire('/', 'public::pages.index')->name('home');
+
 Route::livewire('/register-business', 'public::pages.register-business')->name('register_business');
 
 // Explore Map (public interactive map)
@@ -34,6 +33,7 @@ Route::livewire('/business/{slug}/offerings', 'public::pages.business-offerings'
 Route::livewire('/destination/{id}', 'public::pages.tourist-spot-details')->name('destination.details');
 
 // Auth
+Route::livewire('/profile', 'public::pages.profile')->name('profile');
 Route::livewire('/login', 'public::auth.login')->name('login');
 Route::livewire('/register', 'public::auth.register')->name('register');
 Route::post('/logout', function (Request $request) {
@@ -121,6 +121,7 @@ Route::prefix('admin')->name('tenant.')->middleware([Authenticate::class, IsTena
     Route::livewire('/employees', 'tenant::pages.employee.view-employee')->name('employees.index');
     Route::livewire('/employees/create', 'tenant::pages.employee.create-employee')->name('employees.create');
     Route::livewire('/employees/{employee}/edit', 'tenant::pages.employee.edit-employee')->name('employees.edit');
+    Route::livewire('/employee-dashboard', 'tenant::pages.employee.dashboard')->name('employee.dashboard');
 
     // Properties
     Route::livewire('/properties', 'tenant::pages.property.view-property')->name('properties.index');

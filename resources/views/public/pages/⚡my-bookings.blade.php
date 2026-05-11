@@ -4,197 +4,234 @@ use Livewire\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
-use Illuminate\Support\Facades\Auth;
-use App\Models\Customer;
 use App\Models\Booking;
-use Carbon\Carbon;
+use App\Scopes\TenantScope;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Storage;
 
 new 
 #[Layout('layouts.app')]
 #[Title('My Bookings')]
 class extends Component {
-    public $statusFilter = '';
-    public $search = '';
 
-    #[Computed]
-    public function customer()
-    {
-        if (!Auth::check()) return null;
-        return Customer::where('email', Auth::user()->email)->first();
-    }
+    public string $statusFilter = '';
 
     #[Computed]
     public function bookings()
     {
-        $customer = $this->customer;
-        if (!$customer) return collect();
-
-        $query = Booking::where('customer_id', $customer->id)
-            ->with(['tenant', 'items.property'])
-            ->orderBy('created_at', 'desc');
+        $query = Booking::withoutGlobalScope(TenantScope::class)
+            ->with([
+                'customer'              => fn($q) => $q->withoutGlobalScope(TenantScope::class),
+                'items'                 => fn($q) => $q->withoutGlobalScope(TenantScope::class),
+                'payments'              => fn($q) => $q->withoutGlobalScope(TenantScope::class),
+                'items.property'        => fn($q) => $q->withoutGlobalScope(TenantScope::class),
+                'items.property.tenant',
+                'items.property.images' => fn($q) => $q->withoutGlobalScope(TenantScope::class),
+            ])
+            ->whereHas('customer', fn($q) =>
+                $q->withoutGlobalScope(TenantScope::class)
+                  ->where('email', Auth::user()->email)
+            )
+            ->orderByDesc('created_at');
 
         if ($this->statusFilter) {
             $query->where('status', $this->statusFilter);
         }
 
-        if ($this->search) {
-            $query->where('booking_reference', 'like', '%' . $this->search . '%');
-        }
-
         return $query->get();
     }
 
-    public function cancelBooking($bookingId)
+    #[Computed]
+    public function counts()
     {
-        $booking = Booking::where('id', $bookingId)
-            ->where('customer_id', $this->customer->id)
-            ->first();
-
-        if (!$booking) {
-            session()->flash('error', 'Booking not found.');
-            return;
-        }
-
-        // Only allow cancellation if status is 'pending'
-        if ($booking->status !== 'pending') {
-            session()->flash('error', 'Only pending bookings can be cancelled.');
-            return;
-        }
-
-        $booking->update(['status' => 'cancelled']);
-
-        // Release associated properties (the booted method in Booking model already handles this)
-        // But we also need to release them here immediately? The model booted method already does it on update.
-
-        session()->flash('message', 'Booking cancelled successfully.');
+        $all = Booking::withoutGlobalScope(TenantScope::class)
+            ->whereHas('customer', fn($q) =>
+                $q->withoutGlobalScope(TenantScope::class)
+                  ->where('email', Auth::user()->email)
+            )->get();
+        return [
+            'total'     => $all->count(),
+            'pending'   => $all->where('status', 'pending')->count(),
+            'confirmed' => $all->where('status', 'confirmed')->count(),
+            'completed' => $all->where('status', 'completed')->count(),
+        ];
     }
 
-    public function getStatusBadgeClass($status)
+    public function statusLabel(string $status): string
     {
         return match ($status) {
-            'pending'   => 'bg-yellow-500/20 text-yellow-300 border-yellow-500/50',
-            'confirmed' => 'bg-green-500/20 text-green-300 border-green-500/50',
-            'checked-in'=> 'bg-blue-500/20 text-blue-300 border-blue-500/50',
-            'completed' => 'bg-gray-500/20 text-gray-300 border-gray-500/50',
-            'cancelled' => 'bg-red-500/20 text-red-300 border-red-500/50',
-            default     => 'bg-gray-500/20 text-gray-300 border-gray-500/50',
+            'pending'    => 'Pending',
+            'confirmed'  => 'Confirmed',
+            'checked_in' => 'Checked In',
+            'completed'  => 'Completed',
+            'cancelled'  => 'Cancelled',
+            default      => ucfirst($status),
         };
     }
 };
 ?>
 
-<div class="min-h-screen bg-white dark:bg-black py-12 px-4 transition-colors duration-300">
-    <div class="max-w-7xl mx-auto">
-        {{-- Page header --}}
-        <div class="mb-8">
-            <h1 class="text-3xl md:text-4xl font-bold text-gray-900 dark:text-white">My Bookings</h1>
-            <p class="text-gray-600 dark:text-gray-300 mt-1">Manage your reservations and track your travels</p>
-        </div>
-
-        {{-- Flash messages --}}
-        @if(session()->has('message'))
-            <div class="mb-4 p-4 bg-green-100 dark:bg-green-900/30 border border-green-300 dark:border-green-700 rounded-xl text-green-800 dark:text-green-200">
-                {{ session('message') }}
+<div class="relative z-10 min-h-screen py-8">
+    {{-- ══════════ HERO ══════════ --}}
+    <section class="relative py-20 md:py-28 overflow-hidden bg-black/60 backdrop-blur-sm">
+        <div class="relative z-10 max-w-7xl mx-auto px-6 md:px-16">
+            <div class="flex items-center gap-2 mb-3">
+                <span class="w-4 h-px bg-brand-500"></span>
+                <span class="text-xs tracking-[0.22em] uppercase text-brand-500 font-semibold">Traveller Portal</span>
             </div>
-        @endif
-        @if(session()->has('error'))
-            <div class="mb-4 p-4 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-xl text-red-800 dark:text-red-200">
-                {{ session('error') }}
-            </div>
-        @endif
+            <h1 class="font-display text-4xl md:text-6xl font-semibold text-white leading-none">
+                My <em class="italic">
+                    <span class="bg-gradient-to-r from-brand-400 to-cyan-400 bg-clip-text text-transparent">Reservations</span>
+                </em>
+            </h1>
+            <p class="text-sm text-white/50 mt-4">All your bookings, stays, and travel history in one place.</p>
 
-        {{-- Filters --}}
-        <div class="bg-white/10 dark:bg-gray-900/40 backdrop-blur-sm rounded-2xl p-5 mb-8 border border-gray-200 dark:border-gray-800">
-            <div class="flex flex-col md:flex-row gap-4">
-                <div class="flex-1">
-                    <input type="text" wire:model.live.debounce.300ms="search" placeholder="Search by booking reference..."
-                           class="w-full rounded-xl border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 dark:focus:ring-red-500 px-4 py-2.5">
-                </div>
+            @php $c = $this->counts; @endphp
+            <div class="flex flex-wrap gap-8 mt-10 pt-6 border-t border-white/10">
                 <div>
-                    <select wire:model.live="statusFilter"
-                            class="rounded-xl border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 dark:focus:ring-red-500 px-4 py-2.5">
-                        <option value="">All statuses</option>
-                        <option value="pending">Pending</option>
-                        <option value="confirmed">Confirmed</option>
-                        <option value="checked-in">Checked In</option>
-                        <option value="completed">Completed</option>
-                        <option value="cancelled">Cancelled</option>
-                    </select>
+                    <div class="font-display text-3xl text-brand-400">{{ $c['total'] }}</div>
+                    <div class="text-xs uppercase tracking-widest text-white/40 mt-1">Total</div>
+                </div>
+                <div class="w-px h-10 bg-white/10"></div>
+                <div>
+                    <div class="font-display text-3xl text-brand-400">{{ $c['pending'] }}</div>
+                    <div class="text-xs uppercase tracking-widest text-white/40 mt-1">Pending</div>
+                </div>
+                <div class="w-px h-10 bg-white/10"></div>
+                <div>
+                    <div class="font-display text-3xl text-brand-400">{{ $c['confirmed'] }}</div>
+                    <div class="text-xs uppercase tracking-widest text-white/40 mt-1">Confirmed</div>
+                </div>
+                <div class="w-px h-10 bg-white/10"></div>
+                <div>
+                    <div class="font-display text-3xl text-brand-400">{{ $c['completed'] }}</div>
+                    <div class="text-xs uppercase tracking-widest text-white/40 mt-1">Completed</div>
                 </div>
             </div>
         </div>
+    </section>
 
-        {{-- Bookings list --}}
-        @if($this->bookings->count() > 0)
-            <div class="space-y-6">
+    {{-- ══════════ FILTER PILLS ══════════ --}}
+    <div class="max-w-7xl mx-auto px-6 md:px-16 py-8 flex flex-wrap gap-2">
+        @foreach(['' => 'All', 'pending' => 'Pending', 'confirmed' => 'Confirmed', 'checked_in' => 'Checked In', 'completed' => 'Completed', 'cancelled' => 'Cancelled'] as $val => $label)
+            <button wire:click="$set('statusFilter','{{ $val }}')"
+                    class="px-4 py-1.5 rounded-full text-xs font-semibold uppercase tracking-wider transition-colors border
+                           {{ $statusFilter === $val ? 'bg-brand-600 border-brand-600 text-white' : 'border-white/20 text-white/50 hover:border-brand-400 hover:text-white' }}">
+                {{ $label }}
+            </button>
+        @endforeach
+    </div>
+
+    {{-- ══════════ BOOKING LIST ══════════ --}}
+    <div class="max-w-7xl mx-auto px-6 md:px-16 pb-20">
+        @if($this->bookings->isEmpty())
+            <div class="glass-card p-12 text-center">
+                <svg class="w-12 h-12 mx-auto mb-4 text-white/20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                <h3 class="font-display text-2xl italic text-white/50">No reservations {{ $statusFilter ? 'with this status' : 'yet' }}.</h3>
+                <p class="text-sm text-white/40 mt-2">
+                    {{ $statusFilter ? 'Try a different filter or clear it.' : 'Your travel story starts with your first booking.' }}
+                </p>
+                @if(!$statusFilter)
+                    <a href="{{ route('explore.map') }}" wire:navigate class="inline-flex items-center gap-2 mt-6 px-6 py-3 rounded-full bg-brand-600 hover:bg-brand-500 text-white text-sm font-semibold uppercase tracking-wider transition shadow-lg shadow-brand-500/20">
+                        Explore Destinations
+                    </a>
+                @else
+                    <button wire:click="$set('statusFilter','')" class="mt-6 inline-flex items-center gap-2 px-6 py-3 rounded-full bg-brand-600 hover:bg-brand-500 text-white text-sm font-semibold uppercase tracking-wider transition shadow-lg shadow-brand-500/20">
+                        Clear Filter
+                    </button>
+                @endif
+            </div>
+        @else
+            <div class="space-y-4">
                 @foreach($this->bookings as $booking)
-                    <div class="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-sm hover:shadow-md transition overflow-hidden">
-                        <div class="p-6">
-                            <div class="flex flex-wrap items-start justify-between gap-4">
-                                <div class="space-y-1">
-                                    <div class="flex items-center gap-3 flex-wrap">
-                                        <span class="text-sm font-mono text-gray-500 dark:text-gray-400">#{{ $booking->booking_reference }}</span>
-                                        <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border {{ $this->getStatusBadgeClass($booking->status) }}">
-                                            {{ ucfirst($booking->status) }}
-                                        </span>
+                    @php
+                        $property     = $booking->items->first()?->property;
+                        $businessName = $property?->tenant?->name ?? 'Business';
+                        $businessSlug = $property?->tenant?->slug;
+                        $paid         = $booking->payments->where('payment_status','paid')->sum('amount');
+                        $balance      = $booking->total_amount - $paid;
+                        $paidPct      = $booking->total_amount > 0 ? min(100, ($paid / $booking->total_amount) * 100) : 0;
+                        $nights       = $booking->check_in && $booking->check_out ? max(1, $booking->check_in->diffInDays($booking->check_out)) : 0;
+                        $imagePath    = $property?->images?->first()?->image_path;
+                        $status       = $booking->status;
+                    @endphp
+
+                    <div class="glass-card overflow-hidden grid grid-cols-[5px_1fr] group" wire:key="bk-{{ $booking->id }}">
+                        {{-- Status accent bar --}}
+                        <div class="bg-{{ $status === 'pending' ? 'amber' : ($status === 'confirmed' ? 'blue' : ($status === 'checked_in' ? 'purple' : ($status === 'completed' ? 'gray' : 'red'))) }}-500"></div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-[auto_1fr_auto]">
+                            {{-- Thumbnail --}}
+                            <div class="w-full md:w-40 h-28 md:h-auto overflow-hidden">
+                                @if($imagePath)
+                                    <img src="{{ Storage::url($imagePath) }}" alt="{{ $property->name }}" class="w-full h-full object-cover filter brightness-95 group-hover:brightness-110 transition" loading="lazy">
+                                @else
+                                    <div class="w-full h-full bg-white/5 flex items-center justify-center text-white/20">
+                                        <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
                                     </div>
-                                    <h2 class="text-xl font-bold text-gray-900 dark:text-white">{{ $booking->items->first()->property->name ?? 'Property' }}</h2>
-                                    <p class="text-sm text-gray-600 dark:text-gray-300">{{ $booking->tenant->name ?? 'Business' }}</p>
-                                </div>
-                                <div class="text-right">
-                                    <div class="text-2xl font-bold text-gray-900 dark:text-white">₱{{ number_format($booking->total_amount, 2) }}</div>
-                                    <div class="text-xs text-gray-500 dark:text-gray-400">{{ $booking->created_at->format('M d, Y') }}</div>
-                                </div>
+                                @endif
                             </div>
 
-                            <div class="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
-                                <div class="flex items-center gap-2 text-gray-600 dark:text-gray-300">
-                                    <svg class="w-5 h-5 text-blue-500 dark:text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                                    <span>Check‑in: <strong>{{ \Carbon\Carbon::parse($booking->check_in)->format('M d, Y') }}</strong></span>
+                            {{-- Details --}}
+                            <div class="p-5 flex flex-col">
+                                <div class="flex flex-wrap items-center gap-2 mb-1">
+                                    <span class="text-xs font-semibold uppercase tracking-widest text-white/40">#{{ $booking->booking_reference }}</span>
+                                    <span class="badge-{{ $status }} text-xs px-2 py-0.5 rounded-full">{{ $this->statusLabel($status) }}</span>
+                                    @if($nights > 0)
+                                        <span class="bg-brand-500/10 border border-brand-400/20 rounded-full px-2 py-0.5 text-xs text-white/70">{{ $nights }} night{{ $nights!=1?'s':'' }}</span>
+                                    @endif
                                 </div>
-                                <div class="flex items-center gap-2 text-gray-600 dark:text-gray-300">
-                                    <svg class="w-5 h-5 text-blue-500 dark:text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                                    <span>Check‑out: <strong>{{ \Carbon\Carbon::parse($booking->check_out)->format('M d, Y') }}</strong></span>
+                                <h3 class="font-display text-xl font-medium text-white mb-1">{{ $property?->name ?? 'Booking' }}</h3>
+                                <p class="text-sm text-white/50">{{ $businessName }}</p>
+
+                                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-3 text-sm">
+                                    <div>
+                                        <span class="block text-xs uppercase tracking-wider text-white/40">Check-in</span>
+                                        <span class="font-medium text-white">{{ $booking->check_in?->format('M d, Y') ?? '—' }}</span>
+                                    </div>
+                                    <div>
+                                        <span class="block text-xs uppercase tracking-wider text-white/40">Check-out</span>
+                                        <span class="font-medium text-white">{{ $booking->check_out?->format('M d, Y') ?? '—' }}</span>
+                                    </div>
+                                    <div>
+                                        <span class="block text-xs uppercase tracking-wider text-white/40">Total</span>
+                                        <span class="font-medium text-white">₱{{ number_format($booking->total_amount, 2) }}</span>
+                                    </div>
+                                    <div>
+                                        <span class="block text-xs uppercase tracking-wider text-white/40">Paid</span>
+                                        <span class="font-medium {{ $balance > 0 ? 'text-amber-400' : 'text-green-400' }}">₱{{ number_format($paid, 2) }}</span>
+                                        @if($balance > 0)
+                                            <span class="text-xs text-red-400">₱{{ number_format($balance,2) }} due</span>
+                                        @endif
+                                    </div>
                                 </div>
-                                <div class="flex items-center gap-2 text-gray-600 dark:text-gray-300">
-                                    <svg class="w-5 h-5 text-blue-500 dark:text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                                    <span>{{ \Carbon\Carbon::parse($booking->check_in)->diffInDays($booking->check_out) }} night(s)</span>
+
+                                {{-- Payment progress --}}
+                                <div class="mt-4">
+                                    <div class="flex justify-between text-xs uppercase tracking-wider text-white/40 mb-1"><span>Payment</span><span>{{ round($paidPct) }}%</span></div>
+                                    <div class="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
+                                        <div class="h-full rounded-full transition-all duration-500" style="width: {{ $paidPct }}%; background: {{ $paidPct>=100 ? '#34D399' : '#FBBF24' }};"></div>
+                                    </div>
                                 </div>
                             </div>
-
-                            {{-- Services summary (if any) --}}
-                            @if($booking->services->count())
-                                <div class="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
-                                    <p class="text-xs text-gray-500 dark:text-gray-400">Extra services: {{ $booking->services->count() }} item(s)</p>
-                                </div>
-                            @endif
 
                             {{-- Actions --}}
-                            <div class="mt-5 flex flex-wrap gap-3 justify-end">
-                                <a href="{{ route('tenant.show', $booking->tenant->slug) }}" wire:navigate
-                                   class="inline-flex items-center gap-1 text-sm text-blue-600 dark:text-red-500 hover:underline">
-                                    View business →
-                                </a>
-                                @if($booking->status === 'pending')
-                                    <button wire:click="cancelBooking({{ $booking->id }})"
-                                            wire:confirm="Are you sure you want to cancel this booking?"
-                                            class="px-4 py-2 text-sm font-medium text-red-600 dark:text-red-400 border border-red-300 dark:border-red-700 rounded-full hover:bg-red-50 dark:hover:bg-red-900/20 transition">
-                                        Cancel booking
-                                    </button>
+                            <div class="p-5 border-t md:border-t-0 md:border-l border-white/10 flex flex-col justify-center items-stretch gap-2 min-w-[160px]">
+                                @if($businessSlug)
+                                    <a href="{{ route('tenant.show', $businessSlug) }}" wire:navigate class="glass px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider text-white/80 hover:bg-white/10 text-center transition">
+                                        View Spot
+                                    </a>
+                                    @if($balance > 0 && in_array($status, ['pending','confirmed']))
+                                        <a href="{{ route('business.offerings', $businessSlug) }}" wire:navigate class="px-4 py-2 rounded-full bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold uppercase tracking-wider text-center transition shadow-lg shadow-brand-500/20">
+                                            Pay Balance
+                                        </a>
+                                    @endif
                                 @endif
+                                <div class="text-center text-xs text-white/40 mt-1">{{ $booking->created_at?->format('M d, Y') }}</div>
                             </div>
                         </div>
                     </div>
                 @endforeach
-            </div>
-        @else
-            <div class="text-center py-16 bg-white/10 dark:bg-gray-900/20 rounded-2xl border border-gray-200 dark:border-gray-800">
-                <svg class="mx-auto h-16 w-16 text-gray-400 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2zm9-13.5V9"/></svg>
-                <h3 class="mt-4 text-xl font-semibold text-gray-900 dark:text-white">No bookings yet</h3>
-                <p class="mt-2 text-gray-500 dark:text-gray-400">Start exploring destinations and book your next adventure.</p>
-                <a href="{{ route('home') }}" wire:navigate class="mt-4 inline-flex items-center gap-2 px-5 py-2 bg-blue-600 dark:bg-red-600 text-white rounded-full hover:bg-blue-700 dark:hover:bg-red-700 transition">
-                    Explore now
-                </a>
             </div>
         @endif
     </div>

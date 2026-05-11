@@ -7,7 +7,7 @@ use Livewire\Attributes\Validate;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use App\Models\User;
-use Spatie\Permission\Models\Role; // 👈 Add this import
+use Spatie\Permission\Models\Role;
 
 new 
 #[Layout('layouts.app')] 
@@ -37,7 +37,6 @@ class extends Component {
             'tenant_id' => null, 
         ]);
 
-        // Assign "tourist" role (create if not exists for safety)
         $touristRole = Role::firstOrCreate(['name' => 'tourist']);
         $user->assignRole($touristRole);
 
@@ -47,45 +46,63 @@ class extends Component {
     }
 };
 ?>
-<div class="min-h-screen flex items-center justify-center bg-slate-50 py-12 px-4 sm:px-6 lg:px-8">
-    <div class="max-w-md w-full space-y-8 bg-white p-8 rounded-xl shadow-sm border border-slate-200">
-        <div>
-            <h2 class="mt-4 text-center text-3xl font-extrabold text-slate-900">Create an account</h2>
-            <p class="mt-2 text-center text-sm text-slate-600">
-                Already have an account? <a href="{{ route('login') }}" wire:navigate class="font-medium text-blue-600 hover:text-blue-500">Sign in here</a>
+
+<div class="relative z-10 min-h-screen flex items-center justify-center p-4">
+    <div class="w-full max-w-md glass-card !rounded-3xl !p-0 overflow-hidden">
+        <div class="p-8 sm:p-10">
+            {{-- Brand --}}
+            <div class="flex items-center gap-x-3 mb-7">
+                <div class="size-10 rounded-xl bg-brand-600 inline-flex items-center justify-center shrink-0">
+                    <svg class="size-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1 1 15 0Z"/></svg>
+                </div>
+                <span class="text-base font-semibold text-white">{{ config('app.name', 'Capstone') }}</span>
+            </div>
+
+            {{-- Heading --}}
+            <h1 class="text-2xl font-bold text-white">Create an account</h1>
+            <p class="mt-2 text-sm text-white/60">
+                Already have an account?
+                <a href="{{ route('login') }}" wire:navigate class="font-medium text-brand-400 decoration-2 hover:underline focus:outline-none focus:underline">Sign in here</a>
             </p>
-        </div>
-        <form wire:submit="register" class="mt-8 space-y-6">
-            <div class="space-y-4 shadow-sm">
+
+            {{-- Form --}}
+            <form wire:submit="register" class="mt-6 space-y-4">
                 <div>
-                    <label for="name" class="block text-sm font-medium text-slate-700">Full Name</label>
-                    <input wire:model="name" id="name" type="text" class="mt-1 appearance-none rounded-lg relative block w-full px-3 py-2 border border-slate-300 placeholder-slate-500 text-slate-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
-                    @error('name') <span class="text-red-500 text-sm">{{ $message }}</span> @enderror
+                    <label for="name" class="block text-sm font-medium mb-2 text-white/70">Full Name</label>
+                    <input wire:model="name" id="name" type="text" placeholder="John Doe"
+                           class="py-3 px-4 block w-full bg-white/5 border border-white/10 rounded-lg text-sm text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
+                    @error('name') <p class="mt-2 text-xs text-red-400">{{ $message }}</p> @enderror
                 </div>
                 
                 <div>
-                    <label for="email" class="block text-sm font-medium text-slate-700">Email address</label>
-                    <input wire:model="email" id="email" type="email" class="mt-1 appearance-none rounded-lg relative block w-full px-3 py-2 border border-slate-300 placeholder-slate-500 text-slate-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
-                    @error('email') <span class="text-red-500 text-sm">{{ $message }}</span> @enderror
+                    <label for="email" class="block text-sm font-medium mb-2 text-white/70">Email address</label>
+                    <input wire:model="email" id="email" type="email" placeholder="example@email.com"
+                           class="py-3 px-4 block w-full bg-white/5 border border-white/10 rounded-lg text-sm text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
+                    @error('email') <p class="mt-2 text-xs text-red-400">{{ $message }}</p> @enderror
                 </div>
 
                 <div>
-                    <label for="password" class="block text-sm font-medium text-slate-700">Password</label>
-                    <input wire:model="password" id="password" type="password" class="mt-1 appearance-none rounded-lg relative block w-full px-3 py-2 border border-slate-300 placeholder-slate-500 text-slate-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
-                    @error('password') <span class="text-red-500 text-sm">{{ $message }}</span> @enderror
+                    <label for="password" class="block text-sm font-medium mb-2 text-white/70">Password</label>
+                    <input wire:model="password" id="password" type="password" placeholder="••••••••"
+                           class="py-3 px-4 block w-full bg-white/5 border border-white/10 rounded-lg text-sm text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
+                    @error('password') <p class="mt-2 text-xs text-red-400">{{ $message }}</p> @enderror
                 </div>
 
                 <div>
-                    <label for="password_confirmation" class="block text-sm font-medium text-slate-700">Confirm Password</label>
-                    <input wire:model="password_confirmation" id="password_confirmation" type="password" class="mt-1 appearance-none rounded-lg relative block w-full px-3 py-2 border border-slate-300 placeholder-slate-500 text-slate-900 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                    <label for="password_confirmation" class="block text-sm font-medium mb-2 text-white/70">Confirm Password</label>
+                    <input wire:model="password_confirmation" id="password_confirmation" type="password" placeholder="••••••••"
+                           class="py-3 px-4 block w-full bg-white/5 border border-white/10 rounded-lg text-sm text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
                 </div>
-            </div>
 
-            <div>
-                <button type="submit" class="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-lg text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
-                    Register
+                <button type="submit" wire:loading.attr="disabled"
+                        class="w-full py-3 px-4 inline-flex justify-center items-center gap-x-2 text-sm font-semibold rounded-lg border border-transparent bg-brand-600 text-white hover:bg-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 focus:ring-offset-black/30 disabled:opacity-50 disabled:pointer-events-none transition-colors shadow-lg shadow-brand-500/20">
+                    <span wire:loading.remove>Register</span>
+                    <span wire:loading class="inline-flex items-center gap-x-2">
+                        <svg class="animate-spin size-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+                        Registering...
+                    </span>
                 </button>
-            </div>
-        </form>
+            </form>
+        </div>
     </div>
 </div>

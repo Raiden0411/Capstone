@@ -114,6 +114,7 @@ class extends Component {
     }
 };
 ?>
+
 <div>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" data-navigate-once />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" data-navigate-once></script>
@@ -122,18 +123,53 @@ class extends Component {
     <link href="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/css/tom-select.dark.css" rel="stylesheet" data-navigate-once>
     <script src="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/js/tom-select.complete.min.js" data-navigate-once></script>
 
-    <div class="p-4 sm:p-6 lg:p-10 max-w-7xl mx-auto text-gray-900 dark:text-white space-y-6">
+    @push('styles')
+    <style>
+        /* Fix invisible options in glass-style selects */
+        select option {
+            background: #1e293b;
+            color: #e2e8f0;
+        }
+        .leaflet-container {
+            background: transparent !important;
+            border-radius: 0.75rem;
+        }
+        .leaflet-control-zoom a {
+            background: rgba(255,255,255,0.06) !important;
+            backdrop-filter: blur(16px);
+            color: #fff !important;
+            border: 1px solid rgba(255,255,255,0.12) !important;
+        }
+        .leaflet-control-zoom a:hover {
+            background: rgba(255,255,255,0.12) !important;
+        }
+        .leaflet-control-attribution {
+            background: rgba(0,0,0,0.5) !important;
+            color: rgba(255,255,255,0.4) !important;
+            font-size: 10px !important;
+        }
+        .leaflet-control-attribution a {
+            color: rgba(255,255,255,0.6) !important;
+        }
+    </style>
+    @endpush
 
-        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+    <div class="max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8 space-y-6">
+
+        <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-white/10">
             <div>
-                <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Master Map Control</h1>
-                <p class="text-gray-500 dark:text-slate-400 mt-1">Plot and view all business locations simultaneously.</p>
+                <p class="text-xs font-semibold uppercase tracking-[0.22em] text-brand-600 dark:text-brand-400 flex items-center gap-2 mb-2">
+                    <span class="w-1.5 h-1.5 rounded-full bg-brand-500 shadow-[0_0_8px_var(--color-brand-500)]"></span>
+                    Super Admin · Map
+                </p>
+                <h1 class="font-display text-3xl md:text-4xl font-bold text-gray-900 dark:text-white">Master Map Control</h1>
+                <p class="text-sm text-gray-500 dark:text-white/50 mt-1">Plot and view all business locations simultaneously.</p>
             </div>
         </div>
 
         @if (session()->has('message'))
-            <div class="p-4 bg-green-50 dark:bg-green-500/10 border-l-4 border-green-500 rounded-md shadow-sm">
-                <p class="text-sm text-green-700 dark:text-green-400 font-medium">{{ session('message') }}</p>
+            <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-400 font-medium">
+                {{ session('message') }}
             </div>
         @endif
 
@@ -142,6 +178,7 @@ class extends Component {
                 map: null,
                 activeMarker: null,
                 layerGroup: null,
+                tileLayer: null,
                 globalTenants: @js($this->allMappedTenants),
                 
                 init() {
@@ -173,10 +210,8 @@ class extends Component {
 
                     this.map = L.map($refs.mapContainer).setView([lat, lng], 12);
 
-                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                        maxZoom: 19,
-                        attribution: '© OpenStreetMap'
-                    }).addTo(this.map);
+                    this.updateTileLayer();
+                    new MutationObserver(() => this.updateTileLayer()).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
 
                     this.layerGroup = L.layerGroup().addTo(this.map);
                     this.plotGlobalPins();
@@ -212,6 +247,18 @@ class extends Component {
                     });
 
                     setTimeout(() => { this.map.invalidateSize(); }, 300);
+                },
+
+                updateTileLayer() {
+                    const isDark = document.documentElement.classList.contains('dark');
+                    const url = isDark
+                        ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+                        : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
+                    const attribution = '&copy; <a href=&quot;https://www.openstreetmap.org/copyright&quot;>OpenStreetMap</a> contributors &copy; <a href=&quot;https://carto.com/&quot;>CARTO</a>';
+                    if (this.tileLayer) {
+                        this.map.removeLayer(this.tileLayer);
+                    }
+                    this.tileLayer = L.tileLayer(url, { maxZoom: 19, attribution: attribution }).addTo(this.map);
                 },
 
                 plotGlobalPins() {
@@ -255,20 +302,20 @@ class extends Component {
             }"
         >
             <div class="lg:col-span-8 order-2 lg:order-1">
-                <div class="bg-white dark:bg-[#0b0f19] rounded-xl border border-gray-200 dark:border-slate-700/50 shadow-sm p-2 h-full min-h-[600px] relative">
-                    <div class="absolute top-4 right-4 z-[400] bg-white dark:bg-slate-800 px-3 py-2 rounded shadow text-xs text-gray-600 dark:text-slate-300 border border-gray-200 dark:border-slate-600">
-                        <div class="flex items-center gap-2 mb-1"><div class="w-3 h-3 bg-red-500 rounded-full"></div> Active Pin</div>
-                        <div class="flex items-center gap-2"><div class="w-3 h-3 bg-gray-400 dark:bg-slate-500 rounded-full"></div> Existing Spots</div>
+                <div class="bg-white dark:bg-white/5 dark:backdrop-blur-md border border-gray-200 dark:border-white/10 rounded-2xl shadow-sm dark:shadow-none p-2 h-full min-h-[600px] relative overflow-hidden">
+                    <div class="absolute top-4 right-4 z-[400] glass-card !rounded-lg !px-3 !py-2 text-xs text-white/80 flex flex-col gap-1">
+                        <div class="flex items-center gap-2"><div class="w-3 h-3 bg-red-500 rounded-full"></div> Active Pin</div>
+                        <div class="flex items-center gap-2"><div class="w-3 h-3 bg-gray-400 rounded-full"></div> Existing Spots</div>
                     </div>
                     <div wire:ignore class="h-full">
-                        <div x-ref="mapContainer" class="h-full rounded-lg border border-gray-200 dark:border-slate-700/50" style="min-height: 600px; z-index: 10;"></div>
+                        <div x-ref="mapContainer" class="h-full rounded-lg" style="min-height: 600px;"></div>
                     </div>
                 </div>
             </div>
 
             <div class="lg:col-span-4 order-1 lg:order-2 space-y-6">
                 {{-- Location Setter --}}
-                <div class="bg-white dark:bg-[#0b0f19] rounded-xl border border-gray-200 dark:border-slate-700/50 shadow-sm p-4 sm:p-6">
+                <div class="bg-white dark:bg-white/5 dark:backdrop-blur-md border border-gray-200 dark:border-white/10 rounded-2xl shadow-sm dark:shadow-none p-4 sm:p-6">
                     <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Set Location</h2>
                     
                     <form wire:submit="store" class="space-y-4">
@@ -292,7 +339,7 @@ class extends Component {
                                 }
                             }"
                         >
-                            <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Establishment / Tenant</label>
+                            <label class="block text-sm font-medium text-gray-700 dark:text-white/70 mb-1">Establishment / Tenant</label>
                             <div wire:ignore>
                                 <select x-ref="select" class="w-full text-sm">
                                     <option value="">Search establishments...</option>
@@ -306,27 +353,37 @@ class extends Component {
 
                         <div class="grid grid-cols-2 gap-4">
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Lat</label>
-                                <input type="text" wire:model.live="latitude" class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-gray-50 dark:bg-slate-700 text-gray-900 dark:text-slate-200 text-sm focus:ring-blue-500 focus:border-blue-500" {{ !$tenant_id ? 'disabled' : '' }}>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-white/70 mb-1">Lat</label>
+                                <input type="text" wire:model.live="latitude"
+                                       class="w-full rounded-xl bg-white dark:bg-white/10 border border-gray-300 dark:border-white/10 py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition {{ !$tenant_id ? 'opacity-50 cursor-not-allowed' : '' }}"
+                                       {{ !$tenant_id ? 'disabled' : '' }}>
                                 @error('latitude') <span class="text-red-500 dark:text-red-400 text-xs mt-1">{{ $message }}</span> @enderror
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Lng</label>
-                                <input type="text" wire:model.live="longitude" class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-gray-50 dark:bg-slate-700 text-gray-900 dark:text-slate-200 text-sm focus:ring-blue-500 focus:border-blue-500" {{ !$tenant_id ? 'disabled' : '' }}>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-white/70 mb-1">Lng</label>
+                                <input type="text" wire:model.live="longitude"
+                                       class="w-full rounded-xl bg-white dark:bg-white/10 border border-gray-300 dark:border-white/10 py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition {{ !$tenant_id ? 'opacity-50 cursor-not-allowed' : '' }}"
+                                       {{ !$tenant_id ? 'disabled' : '' }}>
                                 @error('longitude') <span class="text-red-500 dark:text-red-400 text-xs mt-1">{{ $message }}</span> @enderror
                             </div>
                         </div>
 
-                        <button type="button" @click="getLocation()" class="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 flex items-center disabled:opacity-50" {{ !$tenant_id ? 'disabled' : '' }}>
+                        <button type="button" @click="getLocation()"
+                                class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-500 dark:hover:text-brand-300 flex items-center disabled:opacity-50"
+                                {{ !$tenant_id ? 'disabled' : '' }}>
                             <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
                             Sync to My GPS
                         </button>
 
                         <div class="pt-4 flex gap-2">
-                            <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-4 rounded-xl shadow-sm transition-colors flex-1 disabled:opacity-50 disabled:cursor-not-allowed" {{ !$tenant_id ? 'disabled' : '' }}>
+                            <button type="submit"
+                                    class="bg-brand-600 hover:bg-brand-500 text-white font-medium py-2.5 px-4 rounded-xl shadow-lg shadow-brand-500/20 transition flex-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    {{ !$tenant_id ? 'disabled' : '' }}>
                                 Save Location
                             </button>
-                            <button type="button" wire:click="resetFields" class="bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-300 font-medium py-2.5 px-4 rounded-xl shadow-sm transition-colors disabled:opacity-50" {{ !$tenant_id ? 'disabled' : '' }}>
+                            <button type="button" wire:click="resetFields"
+                                    class="bg-gray-100 dark:bg-white/10 hover:bg-gray-200 dark:hover:bg-white/20 text-gray-700 dark:text-white/70 font-medium py-2.5 px-4 rounded-xl transition disabled:opacity-50"
+                                    {{ !$tenant_id ? 'disabled' : '' }}>
                                 Clear
                             </button>
                         </div>
@@ -334,15 +391,15 @@ class extends Component {
                 </div>
 
                 {{-- Tenant List --}}
-                <div class="bg-white dark:bg-[#0b0f19] rounded-xl border border-gray-200 dark:border-slate-700/50 shadow-sm flex flex-col h-[400px]">
-                    <div class="p-4 border-b border-gray-200 dark:border-slate-700/50">
+                <div class="bg-white dark:bg-white/5 dark:backdrop-blur-md border border-gray-200 dark:border-white/10 rounded-2xl shadow-sm dark:shadow-none flex flex-col h-[400px]">
+                    <div class="p-4 border-b border-gray-200 dark:border-white/10">
                         <input type="text" wire:model.live.debounce.300ms="search" placeholder="Filter list..." 
-                               class="w-full rounded-lg border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 placeholder-gray-400 dark:placeholder-slate-500 focus:ring-blue-500 text-sm">
+                               class="w-full rounded-xl bg-white dark:bg-white/10 border border-gray-300 dark:border-white/10 py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
                     </div>
                     
                     <div class="flex-1 overflow-y-auto p-4 space-y-3">
                         @forelse ($this->tenants as $tenant)
-                            <div class="p-3 border border-gray-200 dark:border-slate-700/50 rounded-lg hover:border-blue-200 dark:hover:border-blue-500/50 hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-colors {{ $tenant_id == $tenant->id ? 'border-blue-300 dark:border-blue-500/50 bg-blue-50 dark:bg-blue-500/10' : '' }}">
+                            <div class="p-3 border border-gray-200 dark:border-white/10 rounded-xl hover:border-brand-400/50 dark:hover:border-brand-400/50 transition-colors {{ $tenant_id == $tenant->id ? 'border-brand-500/50 bg-brand-50 dark:bg-brand-500/10' : '' }}">
                                 <div class="flex justify-between items-start">
                                     <div>
                                         <div class="font-medium text-sm text-gray-900 dark:text-white">{{ $tenant->name }}</div>
@@ -351,25 +408,31 @@ class extends Component {
                                                 <div class="w-1.5 h-1.5 rounded-full bg-green-500 mr-1"></div> Mapped
                                             </span>
                                         @else
-                                            <span class="text-[10px] font-medium text-gray-500 dark:text-slate-400 flex items-center mt-1">
-                                                <div class="w-1.5 h-1.5 rounded-full bg-gray-300 dark:bg-slate-500 mr-1"></div> Unmapped
+                                            <span class="text-[10px] font-medium text-gray-500 dark:text-white/40 flex items-center mt-1">
+                                                <div class="w-1.5 h-1.5 rounded-full bg-gray-300 dark:bg-white/20 mr-1"></div> Unmapped
                                             </span>
                                         @endif
                                     </div>
                                     <div class="flex flex-col gap-1">
-                                        <button wire:click="edit({{ $tenant->id }})" class="text-xs bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-600 px-2 py-1 rounded shadow-sm hover:bg-gray-50 dark:hover:bg-slate-700 text-blue-600 dark:text-blue-400">Set Pin</button>
+                                        <button wire:click="edit({{ $tenant->id }})"
+                                                class="text-xs bg-white dark:bg-white/10 border border-gray-200 dark:border-white/10 px-2 py-1 rounded-lg shadow-sm hover:bg-gray-50 dark:hover:bg-white/20 text-brand-600 dark:text-brand-400 transition">
+                                            Set Pin
+                                        </button>
                                         @if($tenant->latitude)
-                                            <button wire:click="removeLocation({{ $tenant->id }})" wire:confirm="Remove this pin?" class="text-[10px] text-red-500 dark:text-red-400 hover:underline text-right">Remove</button>
+                                            <button wire:click="removeLocation({{ $tenant->id }})" wire:confirm="Remove this pin?"
+                                                    class="text-[10px] text-red-500 dark:text-red-400 hover:underline text-right">
+                                                Remove
+                                            </button>
                                         @endif
                                     </div>
                                 </div>
                             </div>
                         @empty
-                            <div class="text-center text-gray-500 dark:text-slate-400 text-sm py-4">No businesses found.</div>
+                            <div class="text-center text-gray-500 dark:text-white/40 text-sm py-4">No businesses found.</div>
                         @endforelse
                     </div>
                     
-                    <div class="p-3 border-t border-gray-200 dark:border-slate-700/50 bg-gray-50 dark:bg-slate-800/50 rounded-b-xl">
+                    <div class="p-3 border-t border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 rounded-b-2xl">
                         {{ $this->tenants->links(data: ['scrollTo' => false]) }}
                     </div>
                 </div>

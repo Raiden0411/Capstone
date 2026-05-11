@@ -5,30 +5,28 @@ namespace App\Http\Middleware;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
-use Illuminate\Support\Facades\Log;
 
 class IsTenantAdmin
 {
     public function handle(Request $request, Closure $next): Response
     {
-        if ($request->user()) {
-            Log::info('IsTenantAdmin middleware', [
-                'user_id' => $request->user()->id,
-                'roles' => $request->user()->getRoleNames()->toArray(),
-                'has_admin' => $request->user()->hasRole('admin'),
-                'has_any' => $request->user()->hasAnyRole(['admin', 'super-admin']),
-            ]);
+        $user = $request->user();
+
+        if (!$user) {
+            abort(403, 'Unauthorized access.');
         }
 
-        if ($request->user() && $request->user()->hasAnyRole(['admin', 'super-admin'])) { 
+        // 1. Always allow super‑admins and business owners
+        if ($user->hasAnyRole(['super-admin', 'admin'])) {
             return $next($request);
         }
 
-        Log::warning('IsTenantAdmin blocked', [
-            'user_id' => $request->user()?->id,
-            'roles' => $request->user()?->getRoleNames()->toArray(),
-        ]);
+        // 2. Allow employees / staff who have been given permissions via a custom role
+        if ($user->tenant_id && $user->getAllPermissions()->count() > 0) {
+            return $next($request);
+        }
 
+        // 3. Everyone else (tourists) is blocked
         abort(403, 'Unauthorized access.');
     }
 }

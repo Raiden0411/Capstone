@@ -10,12 +10,44 @@ class RoleSeeder extends Seeder
 {
     public function run(): void
     {
-        // Create Roles
-        $superAdminRole = Role::firstOrCreate(['name' => 'super-admin', 'guard_name' => 'web']);
-        $tenantAdminRole = Role::firstOrCreate(['name' => 'admin', 'guard_name' => 'web']);
-        $touristRole = Role::firstOrCreate(['name' => 'tourist', 'guard_name' => 'web']); 
+        // ── Permissions ───────────────────────────────
+        $permissions = [
+            // Bookings
+            'view bookings',
+            'create bookings',
+            'edit bookings',
+            // Customers
+            'view customers',
+            'create customers',
+            // Properties
+            'view properties',
+            'edit properties',
+            // Payments
+            'view payments',
+            'create payments',
+            'edit payments',
+            // Services
+            'view services',
+            'create services',
+            'edit services',
+            // Employees
+            'view employees',
+            'create employees',
+            'edit employees',
+            // Analytics
+            'view analytics',
+        ];
 
-        // Assign permissions to Tenant Admin
-        $tenantAdminRole->givePermissionTo(Permission::all());
+        foreach ($permissions as $perm) {
+            Permission::firstOrCreate(['name' => $perm, 'guard_name' => 'web']);
+        }
+
+        // ── Roles ─────────────────────────────────────
+        $superAdmin = Role::firstOrCreate(['name' => 'super-admin', 'guard_name' => 'web']);
+        $admin      = Role::firstOrCreate(['name' => 'admin',       'guard_name' => 'web']);
+        $tourist    = Role::firstOrCreate(['name' => 'tourist',     'guard_name' => 'web']);
+
+        // Admin gets everything (except delete / system permissions)
+        $admin->syncPermissions(Permission::all());
     }
 }

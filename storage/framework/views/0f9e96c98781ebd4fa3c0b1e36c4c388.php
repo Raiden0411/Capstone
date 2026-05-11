@@ -5,82 +5,121 @@ use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
 use App\Models\Tenant;
 use App\Scopes\TenantScope;
+use Illuminate\Support\Facades\Storage;
 ?>
 
-<div class="min-h-screen bg-white dark:bg-black py-12 transition-colors duration-300">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+<div class="relative z-10 min-h-screen py-8">
 
-        
-        <div class="mb-10">
-            <a href="<?php echo e(route('tenant.show', $tenant->slug)); ?>" 
-               wire:navigate 
-               class="inline-flex items-center gap-1 text-sm text-gray-600 dark:text-gray-400 hover:text-blue-600 dark:hover:text-red-500 transition-colors mb-4">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
-                Back to <?php echo e($tenant->name); ?>
+    
+    <section class="relative py-20 md:py-28 overflow-hidden">
+        <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($coverPhoto): ?>
+            <img src="<?php echo e(Storage::url($coverPhoto)); ?>" class="absolute inset-0 w-full h-full object-cover filter brightness-50" alt="">
+        <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
+        <div class="absolute inset-0 bg-gradient-to-br from-black/60 via-black/40 to-black/80"></div>
 
-            </a>
-            <h1 class="text-3xl md:text-4xl font-bold text-gray-900 dark:text-white"><?php echo e($tenant->name); ?> – What We Offer</h1>
-            <p class="text-gray-500 dark:text-gray-400 mt-1">Choose your stay or add extra services</p>
+        <div class="relative z-10 max-w-7xl mx-auto px-6 md:px-16 flex flex-col md:flex-row md:items-end justify-between gap-6">
+            <div>
+                <a href="<?php echo e(route('tenant.show', $tenant->slug)); ?>" wire:navigate class="inline-flex items-center gap-1 text-xs tracking-widest uppercase text-white/50 hover:text-brand-400 transition-colors mb-4">
+                    ← Back to <?php echo e($tenant->name); ?>
+
+                </a>
+                <div class="flex items-center gap-2 mb-3">
+                    <span class="w-4 h-px bg-brand-500"></span>
+                    <span class="text-xs tracking-[0.22em] uppercase text-brand-500 font-semibold">Offerings</span>
+                </div>
+                <h1 class="font-display text-4xl md:text-6xl font-semibold text-white leading-none">
+                    <?php echo e($tenant->name); ?><br>
+                    <em class="italic">
+                        <span class="bg-gradient-to-r from-brand-400 to-cyan-400 bg-clip-text text-transparent">What We Offer</span>
+                    </em>
+                </h1>
+                <div class="mt-8 flex gap-8 pt-6 border-t border-white/10">
+                    <div>
+                        <div class="font-display text-3xl text-brand-400"><?php echo e($this->properties->count()); ?></div>
+                        <div class="text-xs tracking-widest uppercase text-white/40 mt-1">Accommodations</div>
+                    </div>
+                    <div class="w-px h-10 bg-white/10"></div>
+                    <div>
+                        <div class="font-display text-3xl text-brand-400"><?php echo e($this->services->count()); ?></div>
+                        <div class="text-xs tracking-widest uppercase text-white/40 mt-1">Services</div>
+                    </div>
+                </div>
+            </div>
         </div>
+    </section>
 
-        
-        <div class="mb-16">
-            <div class="flex flex-wrap items-center justify-between gap-3 mb-6">
-                <h2 class="text-2xl font-bold text-gray-900 dark:text-white">Accommodations</h2>
-                <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($this->properties->isNotEmpty()): ?>
-                    <span class="bg-blue-50 dark:bg-red-900/30 text-blue-700 dark:text-red-400 text-sm font-semibold px-3 py-1 rounded-full border border-blue-200 dark:border-red-800/50">
-                        <?php echo e($this->properties->count()); ?> available
-                    </span>
+    
+    <nav class="sticky top-16 z-20 bg-black/50 backdrop-blur-lg border-b border-white/10">
+        <div class="max-w-7xl mx-auto px-6 md:px-16 flex gap-0">
+            <button wire:click="$set('activeTab','accommodations')"
+                    class="relative px-6 py-4 text-xs font-semibold uppercase tracking-widest transition-colors whitespace-nowrap
+                           <?php echo e($activeTab === 'accommodations' ? 'text-brand-400' : 'text-white/40 hover:text-white/70'); ?>">
+                Accommodations
+                <span class="ml-2 bg-brand-500/20 text-brand-400 text-xs font-bold px-1.5 py-0.5 rounded-full"><?php echo e($this->properties->count()); ?></span>
+                <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($activeTab === 'accommodations'): ?>
+                    <span class="absolute bottom-0 left-0 w-full h-0.5 bg-brand-500"></span>
                 <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
+            </button>
+            <button wire:click="$set('activeTab','services')"
+                    class="relative px-6 py-4 text-xs font-semibold uppercase tracking-widest transition-colors whitespace-nowrap
+                           <?php echo e($activeTab === 'services' ? 'text-brand-400' : 'text-white/40 hover:text-white/70'); ?>">
+                Add‑on Services
+                <span class="ml-2 bg-brand-500/20 text-brand-400 text-xs font-bold px-1.5 py-0.5 rounded-full"><?php echo e($this->services->count()); ?></span>
+                <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($activeTab === 'services'): ?>
+                    <span class="absolute bottom-0 left-0 w-full h-0.5 bg-brand-500"></span>
+                <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
+            </button>
+        </div>
+    </nav>
+
+    
+    <div class="max-w-7xl mx-auto px-6 md:px-16 py-10">
+
+        <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($activeTab === 'accommodations'): ?>
+            <div class="mb-10">
+                <div class="flex items-center gap-2 mb-2">
+                    <span class="w-4 h-px bg-brand-500"></span>
+                    <span class="text-xs tracking-[0.2em] uppercase text-brand-500 font-semibold">Stay & Explore</span>
+                </div>
+                <h2 class="font-display text-3xl md:text-4xl font-medium text-white">Available <em class="italic text-brand-400">Accommodations</em></h2>
             </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::openLoop(); ?><?php endif; ?><?php $__empty_1 = true; $__currentLoopData = $this->properties; $__env->addLoop($__currentLoopData); foreach($__currentLoopData as $property): $__env->incrementLoopIndices(); $loop = $__env->getLastLoop(); $__empty_1 = false; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::startLoopIteration(); ?><?php endif; ?>
-                    <div class="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-sm hover:shadow-xl transition-all duration-300 flex flex-col overflow-hidden">
-                        
-                        <div class="aspect-[4/3] bg-gray-100 dark:bg-gray-800 overflow-hidden">
+                    <div class="glass-card flex flex-col group" <?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::$currentLoop['key'] = 'prop-'.e($property->id).''; ?>wire:key="prop-<?php echo e($property->id); ?>">
+                        <div class="relative aspect-[16/10] overflow-hidden rounded-t-2xl">
                             <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($property->images->isNotEmpty()): ?>
-                                <img src="<?php echo e(asset('storage/' . $property->images->first()->image_path)); ?>"
-                                     alt="<?php echo e($property->name); ?>"
-                                     class="w-full h-full object-cover hover:scale-105 transition-transform duration-500">
+                                <img src="<?php echo e(asset('storage/'.$property->images->first()->image_path)); ?>" alt="<?php echo e($property->name); ?>" class="w-full h-full object-cover group-hover:scale-105 transition duration-700">
                             <?php else: ?>
-                                <div class="w-full h-full flex items-center justify-center text-gray-400 dark:text-gray-600">
-                                    <svg class="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                <div class="w-full h-full bg-white/5 flex items-center justify-center text-white/30">
+                                    <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
                                 </div>
                             <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
+                            <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($property->propertyType): ?>
+                                <span class="absolute top-3 left-3 bg-black/60 backdrop-blur text-xs font-bold text-brand-400 px-2.5 py-1 rounded-full"><?php echo e($property->propertyType->name); ?></span>
+                            <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
+                            <span class="absolute top-3 right-3 bg-black/60 backdrop-blur text-xs font-bold text-green-300 px-2.5 py-1 rounded-full flex items-center gap-1">
+                                <span class="w-1.5 h-1.5 rounded-full bg-green-300 shadow-[0_0_6px_rgba(52,211,153,0.5)]"></span> Available
+                            </span>
                         </div>
-
-                        
-                        <div class="p-5 flex-1 flex flex-col">
-                            <p class="text-xs font-bold text-blue-600 dark:text-red-500 uppercase mb-1 tracking-wider">
-                                <?php echo e($property->propertyType->name ?? 'Property'); ?>
-
-                            </p>
-                            <h3 class="font-bold text-xl text-gray-900 dark:text-white mb-2"><?php echo e($property->name); ?></h3>
+                        <div class="p-5 flex flex-col flex-1">
+                            <h3 class="font-display text-xl font-semibold text-white mb-2"><?php echo e($property->name); ?></h3>
                             <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($property->description): ?>
-                                <p class="text-sm text-gray-600 dark:text-gray-300 mb-4 flex-1 line-clamp-3"><?php echo e($property->description); ?></p>
+                                <p class="text-sm text-white/60 line-clamp-3 mb-4 flex-1"><?php echo e($property->description); ?></p>
                             <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
-
-                            <div class="flex flex-wrap items-center justify-between gap-4 pt-4 border-t border-gray-100 dark:border-gray-800">
-                                <div class="flex items-baseline gap-1">
-                                    <span class="text-2xl font-extrabold text-gray-900 dark:text-white">₱<?php echo e(number_format($property->price, 2)); ?></span>
-                                    <span class="text-sm text-gray-500 dark:text-gray-400">/ night</span>
+                            <div class="flex items-center justify-between pt-4 border-t border-white/10 mt-auto">
+                                <div>
+                                    <span class="font-display text-2xl font-medium text-white">₱<?php echo e(number_format($property->price, 2)); ?></span>
+                                    <span class="text-xs text-white/50 ml-1">/ night</span>
                                 </div>
-
                                 <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if(auth()->guard()->check()): ?>
                                     <a href="<?php echo e(route('booking.create', ['publicproperty' => $property->id])); ?>"
-                                       class="inline-flex items-center gap-1.5 bg-blue-600 dark:bg-red-600 hover:bg-blue-700 dark:hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg text-sm transition-colors">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                                        Book
+                                       class="py-2 px-5 rounded-full bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold uppercase tracking-wider transition shadow-lg shadow-brand-500/20">
+                                        Reserve
                                     </a>
                                 <?php else: ?>
-                                    <?php
-                                        $returnUrl = url()->current();
-                                        $loginUrl = route('login', ['redirect' => $returnUrl]);
-                                    ?>
-                                    <a href="<?php echo e($loginUrl); ?>"
-                                       class="inline-flex items-center gap-1.5 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 font-semibold py-2 px-4 rounded-lg text-sm transition-colors">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"/></svg>
+                                    <a href="<?php echo e(route('login', ['redirect' => url()->current()])); ?>"
+                                       class="py-2 px-5 rounded-full glass hover:bg-white/10 text-white text-xs font-semibold uppercase tracking-wider transition">
                                         Login to Book
                                     </a>
                                 <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
@@ -88,62 +127,53 @@ use App\Scopes\TenantScope;
                         </div>
                     </div>
                 <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::endLoop(); ?><?php endif; ?><?php endforeach; $__env->popLoop(); $loop = $__env->getLastLoop(); if ($__empty_1): ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::closeLoop(); ?><?php endif; ?>
-                    <div class="col-span-full bg-white dark:bg-gray-900 rounded-2xl border-2 border-dashed border-gray-200 dark:border-gray-700 p-16 text-center">
-                        <svg class="mx-auto h-12 w-12 text-gray-400 dark:text-gray-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
-                        <h3 class="text-xl font-bold text-gray-900 dark:text-white mb-2">No accommodations yet</h3>
-                        <p class="text-gray-500 dark:text-gray-400">This business hasn't listed any available properties. Check back later!</p>
+                    <div class="col-span-full glass-card p-12 text-center">
+                        <svg class="w-12 h-12 mx-auto mb-4 text-white/20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
+                        <h3 class="font-display text-xl italic text-white/50">No accommodations listed yet.</h3>
+                        <p class="text-sm text-white/40 mt-2">Check back soon — new rooms may be added.</p>
                     </div>
                 <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
             </div>
-        </div>
+        <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
 
-        
-        <div>
-            <div class="flex flex-wrap items-center justify-between gap-3 mb-6">
-                <h2 class="text-2xl font-bold text-gray-900 dark:text-white">Additional Services</h2>
-                <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($this->services->isNotEmpty()): ?>
-                    <span class="bg-indigo-50 dark:bg-purple-900/30 text-indigo-700 dark:text-purple-400 text-sm font-semibold px-3 py-1 rounded-full border border-indigo-200 dark:border-purple-800/50">
-                        <?php echo e($this->services->count()); ?> available
-                    </span>
-                <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
+        <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($activeTab === 'services'): ?>
+            <div class="mb-10">
+                <div class="flex items-center gap-2 mb-2">
+                    <span class="w-4 h-px bg-brand-500"></span>
+                    <span class="text-xs tracking-[0.2em] uppercase text-brand-500 font-semibold">Enhance Your Stay</span>
+                </div>
+                <h2 class="font-display text-3xl md:text-4xl font-medium text-white">Add‑on <em class="italic text-brand-400">Services</em></h2>
             </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
                 <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::openLoop(); ?><?php endif; ?><?php $__empty_1 = true; $__currentLoopData = $this->services; $__env->addLoop($__currentLoopData); foreach($__currentLoopData as $service): $__env->incrementLoopIndices(); $loop = $__env->getLastLoop(); $__empty_1 = false; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::startLoopIteration(); ?><?php endif; ?>
-                    <div class="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-sm hover:shadow-lg transition-all duration-300 p-6 flex flex-col">
-                        <h3 class="font-bold text-lg text-gray-900 dark:text-white mb-3"><?php echo e($service->name); ?></h3>
+                    <div class="glass-card p-6 flex flex-col relative overflow-hidden group" <?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::$currentLoop['key'] = 'svc-'.e($service->id).''; ?>wire:key="svc-<?php echo e($service->id); ?>">
+                        <div class="absolute top-0 left-0 w-full h-0.5 bg-gradient-to-r from-brand-500 to-transparent scale-x-0 group-hover:scale-x-100 transition-transform origin-left"></div>
+                        <div class="w-11 h-11 rounded-xl bg-brand-500/20 border border-brand-400/20 flex items-center justify-center text-brand-400 mb-4">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/></svg>
+                        </div>
+                        <h3 class="font-display text-xl font-semibold text-white mb-2"><?php echo e($service->name); ?></h3>
                         <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($service->description): ?>
-                            <p class="text-sm text-gray-600 dark:text-gray-300 mb-4 flex-1"><?php echo e($service->description); ?></p>
+                            <p class="text-sm text-white/60 flex-1 mb-4"><?php echo e($service->description); ?></p>
                         <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
-                        <div class="border-t border-gray-100 dark:border-gray-800 pt-4 mt-auto">
-                            <div class="flex flex-wrap items-center justify-between gap-3">
-                                <div class="flex items-baseline gap-1">
-                                    <span class="text-2xl font-extrabold text-gray-900 dark:text-white">₱<?php echo e(number_format($service->price, 2)); ?></span>
-                                    <span class="text-sm text-gray-500 dark:text-gray-400">/ service</span>
-                                </div>
-                                <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if(auth()->guard()->check()): ?>
-                                    <?php
-                                        // For services, we currently don't have a direct booking endpoint; this is informative only.
-                                        // But if you want to add to cart or booking, you can link later.
-                                    ?>
-                                    <span class="text-xs text-gray-400 dark:text-gray-500 italic">Add on checkout</span>
-                                <?php else: ?>
-                                    <?php
-                                        $returnUrl = url()->current();
-                                        $loginUrl = route('login', ['redirect' => $returnUrl]);
-                                    ?>
-                                    <a href="<?php echo e($loginUrl); ?>" class="text-sm text-blue-600 dark:text-red-500 hover:underline">Login to add</a>
-                                <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
-                            </div>
+                        <div class="flex items-center justify-between pt-4 border-t border-white/10 mt-auto">
+                            <span class="font-display text-2xl font-medium text-white">₱<?php echo e(number_format($service->price, 2)); ?></span>
+                            <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if(auth()->guard()->check()): ?>
+                                <span class="text-xs font-semibold uppercase tracking-wider text-white/40 bg-white/5 border border-white/10 rounded-full px-3 py-1">Add at checkout</span>
+                            <?php else: ?>
+                                <a href="<?php echo e(route('login', ['redirect' => url()->current()])); ?>" class="text-xs font-semibold uppercase tracking-wider text-brand-400 hover:underline">Login to add</a>
+                            <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
                         </div>
                     </div>
                 <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::endLoop(); ?><?php endif; ?><?php endforeach; $__env->popLoop(); $loop = $__env->getLastLoop(); if ($__empty_1): ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::closeLoop(); ?><?php endif; ?>
-                    <div class="col-span-full bg-white dark:bg-gray-900 rounded-2xl border-2 border-dashed border-gray-200 dark:border-gray-700 p-12 text-center">
-                        <p class="text-gray-500 dark:text-gray-400">No additional services are currently offered.</p>
+                    <div class="col-span-full glass-card p-12 text-center">
+                        <svg class="w-12 h-12 mx-auto mb-4 text-white/20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/></svg>
+                        <h3 class="font-display text-xl italic text-white/50">No services available yet.</h3>
+                        <p class="text-sm text-white/40 mt-2">This destination hasn't listed add‑ons yet.</p>
                     </div>
                 <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
             </div>
-        </div>
+        <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
 
     </div>
 </div><?php /**PATH C:\laragon\www\Capstone\storage\framework/views/livewire/views/ed8c353c.blade.php ENDPATH**/ ?>
