@@ -44,16 +44,6 @@
                 <div class="w-px h-5 bg-white/10 hidden sm:block"></div>
 
                 
-                <button type="button" @click="dark = !dark"
-                        class="w-[34px] h-[34px] rounded-full border border-white/10 bg-white/[0.04] flex items-center justify-center text-white/45 hover:border-amber-300/40 hover:text-amber-300 hover:bg-amber-300/[0.06] transition-all duration-200"
-                        aria-label="Toggle dark mode">
-                    <svg x-show="dark" class="w-[14px] h-[14px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2m-7.07-14.93 1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2m-4.34 5.66 1.41 1.41M4.93 4.93l1.41 1.41"/>
-                    </svg>
-                    <svg x-show="!dark" class="w-[14px] h-[14px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
-                    </svg>
-                </button>
 
                 <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if(auth()->guard()->guest()): ?>
                     <div class="flex items-center gap-2">

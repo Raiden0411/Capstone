@@ -24,7 +24,7 @@ class extends Component {
     #[Validate('required|string|max:255')]
     public $customerName = '';
     
-    // Phone validation is now defined in rules() – no attribute here
+    // Phone validation handled in rules()
     public $customerPhone = '';
     
     public $customerEmail = '';
@@ -71,7 +71,7 @@ class extends Component {
         if (in_array($field, $trimFields)) {
             $this->$field = trim($this->$field);
             if ($field === 'customerPhone') {
-                // Remove any spaces, dashes, or invalid characters
+                // Remove spaces, dashes – keep only digits and leading +
                 $this->customerPhone = preg_replace('/[^0-9+]/', '', $this->customerPhone);
             }
         }
@@ -84,7 +84,13 @@ class extends Component {
 
     public function updatedCheckIn()
     {
-        if ($this->check_in && $this->check_out && Carbon::parse($this->check_in)->gte(Carbon::parse($this->check_out))) {
+        // Enforce max booking window of 30 days from today
+        $maxDate = now()->addDays(30)->format('Y-m-d');
+        if ($this->check_in > $maxDate) {
+            $this->check_in = $maxDate;
+        }
+        // Ensure check‑out is at least one day after check‑in
+        if ($this->check_out && Carbon::parse($this->check_in)->gte(Carbon::parse($this->check_out))) {
             $this->check_out = Carbon::parse($this->check_in)->addDay()->format('Y-m-d');
         }
         $this->calculateTotal();
@@ -92,6 +98,15 @@ class extends Component {
 
     public function updatedCheckOut()
     {
+        // Cap check‑out to 30 days from today
+        $maxDate = now()->addDays(30)->format('Y-m-d');
+        if ($this->check_out > $maxDate) {
+            $this->check_out = $maxDate;
+        }
+        // Keep check‑out after check‑in
+        if (Carbon::parse($this->check_out)->lte(Carbon::parse($this->check_in))) {
+            $this->check_out = Carbon::parse($this->check_in)->addDay()->format('Y-m-d');
+        }
         $this->calculateTotal();
     }
 
@@ -118,13 +133,13 @@ class extends Component {
     public function calculateTotal()
     {
         $total = 0;
-        $nights = 1;
+        $days = 1;
         if ($this->check_in && $this->check_out) {
-            $nights = Carbon::parse($this->check_in)->diffInDays(Carbon::parse($this->check_out));
-            $nights = max(1, $nights);
+            $days = Carbon::parse($this->check_in)->diffInDays(Carbon::parse($this->check_out));
+            $days = max(1, $days);
         }
         foreach ($this->selectedProperties as $item) {
-            $total += $item['price'] * $item['quantity'] * $nights;
+            $total += $item['price'] * $item['quantity'] * $days;
         }
         foreach ($this->selectedServices as $item) {
             $total += $item['price'] * $item['quantity'];
@@ -220,8 +235,8 @@ class extends Component {
                 'status' => 'pending',
             ]);
 
-            $nights = Carbon::parse($this->check_in)->diffInDays($this->check_out);
-            $nights = max(1, $nights);
+            $days = Carbon::parse($this->check_in)->diffInDays($this->check_out);
+            $days = max(1, $days);
 
             foreach ($this->selectedProperties as $propertyId => $item) {
                 BookingItem::create([
@@ -230,7 +245,7 @@ class extends Component {
                     'property_id' => $propertyId,
                     'price' => $item['price'],
                     'quantity' => $item['quantity'],
-                    'subtotal' => $item['price'] * $item['quantity'] * $nights,
+                    'subtotal' => $item['price'] * $item['quantity'] * $days,
                 ]);
             }
 
@@ -314,7 +329,6 @@ class extends Component {
 
 @push('styles')
 <style>
-    /* Fix invisible options in glass-style selects */
     select option {
         background: #1e293b;
         color: #e2e8f0;
@@ -331,7 +345,7 @@ class extends Component {
             <h1 class="font-display text-3xl md:text-4xl font-bold text-white">
                 Walk‑In <em class="italic text-brand-400">Checkout</em>
             </h1>
-            <p class="text-sm text-white/50 mt-1">Quickly register a guest and complete their stay.</p>
+            <p class="text-sm text-white/50 mt-1">Quickly register a guest and complete their booking.</p>
         </div>
     </div>
 
@@ -372,12 +386,16 @@ class extends Component {
                 <div>
                     <label class="block text-sm font-medium text-white/70 mb-1">Check‑in *</label>
                     <input type="date" wire:model.live="check_in"
+                           min="{{ now()->format('Y-m-d') }}"
+                           max="{{ now()->addDays(30)->format('Y-m-d') }}"
                            class="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-sm text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
                     @error('check_in') <span class="text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-white/70 mb-1">Check‑out *</label>
                     <input type="date" wire:model.live="check_out"
+                           min="{{ now()->addDay()->format('Y-m-d') }}"
+                           max="{{ now()->addDays(30)->format('Y-m-d') }}"
                            class="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-sm text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
                     @error('check_out') <span class="text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
@@ -393,7 +411,7 @@ class extends Component {
 
         {{-- Property Selection --}}
         <div class="glass-card !rounded-xl p-5 sm:p-6">
-            <h2 class="text-lg font-semibold text-white mb-6">Select Room(s) — Tap to add</h2>
+            <h2 class="text-lg font-semibold text-white mb-6">Select Items — Tap to add</h2>
 
             @if(count($this->availableProperties) > 0)
                 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -412,7 +430,7 @@ class extends Component {
                             </div>
                             <div class="p-4">
                                 <h3 class="font-medium text-white">{{ $property->name }}</h3>
-                                <p class="mt-1 text-sm text-white/60">₱{{ number_format($property->price, 2) }} / night</p>
+                                <p class="mt-1 text-sm text-white/60">₱{{ number_format($property->price, 2) }} / day</p>
                                 <p class="text-xs text-white/40 mt-1">Capacity: {{ $property->capacity }} persons</p>
                             </div>
                             @if($isSelected)
@@ -424,18 +442,18 @@ class extends Component {
                     @endforeach
                 </div>
             @else
-                <p class="text-white/50 text-center py-8">No available rooms for selected dates.</p>
+                <p class="text-white/50 text-center py-8">No available items for selected dates.</p>
             @endif
 
             @if(count($selectedProperties) > 0)
                 <div class="mt-8 space-y-3">
-                    <h3 class="font-medium text-white mb-4">Selected Rooms</h3>
+                    <h3 class="font-medium text-white mb-4">Selected Items</h3>
                     @foreach($selectedProperties as $id => $item)
                         @php
                             $prop = $this->availableProperties->firstWhere('id', $id) ?? App\Models\Property::find($id);
-                            $nights = Carbon::parse($check_in)->diffInDays($check_out);
-                            $nights = max(1, $nights);
-                            $roomTotal = $item['price'] * $item['quantity'] * $nights;
+                            $days = Carbon::parse($check_in)->diffInDays($check_out);
+                            $days = max(1, $days);
+                            $roomTotal = $item['price'] * $item['quantity'] * $days;
                         @endphp
                         <div class="flex items-center gap-4 p-3 bg-white/5 rounded-xl border border-white/10">
                             <div class="w-12 h-12 rounded-lg overflow-hidden bg-white/10 shrink-0">
@@ -448,14 +466,14 @@ class extends Component {
                                 @endif
                             </div>
                             <div class="flex-1 min-w-0">
-                                <p class="font-medium text-white truncate">{{ $prop->name ?? 'Room' }}</p>
+                                <p class="font-medium text-white truncate">{{ $prop->name ?? 'Item' }}</p>
                                 <p class="text-xs text-white/50 mt-0.5">
-                                    ₱{{ number_format($item['price'], 2) }} / night · {{ $nights }} nights
+                                    ₱{{ number_format($item['price'], 2) }} / day · {{ $days }} day{{ $days > 1 ? 's' : '' }}
                                 </p>
                                 <p class="text-sm font-semibold text-white mt-1">₱{{ number_format($roomTotal, 2) }}</p>
                             </div>
                             <button type="button" wire:click="toggleProperty({{ $id }}, {{ $item['price'] }})" 
-                                    class="p-1 text-white/40 hover:text-red-400 transition" title="Remove room">
+                                    class="p-1 text-white/40 hover:text-red-400 transition" title="Remove item">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                             </button>
                         </div>

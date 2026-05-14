@@ -41,12 +41,10 @@ class extends Component
 
     public $selectedServices = [];
     public $totalAmount = 0;
-    public $totalNights = 1;
+    public $totalDays = 1;         
 
     #[Validate('required|in:cash,card,gcash,paymaya')]
     public $payment_method = 'cash';
-    #[Validate('nullable|string|max:255')]
-    public $reference_number = '';
 
     public function mount($publicproperty)
     {
@@ -68,8 +66,30 @@ class extends Component
         $this->calculateTotal();
     }
 
-    public function updatedCheckIn()  { $this->calculateTotal(); }
-    public function updatedCheckOut() { $this->calculateTotal(); }
+    public function updatedCheckIn()
+    {
+        $maxDate = now()->addDays(30)->format('Y-m-d');
+        if ($this->check_in > $maxDate) {
+            $this->check_in = $maxDate;
+        }
+        if ($this->check_out && Carbon::parse($this->check_in)->gte(Carbon::parse($this->check_out))) {
+            $this->check_out = Carbon::parse($this->check_in)->addDay()->format('Y-m-d');
+        }
+        $this->calculateTotal();
+    }
+
+    public function updatedCheckOut()
+    {
+        // Ensure check‑out is within 30 days from today
+        $maxDate = now()->addDays(30)->format('Y-m-d');
+        if ($this->check_out > $maxDate) {
+            $this->check_out = $maxDate;
+        }
+        if (Carbon::parse($this->check_out)->lte(Carbon::parse($this->check_in))) {
+            $this->check_out = Carbon::parse($this->check_in)->addDay()->format('Y-m-d');
+        }
+        $this->calculateTotal();
+    }
 
     public function addService($serviceId)
     {
@@ -87,8 +107,8 @@ class extends Component
     {
         $checkIn  = Carbon::parse($this->check_in);
         $checkOut = Carbon::parse($this->check_out);
-        $this->totalNights = max(1, $checkIn->diffInDays($checkOut));
-        $this->totalAmount = $this->property->price * $this->totalNights;
+        $this->totalDays = max(1, $checkIn->diffInDays($checkOut));
+        $this->totalAmount = $this->property->price * $this->totalDays;
         foreach ($this->selectedServices as $serviceId => $qty) {
             $service = Service::find($serviceId);
             if ($service) $this->totalAmount += $service->price * $qty;
@@ -113,6 +133,7 @@ class extends Component
             return;
         }
 
+        // Availability conflict check
         $conflict = BookingItem::where('property_id', $this->property->id)
             ->whereHas('booking', function ($query) {
                 $query->whereNotIn('status', ['cancelled', 'completed'])
@@ -145,7 +166,7 @@ class extends Component
                 'property_id' => $this->property->id,
                 'price'       => $this->property->price,
                 'quantity'    => 1,
-                'subtotal'    => $this->property->price * $this->totalNights,
+                'subtotal'    => $this->property->price * $this->totalDays,
             ]);
             foreach ($this->selectedServices as $serviceId => $qty) {
                 $service = Service::find($serviceId);
@@ -166,12 +187,12 @@ class extends Component
                     'amount'           => $this->totalAmount,
                     'payment_method'   => 'cash',
                     'payment_status'   => 'paid',
-                    'reference_number' => $this->reference_number,
                     'paid_at'          => now(),
                 ]);
-                return null;
+                return null; // cash booking – stay on page
             }
 
+            // Online payment via PayMongo
             $payMongo = app(PayMongoService::class);
             $session = $payMongo->createCheckoutSession([
                 'customer_name'        => $customer->name,
@@ -179,7 +200,7 @@ class extends Component
                 'customer_phone'       => $customer->phone,
                 'amount'               => $this->totalAmount,
                 'description'          => "Booking #{$booking->booking_reference}",
-                'item_name'            => 'Accommodation + services',
+                'item_name'            => 'Tourism Activity',
                 'success_url'          => route('tenant.payments.success', ['booking' => $booking->id]),
                 'cancel_url'           => route('tenant.payments.cancel', ['booking' => $booking->id]),
                 'metadata'             => ['booking_id' => $booking->id, 'tenant_id' => $tenantId],
@@ -198,6 +219,7 @@ class extends Component
                 return redirect()->away($session['data']['attributes']['checkout_url']);
             }
 
+            // Fallback if PayMongo fails
             Payment::create([
                 'tenant_id'      => $tenantId,
                 'booking_id'     => $booking->id,
@@ -218,15 +240,18 @@ class extends Component
 };
 ?>
 
-{{--
-  ──── VICTORIAS CITY TOURISM · GLASSMORPHISM BOOKING PAGE ────
-  Uses the global dark background, glass utilities, and brand‑green accents.
---}}
+@push('styles')
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600&family=Inter:wght@200;300;400;500;600;700&display=swap');
+
+    .booking-page { min-height: 100vh; }
+</style>
+@endpush
 
 <div class="relative z-10 min-h-screen py-8">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 grid grid-cols-1 lg:grid-cols-[1fr_400px] gap-8 items-start">
 
-        {{-- ══════════ Main Form Column ══════════ --}}
+        {{-- Main Form Column --}}
         <div class="anim-up">
             <a href="{{ route('tenant.show', $property->tenant->slug) }}" wire:navigate
                class="inline-flex items-center gap-1 text-xs uppercase tracking-wider text-white/50 hover:text-brand-400 transition-colors mb-6">
@@ -296,24 +321,28 @@ class extends Component
                 <section>
                     <div class="flex items-center gap-3 mb-5">
                         <span class="w-7 h-7 rounded-full bg-brand-600 text-white flex items-center justify-center text-xs font-bold">2</span>
-                        <h2 class="font-display text-lg font-medium text-white">Stay Dates</h2>
+                        <h2 class="font-display text-lg font-medium text-white">Visit Dates</h2>
                     </div>
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
                             <label class="block text-xs font-semibold uppercase tracking-wider text-white/50 mb-1">Check-in *</label>
                             <input type="date" wire:model.live="check_in"
+                                   min="{{ now()->format('Y-m-d') }}"
+                                   max="{{ now()->addDays(30)->format('Y-m-d') }}"
                                    class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
                             @error('check_in') <p class="text-xs text-red-400 mt-1">{{ $message }}</p> @enderror
                         </div>
                         <div>
                             <label class="block text-xs font-semibold uppercase tracking-wider text-white/50 mb-1">Check-out *</label>
                             <input type="date" wire:model.live="check_out"
+                                   min="{{ now()->addDay()->format('Y-m-d') }}"
+                                   max="{{ now()->addDays(30)->format('Y-m-d') }}"
                                    class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
                             @error('check_out') <p class="text-xs text-red-400 mt-1">{{ $message }}</p> @enderror
                         </div>
                     </div>
                     <div class="mt-4 inline-flex items-center gap-2 bg-brand-500/10 border border-brand-500/20 rounded-full px-4 py-1.5 text-sm text-white/70">
-                        <span class="font-display text-lg text-white">{{ $totalNights }}</span> night{{ $totalNights > 1 ? 's' : '' }} selected
+                        <span class="font-display text-lg text-white">{{ $totalDays }}</span> day{{ $totalDays > 1 ? 's' : '' }} selected
                     </div>
                 </section>
 
@@ -381,20 +410,13 @@ class extends Component
                             </label>
                         @endforeach
                     </div>
-                    @if($payment_method === 'cash')
-                        <div>
-                            <label class="block text-xs font-semibold uppercase tracking-wider text-white/50 mb-1">Reference Number <span class="opacity-50">(optional)</span></label>
-                            <input type="text" wire:model="reference_number"
-                                   class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition max-w-xs"
-                                   placeholder="e.g. Receipt #12345">
-                        </div>
-                    @endif
+                    {{-- No reference number input --}}
                 </section>
 
             </form>
         </div>
 
-        {{-- ══════════ Summary Sidebar ══════════ --}}
+        {{-- Summary Sidebar --}}
         <div class="lg:sticky lg:top-24 anim-up delay-2">
             <div class="bg-black/60 backdrop-blur-xl border border-white/10 rounded-2xl overflow-hidden shadow-2xl">
                 <div class="p-6 border-b border-white/10">
@@ -402,13 +424,13 @@ class extends Component
                     <p class="text-sm text-white/50">{{ $property->propertyType->name ?? 'Property' }} · {{ $property->tenant->name }}</p>
                     <div class="mt-4 flex items-baseline gap-1">
                         <span class="font-display text-3xl text-brand-400">₱{{ number_format($property->price, 2) }}</span>
-                        <span class="text-xs text-white/40">/ night</span>
+                        <span class="text-xs text-white/40">/ day</span>
                     </div>
                 </div>
                 <div class="p-6 border-b border-white/10 space-y-2 text-sm text-white/70">
                     <div class="flex justify-between">
-                        <span>{{ $totalNights }} night{{ $totalNights > 1 ? 's' : '' }}</span>
-                        <span class="font-medium text-white">₱{{ number_format($property->price * $totalNights, 2) }}</span>
+                        <span>{{ $totalDays }} day{{ $totalDays > 1 ? 's' : '' }}</span>
+                        <span class="font-medium text-white">₱{{ number_format($property->price * $totalDays, 2) }}</span>
                     </div>
                     @foreach($selectedServices as $serviceId => $qty)
                         @php $svc = App\Models\Service::find($serviceId); @endphp

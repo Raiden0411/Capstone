@@ -17,14 +17,26 @@ class extends Component
     public string $activeTab = 'accommodations'; 
     public ?string $coverPhoto = null;
 
+    // ── Gallery fields ──
+    public array  $galleryImages    = [];
+    public string $galleryTitle     = '';
+    public string $gallerySubtitle  = '';
+
     public function mount($slug)
     {
         $this->tenant = Tenant::where('slug', $slug)->firstOrFail();
 
-        $this->coverPhoto = $this->tenant->settings()
+        // Fetch cover + gallery settings in one query
+        $settings = $this->tenant->settings()
             ->withoutGlobalScope(TenantScope::class)
-            ->where('key', 'spot_cover')
-            ->value('value');
+            ->whereIn('key', ['spot_cover', 'business_gallery', 'gallery_title', 'gallery_subtitle'])
+            ->get()
+            ->pluck('value', 'key');
+
+        $this->coverPhoto      = $settings['spot_cover']       ?? null;
+        $this->galleryImages   = $settings['business_gallery'] ?? [];
+        $this->galleryTitle    = $settings['gallery_title']    ?? '';
+        $this->gallerySubtitle = $settings['gallery_subtitle'] ?? '';
     }
 
     #[Computed]
@@ -51,10 +63,51 @@ class extends Component
             ->orderBy('name')
             ->get();
     }
+
+    public function getGalleryTitleHtml(): string
+    {
+        if (empty($this->galleryTitle)) return '';
+        return '<em>' . str_replace(' ', '</em> <em>', e($this->galleryTitle)) . '</em>';
+    }
 };
 ?>
 
-<div class="relative z-10 min-h-screen py-8">
+@push('styles')
+<style>
+    /* Gallery masonry – same as business profile */
+    .gallery-item:nth-child(1)  { grid-column: span 6; grid-row: span 3; }
+    .gallery-item:nth-child(2)  { grid-column: span 3; grid-row: span 2; }
+    .gallery-item:nth-child(3)  { grid-column: span 3; grid-row: span 3; }
+    .gallery-item:nth-child(4)  { grid-column: span 4; grid-row: span 2; }
+    .gallery-item:nth-child(5)  { grid-column: span 4; grid-row: span 2; }
+    .gallery-item:nth-child(6)  { grid-column: span 4; grid-row: span 2; }
+    .gallery-item:nth-child(7)  { grid-column: span 5; grid-row: span 2; }
+    .gallery-item:nth-child(8)  { grid-column: span 3; grid-row: span 1; }
+    .gallery-item:nth-child(n+9){ grid-column: span 3; grid-row: span 1; }
+
+    @media (max-width: 768px) {
+        .gallery-grid {
+            grid-template-columns: repeat(2, 1fr);
+            grid-auto-rows: 150px;
+        }
+        .gallery-item {
+            grid-column: span 1 !important;
+            grid-row: span 1 !important;
+        }
+    }
+</style>
+@endpush
+
+<div class="relative z-10 min-h-screen py-8" x-data="{ previewImage: null }" @keydown.escape.window="previewImage = null">
+
+    {{-- Lightbox (reused from business profile) --}}
+    <div x-show="previewImage" x-cloak class="lightbox-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/95 backdrop-blur-md animate-fadeIn"
+         @click.self="previewImage = null">
+        <div class="relative max-w-[90vw] max-h-[90vh]">
+            <button @click="previewImage = null" class="absolute -top-8 right-0 text-white/60 hover:text-brand-400 text-xs uppercase tracking-wider flex items-center gap-1">✕ Close</button>
+            <img :src="previewImage" class="max-w-full max-h-[88vh] rounded-md shadow-2xl object-contain">
+        </div>
+    </div>
 
     {{-- ══════════ HERO ══════════ --}}
     <section class="relative py-20 md:py-28 overflow-hidden">
@@ -93,6 +146,31 @@ class extends Component
         </div>
     </section>
 
+    {{-- ══════════ GALLERY (NEW) ══════════ --}}
+    @if(!empty($galleryImages) && $this->galleryTitle)
+        <section class="py-16 md:py-24 px-6 md:px-16">
+            <div class="max-w-7xl mx-auto">
+                <h2 class="font-display text-4xl md:text-6xl lg:text-7xl font-medium leading-tight mb-12 tracking-tight text-white">
+                    {!! $this->getGalleryTitleHtml() !!}
+                </h2>
+
+                <div class="gallery-grid grid grid-cols-12 auto-rows-[180px] gap-4">
+                    @foreach($galleryImages as $index => $imagePath)
+                        <div wire:key="gallery-{{ $index }}" class="gallery-item relative overflow-hidden rounded-xl cursor-pointer group shadow-sm hover:shadow-xl transition-shadow"
+                             @click="previewImage = '{{ Storage::url($imagePath) }}'">
+                            <img src="{{ Storage::url($imagePath) }}" class="w-full h-full object-cover filter brightness-95 group-hover:brightness-110 group-hover:scale-105 transition duration-700" alt="{{ $tenant->name }} photo {{ $index + 1 }}" loading="lazy">
+                            <div class="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent opacity-0 group-hover:opacity-100 transition flex items-end p-3">
+                                <div class="ml-auto w-9 h-9 rounded-full border border-white/80 text-white flex items-center justify-center backdrop-blur-sm group-hover:bg-brand-500/40 transition-colors">
+                                    <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/></svg>
+                                </div>
+                            </div>
+                        </div>
+                    @endforeach
+                </div>
+            </div>
+        </section>
+    @endif
+
     {{-- Tab Navigation --}}
     <nav class="sticky top-16 z-20 bg-black/50 backdrop-blur-lg border-b border-white/10">
         <div class="max-w-7xl mx-auto px-6 md:px-16 flex gap-0">
@@ -117,7 +195,7 @@ class extends Component
         </div>
     </nav>
 
-    {{-- Body Content --}}
+    {{-- Body Content (unchanged) --}}
     <div class="max-w-7xl mx-auto px-6 md:px-16 py-10">
 
         @if($activeTab === 'accommodations')

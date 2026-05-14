@@ -12,7 +12,6 @@ use Illuminate\Support\Facades\Storage;
 <div>
     <div class="relative z-10">
         
-        <!-- (Hero section unchanged) -->
         <section class="relative min-h-screen w-full overflow-hidden bg-[#071412] dark:bg-[#071412] text-white">
             <div class="absolute inset-0 z-0">
                 <img src="https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&q=80&w=1600"
@@ -159,7 +158,8 @@ use Illuminate\Support\Facades\Storage;
                             <div class="p-6">
                                 <h3 class="font-display text-2xl font-semibold text-gray-900 dark:text-white mb-2 group-hover:text-brand-600 dark:group-hover:text-brand-400 transition"><?php echo e($tenant->name); ?></h3>
                                 <p class="text-gray-600 dark:text-white/50 text-sm leading-relaxed line-clamp-3 mb-6"><?php echo e(Str::limit($tenant->address ?? 'Discover this spot.', 100)); ?></p>
-                                <a href="<?php echo e(route('tenant.show', $tenant->slug)); ?>" wire:navigate class="block w-full py-3 rounded-full bg-brand-600 hover:bg-brand-500 text-white font-semibold text-center shadow-lg shadow-brand-500/20 transition">
+                                
+                                <a href="<?php echo e(route('business.offerings', $tenant->slug)); ?>" wire:navigate class="block w-full py-3 rounded-full bg-brand-600 hover:bg-brand-500 text-white font-semibold text-center shadow-lg shadow-brand-500/20 transition">
                                     Explore <?php echo e($tenant->name); ?>
 
                                 </a>
@@ -207,7 +207,6 @@ use Illuminate\Support\Facades\Storage;
                         </p>
                         <h3 class="font-display text-3xl font-bold text-white mb-5">Interactive Map</h3>
 
-                        
                         <div class="bg-transparent rounded-xl border border-white/10 shadow-2xl p-2 relative z-10"
                              x-data="mapComponent"
                              x-init="init()"
@@ -281,14 +280,13 @@ use Illuminate\Support\Facades\Storage;
             setTimeout(() => window.mapMarkers[index].openPopup(), 1200);
         };
 
-        // Map Alpine component (no inline HTML attribute, cleanly defined here)
+        // Map Alpine component
         document.addEventListener('alpine:init', () => {
             Alpine.data('mapComponent', () => ({
                 map: null,
                 markers: [],
                 
                 init() {
-                    // Wait for Leaflet to be ready, then build the map
                     const ready = () => {
                         if (typeof L !== 'undefined') {
                             this.initMap();
@@ -300,7 +298,6 @@ use Illuminate\Support\Facades\Storage;
                 },
 
                 initMap() {
-                    // Fix default icon paths
                     delete L.Icon.Default.prototype._getIconUrl;
                     L.Icon.Default.mergeOptions({
                         iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
@@ -346,7 +343,6 @@ use Illuminate\Support\Facades\Storage;
                         this.markers.push(marker);
                     });
 
-                    // Expose globally for focusLocation
                     window.mapMarkers = this.markers;
                     window.mapInstance = this.map;
 
@@ -360,7 +356,6 @@ use Illuminate\Support\Facades\Storage;
             }));
         });
 
-        // Initialisation
         document.addEventListener('DOMContentLoaded', () => setTimeout(initCarousel, 200));
         document.addEventListener('livewire:navigated', () => setTimeout(initCarousel, 200));
     </script>

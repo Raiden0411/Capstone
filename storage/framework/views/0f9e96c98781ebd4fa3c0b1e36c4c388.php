@@ -8,7 +8,20 @@ use App\Scopes\TenantScope;
 use Illuminate\Support\Facades\Storage;
 ?>
 
-<div class="relative z-10 min-h-screen py-8">
+<?php $__env->startPush('styles'); ?>
+
+<?php $__env->stopPush(); ?>
+
+<div class="relative z-10 min-h-screen py-8" x-data="{ previewImage: null }" @keydown.escape.window="previewImage = null">
+
+    
+    <div x-show="previewImage" x-cloak class="lightbox-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/95 backdrop-blur-md animate-fadeIn"
+         @click.self="previewImage = null">
+        <div class="relative max-w-[90vw] max-h-[90vh]">
+            <button @click="previewImage = null" class="absolute -top-8 right-0 text-white/60 hover:text-brand-400 text-xs uppercase tracking-wider flex items-center gap-1">✕ Close</button>
+            <img :src="previewImage" class="max-w-full max-h-[88vh] rounded-md shadow-2xl object-contain">
+        </div>
+    </div>
 
     
     <section class="relative py-20 md:py-28 overflow-hidden">
@@ -47,6 +60,32 @@ use Illuminate\Support\Facades\Storage;
             </div>
         </div>
     </section>
+
+    
+    <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if(!empty($galleryImages) && $this->galleryTitle): ?>
+        <section class="py-16 md:py-24 px-6 md:px-16">
+            <div class="max-w-7xl mx-auto">
+                <h2 class="font-display text-4xl md:text-6xl lg:text-7xl font-medium leading-tight mb-12 tracking-tight text-white">
+                    <?php echo $this->getGalleryTitleHtml(); ?>
+
+                </h2>
+
+                <div class="gallery-grid grid grid-cols-12 auto-rows-[180px] gap-4">
+                    <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::openLoop(); ?><?php endif; ?><?php $__currentLoopData = $galleryImages; $__env->addLoop($__currentLoopData); foreach($__currentLoopData as $index => $imagePath): $__env->incrementLoopIndices(); $loop = $__env->getLastLoop(); ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::startLoopIteration(); ?><?php endif; ?>
+                        <div <?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::$currentLoop['key'] = 'gallery-'.e($index).''; ?>wire:key="gallery-<?php echo e($index); ?>" class="gallery-item relative overflow-hidden rounded-xl cursor-pointer group shadow-sm hover:shadow-xl transition-shadow"
+                             @click="previewImage = '<?php echo e(Storage::url($imagePath)); ?>'">
+                            <img src="<?php echo e(Storage::url($imagePath)); ?>" class="w-full h-full object-cover filter brightness-95 group-hover:brightness-110 group-hover:scale-105 transition duration-700" alt="<?php echo e($tenant->name); ?> photo <?php echo e($index + 1); ?>" loading="lazy">
+                            <div class="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent opacity-0 group-hover:opacity-100 transition flex items-end p-3">
+                                <div class="ml-auto w-9 h-9 rounded-full border border-white/80 text-white flex items-center justify-center backdrop-blur-sm group-hover:bg-brand-500/40 transition-colors">
+                                    <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/></svg>
+                                </div>
+                            </div>
+                        </div>
+                    <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::endLoop(); ?><?php endif; ?><?php endforeach; $__env->popLoop(); $loop = $__env->getLastLoop(); ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::closeLoop(); ?><?php endif; ?>
+                </div>
+            </div>
+        </section>
+    <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
 
     
     <nav class="sticky top-16 z-20 bg-black/50 backdrop-blur-lg border-b border-white/10">

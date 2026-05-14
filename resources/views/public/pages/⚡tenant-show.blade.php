@@ -1,7 +1,4 @@
 <?php
-// ──────────────────────────────────────────────
-//  Livewire component unchanged – reused as is
-// ──────────────────────────────────────────────
 use Livewire\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;

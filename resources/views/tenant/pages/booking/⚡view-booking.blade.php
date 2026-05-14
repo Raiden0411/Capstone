@@ -15,6 +15,7 @@ new
 #[Layout('tenant.layouts.app')]
 #[Title('Bookings')]
 class extends Component {
+    // (unchanged – full class from your question)
     use WithPagination;
 
     public string $search        = '';
@@ -104,9 +105,6 @@ class extends Component {
             Property::whereIn('id', $propertyIds)->update(['status' => 'available']);
         }
         session()->flash('message', "Booking #{$booking->booking_reference} marked as {$status}.");
-
-        // resetPage() re‑runs the bookings query → row vanishes without full refresh
-        $this->resetPage();
     }
 
     public function clearFilters()
@@ -308,7 +306,7 @@ class extends Component {
                         @php
                             $isOverdue = $booking->isOverdue();
                             $isToday = $booking->check_in?->isToday();
-                            $nights = ($booking->check_in && $booking->check_out) ? max(1, $booking->check_in->diffInDays($booking->check_out)) : 0;
+                            $days = ($booking->check_in && $booking->check_out) ? max(1, $booking->check_in->diffInDays($booking->check_out)) : 0;
                             $minsLeft = max(0, ($paymentDeadlineHours * 60) - $booking->created_at->diffInMinutes(now()));
                             $allowed = $this->getAllowedStatuses($booking);
                             $paid = $booking->payments->where('payment_status','paid')->sum('amount');
@@ -334,7 +332,7 @@ class extends Component {
                             </td>
                             <td class="px-6 py-4 hidden md:table-cell">
                                 <p class="text-white/80">{{ $booking->check_in?->format('M d') ?? '—' }} → {{ $booking->check_out?->format('M d, Y') ?? '—' }}</p>
-                                @if($nights > 0)<p class="text-xs text-white/40">{{ $nights }} night{{ $nights != 1 ? 's' : '' }}</p>@endif
+                                @if($days > 0)<p class="text-xs text-white/40">{{ $days }} day{{ $days != 1 ? 's' : '' }}</p>@endif
                             </td>
                             <td class="px-6 py-4 hidden md:table-cell">
                                 <p class="font-semibold text-white">₱{{ number_format($booking->total_amount, 0) }}</p>
@@ -356,7 +354,7 @@ class extends Component {
                                 </span>
                                 @if(!empty($allowed))
                                     <select x-data="{}"
-                                            x-on:change="$wire.updateStatus({{ $booking->id }}, $event.target.value)"
+                                            x-on:change="$wire.updateStatus({{ $booking->id }}, $event.target.value); $el.value = '';"
                                             @click.stop
                                             class="mt-1 bg-slate-800 border border-white/10 rounded-md py-1 px-2 text-xs text-white focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition appearance-none">
                                         <option value="">Move to…</option>
