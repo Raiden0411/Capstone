@@ -48,7 +48,7 @@
     <?php echo $__env->yieldPushContent('styles'); ?>
 </head>
 
-<body class="font-sans antialiased min-h-screen text-white">
+<body class="font-sans antialiased flex flex-col min-h-screen bg-[#071412] text-white">
 
     
     <div class="fixed inset-0 -z-10 overflow-hidden pointer-events-none">
@@ -80,7 +80,7 @@
 <?php unset($__componentOriginal6b03705b1bb6b0a0138b7a37efc303f2); ?>
 <?php endif; ?>
 
-    <main class="min-h-screen">
+    <main class="flex-1 pt-[68px]">
         <?php echo e($slot); ?>
 
     </main>

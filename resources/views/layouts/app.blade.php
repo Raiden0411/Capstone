@@ -47,7 +47,7 @@
     @stack('styles')
 </head>
 
-<body class="font-sans antialiased min-h-screen text-white">
+<body class="font-sans antialiased flex flex-col min-h-screen bg-[#071412] text-white">
 
     {{-- Animated background orbs – fixed behind everything --}}
     <div class="fixed inset-0 -z-10 overflow-hidden pointer-events-none">
@@ -58,7 +58,7 @@
 
     <x-headers.public-header />
 
-    <main class="min-h-screen">
+    <main class="flex-1 pt-[68px]">
         {{ $slot }}
     </main>
 

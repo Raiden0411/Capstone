@@ -1,4 +1,3 @@
-
 <div>
     <header
         class="fixed top-0 left-0 right-0 z-50 w-full h-[68px] flex items-center bg-[#061f14] border-b border-white/[0.07] transition-colors duration-300"
@@ -43,6 +42,7 @@
 
                 <div class="w-px h-5 bg-white/10 hidden sm:block"></div>
 
+                
                 
 
                 <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if(auth()->guard()->guest()): ?>
@@ -181,6 +181,5 @@
         </div>
 
     </header>
-
-    <div class="pt-[68px]"></div>
+    
 </div><?php /**PATH C:\laragon\www\Capstone\resources\views/components/headers/public-header.blade.php ENDPATH**/ ?>
