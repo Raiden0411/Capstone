@@ -150,7 +150,7 @@ class extends Component
     {{-- ══════════ HERO ══════════ --}}
     <section class="hero-section relative h-screen min-h-[700px] overflow-hidden flex flex-col justify-end">
         @if($coverPhoto)
-            <img src="{{ Storage::url($coverPhoto) }}" class="hero-img absolute inset-0 w-full h-full object-cover filter brightness-75" alt="{{ $tenant->name }}" loading="eager">
+            <img src="{{ asset('storage/'. $coverPhoto) }}" class="hero-img absolute inset-0 w-full h-full object-cover filter brightness-75" alt="{{ $tenant->name }}" loading="eager">
         @else
             <div class="absolute inset-0 bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900"></div>
         @endif
@@ -204,8 +204,8 @@ class extends Component
                 <div class="gallery-grid grid grid-cols-12 auto-rows-[180px] gap-4">
                     @foreach($galleryImages as $index => $imagePath)
                         <div wire:key="gallery-{{ $index }}" class="gallery-item relative overflow-hidden rounded-xl cursor-pointer group shadow-sm hover:shadow-xl transition-shadow"
-                             @click="previewImage = '{{ Storage::url($imagePath) }}'">
-                            <img src="{{ Storage::url($imagePath) }}" class="w-full h-full object-cover filter brightness-95 group-hover:brightness-110 group-hover:scale-105 transition duration-700" alt="{{ $tenant->name }} photo {{ $index + 1 }}" loading="lazy">
+                             @click="previewImage = '{{ asset('storage/'. $imagePath) }}'">
+                            <img src="{{ asset('storage/'. $imagePath) }}" class="w-full h-full object-cover filter brightness-95 group-hover:brightness-110 group-hover:scale-105 transition duration-700" alt="{{ $tenant->name }} photo {{ $index + 1 }}" loading="lazy">
                             <div class="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent opacity-0 group-hover:opacity-100 transition flex items-end p-3">
                                 <div class="ml-auto w-9 h-9 rounded-full border border-white/80 text-white flex items-center justify-center backdrop-blur-sm group-hover:bg-brand-500/40 transition-colors">
                                     <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/></svg>
@@ -222,7 +222,7 @@ class extends Component
     @if($footerTitle || $footerDescription || $footerThumb1 || $footerThumb2)
         <section class="relative min-h-[90vh] flex flex-col justify-end overflow-hidden">
             @if($footerBackground)
-                <img src="{{ Storage::url($footerBackground) }}" class="absolute inset-0 w-full h-full object-cover filter brightness-50" alt="" loading="lazy">
+                <img src="{{ asset('storage/'. $footerBackground) }}" class="absolute inset-0 w-full h-full object-cover filter brightness-50" alt="" loading="lazy">
             @else
                 <div class="absolute inset-0 bg-gradient-to-br from-gray-900 via-gray-800 to-black"></div>
             @endif
@@ -257,12 +257,12 @@ class extends Component
                     <div class="flex lg:flex-col gap-4 shrink-0">
                         @if($footerThumb1)
                             <div class="w-40 h-28 lg:w-48 lg:h-32 rounded-xl overflow-hidden shadow-xl hover:scale-105 transition-transform">
-                                <img src="{{ Storage::url($footerThumb1) }}" class="w-full h-full object-cover filter brightness-90 hover:brightness-110 transition" alt="Preview 1">
+                                <img src="{{ asset('storage/'. $footerThumb1) }}" class="w-full h-full object-cover filter brightness-90 hover:brightness-110 transition" alt="Preview 1">
                             </div>
                         @endif
                         @if($footerThumb2)
                             <div class="w-40 h-28 lg:w-48 lg:h-32 rounded-xl overflow-hidden shadow-xl hover:scale-105 transition-transform">
-                                <img src="{{ Storage::url($footerThumb2) }}" class="w-full h-full object-cover filter brightness-90 hover:brightness-110 transition" alt="Preview 2">
+                                <img src="{{ asset('storage/'. $footerThumb2) }}" class="w-full h-full object-cover filter brightness-90 hover:brightness-110 transition" alt="Preview 2">
                             </div>
                         @endif
                     </div>

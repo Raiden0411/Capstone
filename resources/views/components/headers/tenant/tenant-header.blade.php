@@ -1,14 +1,17 @@
 {{-- resources/views/components/headers/tenant/tenant-header.blade.php --}}
-<header class="sticky top-0 inset-x-0 flex flex-wrap md:justify-start md:flex-nowrap z-30 w-full bg-black/60 backdrop-blur-xl border-b border-white/10 text-sm py-2.5 transition-all duration-300"
-        :class="minified ? 'lg:ps-[3.25rem]' : 'lg:ps-65'">
+<header
+    x-data="{ minified: false }"
+    @sidebar-minified-tenant.window="minified = $event.detail"
+    :class="minified ? 'lg:ps-[3.25rem]' : 'lg:ps-65'"
+    class="sticky top-0 inset-x-0 flex flex-wrap md:justify-start md:flex-nowrap z-30 w-full bg-black/60 backdrop-blur-xl border-b border-white/10 text-sm py-2.5 transition-all duration-300"
+>
   <nav class="px-4 sm:px-6 flex basis-full items-center w-full mx-auto justify-between">
     
-    {{-- Left: Mobile sidebar toggle (FIXED ID) --}}
+    {{-- Left: Mobile sidebar toggle (now dispatches to Alpine) --}}
     <div class="flex items-center gap-2 lg:hidden me-5">
       <button type="button"
               class="size-8 flex justify-center items-center gap-x-2 rounded-lg glass border-white/10 text-white/80 hover:bg-white/10 transition"
-              data-hs-overlay="#hs-application-sidebar"   {{-- ✅ CORRECTED ID --}}
-              aria-controls="hs-application-sidebar"
+              @click="$dispatch('toggle-tenant-sidebar')"
               aria-label="Toggle navigation">
         <svg class="size-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
       </button>
@@ -16,7 +19,7 @@
 
     {{-- Right: Dark mode toggle + Profile Dropdown --}}
     <div class="flex items-center gap-2 ms-auto">
-      {{-- Dark mode toggle (unchanged) --}}
+      {{-- Dark mode toggle --}}
       <button type="button"
               x-data="{ dark: localStorage.getItem('hs_theme') === 'dark' }"
               x-init="
@@ -34,7 +37,7 @@
       </button>
 
       @auth
-        {{-- Profile Dropdown (z-index increased to beat sidebar) --}}
+        {{-- Profile Dropdown --}}
         <div class="relative"
             x-data="{ open: false }"
             @click.outside="open = false"
@@ -47,7 +50,7 @@
                   aria-haspopup="true">
             @php $tenant = auth()->user()?->tenant; @endphp
             @if($tenant && $tenant->logo)
-              <img src="{{ Storage::url($tenant->logo) }}"
+              <img src="{{ asset('storage/'. $tenant->logo) }}"
                   alt="{{ $tenant->name }}"
                   class="w-6 h-6 rounded-full object-cover shrink-0">
             @else
@@ -59,7 +62,7 @@
             <svg class="hidden sm:block w-3 h-3 transition-transform" :class="open ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
           </button>
 
-          {{-- Dropdown panel – HIGHER z-index --}}
+          {{-- Dropdown panel --}}
           <div x-cloak
               x-show="open"
               x-transition:enter="transition ease-out duration-150"
@@ -75,7 +78,7 @@
               <div class="flex items-center gap-3">
                 @php $tenant = auth()->user()?->tenant; @endphp
                 @if($tenant && $tenant->logo)
-                  <img src="{{ Storage::url($tenant->logo) }}"
+                  <img src="{{ asset('storage/'. $tenant->logo) }}"
                       alt="{{ $tenant->name }}"
                       class="w-10 h-10 rounded-full object-cover shrink-0">
                 @else

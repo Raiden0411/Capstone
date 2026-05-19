@@ -68,7 +68,7 @@
                                 class="flex items-center gap-2 text-[10px] font-medium tracking-[0.14em] uppercase py-1.5 px-3 rounded-full bg-amber-300 border border-amber-300 text-[#061f14] hover:bg-transparent hover:text-amber-300 transition-all duration-200">
                             {{-- Avatar --}}
                             <div x-data="{ 
-                                avatarUrl: '{{ Auth::user()->avatar ? Storage::url(Auth::user()->avatar) : '' }}' 
+                                avatarUrl: '{{ Auth::user()->avatar ? asset('storage/'. Auth::user()->avatar) : '' }}' 
                             }"
                             @avatar-updated.window="avatarUrl = $event.detail.url">
                                 <img x-show="avatarUrl" :src="avatarUrl"
@@ -88,7 +88,7 @@
                             <div class="px-4 py-3 border-b border-white/[0.08]">
                                 <div class="flex items-center gap-3">
                                     <div x-data="{ 
-                                        avatarUrl: '{{ Auth::user()->avatar ? Storage::url(Auth::user()->avatar) : '' }}' 
+                                        avatarUrl: '{{ Auth::user()->avatar ? asset('storage/'. Auth::user()->avatar) : '' }}' 
                                     }"
                                     @avatar-updated.window="avatarUrl = $event.detail.url">
                                         <img x-show="avatarUrl" :src="avatarUrl"

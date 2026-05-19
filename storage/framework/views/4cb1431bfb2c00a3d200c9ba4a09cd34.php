@@ -114,4 +114,5 @@
     <script src="https://unpkg.com/preline/dist/preline.js"></script>
 </body>
 
-</html><?php /**PATH C:\laragon\www\Capstone\resources\views/superadmin/layouts/app.blade.php ENDPATH**/ ?>
+</html>
+<?php /**PATH C:\laragon\www\Capstone\resources\views/superadmin/layouts/app.blade.php ENDPATH**/ ?>

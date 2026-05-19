@@ -1,15 +1,23 @@
 
-<div :class="minified ? 'w-13' : 'w-65'"
-     id="hs-application-sidebar"
-     class="hs-overlay [--body-scroll:true] lg:[--overlay-backdrop:false] [--is-layout-affect:true] [--auto-close:lg]
-            hs-overlay-open:translate-x-0
-            -translate-x-full transition-all duration-300 transform
-            h-full
-            hidden lg:block
-            fixed inset-y-0 start-0 z-60
-            lg:translate-x-0
-            bg-white dark:bg-black/60 dark:backdrop-blur-xl border-e border-gray-200 dark:border-white/10"
-     role="dialog" tabindex="-1" aria-label="Sidebar">
+<div
+    x-data="{ mobileOpen: false, minified: false }"
+    @toggle-superadmin-sidebar.window="mobileOpen = !mobileOpen"
+    @keydown.escape.window="mobileOpen = false"
+    :class="[minified ? 'w-13' : 'w-65', mobileOpen ? 'translate-x-0' : '-translate-x-full', 'lg:translate-x-0']"
+    id="hs-application-sidebar"
+    class="
+        fixed inset-y-0 start-0 z-60 h-full
+        bg-white dark:bg-black/60 dark:backdrop-blur-xl border-e border-gray-200 dark:border-white/10
+        transition-all duration-300 transform
+        lg:block
+    "
+    role="dialog" tabindex="-1" aria-label="Sidebar"
+>
+    
+    <div x-show="mobileOpen" x-cloak
+         class="fixed inset-0 bg-black/50 backdrop-blur-sm z-[-1] lg:hidden"
+         @click="mobileOpen = false" x-transition.opacity></div>
+
     <div class="relative flex flex-col h-full max-h-full">
         
         <!-- Header – no default icon, only text -->
@@ -22,7 +30,8 @@
             </div>
 
             <!-- Desktop Minify Toggle -->
-            <button type="button" @click="minified = !minified"
+            <button type="button"
+                    @click="minified = !minified; $dispatch('sidebar-minified', minified)"
                     class="hidden lg:flex justify-center items-center flex-none gap-x-3 size-9 text-sm text-gray-500 dark:text-white/50 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 focus:outline-none transition-colors"
                     aria-label="Toggle sidebar">
                 <svg x-show="!minified" class="shrink-0 size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/><path d="m10 15-3-3 3-3"/></svg>
@@ -32,7 +41,7 @@
             <!-- Mobile Close Button -->
             <button type="button"
                     class="flex lg:hidden justify-center items-center size-8 rounded-full bg-gray-100 dark:bg-white/10 text-gray-500 dark:text-white/50 hover:text-gray-800 dark:hover:text-white"
-                    data-hs-overlay="#hs-application-sidebar"
+                    @click="mobileOpen = false"
                     aria-label="Close sidebar">
                 <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
             </button>
@@ -100,6 +109,22 @@
                         <a class="flex items-center gap-x-3.5 py-2 px-3 text-sm rounded-lg transition-colors <?php echo e(request()->routeIs('superadmin.map-markers.*') ? 'bg-brand-100 dark:bg-brand-500/20 text-brand-700 dark:text-brand-300' : 'text-gray-600 dark:text-white/60 hover:bg-gray-100 dark:hover:bg-white/10 hover:text-gray-900 dark:hover:text-white'); ?>" href="<?php echo e(route('superadmin.map-markers.index')); ?>" wire:navigate>
                             <svg class="shrink-0 size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.657 16.657 13.414 20.9a1.998 1.998 0 0 1-2.827 0l-4.244-4.243a8 8 0 1 1 11.314 0z"/><path d="M15 11a3 3 0 1 1-6 0 3 3 0 0 1 6 0z"/></svg>
                             <span x-show="!minified">Map Markers</span>
+                        </a>
+                    </li>
+
+                    
+                    <li>
+                        <a class="flex items-center gap-x-3.5 py-2 px-3 text-sm rounded-lg transition-colors <?php echo e(request()->routeIs('superadmin.homepage.editor') ? 'bg-brand-100 dark:bg-brand-500/20 text-brand-700 dark:text-brand-300' : 'text-gray-600 dark:text-white/60 hover:bg-gray-100 dark:hover:bg-white/10 hover:text-gray-900 dark:hover:text-white'); ?>" href="<?php echo e(route('superadmin.homepage.editor')); ?>" wire:navigate>
+                            <svg class="shrink-0 size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                            <span x-show="!minified">Homepage Editor</span>
+                        </a>
+                    </li>
+
+                    
+                    <li>
+                        <a class="flex items-center gap-x-3.5 py-2 px-3 text-sm rounded-lg transition-colors <?php echo e(request()->routeIs('superadmin.about.editor') ? 'bg-brand-100 dark:bg-brand-500/20 text-brand-700 dark:text-brand-300' : 'text-gray-600 dark:text-white/60 hover:bg-gray-100 dark:hover:bg-white/10 hover:text-gray-900 dark:hover:text-white'); ?>" href="<?php echo e(route('superadmin.about.editor')); ?>" wire:navigate>
+                            <svg class="shrink-0 size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                            <span x-show="!minified">About Page Editor</span>
                         </a>
                     </li>
                 </ul>

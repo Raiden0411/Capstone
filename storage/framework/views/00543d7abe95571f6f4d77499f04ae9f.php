@@ -1,14 +1,17 @@
 
-<header class="sticky top-0 inset-x-0 flex flex-wrap md:justify-start md:flex-nowrap z-30 w-full bg-black/60 backdrop-blur-xl border-b border-white/10 text-sm py-2.5 transition-all duration-300"
-        :class="minified ? 'lg:ps-[3.25rem]' : 'lg:ps-65'">
+<header
+    x-data="{ minified: false }"
+    @sidebar-minified-tenant.window="minified = $event.detail"
+    :class="minified ? 'lg:ps-[3.25rem]' : 'lg:ps-65'"
+    class="sticky top-0 inset-x-0 flex flex-wrap md:justify-start md:flex-nowrap z-30 w-full bg-black/60 backdrop-blur-xl border-b border-white/10 text-sm py-2.5 transition-all duration-300"
+>
   <nav class="px-4 sm:px-6 flex basis-full items-center w-full mx-auto justify-between">
     
     
     <div class="flex items-center gap-2 lg:hidden me-5">
       <button type="button"
               class="size-8 flex justify-center items-center gap-x-2 rounded-lg glass border-white/10 text-white/80 hover:bg-white/10 transition"
-              data-hs-overlay="#hs-application-sidebar"   
-              aria-controls="hs-application-sidebar"
+              @click="$dispatch('toggle-tenant-sidebar')"
               aria-label="Toggle navigation">
         <svg class="size-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
       </button>
@@ -47,7 +50,7 @@
                   aria-haspopup="true">
             <?php $tenant = auth()->user()?->tenant; ?>
             <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($tenant && $tenant->logo): ?>
-              <img src="<?php echo e(Storage::url($tenant->logo)); ?>"
+              <img src="<?php echo e(asset('storage/'. $tenant->logo)); ?>"
                   alt="<?php echo e($tenant->name); ?>"
                   class="w-6 h-6 rounded-full object-cover shrink-0">
             <?php else: ?>
@@ -76,7 +79,7 @@
               <div class="flex items-center gap-3">
                 <?php $tenant = auth()->user()?->tenant; ?>
                 <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($tenant && $tenant->logo): ?>
-                  <img src="<?php echo e(Storage::url($tenant->logo)); ?>"
+                  <img src="<?php echo e(asset('storage/'. $tenant->logo)); ?>"
                       alt="<?php echo e($tenant->name); ?>"
                       class="w-10 h-10 rounded-full object-cover shrink-0">
                 <?php else: ?>

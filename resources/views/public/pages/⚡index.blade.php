@@ -1,9 +1,11 @@
+{{-- resources/views/public/pages/index.blade.php --}}
 <?php
 
 use Livewire\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Computed;
 use App\Models\Tenant;
+use App\Models\SiteSetting;
 use App\Scopes\TenantScope;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Storage;
@@ -51,6 +53,59 @@ class extends Component {
                 ];
             })->values()->toArray();
     }
+
+    // ── Dynamic image helpers ──
+    public function getHeroBackgroundUrl(): string
+    {
+        $path = SiteSetting::getValue('hero_background_image');
+        if ($path) {
+            return asset('storage/' . $path);
+        }
+        return 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&q=80&w=1600';
+    }
+
+    public function getSideImageUrl(int $index): string
+    {
+        $key = 'hero_side_image_' . $index;
+        $path = SiteSetting::getValue($key);
+        if ($path) {
+            return asset('storage/' . $path);
+        }
+        $defaults = [
+            1 => 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&q=80&w=600',
+            2 => 'https://images.unsplash.com/photo-1448375240586-882707db888b?auto=format&fit=crop&q=80&w=600',
+            3 => 'https://images.unsplash.com/photo-1542273917363-3b1817f69a2d?auto=format&fit=crop&q=80&w=600',
+        ];
+        return $defaults[$index] ?? '';
+    }
+
+    // ── Dynamic text helpers ──
+    public function getHeroTitle(): string
+    {
+        return SiteSetting::getValue('hero_title', 'Welcome to the North');
+    }
+
+    public function getHeroSubtitle(): string
+    {
+        return SiteSetting::getValue('hero_subtitle', 'Victorias City');
+    }
+
+    public function getHeroDescription(): string
+    {
+        return SiteSetting::getValue('hero_description',
+            'Escape into a world where the air is scented with sugar cane and the mountains hum with hidden waterfalls. A breathtaking sanctuary in Negros Occidental.');
+    }
+
+    public function getDiscoverTitle(): string
+    {
+        return SiteSetting::getValue('discover_title', 'The City of Smiles & Heritage');
+    }
+
+    public function getDiscoverDescription(): string
+    {
+        return SiteSetting::getValue('discover_description',
+            'Victorias is more than just an industrial hub; it is a blend of natural sanctuary, deep-rooted history, and warm hospitality. Experience the unique charm that makes this city a hidden gem in Western Visayas.');
+    }
 };
 ?>
 
@@ -60,7 +115,7 @@ class extends Component {
         {{-- ========== HERO ========== --}}
         <section class="relative min-h-screen w-full overflow-hidden bg-[#071412] dark:bg-[#071412] text-white">
             <div class="absolute inset-0 z-0">
-                <img src="https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&q=80&w=1600"
+                <img src="{{ $this->getHeroBackgroundUrl() }}"
                      alt="Victorias City Forest"
                      class="w-full h-full object-cover scale-110 opacity-40 dark:opacity-30">
                 <div class="absolute inset-0 bg-gradient-to-r from-[#071412] via-[#071412]/70 to-transparent"></div>
@@ -70,15 +125,14 @@ class extends Component {
             <div class="relative z-10 flex flex-col lg:flex-row items-center w-full min-h-screen">
                 <div class="flex flex-col justify-center px-6 py-20 sm:p-12 lg:p-24 lg:w-3/5 w-full">
                     <div class="space-y-4 mb-8">
-                        <span class="block text-brand-400 font-semibold tracking-[0.4em] uppercase text-xs sm:text-sm">Welcome to the North</span>
+                        <span class="block text-brand-400 font-semibold tracking-[0.4em] uppercase text-xs sm:text-sm">{{ $this->getHeroTitle() }}</span>
                         <h1 class="font-display text-7xl md:text-8xl lg:text-9xl xl:text-[11rem] leading-[0.8] text-white tracking-tighter drop-shadow-lg">
-                            <span class="italic font-light">Victorias</span> <br>
-                            <span class="ml-4 md:ml-12">City</span>
+                            <span class="italic font-light">{{ $this->getHeroSubtitle() }}</span>
                         </h1>
                     </div>
                     <div class="max-w-lg">
                         <p class="text-lg sm:text-xl text-white/70 leading-relaxed mb-10 font-light">
-                            Escape into a world where the air is scented with sugar cane and the mountains hum with hidden waterfalls. A breathtaking sanctuary in Negros Occidental.
+                            {{ $this->getHeroDescription() }}
                         </p>
                         <div class="relative inline-block group">
                             <div class="absolute -inset-1 bg-brand-500/20 blur-xl rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
@@ -94,13 +148,13 @@ class extends Component {
                 <div class="flex flex-row items-center justify-center gap-4 sm:gap-6 px-6 pb-24 lg:pb-0 lg:w-2/5 w-full">
                     <div class="flex flex-col items-center gap-4 mt-12 animate-float">
                         <div class="group relative rounded-2xl overflow-hidden shadow-2xl w-24 sm:w-36 lg:w-40 aspect-[3/4] border border-white/10">
-                            <img src="https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&q=80&w=600" class="w-full h-full object-cover grayscale-[0.5] group-hover:grayscale-0 transition-all duration-700" />
+                            <img src="{{ $this->getSideImageUrl(1) }}" class="w-full h-full object-cover grayscale-[0.5] group-hover:grayscale-0 transition-all duration-700" />
                         </div>
                         <span class="text-brand-400/60 text-[9px] tracking-widest uppercase">Nature</span>
                     </div>
                     <div class="flex flex-col items-center gap-4 z-20">
                         <div class="group relative rounded-3xl overflow-hidden shadow-[0_30px_60px_rgba(0,0,0,0.8)] w-36 sm:w-56 lg:w-64 aspect-[3/5] border border-white/20">
-                            <img src="https://images.unsplash.com/photo-1448375240586-882707db888b?auto=format&fit=crop&q=80&w=600" class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-1000" />
+                            <img src="{{ $this->getSideImageUrl(2) }}" class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-1000" />
                             <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 flex items-end p-6">
                                 <p class="text-white text-xs font-bold tracking-widest uppercase">Gawahon Falls</p>
                             </div>
@@ -109,7 +163,7 @@ class extends Component {
                     </div>
                     <div class="flex flex-col items-center gap-4 mt-12 animate-float" style="animation-delay: 2s;">
                         <div class="group relative rounded-2xl overflow-hidden shadow-2xl w-24 sm:w-36 lg:w-40 aspect-[3/4] border border-white/10">
-                            <img src="https://images.unsplash.com/photo-1542273917363-3b1817f69a2d?auto=format&fit=crop&q=80&w=600" class="w-full h-full object-cover grayscale-[0.5] group-hover:grayscale-0 transition-all duration-700" />
+                            <img src="{{ $this->getSideImageUrl(3) }}" class="w-full h-full object-cover grayscale-[0.5] group-hover:grayscale-0 transition-all duration-700" />
                         </div>
                         <span class="text-brand-400/60 text-[9px] tracking-widest uppercase">Culture</span>
                     </div>
@@ -121,10 +175,10 @@ class extends Component {
         <div class="py-16 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div class="grid lg:grid-cols-2 gap-12 items-center">
                 <div class="space-y-6">
-                    <p class="text-brand-600 dark:text-brand-400 font-bold tracking-widest uppercase text-xs">Discover Victorias</p>
-                    <h2 class="font-display text-4xl md:text-5xl font-bold text-gray-900 dark:text-white leading-tight">The City of Smiles & Heritage</h2>
+                    <p class="text-brand-600 dark:text-brand-400 font-bold tracking-widest uppercase text-xs">{{ $this->getHeroTitle() }}</p>
+                    <h2 class="font-display text-4xl md:text-5xl font-bold text-gray-900 dark:text-white leading-tight">{{ $this->getDiscoverTitle() }}</h2>
                     <p class="text-gray-600 dark:text-white/60 text-lg">
-                        Victorias is more than just an industrial hub; it is a blend of natural sanctuary, deep-rooted history, and warm hospitality. Experience the unique charm that makes this city a hidden gem in Western Visayas.
+                        {{ $this->getDiscoverDescription() }}
                     </p>
                     <ul class="space-y-4">
                         <li class="flex items-start gap-3">
@@ -160,7 +214,7 @@ class extends Component {
                             @forelse($this->carouselTenants as $tenant)
                                 <div class="hs-carousel-slide">
                                     <div class="h-full bg-cover bg-center flex items-end p-8"
-                                         style="background-image: linear-gradient(rgba(0,0,0,0.3), rgba(0,0,0,0.7)), url('{{ Storage::url($tenant->logo) }}');">
+                                         style="background-image: linear-gradient(rgba(0,0,0,0.3), rgba(0,0,0,0.7)), url('{{ asset('storage/'. $tenant->logo) }}');">
                                         <h3 class="text-white text-2xl font-bold">{{ $tenant->name }}</h3>
                                     </div>
                                 </div>
@@ -195,7 +249,7 @@ class extends Component {
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                     @foreach($this->tenants as $tenant)
                         @php
-                            $cardImage = $tenant->logo ? Storage::url($tenant->logo) : 'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?q=80&w=800';
+                            $cardImage = $tenant->logo ? asset('storage/'. $tenant->logo) : 'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?q=80&w=800';
                         @endphp
                         <div class="group bg-white dark:bg-white/5 dark:backdrop-blur-md border border-gray-200 dark:border-white/10 rounded-3xl overflow-hidden shadow-sm dark:shadow-none hover:shadow-xl dark:hover:shadow-lg hover:-translate-y-1 transition-all duration-300">
                             <div class="h-56 overflow-hidden">
@@ -204,7 +258,6 @@ class extends Component {
                             <div class="p-6">
                                 <h3 class="font-display text-2xl font-semibold text-gray-900 dark:text-white mb-2 group-hover:text-brand-600 dark:group-hover:text-brand-400 transition">{{ $tenant->name }}</h3>
                                 <p class="text-gray-600 dark:text-white/50 text-sm leading-relaxed line-clamp-3 mb-6">{{ Str::limit($tenant->address ?? 'Discover this spot.', 100) }}</p>
-                                {{-- 🔁 Changed from tenant.show to business.offerings --}}
                                 <a href="{{ route('business.offerings', $tenant->slug) }}" wire:navigate class="block w-full py-3 rounded-full bg-brand-600 hover:bg-brand-500 text-white font-semibold text-center shadow-lg shadow-brand-500/20 transition">
                                     Explore {{ $tenant->name }}
                                 </a>
@@ -325,7 +378,7 @@ class extends Component {
             setTimeout(() => window.mapMarkers[index].openPopup(), 1200);
         };
 
-        // Map Alpine component
+        // Map Alpine component (fixed to avoid black screen)
         document.addEventListener('alpine:init', () => {
             Alpine.data('mapComponent', () => ({
                 map: null,
@@ -343,6 +396,14 @@ class extends Component {
                 },
 
                 initMap() {
+                    // Wait until the container actually has a height
+                    const container = this.$refs.mapContainer;
+                    if (!container || container.offsetHeight === 0) {
+                        // Retry after a short delay
+                        setTimeout(() => this.initMap(), 150);
+                        return;
+                    }
+
                     delete L.Icon.Default.prototype._getIconUrl;
                     L.Icon.Default.mergeOptions({
                         iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
@@ -353,7 +414,7 @@ class extends Component {
                     const locations = @json($this->mapLocations());
 
                     if (!locations || locations.length === 0) {
-                        this.$refs.mapContainer.innerHTML =
+                        container.innerHTML =
                             '<div class="flex items-center justify-center h-full text-white/50">No locations to display</div>';
                         return;
                     }
@@ -362,7 +423,7 @@ class extends Component {
                     const centerLng = locations[0].lng;
                     const zoom = locations.length === 1 ? 12 : 10;
 
-                    this.map = L.map(this.$refs.mapContainer, {
+                    this.map = L.map(container, {
                         center: [centerLat, centerLng],
                         zoom: zoom,
                         scrollWheelZoom: true,
@@ -383,7 +444,7 @@ class extends Component {
                             iconAnchor: [10, 10],
                         });
                         const marker = L.marker([loc.lat, loc.lng], { icon })
-                            .bindPopup(`<strong>${loc.name}</strong><br/>${loc.type}<br/><a href="/business/${loc.slug}" class="text-brand-400 underline" wire:navigate>Visit business</a>`)
+                            .bindPopup(`<strong>${loc.name}</strong><br/>${loc.type}<br/><a href="/business/${loc.slug}/offerings" class="text-brand-400 underline" wire:navigate>View offerings</a>`)
                             .addTo(this.map);
                         this.markers.push(marker);
                     });
@@ -396,7 +457,10 @@ class extends Component {
                         this.map.fitBounds(bounds, { padding: [50, 50] });
                     }
 
-                    setTimeout(() => this.map.invalidateSize(), 200);
+                    // Invalidate size after a small delay to ensure tiles load correctly
+                    setTimeout(() => this.map.invalidateSize(), 300);
+                    // Also listen for window resize to keep map correct
+                    window.addEventListener('resize', () => this.map?.invalidateSize(), { once: false });
                 }
             }));
         });

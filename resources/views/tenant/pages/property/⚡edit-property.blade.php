@@ -58,7 +58,7 @@ class extends Component {
             return [
                 'id'   => $image->id,
                 'path' => $image->image_path,
-                'url'  => Storage::url($image->image_path),
+                'url'  => asset('storage/'. $image->image_path),
             ];
         })->toArray();
     }
@@ -92,7 +92,7 @@ class extends Component {
                 return [
                     'id'   => $img->id,
                     'path' => $img->image_path,
-                    'url'  => Storage::url($img->image_path),
+                    'url'  => asset('storage/'. $img->image_path),
                 ];
             })->toArray();
         }

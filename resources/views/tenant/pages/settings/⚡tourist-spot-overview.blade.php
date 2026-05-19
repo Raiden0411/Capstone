@@ -243,10 +243,9 @@ class extends Component
 
 @push('styles')
 <style>
-    select option {
-        background: #1e293b;
-        color: #e2e8f0;
-    }
+    select option { background: #1e293b; color: #e2e8f0; }
+    /* Tiny tweak for draggable handle */
+    .drag-handle { cursor: grab; }
 </style>
 @endpush
 
@@ -303,213 +302,221 @@ class extends Component
                 @endforeach
             </nav>
 
-            {{-- Section content --}}
+            {{-- Section content (ONLY the active section is rendered) --}}
             <div class="p-5 space-y-8">
                 {{-- COVER SECTION --}}
-                <div x-show="$wire.activeSection === 'cover'">
-                    <h2 class="text-base font-semibold text-white mb-4">Cover Photo</h2>
-                    <div class="space-y-4">
-                        <div class="aspect-video rounded-xl border-2 border-dashed border-white/20 overflow-hidden bg-white/5 flex items-center justify-center relative">
-                            @if($currentCover)
-                                <img src="{{ Storage::url($currentCover) }}" class="w-full h-full object-cover" alt="Cover">
-                            @else
-                                <div class="text-center text-white/40">
-                                    <svg class="mx-auto h-10 w-10 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                                    <p class="text-sm">No cover photo yet</p>
-                                </div>
-                            @endif
-                            <div class="absolute bottom-3 right-3 flex gap-2">
-                                <label class="bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer shadow text-white">
-                                    Change
-                                    <input type="file" wire:model="coverPhoto" accept="image/*" class="hidden">
-                                </label>
+                @if($activeSection === 'cover')
+                    <div>
+                        <h2 class="text-base font-semibold text-white mb-4">Cover Photo</h2>
+                        <div class="space-y-4">
+                            <div class="aspect-video rounded-xl border-2 border-dashed border-white/20 overflow-hidden bg-white/5 flex items-center justify-center relative">
                                 @if($currentCover)
-                                    <button wire:click="removeCover" class="bg-red-500/80 hover:bg-red-500 text-white px-2 py-1.5 rounded-lg text-xs">Remove</button>
+                                    <img src="{{ asset('storage/'. $currentCover) }}" class="w-full h-full object-cover" alt="Cover" loading="lazy">
+                                @else
+                                    <div class="text-center text-white/40">
+                                        <svg class="mx-auto h-10 w-10 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                        <p class="text-sm">No cover photo yet</p>
+                                    </div>
                                 @endif
+                                <div class="absolute bottom-3 right-3 flex gap-2">
+                                    <label class="bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer shadow text-white">
+                                        Change
+                                        <input type="file" wire:model="coverPhoto" accept="image/*" class="hidden">
+                                    </label>
+                                    @if($currentCover)
+                                        <button wire:click="removeCover" class="bg-red-500/80 hover:bg-red-500 text-white px-2 py-1.5 rounded-lg text-xs">Remove</button>
+                                    @endif
+                                </div>
                             </div>
+                            <p class="text-xs text-white/40">Recommended: 1920x1080, max 5MB</p>
                         </div>
-                        <p class="text-xs text-white/40">Recommended: 1920x1080, max 5MB</p>
                     </div>
-                </div>
+                @endif
 
                 {{-- DETAILS SECTION --}}
-                <div x-show="$wire.activeSection === 'details'">
-                    <h2 class="text-base font-semibold text-white mb-4">Description & Tags</h2>
-                    <div class="space-y-4">
-                        <div>
-                            <label class="block text-sm font-medium text-white/70 mb-1">Description</label>
-                            <textarea wire:model.live.debounce.400ms="description" rows="6"
-                                      class="w-full rounded-xl bg-white/5 border border-white/10 text-sm px-4 py-2.5 text-white placeholder-white/30 focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
-                                      placeholder="Write a compelling description…"></textarea>
-                            <div class="mt-1 text-xs text-white/40 flex justify-between">
-                                <span>{{ mb_strlen($description) }}/5000 characters</span>
-                                <div class="w-24 bg-white/10 rounded-full h-1.5">
-                                    <div class="bg-brand-600 h-1.5 rounded-full" style="width: {{ $this->getDescriptionPercent() }}%"></div>
+                @if($activeSection === 'details')
+                    <div>
+                        <h2 class="text-base font-semibold text-white mb-4">Description & Tags</h2>
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium text-white/70 mb-1">Description</label>
+                                <textarea wire:model.live.debounce.400ms="description" rows="6"
+                                          class="w-full rounded-xl bg-white/5 border border-white/10 text-sm px-4 py-2.5 text-white placeholder-white/30 focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
+                                          placeholder="Write a compelling description…"></textarea>
+                                <div class="mt-1 text-xs text-white/40 flex justify-between">
+                                    <span>{{ mb_strlen($description) }}/5000 characters</span>
+                                    <div class="w-24 bg-white/10 rounded-full h-1.5">
+                                        <div class="bg-brand-600 h-1.5 rounded-full" style="width: {{ $this->getDescriptionPercent() }}%"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-white/70 mb-1">Tags</label>
+                                <div class="flex flex-wrap gap-2 mb-3">
+                                    @foreach($tagArray as $index => $tag)
+                                        <span class="inline-flex items-center gap-1 px-3 py-1 bg-brand-500/20 text-brand-300 rounded-full text-sm">
+                                            {{ $tag }}
+                                            <button type="button" wire:click="removeTag({{ $index }})" class="hover:text-red-400">&times;</button>
+                                        </span>
+                                    @endforeach
+                                </div>
+                                <div class="flex gap-2" x-data="{ tagInput: '' }">
+                                    <input type="text" x-ref="tagInput" x-model="tagInput"
+                                           class="flex-1 rounded-xl bg-white/5 border border-white/10 text-sm px-3 py-2 text-white placeholder-white/30 focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
+                                           placeholder="e.g., beach, mountain…"
+                                           @keydown.enter.prevent="$wire.addTag(tagInput); tagInput=''">
+                                    <button type="button"
+                                            @click="$wire.addTag(tagInput); tagInput=''"
+                                            class="px-4 py-2 bg-white/10 rounded-xl text-sm text-white/80 hover:bg-white/20 transition">
+                                        Add
+                                    </button>
                                 </div>
                             </div>
                         </div>
-                        <div>
-                            <label class="block text-sm font-medium text-white/70 mb-1">Tags</label>
-                            <div class="flex flex-wrap gap-2 mb-3">
-                                @foreach($tagArray as $index => $tag)
-                                    <span class="inline-flex items-center gap-1 px-3 py-1 bg-brand-500/20 text-brand-300 rounded-full text-sm">
-                                        {{ $tag }}
-                                        <button type="button" wire:click="removeTag({{ $index }})" class="hover:text-red-400">&times;</button>
-                                    </span>
-                                @endforeach
-                            </div>
-                            <div class="flex gap-2" x-data="{ tagInput: '' }">
-                                <input type="text" x-ref="tagInput" x-model="tagInput"
-                                       class="flex-1 rounded-xl bg-white/5 border border-white/10 text-sm px-3 py-2 text-white placeholder-white/30 focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
-                                       placeholder="e.g., beach, mountain…"
-                                       @keydown.enter.prevent="$wire.addTag(tagInput); tagInput=''">
-                                <button type="button"
-                                        @click="$wire.addTag(tagInput); tagInput=''"
-                                        class="px-4 py-2 bg-white/10 rounded-xl text-sm text-white/80 hover:bg-white/20 transition">
-                                    Add
-                                </button>
-                            </div>
-                        </div>
                     </div>
-                </div>
+                @endif
 
                 {{-- GALLERY SECTION --}}
-                <div x-show="$wire.activeSection === 'gallery'">
-                    <h2 class="text-base font-semibold text-white mb-4">Photo Gallery</h2>
-                    <div class="space-y-4">
-                        <div class="border-2 border-dashed border-white/20 rounded-xl p-6 text-center hover:border-brand-400/50 transition">
-                            <input type="file" wire:model.live="newPhotos" multiple accept="image/*" class="hidden" id="gallery-input">
-                            <label for="gallery-input" class="cursor-pointer">
-                                <svg class="mx-auto h-8 w-8 text-white/30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
-                                <p class="mt-2 text-sm text-white/60">Click to add images</p>
-                            </label>
-                        </div>
+                @if($activeSection === 'gallery')
+                    <div>
+                        <h2 class="text-base font-semibold text-white mb-4">Photo Gallery</h2>
+                        <div class="space-y-4">
+                            <div class="border-2 border-dashed border-white/20 rounded-xl p-6 text-center hover:border-brand-400/50 transition">
+                                <input type="file" wire:model.live="newPhotos" multiple accept="image/*" class="hidden" id="gallery-input">
+                                <label for="gallery-input" class="cursor-pointer">
+                                    <svg class="mx-auto h-8 w-8 text-white/30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
+                                    <p class="mt-2 text-sm text-white/60">Click to add images</p>
+                                </label>
+                            </div>
 
-                        @if(count($newPhotos))
-                            <div class="flex items-center justify-between">
-                                <span class="text-sm font-medium text-white">Pending ({{ count($newPhotos) }})</span>
-                                <button wire:click="uploadGallery" class="bg-brand-600 hover:bg-brand-500 text-white text-xs px-3 py-1 rounded-full">Upload</button>
-                            </div>
-                            <div class="grid grid-cols-3 gap-3">
-                                @foreach($newPhotos as $index => $photo)
-                                    <div class="relative rounded-lg overflow-hidden">
-                                        <img src="{{ $photo->temporaryUrl() }}" class="w-full h-24 object-cover">
-                                        <button wire:click="removeNewPhoto({{ $index }})" class="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 text-xs">&times;</button>
-                                    </div>
-                                @endforeach
-                            </div>
-                        @endif
+                            @if(count($newPhotos))
+                                <div class="flex items-center justify-between">
+                                    <span class="text-sm font-medium text-white">Pending ({{ count($newPhotos) }})</span>
+                                    <button wire:click="uploadGallery" class="bg-brand-600 hover:bg-brand-500 text-white text-xs px-3 py-1 rounded-full">Upload</button>
+                                </div>
+                                <div class="grid grid-cols-3 gap-3">
+                                    @foreach($newPhotos as $index => $photo)
+                                        <div class="relative rounded-lg overflow-hidden">
+                                            <img src="{{ $photo->temporaryUrl() }}" class="w-full h-24 object-cover" loading="lazy">
+                                            <button wire:click="removeNewPhoto({{ $index }})" class="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 text-xs">&times;</button>
+                                        </div>
+                                    @endforeach
+                                </div>
+                            @endif
 
-                        @if(count($gallery))
-                            <div id="ranking-grid" class="grid grid-cols-3 gap-3" wire:ignore>
-                                @foreach($gallery as $index => $path)
-                                    <div data-path="{{ $path }}" wire:key="gallery-{{ $index }}" class="relative group cursor-pointer rounded-lg overflow-hidden">
-                                        <img src="{{ Storage::url($path) }}" class="w-full h-24 object-cover">
-                                        <button wire:click="deletePhoto({{ $index }})" class="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition">&times;</button>
-                                        <div class="drag-handle absolute bottom-1 left-1 bg-black/60 rounded p-0.5 text-white text-xs cursor-grab opacity-0 group-hover:opacity-100">⣿</div>
-                                    </div>
-                                @endforeach
-                            </div>
-                            <p class="text-xs text-white/40">Drag to reorder</p>
-                        @else
-                            <p class="text-sm text-white/40 italic">No photos yet.</p>
-                        @endif
+                            @if(count($gallery))
+                                <div id="ranking-grid" class="grid grid-cols-3 gap-3" wire:ignore>
+                                    @foreach($gallery as $index => $path)
+                                        <div data-path="{{ $path }}" wire:key="gallery-{{ $index }}" class="relative group cursor-pointer rounded-lg overflow-hidden">
+                                            <img src="{{ asset('storage/'. $path) }}" class="w-full h-24 object-cover" loading="lazy">
+                                            <button wire:click="deletePhoto({{ $index }})" class="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition">&times;</button>
+                                            <div class="drag-handle absolute bottom-1 left-1 bg-black/60 rounded p-0.5 text-white text-xs cursor-grab opacity-0 group-hover:opacity-100">⣿</div>
+                                        </div>
+                                    @endforeach
+                                </div>
+                                <p class="text-xs text-white/40">Drag to reorder</p>
+                            @else
+                                <p class="text-sm text-white/40 italic">No photos yet.</p>
+                            @endif
 
-                        <div class="space-y-3 pt-2">
-                            <div>
-                                <label class="block text-sm font-medium text-white/70 mb-1">Gallery Subtitle</label>
-                                <input type="text" wire:model.live.debounce.400ms="gallerySubtitle"
-                                       class="w-full rounded-xl bg-white/5 border border-white/10 text-sm px-3 py-2 text-white placeholder-white/30 focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
-                                       placeholder="e.g., Pick your dream">
-                            </div>
-                            <div>
-                                <label class="block text-sm font-medium text-white/70 mb-1">Gallery Title</label>
-                                <input type="text" wire:model.live.debounce.400ms="galleryTitle"
-                                       class="w-full rounded-xl bg-white/5 border border-white/10 text-sm px-3 py-2 text-white placeholder-white/30 focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
-                                       placeholder="e.g., Destination Recommendations">
+                            <div class="space-y-3 pt-2">
+                                <div>
+                                    <label class="block text-sm font-medium text-white/70 mb-1">Gallery Subtitle</label>
+                                    <input type="text" wire:model.live.debounce.400ms="gallerySubtitle"
+                                           class="w-full rounded-xl bg-white/5 border border-white/10 text-sm px-3 py-2 text-white placeholder-white/30 focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
+                                           placeholder="e.g., Pick your dream">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-white/70 mb-1">Gallery Title</label>
+                                    <input type="text" wire:model.live.debounce.400ms="galleryTitle"
+                                           class="w-full rounded-xl bg-white/5 border border-white/10 text-sm px-3 py-2 text-white placeholder-white/30 focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
+                                           placeholder="e.g., Destination Recommendations">
+                                </div>
                             </div>
                         </div>
                     </div>
-                </div>
+                @endif
 
                 {{-- FOOTER SECTION --}}
-                <div x-show="$wire.activeSection === 'footer'">
-                    <h2 class="text-base font-semibold text-white mb-4">Footer Section</h2>
-                    <div class="space-y-4">
-                        <div>
-                            <label class="block text-sm font-medium text-white/70 mb-1">Footer Title</label>
-                            <textarea wire:model.live.debounce.400ms="footerTitle" rows="2"
-                                      class="w-full rounded-xl bg-white/5 border border-white/10 text-sm px-3 py-2 text-white placeholder-white/30 focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
-                                      placeholder="TRAVEL AND ENJOY YOUR HOLIDAY"></textarea>
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-white/70 mb-1">Footer Description</label>
-                            <textarea wire:model.live.debounce.400ms="footerDescription" rows="2"
-                                      class="w-full rounded-xl bg-white/5 border border-white/10 text-sm px-3 py-2 text-white placeholder-white/30 focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
-                                      placeholder="Slogan or description"></textarea>
-                        </div>
-                        <div class="grid grid-cols-2 gap-4">
+                @if($activeSection === 'footer')
+                    <div>
+                        <h2 class="text-base font-semibold text-white mb-4">Footer Section</h2>
+                        <div class="space-y-4">
                             <div>
-                                <label class="block text-sm font-medium text-white/70 mb-1">Thumbnail 1</label>
-                                <div class="flex items-center gap-2">
-                                    @if($footerThumb1)
-                                        <img src="{{ Storage::url($footerThumb1) }}" class="h-12 w-12 object-cover rounded-lg">
-                                    @endif
-                                    <label class="bg-white/10 px-2 py-1 rounded text-xs cursor-pointer text-white/80 hover:bg-white/20 transition">
-                                        Upload
-                                        <input type="file" wire:model="footerThumb1File" accept="image/*" class="hidden">
-                                    </label>
-                                    @if($footerThumb1)
-                                        <button wire:click="removeFooterAsset('footerThumb1', 'footer_thumb_1')" class="text-red-400 text-xs">Remove</button>
-                                    @endif
-                                </div>
+                                <label class="block text-sm font-medium text-white/70 mb-1">Footer Title</label>
+                                <textarea wire:model.live.debounce.400ms="footerTitle" rows="2"
+                                          class="w-full rounded-xl bg-white/5 border border-white/10 text-sm px-3 py-2 text-white placeholder-white/30 focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
+                                          placeholder="TRAVEL AND ENJOY YOUR HOLIDAY"></textarea>
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-white/70 mb-1">Thumbnail 2</label>
-                                <div class="flex items-center gap-2">
-                                    @if($footerThumb2)
-                                        <img src="{{ Storage::url($footerThumb2) }}" class="h-12 w-12 object-cover rounded-lg">
-                                    @endif
-                                    <label class="bg-white/10 px-2 py-1 rounded text-xs cursor-pointer text-white/80 hover:bg-white/20 transition">
-                                        Upload
-                                        <input type="file" wire:model="footerThumb2File" accept="image/*" class="hidden">
-                                    </label>
-                                    @if($footerThumb2)
-                                        <button wire:click="removeFooterAsset('footerThumb2', 'footer_thumb_2')" class="text-red-400 text-xs">Remove</button>
-                                    @endif
-                                </div>
+                                <label class="block text-sm font-medium text-white/70 mb-1">Footer Description</label>
+                                <textarea wire:model.live.debounce.400ms="footerDescription" rows="2"
+                                          class="w-full rounded-xl bg-white/5 border border-white/10 text-sm px-3 py-2 text-white placeholder-white/30 focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
+                                          placeholder="Slogan or description"></textarea>
                             </div>
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-white/70 mb-1">Footer Background</label>
-                            <div class="flex items-center gap-4">
-                                @if($footerBackground)
-                                    <div class="w-16 h-16 rounded-lg overflow-hidden">
-                                        <img src="{{ Storage::url($footerBackground) }}" class="w-full h-full object-cover">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-white/70 mb-1">Thumbnail 1</label>
+                                    <div class="flex items-center gap-2">
+                                        @if($footerThumb1)
+                                            <img src="{{ asset('storage/'. $footerThumb1) }}" class="h-12 w-12 object-cover rounded-lg" loading="lazy">
+                                        @endif
+                                        <label class="bg-white/10 px-2 py-1 rounded text-xs cursor-pointer text-white/80 hover:bg-white/20 transition">
+                                            Upload
+                                            <input type="file" wire:model="footerThumb1File" accept="image/*" class="hidden">
+                                        </label>
+                                        @if($footerThumb1)
+                                            <button wire:click="removeFooterAsset('footerThumb1', 'footer_thumb_1')" class="text-red-400 text-xs">Remove</button>
+                                        @endif
                                     </div>
-                                @endif
-                                <label class="bg-white/10 px-2 py-1 rounded text-xs cursor-pointer text-white/80 hover:bg-white/20 transition">
-                                    Upload
-                                    <input type="file" wire:model="footerBackgroundFile" accept="image/*" class="hidden">
-                                </label>
-                                @if($footerBackground)
-                                    <button wire:click="removeFooterAsset('footerBackground', 'footer_background')" class="text-red-400 text-xs">Remove</button>
-                                @endif
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-white/70 mb-1">Thumbnail 2</label>
+                                    <div class="flex items-center gap-2">
+                                        @if($footerThumb2)
+                                            <img src="{{ asset('storage/'. $footerThumb2) }}" class="h-12 w-12 object-cover rounded-lg" loading="lazy">
+                                        @endif
+                                        <label class="bg-white/10 px-2 py-1 rounded text-xs cursor-pointer text-white/80 hover:bg-white/20 transition">
+                                            Upload
+                                            <input type="file" wire:model="footerThumb2File" accept="image/*" class="hidden">
+                                        </label>
+                                        @if($footerThumb2)
+                                            <button wire:click="removeFooterAsset('footerThumb2', 'footer_thumb_2')" class="text-red-400 text-xs">Remove</button>
+                                        @endif
+                                    </div>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-white/70 mb-1">Footer Background</label>
+                                <div class="flex items-center gap-4">
+                                    @if($footerBackground)
+                                        <div class="w-16 h-16 rounded-lg overflow-hidden">
+                                            <img src="{{ asset('storage/'. $footerBackground) }}" class="w-full h-full object-cover" loading="lazy">
+                                        </div>
+                                    @endif
+                                    <label class="bg-white/10 px-2 py-1 rounded text-xs cursor-pointer text-white/80 hover:bg-white/20 transition">
+                                        Upload
+                                        <input type="file" wire:model="footerBackgroundFile" accept="image/*" class="hidden">
+                                    </label>
+                                    @if($footerBackground)
+                                        <button wire:click="removeFooterAsset('footerBackground', 'footer_background')" class="text-red-400 text-xs">Remove</button>
+                                    @endif
+                                </div>
                             </div>
                         </div>
                     </div>
-                </div>
+                @endif
             </div>
         </div>
 
-        {{-- RIGHT: Live Preview --}}
+        {{-- RIGHT: Live Preview (always shown, but images are lazy) --}}
         <div class="hidden lg:flex flex-1 bg-black/40 backdrop-blur-sm overflow-y-auto">
             <div class="w-full p-6 flex items-start justify-center">
                 <div class="w-full max-w-md glass-card overflow-hidden border border-white/10 rounded-3xl shadow-2xl">
                     <div class="h-[600px] overflow-y-auto scrollbar-thin">
                         <!-- Hero -->
                         <div class="relative h-48 bg-cover bg-center {{ $currentCover ? '' : 'bg-gradient-to-br from-gray-800 to-gray-900' }}"
-                             @if($currentCover) style="background-image: url('{{ Storage::url($currentCover) }}');" @endif>
+                             @if($currentCover) style="background-image: url('{{ asset('storage/'. $currentCover) }}');" @endif>
                             <div class="absolute inset-0 bg-black/40"></div>
                             <div class="absolute bottom-4 left-4 right-4">
                                 <h1 class="text-white text-xl font-bold">{{ $spotName }}</h1>
@@ -540,7 +547,7 @@ class extends Component
                             <div class="grid grid-cols-3 gap-2">
                                 @foreach(array_slice($gallery, 0, 6) as $img)
                                     <div class="aspect-square rounded-lg overflow-hidden bg-white/10">
-                                        <img src="{{ Storage::url($img) }}" class="w-full h-full object-cover">
+                                        <img src="{{ asset('storage/'. $img) }}" class="w-full h-full object-cover" loading="lazy">
                                     </div>
                                 @endforeach
                                 @for($i = count($gallery); $i < 3; $i++)
@@ -548,11 +555,11 @@ class extends Component
                                 @endfor
                             </div>
 
-                            {{-- Footer Preview with Background Image Fix --}}
+                            {{-- Footer Preview --}}
                             @if($footerTitle || $footerDescription || $footerThumb1 || $footerThumb2 || $footerBackground)
                                 <div class="mt-6 pt-4 border-t border-white/10 relative overflow-hidden rounded-lg"
                                      @if($footerBackground)
-                                         style="background-image: url('{{ Storage::url($footerBackground) }}');
+                                         style="background-image: url('{{ asset('storage/'. $footerBackground) }}');
                                                 background-size: cover;
                                                 background-position: center;"
                                      @endif
@@ -567,10 +574,10 @@ class extends Component
                                         @endif
                                         <div class="flex gap-2 mt-3">
                                             @if($footerThumb1)
-                                                <img src="{{ Storage::url($footerThumb1) }}" class="h-16 w-16 object-cover rounded-lg">
+                                                <img src="{{ asset('storage/'. $footerThumb1) }}" class="h-16 w-16 object-cover rounded-lg" loading="lazy">
                                             @endif
                                             @if($footerThumb2)
-                                                <img src="{{ Storage::url($footerThumb2) }}" class="h-16 w-16 object-cover rounded-lg">
+                                                <img src="{{ asset('storage/'. $footerThumb2) }}" class="h-16 w-16 object-cover rounded-lg" loading="lazy">
                                             @endif
                                         </div>
                                     </div>

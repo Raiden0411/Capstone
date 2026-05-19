@@ -1,14 +1,17 @@
 
-<header class="sticky top-0 inset-x-0 flex flex-wrap md:justify-start md:flex-nowrap z-30 w-full bg-white dark:bg-black/60 dark:backdrop-blur-xl border-b border-gray-200 dark:border-white/10 text-sm py-2.5 transition-all duration-300"
-        :class="minified ? 'lg:ps-[3.25rem]' : 'lg:ps-65'">
+<header
+    x-data="{ minified: false }"
+    @sidebar-minified.window="minified = $event.detail"
+    :class="minified ? 'lg:ps-[3.25rem]' : 'lg:ps-65'"
+    class="sticky top-0 inset-x-0 flex flex-wrap md:justify-start md:flex-nowrap z-30 w-full bg-white dark:bg-black/60 dark:backdrop-blur-xl border-b border-gray-200 dark:border-white/10 text-sm py-2.5 transition-all duration-300"
+>
   <nav class="px-4 sm:px-6 flex basis-full items-center w-full mx-auto justify-between">
     
     
     <div class="flex items-center gap-2 lg:hidden me-5">
       <button type="button"
               class="size-8 flex justify-center items-center gap-x-2 rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-white/5 text-gray-700 dark:text-white/70 hover:bg-gray-100 dark:hover:bg-white/10 transition-colors"
-              data-hs-overlay="#hs-application-sidebar"
-              aria-controls="hs-application-sidebar"
+              @click="$dispatch('toggle-superadmin-sidebar')"
               aria-label="Toggle navigation">
         <svg class="size-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
       </button>
@@ -40,7 +43,6 @@
              @click.outside="open = false"
              @keydown.escape.window="open = false">
           
-          
           <button type="button"
                   @click="open = !open"
                   class="flex items-center gap-2 py-1.5 px-2 rounded-lg text-gray-600 dark:text-white/70 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-white/10 transition-colors focus:outline-none"
@@ -65,7 +67,6 @@
                x-transition:leave-end="opacity-0 scale-95 translate-y-1"
                class="absolute right-0 mt-2 w-64 glass-strong border border-white/10 rounded-2xl shadow-2xl z-50 overflow-hidden">
             
-            
             <div class="px-4 py-3 border-b border-white/10">
               <div class="flex items-center gap-3">
                 <div class="w-10 h-10 rounded-full bg-brand-600 text-white flex items-center justify-center font-bold text-sm shrink-0">
@@ -86,7 +87,6 @@
               </div>
             </div>
 
-            
             <div class="p-1.5 space-y-0.5">
               <a href="<?php echo e(route('superadmin.profile')); ?>" wire:navigate
                  class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-white/70 hover:bg-white/10 hover:text-white transition-colors"

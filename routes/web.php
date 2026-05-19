@@ -91,6 +91,10 @@ Route::prefix('platform')->name('superadmin.')->middleware([Authenticate::class,
 
     // Map Markers (Master Map Control)
     Route::livewire('/map-markers', 'superadmin::pages.map-marker.manage-map-markers')->name('map-markers.index');
+
+    // ★ Homepage Editor (new)
+    Route::livewire('/homepage-editor', 'superadmin::pages.homepage.homepage-editor')->name('homepage.editor');
+    Route::livewire('/about-editor', 'superadmin::pages.homepage.about-editor')->name('about.editor');
 });
 
 
@@ -101,7 +105,6 @@ Route::prefix('admin')->name('tenant.')->middleware([Authenticate::class, IsTena
     // Dashboard & Settings
     Route::livewire('/dashboard', 'tenant::pages.dashboard.dashboard-page')->name('dashboard');
     Route::livewire('/settings', 'tenant::pages.settings.business-profile')->name('settings.index');
-    Route::livewire('/gallery', 'tenant::pages.settings.gallery')->name('settings.gallery');
     Route::livewire('/tourist-spot', 'tenant::pages.settings.tourist-spot-overview')->name('settings.overview');
 
     // Bookings

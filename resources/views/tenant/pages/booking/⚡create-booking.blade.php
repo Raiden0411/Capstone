@@ -425,7 +425,7 @@ class extends Component {
                              wire:click="toggleProperty({{ $property->id }}, {{ $property->price }})">
                             <div class="aspect-4/4 overflow-hidden rounded-t-2xl">
                                 <img class="size-full object-cover group-hover:scale-105 transition duration-700"
-                                     src="{{ $firstImg ? Storage::url($firstImg->image_path) : asset('images/placeholder-room.jpg') }}"
+                                     src="{{ $firstImg ? asset('storage/'. $firstImg->image_path) : asset('images/placeholder-room.jpg') }}"
                                      alt="{{ $property->name }}">
                             </div>
                             <div class="p-4">
@@ -458,7 +458,7 @@ class extends Component {
                         <div class="flex items-center gap-4 p-3 bg-white/5 rounded-xl border border-white/10">
                             <div class="w-12 h-12 rounded-lg overflow-hidden bg-white/10 shrink-0">
                                 @if($prop && $prop->images->isNotEmpty())
-                                    <img src="{{ Storage::url($prop->images->first()->image_path) }}" class="w-full h-full object-cover" alt="{{ $prop->name }}">
+                                    <img src="{{ asset('storage/'. $prop->images->first()->image_path) }}" class="w-full h-full object-cover" alt="{{ $prop->name }}">
                                 @else
                                     <div class="w-full h-full flex items-center justify-center text-white/30">
                                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>

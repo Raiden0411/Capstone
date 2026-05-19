@@ -1,15 +1,23 @@
 {{-- resources/views/components/headers/tenant/sidebar.blade.php --}}
-<div :class="minified ? 'w-13' : 'w-65'"
-     id="hs-application-sidebar"
-     class="hs-overlay [--body-scroll:true] lg:[--overlay-backdrop:false] [--is-layout-affect:true] [--auto-close:lg]
-            hs-overlay-open:translate-x-0
-            -translate-x-full transition-all duration-300 transform
-            h-full
-            hidden lg:block
-            fixed inset-y-0 start-0 z-60
-            lg:translate-x-0
-            bg-black/60 backdrop-blur-xl border-e border-white/10"
-     role="dialog" tabindex="-1" aria-label="Sidebar">
+<div
+    x-data="{ mobileOpen: false, minified: false }"
+    @toggle-tenant-sidebar.window="mobileOpen = !mobileOpen"
+    @keydown.escape.window="mobileOpen = false"
+    :class="[minified ? 'w-13' : 'w-65', mobileOpen ? 'translate-x-0' : '-translate-x-full', 'lg:translate-x-0']"
+    id="hs-application-sidebar"
+    class="
+        fixed inset-y-0 start-0 z-60 h-full
+        bg-black/60 backdrop-blur-xl border-e border-white/10
+        transition-all duration-300 transform
+        lg:block
+    "
+    role="dialog" tabindex="-1" aria-label="Sidebar"
+>
+    {{-- Mobile backdrop --}}
+    <div x-show="mobileOpen" x-cloak
+         class="fixed inset-0 bg-black/50 backdrop-blur-sm z-[-1] lg:hidden"
+         @click="mobileOpen = false" x-transition.opacity></div>
+
     <div class="relative flex flex-col h-full max-h-full">
         
         <!-- Header with dynamic business profile -->
@@ -23,7 +31,7 @@
                 <a class="flex items-center gap-2 font-bold text-xl text-white"
                    href="{{ $dashboardRoute }}" wire:navigate aria-label="Brand">
                     @if($tenant && $tenant->logo)
-                        <img src="{{ Storage::url($tenant->logo) }}"
+                        <img src="{{ asset('storage/'. $tenant->logo) }}"
                              alt="{{ $tenant->name }}"
                              class="w-7 h-7 rounded-full object-cover shrink-0"
                              loading="lazy">
@@ -33,7 +41,8 @@
             </div>
 
             <!-- Desktop Minify Toggle -->
-            <button type="button" @click="minified = !minified"
+            <button type="button"
+                    @click="minified = !minified; $dispatch('sidebar-minified-tenant', minified)"
                     class="hidden lg:flex justify-center items-center flex-none gap-x-3 size-9 text-sm text-white/50 rounded-lg hover:bg-white/10 focus:outline-none"
                     aria-label="Toggle sidebar">
                 <svg x-show="!minified" class="shrink-0 size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/><path d="m10 15-3-3 3-3"/></svg>
@@ -43,7 +52,7 @@
             <!-- Mobile Close Button -->
             <button type="button"
                     class="flex lg:hidden justify-center items-center size-8 rounded-full bg-white/10 text-white/50 hover:text-white hover:bg-white/20"
-                    data-hs-overlay="#hs-application-sidebar"
+                    @click="mobileOpen = false"
                     aria-label="Close sidebar">
                 <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
             </button>

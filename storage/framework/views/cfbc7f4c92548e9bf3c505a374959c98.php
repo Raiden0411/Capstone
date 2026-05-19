@@ -2,6 +2,10 @@
 
 use Livewire\Component;
 
+new class extends Component
+{
+    //
+};
 ?>
 
 <footer class="relative z-10 mt-auto w-full bg-[#020c08]/90 backdrop-blur-xl border-t border-white/10 pt-12 pb-8 px-4 sm:px-6 lg:px-8 font-sans text-white">
@@ -91,4 +95,5 @@ use Livewire\Component;
             </div>
         </div>
     </div>
-</footer><?php /**PATH C:\laragon\www\Capstone\resources\views/components/footers/public-footer.blade.php ENDPATH**/ ?>
+</footer>
+<?php /**PATH C:\laragon\www\Capstone\resources\views/components/footers/public-footer.blade.php ENDPATH**/ ?>

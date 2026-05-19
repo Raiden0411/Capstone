@@ -259,7 +259,7 @@ class extends Component
         galleryOpen: false,
         lightboxSrc: null,
         lightboxIndex: 0,
-        galleryImages: {{ Js::from(collect($galleryImages)->map(fn($p) => Storage::url($p))->values()) }},
+        galleryImages: {{ Js::from(collect($galleryImages)->map(fn($p) => asset('storage/'. $p))->values()) }},
 
         openGallery() {
             this.galleryOpen = true;
@@ -333,9 +333,9 @@ class extends Component
                     @foreach($galleryImages as $index => $imagePath)
                         <div wire:key="gm-{{ $index }}"
                              class="gm-item relative overflow-hidden rounded-xl cursor-pointer group"
-                             @click="openLightbox('{{ Storage::url($imagePath) }}', {{ $index }})"
+                             @click="openLightbox('{{ asset('storage/'. $imagePath) }}', {{ $index }})"
                              style="animation: scaleIn 0.4s cubic-bezier(0.16,1,0.3,1) {{ $index * 40 }}ms both">
-                            <img src="{{ Storage::url($imagePath) }}"
+                            <img src="{{ asset('storage/'. $imagePath) }}"
                                  class="w-full h-full object-cover brightness-90 group-hover:brightness-105 group-hover:scale-105 transition duration-700"
                                  alt="{{ $tenant->name }} photo {{ $index + 1 }}" loading="lazy">
                             <div class="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300">
@@ -390,7 +390,7 @@ class extends Component
 
         {{-- Background --}}
         @if($coverPhoto)
-            <img src="{{ Storage::url($coverPhoto) }}"
+            <img src="{{ asset('storage/'. $coverPhoto) }}"
                  class="absolute inset-0 w-full h-full object-cover scale-105"
                  style="filter: brightness(0.38) saturate(1.2);" alt="">
         @else
@@ -462,7 +462,7 @@ class extends Component
                              @click="openGallery()">
                             @foreach(array_slice($galleryImages, 0, 5) as $i => $img)
                                 <div class="overflow-hidden {{ $i === 0 ? 'rounded-l-xl' : '' }} {{ $i === 4 ? 'rounded-r-xl' : '' }}">
-                                    <img src="{{ Storage::url($img) }}"
+                                    <img src="{{ asset('storage/'. $img) }}"
                                          class="w-full h-full object-cover hover:scale-110 transition duration-700 brightness-75"
                                          alt="" loading="lazy">
                                 </div>

@@ -105,7 +105,7 @@ class extends Component {
         $user->update($data);
 
         // ✅ Dispatch the correct URL (Storage::url) so the header updates instantly
-        $this->dispatch('avatar-updated', url: $newAvatarPath ? Storage::url($newAvatarPath) : null);
+        $this->dispatch('avatar-updated', url: $newAvatarPath ? asset('storage/'. $newAvatarPath) : null);
 
         session()->flash('message', 'Profile updated successfully.');
         $this->reset(['current_password', 'new_password', 'new_password_confirmation']);
@@ -116,7 +116,7 @@ class extends Component {
     {
         if (!$path) return null;
         if (str_starts_with($path, 'http')) return $path;   // temp preview
-        return Storage::url($path);
+        return asset('storage/'. $path);
     }
 };
 ?>

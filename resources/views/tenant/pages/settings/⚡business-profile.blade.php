@@ -118,7 +118,7 @@ class extends Component {
                             @if($logo)
                                 <img src="{{ $logo->temporaryUrl() }}" class="h-16 w-16 object-cover rounded-lg border border-white/10">
                             @elseif($tenant->logo)
-                                <img src="{{ Storage::url($tenant->logo) }}" class="h-16 w-16 object-cover rounded-lg border border-white/10">
+                                <img src="{{ asset('storage/'. $tenant->logo) }}" class="h-16 w-16 object-cover rounded-lg border border-white/10">
                             @else
                                 <div class="h-16 w-16 rounded-lg bg-white/5 flex items-center justify-center text-white/30 border border-white/10">
                                     <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
