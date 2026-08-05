@@ -24,7 +24,7 @@ use App\Models\Booking;
                 <thead class="border-b border-white/10">
                     <tr>
                         <th class="px-6 py-4 text-xs font-semibold text-white/50 uppercase">Ref</th>
-                        <th class="px-6 py-4 text-xs font-semibold text-white/50 uppercase">Customer</th>
+                        <th class="px-6 py-4 text-xs font-semibold text-white/50 uppercase">Guest</th>
                         <th class="px-6 py-4 text-xs font-semibold text-white/50 uppercase">Check In/Out</th>
                         <th class="px-6 py-4 text-xs font-semibold text-white/50 uppercase">Total</th>
                         <th class="px-6 py-4 text-xs font-semibold text-white/50 uppercase">Status</th>
@@ -35,7 +35,7 @@ use App\Models\Booking;
                     <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::openLoop(); ?><?php endif; ?><?php $__empty_1 = true; $__currentLoopData = $this->bookings; $__env->addLoop($__currentLoopData); foreach($__currentLoopData as $booking): $__env->incrementLoopIndices(); $loop = $__env->getLastLoop(); $__empty_1 = false; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::startLoopIteration(); ?><?php endif; ?>
                         <tr class="hover:bg-white/5 transition">
                             <td class="px-6 py-4 font-mono text-sm"><?php echo e($booking->booking_reference); ?></td>
-                            <td class="px-6 py-4 text-sm"><?php echo e($booking->customer->name ?? 'N/A'); ?></td>
+                            <td class="px-6 py-4 text-sm"><?php echo e($booking->user->name ?? 'N/A'); ?></td>
                             <td class="px-6 py-4 text-sm">
                                 <?php echo e($booking->check_in?->format('M d, Y') ?? '—'); ?> → <?php echo e($booking->check_out?->format('M d, Y') ?? '—'); ?>
 

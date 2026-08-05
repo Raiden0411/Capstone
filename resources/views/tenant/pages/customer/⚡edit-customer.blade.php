@@ -4,15 +4,15 @@ use Livewire\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Validate;
-use App\Models\Customer;
+use App\Models\User;
 use Illuminate\Support\Facades\Auth;
 
 new 
 #[Layout('tenant.layouts.app')]
-#[Title('Edit Customer')]
+#[Title('Edit Guest')]
 class extends Component {
     
-    public Customer $customer;
+    public User $user;   // was Customer
     
     #[Validate('required|string|max:255')]
     public $name = '';
@@ -29,32 +29,31 @@ class extends Component {
     #[Validate('nullable|string')]
     public $notes = '';
 
-    public function mount(Customer $customer)
+    public function mount(User $user)
     {
-        // If the customer has no tenant, let the current tenant admin adopt it
-        if (is_null($customer->tenant_id)) {
-            $customer->tenant_id = Auth::user()->tenant_id;
-            $customer->save();
+        // Ensure the user belongs to the tenant (or allow adoption)
+        if (is_null($user->tenant_id)) {
+            $user->tenant_id = Auth::user()->tenant_id;
+            $user->save();
         }
 
-        // Now enforce tenant ownership
-        if ($customer->tenant_id !== Auth::user()->tenant_id) {
+        if ($user->tenant_id !== Auth::user()->tenant_id) {
             abort(403, 'Unauthorized.');
         }
 
-        $this->customer = $customer;
-        $this->name = $customer->name;
-        $this->phone = $customer->phone;
-        $this->email = $customer->email;
-        $this->address = $customer->address;
-        $this->notes = $customer->notes;
+        $this->user = $user;
+        $this->name = $user->name;
+        $this->phone = $user->phone;
+        $this->email = $user->email;
+        $this->address = $user->address;
+        $this->notes = $user->notes;
     }
 
     public function update()
     {
         $this->validate();
         
-        $this->customer->update([
+        $this->user->update([
             'name'    => trim($this->name),
             'phone'   => trim($this->phone),
             'email'   => trim($this->email),
@@ -62,14 +61,14 @@ class extends Component {
             'notes'   => trim($this->notes),
         ]);
         
-        session()->flash('message', 'Customer updated successfully.');
-        return $this->redirectRoute('tenant.bookings.index', navigate: true);
+        session()->flash('message', 'Guest updated successfully.');
+        return $this->redirectRoute('tenant.users.index', navigate: true);  // adjust route if needed
     }
 };
 ?>
 
 <div class="p-6 max-w-3xl mx-auto">
-    <h1 class="text-2xl font-bold mb-6">Edit Customer</h1>
+    <h1 class="text-2xl font-bold mb-6">Edit Guest</h1>
     
     <form wire:submit="update" class="bg-white p-6 rounded-xl shadow space-y-4">
         <div>
@@ -103,10 +102,10 @@ class extends Component {
         
         <div class="flex gap-3 pt-4">
             <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg transition flex items-center gap-2 data-loading:opacity-75">
-                <span class="in-data-loading:hidden">Update Customer</span>
+                <span class="in-data-loading:hidden">Update Guest</span>
                 <span class="not-in-data-loading:hidden">Saving...</span>
             </button>
-            <a href="{{ route('tenant.bookings.index') }}" wire:navigate class="border px-6 py-2 rounded-lg hover:bg-slate-50 transition">Cancel</a>
+            <a href="{{ route('tenant.users.index') }}" wire:navigate class="border px-6 py-2 rounded-lg hover:bg-slate-50 transition">Cancel</a>
         </div>
     </form>
 </div>

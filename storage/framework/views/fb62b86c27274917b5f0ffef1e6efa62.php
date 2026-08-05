@@ -5,7 +5,7 @@ use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
 use App\Models\Booking;
-use App\Models\Customer;
+use App\Models\User;
 use App\Models\Property;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
@@ -93,17 +93,17 @@ use Illuminate\Support\Facades\Auth;
                    class="w-full bg-white/5 border border-white/10 rounded-xl py-2.5 pl-10 pr-4 text-sm text-white placeholder-white/30 focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
                    placeholder="Search reference or guest…">
         </div>
-        <select wire:model.live="customerFilter"
+        <select wire:model.live="userFilter"
                 class="bg-slate-800 border border-white/10 rounded-xl py-2.5 px-4 text-sm text-white focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
             <option value="">All Guests</option>
-            <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::openLoop(); ?><?php endif; ?><?php $__currentLoopData = $this->customers; $__env->addLoop($__currentLoopData); foreach($__currentLoopData as $customer): $__env->incrementLoopIndices(); $loop = $__env->getLastLoop(); ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::startLoopIteration(); ?><?php endif; ?>
-                <option value="<?php echo e($customer->id); ?>"><?php echo e($customer->name); ?></option>
+            <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::openLoop(); ?><?php endif; ?><?php $__currentLoopData = $this->users; $__env->addLoop($__currentLoopData); foreach($__currentLoopData as $user): $__env->incrementLoopIndices(); $loop = $__env->getLastLoop(); ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::startLoopIteration(); ?><?php endif; ?>
+                <option value="<?php echo e($user->id); ?>"><?php echo e($user->name); ?></option>
             <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::endLoop(); ?><?php endif; ?><?php endforeach; $__env->popLoop(); $loop = $__env->getLastLoop(); ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::closeLoop(); ?><?php endif; ?>
         </select>
         <input type="text" wire:model.live="dateRange"
                class="bg-white/5 border border-white/10 rounded-xl py-2.5 px-4 text-sm text-white/80 placeholder-white/30 w-44 focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
                placeholder="Check‑in range…">
-        <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($search || $statusFilter || $dateRange || $customerFilter): ?>
+        <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($search || $statusFilter || $dateRange || $userFilter): ?>
             <button wire:click="clearFilters"
                     class="px-4 py-2 rounded-xl border border-white/20 text-white/60 hover:bg-white/10 text-xs font-semibold uppercase tracking-wider transition">
                 ✕ Clear
@@ -168,12 +168,12 @@ use Illuminate\Support\Facades\Auth;
                             <td class="px-6 py-4">
                                 <div class="flex items-center gap-3">
                                     <div class="w-8 h-8 rounded-full bg-brand-500/20 flex items-center justify-center text-brand-400 font-semibold text-sm">
-                                        <?php echo e(strtoupper(substr($booking->customer->name ?? 'G', 0, 1))); ?>
+                                        <?php echo e(strtoupper(substr($booking->user->name ?? 'G', 0, 1))); ?>
 
                                     </div>
                                     <div>
-                                        <p class="font-medium text-white"><?php echo e($booking->customer->name ?? 'Walk‑in Guest'); ?></p>
-                                        <p class="text-xs text-white/40"><?php echo e($booking->customer->phone ?? $booking->customer->email ?? '—'); ?></p>
+                                        <p class="font-medium text-white"><?php echo e($booking->user->name ?? 'Walk‑in Guest'); ?></p>
+                                        <p class="text-xs text-white/40"><?php echo e($booking->user->phone ?? $booking->user->email ?? '—'); ?></p>
                                     </div>
                                 </div>
                             </td>
@@ -239,8 +239,8 @@ use Illuminate\Support\Facades\Auth;
                                     <div class="p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
                                         <div>
                                             <h4 class="text-xs font-semibold uppercase tracking-wider text-brand-400 mb-3">Guest Details</h4>
-                                            <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($booking->customer): ?>
-                                                <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::openLoop(); ?><?php endif; ?><?php $__currentLoopData = ['Name' => $booking->customer->name, 'Phone' => $booking->customer->phone, 'Email' => $booking->customer->email, 'Address' => $booking->customer->address]; $__env->addLoop($__currentLoopData); foreach($__currentLoopData as $k => $v): $__env->incrementLoopIndices(); $loop = $__env->getLastLoop(); ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::startLoopIteration(); ?><?php endif; ?>
+                                            <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($booking->user): ?>
+                                                <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::openLoop(); ?><?php endif; ?><?php $__currentLoopData = ['Name' => $booking->user->name, 'Phone' => $booking->user->phone, 'Email' => $booking->user->email, 'Address' => $booking->user->address]; $__env->addLoop($__currentLoopData); foreach($__currentLoopData as $k => $v): $__env->incrementLoopIndices(); $loop = $__env->getLastLoop(); ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::startLoopIteration(); ?><?php endif; ?>
                                                     <div class="flex justify-between py-1 text-sm"><span class="text-white/50"><?php echo e($k); ?></span><span class="text-white/80"><?php echo e($v ?? '—'); ?></span></div>
                                                 <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::endLoop(); ?><?php endif; ?><?php endforeach; $__env->popLoop(); $loop = $__env->getLastLoop(); ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::closeLoop(); ?><?php endif; ?>
                                             <?php else: ?>

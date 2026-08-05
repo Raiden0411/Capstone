@@ -65,7 +65,6 @@ class extends Component {
 
 <div class="p-4 sm:p-6 lg:p-10 max-w-3xl mx-auto space-y-6">
 
-    {{-- Flash Message (shown after redirect) --}}
     @if (session()->has('message'))
         <div class="glass-card border-l-4 border-l-brand-400 p-4 text-sm text-white/80 flex items-center gap-3">
             <svg class="w-4 h-4 text-brand-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
@@ -81,7 +80,6 @@ class extends Component {
     </div>
 
     <form wire:submit="update" class="glass-card !rounded-xl p-5 sm:p-6 space-y-5">
-        {{-- Name --}}
         <div>
             <label class="block text-sm font-medium text-white/70 mb-1">Full Name *</label>
             <input type="text" wire:model="name"
@@ -89,7 +87,6 @@ class extends Component {
             @error('name') <span class="text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
         </div>
         
-        {{-- Job Title & Phone --}}
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
                 <label class="block text-sm font-medium text-white/70 mb-1">Job Title / Role</label>
@@ -104,14 +101,12 @@ class extends Component {
             </div>
         </div>
         
-        {{-- Active Checkbox --}}
         <div class="flex items-center gap-3">
             <input type="checkbox" wire:model="is_active"
                    class="rounded border-white/20 bg-white/5 text-brand-600 focus:ring-brand-500">
             <label class="text-sm text-white/70">Active</label>
         </div>
         
-        {{-- Form Actions --}}
         <div class="flex items-center gap-3 pt-4 border-t border-white/10">
             <button type="submit"
                     wire:loading.attr="disabled"

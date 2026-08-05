@@ -60,10 +60,11 @@ class extends Component
             ->whereBetween('created_at', [$start, $end])
             ->count();
 
+        // 🆕 guests are now counted via the user_id column
         $totalGuests = Booking::where('tenant_id', $tenantId)
             ->whereBetween('created_at', [$start, $end])
-            ->distinct('customer_id')
-            ->count('customer_id');
+            ->distinct('user_id')
+            ->count('user_id');
 
         $totalProperties = Property::where('tenant_id', $tenantId)->count();
         $activeBookings = Booking::where('tenant_id', $tenantId)
@@ -154,12 +155,12 @@ class extends Component
             'arrivals'   => Booking::where('tenant_id', Auth::user()->tenant_id)
                 ->where('check_in', $today)
                 ->where('status', '!=', 'cancelled')
-                ->with('customer')
+                ->with('user')          // 🆕 was 'customer'
                 ->get(),
             'departures' => Booking::where('tenant_id', Auth::user()->tenant_id)
                 ->where('check_out', $today)
                 ->where('status', '!=', 'cancelled')
-                ->with('customer')
+                ->with('user')          // 🆕
                 ->get(),
         ];
     }
@@ -371,7 +372,7 @@ class extends Component
                 @forelse($this->upcomingActivity['arrivals'] as $b)
                     <div class="py-3 flex justify-between items-center">
                         <div>
-                            <p class="text-sm font-medium text-white">{{ $b->customer->name ?? 'Guest' }}</p>
+                            <p class="text-sm font-medium text-white">{{ $b->user->name ?? 'Guest' }}</p>   {{-- 🆕 was customer --}}
                             <p class="text-xs text-white/50">{{ $b->check_in->format('M d, Y') }}</p>
                         </div>
                         <span class="text-xs text-brand-400 font-medium">Arriving</span>
@@ -391,7 +392,7 @@ class extends Component
                 @forelse($this->upcomingActivity['departures'] as $b)
                     <div class="py-3 flex justify-between items-center">
                         <div>
-                            <p class="text-sm font-medium text-white">{{ $b->customer->name ?? 'Guest' }}</p>
+                            <p class="text-sm font-medium text-white">{{ $b->user->name ?? 'Guest' }}</p>   {{-- 🆕 --}}
                             <p class="text-xs text-white/50">{{ $b->check_out->format('M d, Y') }}</p>
                         </div>
                         <span class="text-xs text-rose-400 font-medium">Departing</span>
@@ -503,7 +504,6 @@ class extends Component
         });
     };
 
-    // Wait for Chart.js to be ready, then draw
     function initChart() {
         if (typeof Chart === 'undefined') {
             setTimeout(initChart, 100);
@@ -513,10 +513,8 @@ class extends Component
         window.renderBarChart(initialData);
     }
 
-    // Start on page load
     initChart();
 
-    // Also re‑draw when Livewire sends new data (date filter changes)
     Livewire.on('refreshChart', (payload) => {
         const data = payload[0] || payload;
         window.renderBarChart(data);

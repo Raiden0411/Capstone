@@ -8,7 +8,6 @@ use Livewire\Attributes\Computed;
 use App\Models\Property;
 use App\Models\PropertyType;
 use App\Models\Booking;
-use App\Models\Customer;
 use App\Scopes\TenantScope;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -17,7 +16,6 @@ new
 #[Layout('tenant.layouts.app')]
 #[Title('Property Inventory')]
 class extends Component {
-    // (Class code unchanged – keep exactly as provided)
     use WithPagination;
 
     public string $search = '';
@@ -168,13 +166,13 @@ class extends Component {
             ->whereNotIn('status', ['cancelled', 'completed'])
             ->where('check_in', '<=', now())
             ->where('check_out', '>', now())
-            ->with(['items', 'customer'])
+            ->with(['items', 'user'])                                                     // 🆕 was 'customer'
             ->get()
             ->flatMap(function ($booking) {
                 return $booking->items->map(function ($item) use ($booking) {
                     return [
                         'property_id' => $item->property_id,
-                        'guest_name'  => $booking->customer->name ?? 'N/A',
+                        'guest_name'  => $booking->user->name ?? 'N/A',                   // 🆕
                         'check_out'   => $booking->check_out->format('M d, Y'),
                     ];
                 });
@@ -205,7 +203,6 @@ class extends Component {
 
 @push('styles')
 <style>
-    /* Fix invisible options in glass-style selects */
     select option {
         background: #1e293b;
         color: #e2e8f0;

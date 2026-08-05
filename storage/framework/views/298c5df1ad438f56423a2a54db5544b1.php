@@ -9,7 +9,6 @@ use App\Models\Employee;
 
 <div class="p-4 sm:p-6 lg:p-10 max-w-7xl mx-auto space-y-6">
 
-    
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
             <h1 class="text-2xl sm:text-3xl font-bold text-white">Employees</h1>
@@ -21,7 +20,6 @@ use App\Models\Employee;
         </a>
     </div>
 
-    
     <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if(session()->has('message')): ?>
         <div class="glass-card border-l-4 border-l-brand-400 p-4 text-sm text-white/80 flex items-center gap-3">
             <svg class="w-4 h-4 text-brand-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
@@ -30,7 +28,6 @@ use App\Models\Employee;
         </div>
     <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
 
-    
     <div class="relative w-full md:w-1/3">
         <input type="text" wire:model.live.debounce.300ms="search" placeholder="Search employees..." 
                class="w-full bg-white/5 border border-white/10 rounded-xl py-3 pl-10 pr-4 text-sm text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
@@ -39,7 +36,6 @@ use App\Models\Employee;
         </svg>
     </div>
 
-    
     <div class="glass-card !rounded-xl overflow-hidden">
         <div class="overflow-x-auto">
             <table class="w-full text-left">

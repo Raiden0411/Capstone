@@ -6,10 +6,10 @@ use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
 use App\Models\Booking;
 use App\Models\Property;
-use App\Models\Customer;
 use App\Models\Payment;
 use App\Models\Service;
 use App\Models\Employee;
+use App\Models\User;                     // 🆕 replaces Customer
 use Illuminate\Support\Facades\Auth;
 
 new 
@@ -27,7 +27,7 @@ class extends Component {
         return [
             'total_bookings' => Booking::count(),
             'total_properties' => Property::count(),
-            'total_customers' => Customer::count(),
+            'total_customers' => User::whereNotNull('tenant_id')->count(),  // customers = users with a tenant_id
             'total_services' => Service::count(),
             'total_employees' => Employee::count(),
             
@@ -51,7 +51,7 @@ class extends Component {
     #[Computed]
     public function recentBookings()
     {
-        return Booking::with('customer')
+        return Booking::with('user')          // 🆕 was 'customer'
             ->orderBy('created_at', 'desc')
             ->take(5)
             ->get();
@@ -60,7 +60,7 @@ class extends Component {
     #[Computed]
     public function upcomingArrivals()
     {
-        return Booking::with('customer')
+        return Booking::with('user')          // 🆕
             ->where('status', 'confirmed')
             ->whereDate('check_in', '>=', now())
             ->orderBy('check_in')
@@ -216,7 +216,7 @@ class extends Component {
                     <thead>
                         <tr class="text-xs font-semibold uppercase tracking-wider text-white/40 border-b border-white/5">
                             <th class="px-6 py-4 text-left">Ref</th>
-                            <th class="px-6 py-4 text-left">Customer</th>
+                            <th class="px-6 py-4 text-left">Guest</th>
                             <th class="px-6 py-4 text-left">Check‑in</th>
                             <th class="px-6 py-4 text-left">Amount</th>
                             <th class="px-6 py-4 text-left">Status</th>
@@ -226,7 +226,7 @@ class extends Component {
                         @forelse($this->recentBookings as $b)
                             <tr class="hover:bg-white/5 transition-colors">
                                 <td class="px-6 py-4 font-mono text-xs">{{ $b->booking_reference }}</td>
-                                <td class="px-6 py-4">{{ $b->customer->name ?? 'N/A' }}</td>
+                                <td class="px-6 py-4">{{ $b->user->name ?? 'N/A' }}</td>   {{-- 🆕 was customer --}}
                                 <td class="px-6 py-4">{{ $b->check_in->format('M d, Y') }}</td>
                                 <td class="px-6 py-4 font-semibold text-white">₱{{ number_format($b->total_amount, 2) }}</td>
                                 <td class="px-6 py-4">
@@ -255,7 +255,7 @@ class extends Component {
                     @forelse($this->upcomingArrivals as $b)
                         <div class="py-3 flex justify-between items-center">
                             <div>
-                                <p class="text-sm font-semibold text-white">{{ $b->customer->name ?? 'Guest' }}</p>
+                                <p class="text-sm font-semibold text-white">{{ $b->user->name ?? 'Guest' }}</p>
                                 <p class="text-xs text-white/50">{{ $b->check_in->format('M d, Y') }} · {{ $b->booking_reference }}</p>
                             </div>
                             <span class="text-xs text-emerald-400 font-medium">Confirmed</span>

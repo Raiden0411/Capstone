@@ -276,15 +276,25 @@ use Illuminate\Support\Facades\Storage;
             } catch (e) { console.error(e); }
         }
 
-        // Focus location helper
+        // Focus location helper – now uses the first coordinate of the tenant
         window.focusLocation = function(index) {
-            if (!window.mapInstance || !window.mapMarkers || !window.mapMarkers[index]) return;
-            const loc = window.mapMarkers[index].getLatLng();
-            window.mapInstance.flyTo(loc, 15, { duration: 1.5 });
-            setTimeout(() => window.mapMarkers[index].openPopup(), 1200);
+            const loc = window._mapLocationsData?.[index];
+            if (!loc || !window.mapInstance) return;
+            const coord = loc.coordinates?.[0];
+            if (!coord) return;
+            window.mapInstance.flyTo([coord.lat, coord.lng], 15, { duration: 1.5 });
+            // Open popup of the first marker that matches
+            setTimeout(() => {
+                window._mapMarkers?.forEach(m => {
+                    const p = m.getLatLng();
+                    if (Math.abs(p.lat - coord.lat) < 0.0001 && Math.abs(p.lng - coord.lng) < 0.0001) {
+                        m.openPopup();
+                    }
+                });
+            }, 1200);
         };
 
-        // Map Alpine component (fixed to avoid black screen)
+        // Map Alpine component (updated for coordinates array)
         document.addEventListener('alpine:init', () => {
             Alpine.data('mapComponent', () => ({
                 map: null,
@@ -302,10 +312,8 @@ use Illuminate\Support\Facades\Storage;
                 },
 
                 initMap() {
-                    // Wait until the container actually has a height
                     const container = this.$refs.mapContainer;
                     if (!container || container.offsetHeight === 0) {
-                        // Retry after a short delay
                         setTimeout(() => this.initMap(), 150);
                         return;
                     }
@@ -318,6 +326,7 @@ use Illuminate\Support\Facades\Storage;
                     });
 
                     const locations = <?php echo json_encode($this->mapLocations(), 15, 512) ?>;
+                    window._mapLocationsData = locations;
 
                     if (!locations || locations.length === 0) {
                         container.innerHTML =
@@ -325,8 +334,10 @@ use Illuminate\Support\Facades\Storage;
                         return;
                     }
 
-                    const centerLat = locations[0].lat;
-                    const centerLng = locations[0].lng;
+                    // Use first tenant's first coordinate as center
+                    const firstCoord = locations[0].coordinates[0];
+                    const centerLat = firstCoord.lat;
+                    const centerLng = firstCoord.lng;
                     const zoom = locations.length === 1 ? 12 : 10;
 
                     this.map = L.map(container, {
@@ -341,31 +352,35 @@ use Illuminate\Support\Facades\Storage;
                     }).addTo(this.map);
 
                     this.markers = [];
-                    locations.forEach((loc, idx) => {
-                        const color = loc.color;
-                        const icon = L.divIcon({
-                            className: 'custom-pin',
-                            html: `<div class="pin-dot" style="background: ${color}; box-shadow: 0 0 10px ${color};"></div>`,
-                            iconSize: [20, 20],
-                            iconAnchor: [10, 10],
+                    locations.forEach((loc) => {
+                        loc.coordinates.forEach((coord) => {
+                            const color = loc.color;
+                            const isParent = coord.type === 'parent';
+                            const pinSize = isParent ? 14 : 9;
+                            const icon = L.divIcon({
+                                className: 'custom-pin',
+                                html: `<div class="pin-dot" style="background: ${color}; width: ${pinSize}px; height: ${pinSize}px; box-shadow: 0 0 10px ${color};"></div>`,
+                                iconSize: [20, 20],
+                                iconAnchor: [10, 10],
+                            });
+                            const marker = L.marker([coord.lat, coord.lng], { icon })
+                                .bindPopup(`<strong>${coord.name || loc.name}</strong><br/>${loc.type}<br/><a href="/business/${loc.slug}/offerings" class="text-brand-400 underline" wire:navigate>View offerings</a>`)
+                                .addTo(this.map);
+                            this.markers.push(marker);
                         });
-                        const marker = L.marker([loc.lat, loc.lng], { icon })
-                            .bindPopup(`<strong>${loc.name}</strong><br/>${loc.type}<br/><a href="/business/${loc.slug}/offerings" class="text-brand-400 underline" wire:navigate>View offerings</a>`)
-                            .addTo(this.map);
-                        this.markers.push(marker);
                     });
 
                     window.mapMarkers = this.markers;
                     window.mapInstance = this.map;
 
-                    if (locations.length > 1) {
-                        const bounds = L.latLngBounds(locations.map(l => [l.lat, l.lng]));
+                    if (locations.length > 1 || (locations.length === 1 && locations[0].coordinates.length > 1)) {
+                        const allCoords = [];
+                        locations.forEach(l => l.coordinates.forEach(c => allCoords.push([c.lat, c.lng])));
+                        const bounds = L.latLngBounds(allCoords);
                         this.map.fitBounds(bounds, { padding: [50, 50] });
                     }
 
-                    // Invalidate size after a small delay to ensure tiles load correctly
                     setTimeout(() => this.map.invalidateSize(), 300);
-                    // Also listen for window resize to keep map correct
                     window.addEventListener('resize', () => this.map?.invalidateSize(), { once: false });
                 }
             }));

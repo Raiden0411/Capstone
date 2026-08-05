@@ -6,7 +6,7 @@ use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
 use App\Models\Booking;
-use App\Models\Customer;
+use App\Models\User;
 use App\Models\Property;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
@@ -15,13 +15,12 @@ new
 #[Layout('tenant.layouts.app')]
 #[Title('Bookings')]
 class extends Component {
-    // (unchanged – full class from your question)
     use WithPagination;
 
     public string $search        = '';
     public string $statusFilter  = '';
     public string $dateRange     = '';
-    public ?int   $customerFilter = null;
+    public ?int   $userFilter    = null;
     public ?int   $expandedId    = null;
 
     public int $paymentDeadlineHours = 24;
@@ -51,7 +50,7 @@ class extends Component {
     public function updatingSearch()         { $this->resetPage(); }
     public function updatingStatusFilter()   { $this->resetPage(); }
     public function updatingDateRange()      { $this->resetPage(); }
-    public function updatingCustomerFilter() { $this->resetPage(); }
+    public function updatingUserFilter()     { $this->resetPage(); }
 
     public function toggleExpand(int $id)
     {
@@ -109,7 +108,7 @@ class extends Component {
 
     public function clearFilters()
     {
-        $this->reset(['search', 'statusFilter', 'dateRange', 'customerFilter']);
+        $this->reset(['search', 'statusFilter', 'dateRange', 'userFilter']);
         $this->resetPage();
     }
 
@@ -119,22 +118,24 @@ class extends Component {
     }
 
     #[Computed]
-    public function customers()
+    public function users()
     {
-        return Customer::orderBy('name')->get();
+        return User::whereNotNull('tenant_id')
+            ->orderBy('name')
+            ->get();
     }
 
     #[Computed]
     public function bookings()
     {
-        return Booking::with(['customer', 'items.property', 'services.service', 'payments'])
+        return Booking::with(['user', 'items.property', 'services.service', 'payments'])
             ->whereNotIn('status', ['completed', 'cancelled'])
             ->when($this->search, fn($q) => $q->where(fn($q2) =>
                 $q2->where('booking_reference', 'like', '%'.$this->search.'%')
-                   ->orWhereHas('customer', fn($c) => $c->where('name', 'like', '%'.$this->search.'%'))
+                   ->orWhereHas('user', fn($c) => $c->where('name', 'like', '%'.$this->search.'%'))
             ))
             ->when($this->statusFilter, fn($q) => $q->where('status', $this->statusFilter))
-            ->when($this->customerFilter, fn($q) => $q->where('customer_id', $this->customerFilter))
+            ->when($this->userFilter, fn($q) => $q->where('user_id', $this->userFilter))
             ->when($this->dateRange, function ($q) {
                 $dates = explode(' to ', $this->dateRange);
                 if (count($dates) === 2) {
@@ -248,17 +249,17 @@ class extends Component {
                    class="w-full bg-white/5 border border-white/10 rounded-xl py-2.5 pl-10 pr-4 text-sm text-white placeholder-white/30 focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
                    placeholder="Search reference or guest…">
         </div>
-        <select wire:model.live="customerFilter"
+        <select wire:model.live="userFilter"
                 class="bg-slate-800 border border-white/10 rounded-xl py-2.5 px-4 text-sm text-white focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
             <option value="">All Guests</option>
-            @foreach($this->customers as $customer)
-                <option value="{{ $customer->id }}">{{ $customer->name }}</option>
+            @foreach($this->users as $user)
+                <option value="{{ $user->id }}">{{ $user->name }}</option>
             @endforeach
         </select>
         <input type="text" wire:model.live="dateRange"
                class="bg-white/5 border border-white/10 rounded-xl py-2.5 px-4 text-sm text-white/80 placeholder-white/30 w-44 focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
                placeholder="Check‑in range…">
-        @if($search || $statusFilter || $dateRange || $customerFilter)
+        @if($search || $statusFilter || $dateRange || $userFilter)
             <button wire:click="clearFilters"
                     class="px-4 py-2 rounded-xl border border-white/20 text-white/60 hover:bg-white/10 text-xs font-semibold uppercase tracking-wider transition">
                 ✕ Clear
@@ -322,11 +323,11 @@ class extends Component {
                             <td class="px-6 py-4">
                                 <div class="flex items-center gap-3">
                                     <div class="w-8 h-8 rounded-full bg-brand-500/20 flex items-center justify-center text-brand-400 font-semibold text-sm">
-                                        {{ strtoupper(substr($booking->customer->name ?? 'G', 0, 1)) }}
+                                        {{ strtoupper(substr($booking->user->name ?? 'G', 0, 1)) }}
                                     </div>
                                     <div>
-                                        <p class="font-medium text-white">{{ $booking->customer->name ?? 'Walk‑in Guest' }}</p>
-                                        <p class="text-xs text-white/40">{{ $booking->customer->phone ?? $booking->customer->email ?? '—' }}</p>
+                                        <p class="font-medium text-white">{{ $booking->user->name ?? 'Walk‑in Guest' }}</p>
+                                        <p class="text-xs text-white/40">{{ $booking->user->phone ?? $booking->user->email ?? '—' }}</p>
                                     </div>
                                 </div>
                             </td>
@@ -386,8 +387,8 @@ class extends Component {
                                     <div class="p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
                                         <div>
                                             <h4 class="text-xs font-semibold uppercase tracking-wider text-brand-400 mb-3">Guest Details</h4>
-                                            @if($booking->customer)
-                                                @foreach(['Name' => $booking->customer->name, 'Phone' => $booking->customer->phone, 'Email' => $booking->customer->email, 'Address' => $booking->customer->address] as $k => $v)
+                                            @if($booking->user)
+                                                @foreach(['Name' => $booking->user->name, 'Phone' => $booking->user->phone, 'Email' => $booking->user->email, 'Address' => $booking->user->address] as $k => $v)
                                                     <div class="flex justify-between py-1 text-sm"><span class="text-white/50">{{ $k }}</span><span class="text-white/80">{{ $v ?? '—' }}</span></div>
                                                 @endforeach
                                             @else

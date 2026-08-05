@@ -199,7 +199,7 @@ use Carbon\Carbon;
                 <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::openLoop(); ?><?php endif; ?><?php $__empty_1 = true; $__currentLoopData = $this->upcomingActivity['arrivals']; $__env->addLoop($__currentLoopData); foreach($__currentLoopData as $b): $__env->incrementLoopIndices(); $loop = $__env->getLastLoop(); $__empty_1 = false; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::startLoopIteration(); ?><?php endif; ?>
                     <div class="py-3 flex justify-between items-center">
                         <div>
-                            <p class="text-sm font-medium text-white"><?php echo e($b->customer->name ?? 'Guest'); ?></p>
+                            <p class="text-sm font-medium text-white"><?php echo e($b->user->name ?? 'Guest'); ?></p>   
                             <p class="text-xs text-white/50"><?php echo e($b->check_in->format('M d, Y')); ?></p>
                         </div>
                         <span class="text-xs text-brand-400 font-medium">Arriving</span>
@@ -219,7 +219,7 @@ use Carbon\Carbon;
                 <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::openLoop(); ?><?php endif; ?><?php $__empty_1 = true; $__currentLoopData = $this->upcomingActivity['departures']; $__env->addLoop($__currentLoopData); foreach($__currentLoopData as $b): $__env->incrementLoopIndices(); $loop = $__env->getLastLoop(); $__empty_1 = false; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::startLoopIteration(); ?><?php endif; ?>
                     <div class="py-3 flex justify-between items-center">
                         <div>
-                            <p class="text-sm font-medium text-white"><?php echo e($b->customer->name ?? 'Guest'); ?></p>
+                            <p class="text-sm font-medium text-white"><?php echo e($b->user->name ?? 'Guest'); ?></p>   
                             <p class="text-xs text-white/50"><?php echo e($b->check_out->format('M d, Y')); ?></p>
                         </div>
                         <span class="text-xs text-rose-400 font-medium">Departing</span>
@@ -334,7 +334,6 @@ use Carbon\Carbon;
         });
     };
 
-    // Wait for Chart.js to be ready, then draw
     function initChart() {
         if (typeof Chart === 'undefined') {
             setTimeout(initChart, 100);
@@ -344,10 +343,8 @@ use Carbon\Carbon;
         window.renderBarChart(initialData);
     }
 
-    // Start on page load
     initChart();
 
-    // Also re‑draw when Livewire sends new data (date filter changes)
     Livewire.on('refreshChart', (payload) => {
         const data = payload[0] || payload;
         window.renderBarChart(data);

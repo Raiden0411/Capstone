@@ -43,7 +43,7 @@ use Illuminate\Support\Facades\Auth;
                 <thead class="border-b border-white/10">
                     <tr>
                         <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-white/50 uppercase">Booking Ref</th>
-                        <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-white/50 uppercase hidden sm:table-cell">Customer</th>
+                        <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-white/50 uppercase hidden sm:table-cell">Guest</th>
                         <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-white/50 uppercase">Method</th>
                         <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-white/50 uppercase">Amount</th>
                         <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-white/50 uppercase hidden md:table-cell">Status</th>
@@ -64,8 +64,7 @@ use Illuminate\Support\Facades\Auth;
                                 <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
                             </td>
                             <td class="px-4 sm:px-6 py-4 text-sm hidden sm:table-cell">
-                                <?php echo e($payment->booking->customer->name ?? '—'); ?>
-
+                                <?php echo e($payment->booking->user->name ?? '—'); ?>          
                             </td>
                             <td class="px-4 sm:px-6 py-4 text-sm capitalize">
                                 <?php echo e(str_replace('_', ' ', $payment->payment_method)); ?>

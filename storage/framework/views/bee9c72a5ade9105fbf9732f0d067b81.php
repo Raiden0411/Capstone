@@ -4,7 +4,7 @@ use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Validate;
 use App\Models\Booking;
-use App\Models\Customer;
+use App\Models\User;
 use App\Models\Property;
 use App\Models\Service;
 use App\Models\BookingItem;

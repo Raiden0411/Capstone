@@ -76,12 +76,12 @@ class extends Component {
             'payment_method' => 'required|in:card,gcash,paymaya',
         ]);
 
-        $customer = $this->booking->customer;
+        $user = $this->booking->user;          // 🆕 was customer
         
         $session = $payMongo->createCheckoutSession([
-            'customer_name'   => $customer->name,
-            'customer_email'  => $customer->email ?? 'guest@example.com',
-            'customer_phone'  => $customer->phone,
+            'customer_name'   => $user->name,
+            'customer_email'  => $user->email ?? 'guest@example.com',
+            'customer_phone'  => $user->phone,
             'amount'          => $this->amount,
             'description'     => "Booking #{$this->booking->booking_reference}",
             'item_name'       => 'Accommodation Payment',
@@ -152,7 +152,7 @@ class extends Component {
     <div class="glass-card !rounded-xl p-5 sm:p-6">
         {{-- Booking Summary --}}
         <div class="mb-5 p-4 rounded-xl bg-white/5 border border-white/10">
-            <p class="text-sm text-white/80">Customer: <span class="font-medium text-white">{{ $booking->customer->name }}</span></p>
+            <p class="text-sm text-white/80">Guest: <span class="font-medium text-white">{{ $booking->user->name }}</span></p>   {{-- 🆕 --}}
             <p class="text-sm text-white/80">Total Amount: <span class="font-medium text-white">₱{{ number_format($booking->total_amount, 2) }}</span></p>
             <p class="text-sm text-white/80">Remaining Balance: <span class="font-bold text-red-400">₱{{ number_format($amount, 2) }}</span></p>
             @if($amount >= $booking->total_amount)

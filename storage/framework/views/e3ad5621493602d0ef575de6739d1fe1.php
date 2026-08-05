@@ -5,10 +5,10 @@ use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
 use App\Models\Booking;
 use App\Models\Property;
-use App\Models\Customer;
 use App\Models\Payment;
 use App\Models\Service;
 use App\Models\Employee;
+use App\Models\User;
 use Illuminate\Support\Facades\Auth;
 ?>
 
@@ -138,7 +138,7 @@ use Illuminate\Support\Facades\Auth;
                     <thead>
                         <tr class="text-xs font-semibold uppercase tracking-wider text-white/40 border-b border-white/5">
                             <th class="px-6 py-4 text-left">Ref</th>
-                            <th class="px-6 py-4 text-left">Customer</th>
+                            <th class="px-6 py-4 text-left">Guest</th>
                             <th class="px-6 py-4 text-left">Check‑in</th>
                             <th class="px-6 py-4 text-left">Amount</th>
                             <th class="px-6 py-4 text-left">Status</th>
@@ -148,7 +148,7 @@ use Illuminate\Support\Facades\Auth;
                         <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::openLoop(); ?><?php endif; ?><?php $__empty_1 = true; $__currentLoopData = $this->recentBookings; $__env->addLoop($__currentLoopData); foreach($__currentLoopData as $b): $__env->incrementLoopIndices(); $loop = $__env->getLastLoop(); $__empty_1 = false; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::startLoopIteration(); ?><?php endif; ?>
                             <tr class="hover:bg-white/5 transition-colors">
                                 <td class="px-6 py-4 font-mono text-xs"><?php echo e($b->booking_reference); ?></td>
-                                <td class="px-6 py-4"><?php echo e($b->customer->name ?? 'N/A'); ?></td>
+                                <td class="px-6 py-4"><?php echo e($b->user->name ?? 'N/A'); ?></td>   
                                 <td class="px-6 py-4"><?php echo e($b->check_in->format('M d, Y')); ?></td>
                                 <td class="px-6 py-4 font-semibold text-white">₱<?php echo e(number_format($b->total_amount, 2)); ?></td>
                                 <td class="px-6 py-4">
@@ -180,7 +180,7 @@ use Illuminate\Support\Facades\Auth;
                     <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::openLoop(); ?><?php endif; ?><?php $__empty_1 = true; $__currentLoopData = $this->upcomingArrivals; $__env->addLoop($__currentLoopData); foreach($__currentLoopData as $b): $__env->incrementLoopIndices(); $loop = $__env->getLastLoop(); $__empty_1 = false; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::startLoopIteration(); ?><?php endif; ?>
                         <div class="py-3 flex justify-between items-center">
                             <div>
-                                <p class="text-sm font-semibold text-white"><?php echo e($b->customer->name ?? 'Guest'); ?></p>
+                                <p class="text-sm font-semibold text-white"><?php echo e($b->user->name ?? 'Guest'); ?></p>
                                 <p class="text-xs text-white/50"><?php echo e($b->check_in->format('M d, Y')); ?> · <?php echo e($b->booking_reference); ?></p>
                             </div>
                             <span class="text-xs text-emerald-400 font-medium">Confirmed</span>

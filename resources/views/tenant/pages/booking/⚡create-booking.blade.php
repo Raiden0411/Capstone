@@ -5,7 +5,7 @@ use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Validate;
 use App\Models\Booking;
-use App\Models\Customer;
+use App\Models\User;
 use App\Models\Property;
 use App\Models\Service;
 use App\Models\BookingItem;
@@ -24,7 +24,6 @@ class extends Component {
     #[Validate('required|string|max:255')]
     public $customerName = '';
     
-    // Phone validation handled in rules()
     public $customerPhone = '';
     
     public $customerEmail = '';
@@ -71,7 +70,6 @@ class extends Component {
         if (in_array($field, $trimFields)) {
             $this->$field = trim($this->$field);
             if ($field === 'customerPhone') {
-                // Remove spaces, dashes – keep only digits and leading +
                 $this->customerPhone = preg_replace('/[^0-9+]/', '', $this->customerPhone);
             }
         }
@@ -84,12 +82,10 @@ class extends Component {
 
     public function updatedCheckIn()
     {
-        // Enforce max booking window of 30 days from today
         $maxDate = now()->addDays(30)->format('Y-m-d');
         if ($this->check_in > $maxDate) {
             $this->check_in = $maxDate;
         }
-        // Ensure check‑out is at least one day after check‑in
         if ($this->check_out && Carbon::parse($this->check_in)->gte(Carbon::parse($this->check_out))) {
             $this->check_out = Carbon::parse($this->check_in)->addDay()->format('Y-m-d');
         }
@@ -98,12 +94,10 @@ class extends Component {
 
     public function updatedCheckOut()
     {
-        // Cap check‑out to 30 days from today
         $maxDate = now()->addDays(30)->format('Y-m-d');
         if ($this->check_out > $maxDate) {
             $this->check_out = $maxDate;
         }
-        // Keep check‑out after check‑in
         if (Carbon::parse($this->check_out)->lte(Carbon::parse($this->check_in))) {
             $this->check_out = Carbon::parse($this->check_in)->addDay()->format('Y-m-d');
         }
@@ -217,22 +211,22 @@ class extends Component {
         }
 
         DB::transaction(function () {
-            $customer = Customer::create([
+            $user = User::create([
                 'tenant_id' => Auth::user()->tenant_id,
-                'name' => $this->customerName,
-                'phone' => $this->customerPhone,
-                'email' => $this->customerEmail ?: null,
-                'address' => $this->customerAddress ?: null,
+                'name'      => $this->customerName,
+                'email'     => $this->customerEmail ?: ('guest_' . Str::random(8) . '@walkin.local'),
+                'password'  => bcrypt(Str::random(16)),
+                'is_active' => true,
             ]);
 
             $booking = Booking::create([
-                'tenant_id' => Auth::user()->tenant_id,
-                'customer_id' => $customer->id,
+                'tenant_id'         => Auth::user()->tenant_id,
+                'user_id'           => $user->id,
                 'booking_reference' => $this->booking_reference,
-                'check_in' => $this->check_in,
-                'check_out' => $this->check_out,
-                'total_amount' => $this->totalAmount,
-                'status' => 'pending',
+                'check_in'          => $this->check_in,
+                'check_out'         => $this->check_out,
+                'total_amount'      => $this->totalAmount,
+                'status'            => 'pending',
             ]);
 
             $days = Carbon::parse($this->check_in)->diffInDays($this->check_out);
@@ -240,22 +234,22 @@ class extends Component {
 
             foreach ($this->selectedProperties as $propertyId => $item) {
                 BookingItem::create([
-                    'tenant_id' => Auth::user()->tenant_id,
-                    'booking_id' => $booking->id,
+                    'tenant_id'   => Auth::user()->tenant_id,
+                    'booking_id'  => $booking->id,
                     'property_id' => $propertyId,
-                    'price' => $item['price'],
-                    'quantity' => $item['quantity'],
-                    'subtotal' => $item['price'] * $item['quantity'] * $days,
+                    'price'       => $item['price'],
+                    'quantity'    => $item['quantity'],
+                    'subtotal'    => $item['price'] * $item['quantity'] * $days,
                 ]);
             }
 
             foreach ($this->selectedServices as $serviceId => $item) {
                 BookingService::create([
-                    'tenant_id' => Auth::user()->tenant_id,
+                    'tenant_id'  => Auth::user()->tenant_id,
                     'booking_id' => $booking->id,
                     'service_id' => $serviceId,
-                    'quantity' => $item['quantity'],
-                    'subtotal' => $item['price'] * $item['quantity'],
+                    'quantity'   => $item['quantity'],
+                    'subtotal'   => $item['price'] * $item['quantity'],
                 ]);
             }
 
@@ -263,12 +257,12 @@ class extends Component {
 
             if ($this->payment_method === 'cash') {
                 Payment::create([
-                    'tenant_id' => Auth::user()->tenant_id,
-                    'booking_id' => $booking->id,
-                    'amount' => $this->totalAmount,
-                    'payment_method' => 'cash',
-                    'payment_status' => 'paid',
-                    'paid_at' => now(),
+                    'tenant_id'       => Auth::user()->tenant_id,
+                    'booking_id'      => $booking->id,
+                    'amount'          => $this->totalAmount,
+                    'payment_method'  => 'cash',
+                    'payment_status'  => 'paid',
+                    'paid_at'         => now(),
                 ]);
 
                 $totalPaid = $booking->payments()->where('payment_status', 'paid')->sum('amount');
@@ -289,21 +283,21 @@ class extends Component {
     protected function initiateOnlinePayment()
     {
         $booking = Booking::find($this->createdBookingId);
-        $customer = $booking->customer;
+        $user = $booking->user;
 
         $payMongo = app(PayMongoService::class);
         $session = $payMongo->createCheckoutSession([
-            'customer_name' => $customer->name,
-            'customer_email' => $customer->email ?? 'guest@example.com',
-            'customer_phone' => $customer->phone,
-            'amount' => $this->totalAmount,
-            'description' => "Booking #{$booking->booking_reference}",
-            'item_name' => 'Accommodation Payment',
-            'success_url' => route('tenant.payments.success', ['booking' => $booking->id]),
-            'cancel_url' => route('tenant.payments.cancel', ['booking' => $booking->id]),
-            'metadata' => [
+            'customer_name'  => $user->name,
+            'customer_email' => $user->email ?? 'guest@example.com',
+            'customer_phone' => $this->customerPhone,
+            'amount'         => $this->totalAmount,
+            'description'    => "Booking #{$booking->booking_reference}",
+            'item_name'      => 'Accommodation Payment',
+            'success_url'    => route('tenant.payments.success', ['booking' => $booking->id]),
+            'cancel_url'     => route('tenant.payments.cancel', ['booking' => $booking->id]),
+            'metadata'       => [
                 'booking_id' => $booking->id,
-                'tenant_id' => Auth::user()->tenant_id,
+                'tenant_id'  => Auth::user()->tenant_id,
             ],
             'payment_method_types' => [$this->payment_method],
         ]);
@@ -314,11 +308,11 @@ class extends Component {
         }
 
         Payment::create([
-            'tenant_id' => Auth::user()->tenant_id,
-            'booking_id' => $booking->id,
-            'amount' => $this->totalAmount,
-            'payment_method' => $this->payment_method,
-            'payment_status' => 'unpaid',
+            'tenant_id'           => Auth::user()->tenant_id,
+            'booking_id'          => $booking->id,
+            'amount'              => $this->totalAmount,
+            'payment_method'      => $this->payment_method,
+            'payment_status'      => 'unpaid',
             'paymongo_session_id' => $session['data']['id'],
         ]);
 

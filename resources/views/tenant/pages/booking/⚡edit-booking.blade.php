@@ -5,7 +5,7 @@ use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Validate;
 use App\Models\Booking;
-use App\Models\Customer;
+use App\Models\User;
 use App\Models\Property;
 use App\Models\Service;
 use App\Models\BookingItem;
@@ -20,8 +20,8 @@ new
 class extends Component {
     public Booking $booking;
     
-    #[Validate('required|exists:customers,id')]
-    public $customer_id = '';
+    #[Validate('required|exists:users,id')]
+    public $user_id = '';
     
     #[Validate('required|date')]
     public $check_in;
@@ -45,7 +45,7 @@ class extends Component {
         }
 
         $this->booking = $booking;
-        $this->customer_id = (string) $booking->customer_id;
+        $this->user_id = (string) $booking->user_id;
         $this->check_in = $booking->check_in ? Carbon::parse($booking->check_in)->format('Y-m-d') : now()->format('Y-m-d');
         $this->check_out = $booking->check_out ? Carbon::parse($booking->check_out)->format('Y-m-d') : now()->addDay()->format('Y-m-d');
         $this->booking_reference = $booking->booking_reference;
@@ -114,9 +114,11 @@ class extends Component {
         $this->totalAmount = $total;
     }
 
-    public function getCustomersProperty()
+    public function getUsersProperty()
     {
-        return Customer::orderBy('name')->get();
+        return User::whereNotNull('tenant_id')
+            ->orderBy('name')
+            ->get();
     }
     
     public function getAvailablePropertiesProperty()
@@ -169,17 +171,16 @@ class extends Component {
 
         DB::transaction(function () {
             $this->booking->update([
-                'customer_id' => $this->customer_id,
-                'check_in' => $this->check_in,
-                'check_out' => $this->check_out,
-                'status' => $this->status,
+                'user_id'    => $this->user_id,
+                'check_in'   => $this->check_in,
+                'check_out'  => $this->check_out,
+                'status'     => $this->status,
                 'total_amount' => $this->totalAmount,
             ]);
 
             $nights = Carbon::parse($this->check_in)->diffInDays($this->check_out);
             $nights = max(1, $nights);
 
-            // Sync property items
             $existingItemIds = $this->booking->items->pluck('id')->toArray();
             foreach ($this->selectedProperties as $propertyId => $item) {
                 $subtotal = $item['price'] * $item['quantity'] * $nights;
@@ -202,7 +203,6 @@ class extends Component {
             }
             BookingItem::whereIn('id', $existingItemIds)->delete();
 
-            // Sync service items
             $existingServiceIds = $this->booking->services->pluck('id')->toArray();
             foreach ($this->selectedServices as $serviceId => $item) {
                 $subtotal = $item['price'] * $item['quantity'];
@@ -233,7 +233,6 @@ class extends Component {
 
 @push('styles')
 <style>
-    /* Fix invisible options in glass-style selects */
     select option {
         background: #1e293b;
         color: #e2e8f0;
@@ -264,14 +263,14 @@ class extends Component {
         {{-- Customer Selection --}}
         <div class="glass-card !rounded-xl p-5 sm:p-6">
             <h2 class="text-lg font-semibold text-white mb-4">Customer Information</h2>
-            <select wire:model="customer_id"
+            <select wire:model="user_id"
                     class="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-sm text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition appearance-none">
-                <option value="">-- Select Customer --</option>
-                @foreach($this->customers as $customer)
-                    <option value="{{ $customer->id }}">{{ $customer->name }} ({{ $customer->phone }})</option>
+                <option value="">-- Select Guest --</option>
+                @foreach($this->users as $user)
+                    <option value="{{ $user->id }}">{{ $user->name }} ({{ $user->email ?? $user->phone }})</option>
                 @endforeach
             </select>
-            @error('customer_id') <span class="text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+            @error('user_id') <span class="text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
         </div>
 
         {{-- Dates & Status --}}

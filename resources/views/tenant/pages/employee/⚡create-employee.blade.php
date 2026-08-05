@@ -144,7 +144,6 @@ class extends Component {
 
 @push('styles')
 <style>
-    /* Fix invisible options in glass-style selects */
     select option {
         background: #1e293b;
         color: #e2e8f0;
@@ -154,7 +153,6 @@ class extends Component {
 
 <div class="p-4 sm:p-6 lg:p-10 max-w-3xl mx-auto space-y-6">
 
-    {{-- Flash Message (shown on redirect) --}}
     @if (session()->has('message'))
         <div class="glass-card border-l-4 border-l-brand-400 p-4 text-sm text-white/80 flex items-center gap-3">
             <svg class="w-4 h-4 text-brand-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
@@ -170,7 +168,6 @@ class extends Component {
     </div>
 
     <form wire:submit="save" class="glass-card !rounded-xl p-5 sm:p-6 space-y-5">
-        {{-- Basic Info --}}
         <div>
             <label class="block text-sm font-medium text-white/70 mb-1">Full Name *</label>
             <input type="text" wire:model="name"
@@ -198,7 +195,6 @@ class extends Component {
             <label class="text-sm text-white/70">Active</label>
         </div>
         
-        {{-- User Account Toggle --}}
         <div class="border-t border-white/10 pt-5">
             <label class="flex items-center gap-3 cursor-pointer">
                 <input type="checkbox" wire:model.live="create_user"
@@ -245,7 +241,6 @@ class extends Component {
             @endif
         </div>
         
-        {{-- Form Actions --}}
         <div class="flex items-center gap-3 pt-4 border-t border-white/10">
             <button type="submit"
                     wire:loading.attr="disabled"

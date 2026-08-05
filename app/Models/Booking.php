@@ -12,7 +12,7 @@ class Booking extends Model
 
     protected $fillable = [
         'tenant_id',
-        'customer_id',
+        'user_id',            // changed from customer_id
         'booking_reference',
         'check_in',
         'check_out',
@@ -27,15 +27,15 @@ class Booking extends Model
 
     public const PAYMENT_DEADLINE_HOURS = 3;
 
-    // ─── Relationships ─────────────────────────────────────────
+    // ---------- Relationships ----------
     public function tenant()
     {
         return $this->belongsTo(Tenant::class);
     }
 
-    public function customer()
+    public function user()            // changed from customer()
     {
-        return $this->belongsTo(Customer::class);
+        return $this->belongsTo(User::class);
     }
 
     public function items()
@@ -58,7 +58,7 @@ class Booking extends Model
         return $this->hasMany(Transaction::class);
     }
 
-    // ─── Accessors ────────────────────────────────────────────
+    // ---------- Accessors ----------
     public function getCheckInAttribute($value): ?Carbon
     {
         return $value ? Carbon::parse($value) : null;
@@ -78,7 +78,7 @@ class Booking extends Model
         return $this->created_at->addHours(self::PAYMENT_DEADLINE_HOURS);
     }
 
-    // ─── Helpers ──────────────────────────────────────────────
+    // ---------- Helpers ----------
     public function isOverdue(): bool
     {
         if ($this->status !== 'pending') {
@@ -93,7 +93,7 @@ class Booking extends Model
         return $this->created_at->diffInHours(now()) >= self::PAYMENT_DEADLINE_HOURS;
     }
 
-    // ─── Model Boot ───────────────────────────────────────────
+    // ---------- Boot ----------
     protected static function booted()
     {
         static::updated(function (Booking $booking) {
@@ -104,7 +104,6 @@ class Booking extends Model
                     ->values()
                     ->toArray();
 
-                // Explicit optional params to quiet Intelephense
                 Property::whereIn('id', $propertyIds, 'and', false)
                     ->update(['status' => 'available']);
             }

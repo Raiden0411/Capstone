@@ -5,7 +5,6 @@ namespace Database\Seeders;
 use App\Models\Booking;
 use App\Models\BookingItem;
 use App\Models\BookingService;
-use App\Models\Customer;
 use App\Models\Employee;
 use App\Models\Payment;
 use App\Models\Property;
@@ -24,25 +23,22 @@ class DatabaseSeeder extends Seeder
 {
     public function run(): void
     {
-        // 1. Roles & permissions
         $this->call([
             PermissionSeeder::class,
             RoleSeeder::class,
         ]);
 
-        // 2. Tenant types
         $typeInn      = TypeOfTenant::firstOrCreate(['type' => 'Inn'],      ['description' => 'Small lodging']);
         $typeResort   = TypeOfTenant::firstOrCreate(['type' => 'Resort'],   ['description' => 'Leisure resort']);
         $typeEcoPark  = TypeOfTenant::firstOrCreate(['type' => 'Eco Park'], ['description' => 'Nature park']);
         $typeMangrove = TypeOfTenant::firstOrCreate(['type' => 'Mangrove'], ['description' => 'Mangrove area']);
 
-        // 3. Property types (global)
         $propTypeStandard = PropertyType::firstOrCreate(['name' => 'Standard Room'], ['tenant_id' => null]);
         $propTypeDeluxe   = PropertyType::firstOrCreate(['name' => 'Deluxe Room'],   ['tenant_id' => null]);
         $propTypeSuite    = PropertyType::firstOrCreate(['name' => 'Family Suite'],  ['tenant_id' => null]);
         $propTypeCottage  = PropertyType::firstOrCreate(['name' => 'Cottage'],       ['tenant_id' => null]);
 
-        // 4. Super admin
+        // Super admin
         $superAdmin = User::firstOrCreate(
             ['email' => 'superadmin@gmail.com'],
             [
@@ -54,7 +50,18 @@ class DatabaseSeeder extends Seeder
         );
         $superAdmin->assignRole('super-admin');
 
-        // 5. Sample tenants + admin users + full demo data
+        // Tourist user (used for all bookings)
+        $touristUser = User::firstOrCreate(
+            ['email' => 'tourist@gmail.com'],
+            [
+                'name'      => 'Juan Tourist',
+                'password'  => Hash::make('password'),
+                'tenant_id' => null,
+                'is_active' => 1,
+            ]
+        );
+        $touristUser->assignRole('tourist');
+
         $tenants = [
             [
                 'name'             => 'Victorias Eco Park',
@@ -63,8 +70,11 @@ class DatabaseSeeder extends Seeder
                 'address'          => 'Sitio Malingin, Brgy. XIII, Victorias City',
                 'contact_number'   => '034-399-2830',
                 'email'            => 'eco@gmail.com',
-                'latitude'         => 10.9089,
-                'longitude'        => 123.0762,
+                'coordinates'      => [
+                    ['lat' => 10.9089, 'lng' => 123.0762, 'name' => 'Gawahon Falls',       'type' => 'parent'],
+                    ['lat' => 10.9095, 'lng' => 123.0770, 'name' => 'Main Office',          'type' => 'child'],
+                    ['lat' => 10.9080, 'lng' => 123.0750, 'name' => 'Parking Lot',          'type' => 'child'],
+                ],
                 'is_active'        => true,
             ],
             [
@@ -74,8 +84,10 @@ class DatabaseSeeder extends Seeder
                 'address'          => 'Brgy. VI, Victorias City',
                 'contact_number'   => '034-409-1234',
                 'email'            => 'resort@gmail.com',
-                'latitude'         => 10.8956,
-                'longitude'        => 123.0710,
+                'coordinates'      => [
+                    ['lat' => 10.8956, 'lng' => 123.0710, 'name' => 'Resort Main',          'type' => 'parent'],
+                    ['lat' => 10.8960, 'lng' => 123.0720, 'name' => 'Swimming Pool',        'type' => 'child'],
+                ],
                 'is_active'        => true,
             ],
             [
@@ -85,8 +97,9 @@ class DatabaseSeeder extends Seeder
                 'address'          => 'Brgy. II, Victorias City',
                 'contact_number'   => '034-399-5678',
                 'email'            => 'mangrove@gmail.com',
-                'latitude'         => 10.9002,
-                'longitude'        => 123.0685,
+                'coordinates'      => [
+                    ['lat' => 10.9002, 'lng' => 123.0685, 'name' => 'Mangrove Centre',      'type' => 'parent'],
+                ],
                 'is_active'        => true,
             ],
         ];
@@ -106,41 +119,21 @@ class DatabaseSeeder extends Seeder
             );
             $admin->assignRole('admin');
 
-            // Seed demo data (properties, services, customers, bookings, employees)
             $this->seedTenantDemoData($tenant);
         }
-
-        // 6. Tourist user
-        $tourist = User::firstOrCreate(
-            ['email' => 'tourist@gmail.com'],
-            [
-                'name'      => 'Juan Tourist',
-                'password'  => Hash::make('password'),
-                'tenant_id' => null,
-                'is_active' => 1,
-            ]
-        );
-        $tourist->assignRole('tourist');
     }
 
-    /**
-     * Seeds properties, services, customers, bookings, payments and employees
-     * for a single tenant — but only if not already seeded.
-     */
     private function seedTenantDemoData(Tenant $tenant): void
     {
-        // Don't double‑seed (using the three‑argument + boolean pattern)
         if (Property::where('tenant_id', '=', $tenant->id, 'and')->count() > 0) {
             return;
         }
 
-        // ── Property types for this tenant (use global types) ──
         $standard = PropertyType::where('name', '=', 'Standard Room', 'and')->firstOrFail();
         $deluxe   = PropertyType::where('name', '=', 'Deluxe Room',   'and')->firstOrFail();
         $suite    = PropertyType::where('name', '=', 'Family Suite',  'and')->firstOrFail();
         $cottage  = PropertyType::where('name', '=', 'Cottage',       'and')->firstOrFail();
 
-        // ── Properties ──
         $props = [
             ['name' => 'Standard Room', 'type' => $standard, 'price' => 1200, 'capacity' => 2, 'desc' => 'Cozy room for two'],
             ['name' => 'Deluxe Room',   'type' => $deluxe,   'price' => 2000, 'capacity' => 3, 'desc' => 'Spacious with garden view'],
@@ -160,7 +153,6 @@ class DatabaseSeeder extends Seeder
             ]);
         }
 
-        // ── Services ──
         Service::insert([
             ['tenant_id' => $tenant->id, 'name' => 'Breakfast Buffet', 'price' => 250, 'is_active' => 1, 'created_at' => now(), 'updated_at' => now()],
             ['tenant_id' => $tenant->id, 'name' => 'Airport Transfer', 'price' => 500, 'is_active' => 1, 'created_at' => now(), 'updated_at' => now()],
@@ -168,21 +160,11 @@ class DatabaseSeeder extends Seeder
             ['tenant_id' => $tenant->id, 'name' => 'Bike Rental',      'price' => 150, 'is_active' => 1, 'created_at' => now(), 'updated_at' => now()],
         ]);
 
-        // ── Customers ──
-        Customer::insert([
-            ['tenant_id' => $tenant->id, 'name' => 'Juan dela Cruz', 'phone' => '09171234567', 'email' => 'juan@email.com', 'address' => 'Manila', 'created_at' => now(), 'updated_at' => now()],
-            ['tenant_id' => $tenant->id, 'name' => 'Maria Santos',    'phone' => '09182345678', 'email' => 'maria@email.com', 'address' => null,     'created_at' => now(), 'updated_at' => now()],
-            ['tenant_id' => $tenant->id, 'name' => 'Pedro Reyes',     'phone' => '09193456789', 'email' => null,               'address' => null,     'created_at' => now(), 'updated_at' => now()],
-            ['tenant_id' => $tenant->id, 'name' => 'Ana Gonzales',    'phone' => '09201234567', 'email' => 'ana@email.com',   'address' => 'Cebu',  'created_at' => now(), 'updated_at' => now()],
-            ['tenant_id' => $tenant->id, 'name' => 'Mark Villanueva', 'phone' => '09213456789', 'email' => null,               'address' => 'Iloilo','created_at' => now(), 'updated_at' => now()],
-        ]);
-
-        // ── Employees with login accounts ──
+        // Employees
         $customRoles = TenantSetting::where('tenant_id', '=', $tenant->id, 'and')
                                     ->where('key', '=', 'custom_roles', 'and')
                                     ->first();
         $customRolesArray = $customRoles ? $customRoles->value : [];
-        // Ensure a "Front Desk" custom role exists
         $frontDeskIndex = null;
         foreach ($customRolesArray as $idx => $role) {
             if ($role['name'] === 'Front Desk') {
@@ -198,7 +180,6 @@ class DatabaseSeeder extends Seeder
             );
         }
 
-        // Employee accounts
         $emp1User = User::firstOrCreate(
             ['email' => 'rico@gmail.com'],
             ['name' => 'Rico Reception', 'password' => Hash::make('password'), 'tenant_id' => $tenant->id, 'is_active' => 1]
@@ -212,7 +193,6 @@ class DatabaseSeeder extends Seeder
         );
         Employee::create(['tenant_id' => $tenant->id, 'user_id' => $emp2User->id, 'name' => 'Hannah Housekeeping', 'role' => 'Housekeeping', 'phone' => '0917-222-2222', 'is_active' => 1]);
 
-        // Manager (has many permissions directly)
         $mgrUser = User::firstOrCreate(
             ['email' => 'megan@gmail.com'],
             ['name' => 'Megan Manager', 'password' => Hash::make('password'), 'tenant_id' => $tenant->id, 'is_active' => 1]
@@ -220,15 +200,16 @@ class DatabaseSeeder extends Seeder
         $mgrUser->syncPermissions(['view bookings', 'create bookings', 'view customers', 'view properties', 'view services', 'view payments', 'view employees', 'view analytics']);
         Employee::create(['tenant_id' => $tenant->id, 'user_id' => $mgrUser->id, 'name' => 'Megan Manager', 'role' => 'Manager', 'phone' => '0917-333-3333', 'is_active' => 1]);
 
-        // ── Bookings and payments ──
-        $customerIds     = Customer::where('tenant_id', '=', $tenant->id, 'and')->pluck('id')->toArray();
+        // Bookings (using the tourist user)
+        // FIX: Intelephense-friendly four-argument where()
+        $touristUser = User::where('email', '=', 'tourist@gmail.com', 'and')->first();
         $propertyIds     = Property::where('tenant_id', '=', $tenant->id, 'and')->pluck('id')->toArray();
         $propertyPrices  = Property::where('tenant_id', '=', $tenant->id, 'and')->pluck('price', 'id')->toArray();
         $serviceIds      = Service::where('tenant_id', '=', $tenant->id, 'and')->pluck('id')->toArray();
         $servicePrices   = Service::where('tenant_id', '=', $tenant->id, 'and')->pluck('price', 'id')->toArray();
 
         for ($i = 0; $i < 30; $i++) {
-            $checkIn  = Carbon::now()->subDays(rand(0, 60))->addDays(rand(0, 30)); // mix past & future
+            $checkIn  = Carbon::now()->subDays(rand(0, 60))->addDays(rand(0, 30));
             $nights   = rand(1, 4);
             $checkOut = $checkIn->copy()->addDays($nights);
 
@@ -242,7 +223,7 @@ class DatabaseSeeder extends Seeder
 
             $booking = Booking::create([
                 'tenant_id'         => $tenant->id,
-                'customer_id'       => $customerIds[array_rand($customerIds)],
+                'user_id'           => $touristUser->id,
                 'booking_reference' => 'BK-' . strtoupper(Str::random(8)),
                 'check_in'          => $checkIn,
                 'check_out'         => $checkOut,
@@ -260,7 +241,6 @@ class DatabaseSeeder extends Seeder
                 'subtotal'    => $total,
             ]);
 
-            // Randomly attach 0‑2 services
             for ($j = 0; $j < rand(0, 2); $j++) {
                 $svcId    = $serviceIds[array_rand($serviceIds)];
                 $svcPrice = $servicePrices[$svcId];
@@ -275,7 +255,6 @@ class DatabaseSeeder extends Seeder
                 $booking->update(['total_amount' => $total]);
             }
 
-            // Payment
             $paymentStatus = ($status === 'cancelled')
                 ? 'unpaid'
                 : (($status === 'completed' || rand(0, 1)) ? 'paid' : 'unpaid');

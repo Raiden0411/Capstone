@@ -5,7 +5,7 @@ use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Validate;
 use App\Models\Booking;
-use App\Models\Customer;
+use App\Models\User;
 use App\Models\Property;
 use App\Models\Service;
 use App\Models\BookingItem;
@@ -24,7 +24,6 @@ class extends Component {
     #[Validate('required|string|max:255')]
     public $customerName = '';
     
-    // Phone handled in rules()
     public $customerPhone = '';
     
     public $customerEmail = '';
@@ -84,7 +83,6 @@ class extends Component {
 
     public function updatedCheckIn()
     {
-        // Limit to 30 days from now
         $maxDate = now()->addDays(30)->format('Y-m-d');
         if ($this->check_in > $maxDate) {
             $this->check_in = $maxDate;
@@ -189,18 +187,19 @@ class extends Component {
         }
 
         DB::transaction(function () {
-            $customer = Customer::create([
+            // Create a guest user (instead of Customer)
+            $user = User::create([
                 'tenant_id' => Auth::user()->tenant_id,
                 'name'      => $this->customerName,
                 'phone'     => $this->customerPhone,
-                'email'     => $this->customerEmail ?: null,
-                'address'   => $this->customerAddress ?: null,
-                'notes'     => $this->customerNotes ?: null,
+                'email'     => $this->customerEmail ?: ('guest_' . Str::random(8) . '@reservation.local'),
+                'password'  => bcrypt(Str::random(16)),
+                'is_active' => true,
             ]);
 
             $booking = Booking::create([
                 'tenant_id'          => Auth::user()->tenant_id,
-                'customer_id'        => $customer->id,
+                'user_id'            => $user->id,
                 'booking_reference'  => $this->booking_reference,
                 'check_in'           => $this->check_in,
                 'check_out'          => $this->check_out,
@@ -262,13 +261,13 @@ class extends Component {
     protected function initiateOnlinePayment()
     {
         $booking = Booking::find($this->createdBookingId);
-        $customer = $booking->customer;
+        $user = $booking->user;
 
         $payMongo = app(PayMongoService::class);
         $session = $payMongo->createCheckoutSession([
-            'customer_name'   => $customer->name,
-            'customer_email'  => $customer->email ?? 'guest@example.com',
-            'customer_phone'  => $customer->phone,
+            'customer_name'   => $user->name,
+            'customer_email'  => $user->email ?? 'guest@example.com',
+            'customer_phone'  => $user->phone,
             'amount'          => $this->totalAmount,
             'description'     => "Booking #{$booking->booking_reference}",
             'item_name'       => 'Accommodation Payment',

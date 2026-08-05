@@ -16,7 +16,7 @@ class extends Component {
     #[Computed]
     public function bookings()
     {
-        return Booking::with(['customer', 'items.property'])
+        return Booking::with(['user', 'items.property'])
             ->whereIn('status', ['completed', 'cancelled'])
             ->orderBy('check_in', 'desc')
             ->paginate(15);
@@ -41,7 +41,7 @@ class extends Component {
                 <thead class="border-b border-white/10">
                     <tr>
                         <th class="px-6 py-4 text-xs font-semibold text-white/50 uppercase">Ref</th>
-                        <th class="px-6 py-4 text-xs font-semibold text-white/50 uppercase">Customer</th>
+                        <th class="px-6 py-4 text-xs font-semibold text-white/50 uppercase">Guest</th>
                         <th class="px-6 py-4 text-xs font-semibold text-white/50 uppercase">Check In/Out</th>
                         <th class="px-6 py-4 text-xs font-semibold text-white/50 uppercase">Total</th>
                         <th class="px-6 py-4 text-xs font-semibold text-white/50 uppercase">Status</th>
@@ -52,7 +52,7 @@ class extends Component {
                     @forelse($this->bookings as $booking)
                         <tr class="hover:bg-white/5 transition">
                             <td class="px-6 py-4 font-mono text-sm">{{ $booking->booking_reference }}</td>
-                            <td class="px-6 py-4 text-sm">{{ $booking->customer->name ?? 'N/A' }}</td>
+                            <td class="px-6 py-4 text-sm">{{ $booking->user->name ?? 'N/A' }}</td>
                             <td class="px-6 py-4 text-sm">
                                 {{ $booking->check_in?->format('M d, Y') ?? '—' }} → {{ $booking->check_out?->format('M d, Y') ?? '—' }}
                             </td>

@@ -371,7 +371,7 @@ use Illuminate\Support\Facades\DB;
         ⚡ <span x-text="message"></span>
     </div>
 
-    <?php if (! $__env->hasRenderedOnce('e636689b-8fe3-45a2-ae43-a4c37b770a28')): $__env->markAsRenderedOnce('e636689b-8fe3-45a2-ae43-a4c37b770a28'); ?>
+    <?php if (! $__env->hasRenderedOnce('07a6f13c-3dc2-476e-bcde-3d94b8bbac4d')): $__env->markAsRenderedOnce('07a6f13c-3dc2-476e-bcde-3d94b8bbac4d'); ?>
         <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
         <script>
             document.addEventListener('livewire:navigated', function () {

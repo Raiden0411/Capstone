@@ -5,11 +5,11 @@ use Livewire\WithPagination;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
-use App\Models\Customer;
+use App\Models\User;
 
 new 
 #[Layout('tenant.layouts.app')]
-#[Title('Customers')]
+#[Title('Guests')]
 class extends Component {
     use WithPagination;
 
@@ -22,15 +22,15 @@ class extends Component {
 
     public function delete(int $id)
     {
-        $customer = Customer::findOrFail($id);
-        $customer->delete();
-        session()->flash('message', 'Customer deleted successfully.');
+        $user = User::findOrFail($id);
+        $user->delete();
+        session()->flash('message', 'Guest deleted successfully.');
     }
 
     #[Computed]
-    public function customers()
+    public function users()
     {
-        return Customer::query()
+        return User::whereNotNull('tenant_id')
             ->when($this->search, fn($q) => $q->where('name', 'like', '%' . $this->search . '%')
                 ->orWhere('phone', 'like', '%' . $this->search . '%')
                 ->orWhere('email', 'like', '%' . $this->search . '%'))
@@ -43,12 +43,12 @@ class extends Component {
 <div class="p-6 sm:p-10 max-w-7xl mx-auto">
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6 gap-4">
         <div>
-            <h1 class="text-3xl font-bold text-slate-800">Customers</h1>
+            <h1 class="text-3xl font-bold text-slate-800">Guests</h1>
             <p class="text-slate-500">Manage your guest information.</p>
         </div>
-        <a href="{{ route('tenant.customers.create') }}" wire:navigate class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-5 rounded-lg shadow-sm transition flex items-center gap-2">
+        <a href="{{ route('tenant.users.create') }}" wire:navigate class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-5 rounded-lg shadow-sm transition flex items-center gap-2">
             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
-            Add Customer
+            Add Guest
         </a>
     </div>
 
@@ -76,24 +76,24 @@ class extends Component {
                 </tr>
             </thead>
             <tbody class="divide-y divide-slate-200">
-                @forelse($this->customers as $customer)
+                @forelse($this->users as $user)
                     <tr class="hover:bg-slate-50">
-                        <td class="px-6 py-4 font-medium">{{ $customer->name }}</td>
-                        <td class="px-6 py-4">{{ $customer->phone ?? '—' }}</td>
-                        <td class="px-6 py-4">{{ $customer->email ?? '—' }}</td>
-                        <td class="px-6 py-4">{{ $customer->address ?? '—' }}</td>
+                        <td class="px-6 py-4 font-medium">{{ $user->name }}</td>
+                        <td class="px-6 py-4">{{ $user->phone ?? '—' }}</td>
+                        <td class="px-6 py-4">{{ $user->email ?? '—' }}</td>
+                        <td class="px-6 py-4">{{ $user->address ?? '—' }}</td>
                         <td class="px-6 py-4 text-right">
-                            <a href="{{ route('tenant.customers.edit', $customer->id) }}" wire:navigate class="text-blue-600 hover:underline mr-3">Edit</a>
-                            <button wire:click="delete({{ $customer->id }})" wire:confirm="Delete this customer?" class="text-red-600 hover:underline">Delete</button>
+                            <a href="{{ route('tenant.users.edit', $user->id) }}" wire:navigate class="text-blue-600 hover:underline mr-3">Edit</a>
+                            <button wire:click="delete({{ $user->id }})" wire:confirm="Delete this guest?" class="text-red-600 hover:underline">Delete</button>
                         </td>
                     </tr>
                 @empty
-                    <tr><td colspan="5" class="px-6 py-8 text-center text-slate-500">No customers found.</td></tr>
+                    <tr><td colspan="5" class="px-6 py-8 text-center text-slate-500">No guests found.</td></tr>
                 @endforelse
             </tbody>
         </table>
-        @if($this->customers->hasPages())
-            <div class="px-6 py-4 border-t bg-slate-50">{{ $this->customers->links() }}</div>
+        @if($this->users->hasPages())
+            <div class="px-6 py-4 border-t bg-slate-50">{{ $this->users->links() }}</div>
         @endif
     </div>
 </div>

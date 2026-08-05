@@ -10,12 +10,12 @@ use App\Models\Tenant;
 new 
 #[Layout('superadmin.layouts.app')]
 #[Title('Master Map Control')]
-class extends Component {
+class extends Component
+{
     use WithPagination;
     
-    public string $tenant_id = ''; 
-    public $latitude = 10.6765;
-    public $longitude = 122.9509;
+    public string $tenant_id = '';
+    public array $coordinates = [];   // current marker set for editing
     public string $search = '';
 
     public function updatingSearch()
@@ -28,12 +28,13 @@ class extends Component {
         if ($value) {
             $tenant = Tenant::find($value);
             if ($tenant) {
-                $this->latitude = $tenant->latitude ?? 10.6765;
-                $this->longitude = $tenant->longitude ?? 122.9509;
-                $this->dispatch('fly-to-location', lat: $this->latitude, lng: $this->longitude);
+                $this->coordinates = $tenant->coordinates ?? [];
+                if (count($this->coordinates) > 0) {
+                    $this->dispatch('fly-to-location', lat: $this->coordinates[0]['lat'], lng: $this->coordinates[0]['lng']);
+                }
             }
         } else {
-            $this->resetFields();
+            $this->resetCoordinates();
         }
     }
 
@@ -56,28 +57,38 @@ class extends Component {
     #[Computed]
     public function allMappedTenants()
     {
-        return Tenant::whereNotNull('latitude')
-            ->whereNotNull('longitude')
-            ->select('id', 'name', 'latitude', 'longitude')
-            ->get();
+        return Tenant::whereNotNull('coordinates')
+            ->get()
+            ->map(function ($tenant) {
+                $coords = $tenant->coordinates;
+                if (!$coords) return null;
+                return [
+                    'id' => $tenant->id,
+                    'name' => $tenant->name,
+                    'markers' => $coords,
+                ];
+            })
+            ->filter()
+            ->values();
     }
 
     public function store()
     {
         $this->validate([
             'tenant_id' => 'required|exists:tenants,id',
-            'latitude' => 'required|numeric',
-            'longitude' => 'required|numeric',
+            'coordinates' => 'required|array|min:1',
+            'coordinates.*.lat' => 'required|numeric',
+            'coordinates.*.lng' => 'required|numeric',
+            'coordinates.*.name' => 'nullable|string',
+            'coordinates.*.type' => 'nullable|string|in:parent,child',
         ]);
 
-        $tenant = Tenant::findOrFail($this->tenant_id);
-        $tenant->update([
-            'latitude' => $this->latitude,
-            'longitude' => $this->longitude,
+        Tenant::findOrFail($this->tenant_id)->update([
+            'coordinates' => $this->coordinates,
         ]);
 
-        session()->flash('message', "Location updated successfully for {$tenant->name}.");
-        $this->resetFields();
+        session()->flash('message', 'Locations updated successfully.');
+        $this->resetCoordinates();
         unset($this->allMappedTenants, $this->tenants);
     }
 
@@ -85,32 +96,54 @@ class extends Component {
     {
         $tenant = Tenant::findOrFail($id);
         $this->tenant_id = (string) $tenant->id;
-        $this->latitude = $tenant->latitude ?? 10.6765;
-        $this->longitude = $tenant->longitude ?? 122.9509;
-        $this->dispatch('fly-to-location', lat: $this->latitude, lng: $this->longitude);
+        $this->coordinates = $tenant->coordinates ?? [];
+        if (count($this->coordinates) > 0) {
+            $this->dispatch('fly-to-location', lat: $this->coordinates[0]['lat'], lng: $this->coordinates[0]['lng']);
+        }
     }
 
     public function removeLocation($id)
     {
         $tenant = Tenant::findOrFail($id);
-        $tenant->update([
-            'latitude' => null,
-            'longitude' => null
-        ]);
-        
-        session()->flash('message', "Location removed for {$tenant->name}.");
+        $tenant->update(['coordinates' => null]);
+        session()->flash('message', "All locations removed for {$tenant->name}.");
         if ($this->tenant_id == $id) {
-            $this->resetFields();
+            $this->resetCoordinates();
         }
         unset($this->allMappedTenants);
+    }
+
+    public function addCoordinate()
+    {
+        $this->coordinates[] = [
+            'lat' => 10.6765,
+            'lng' => 122.9509,
+            'name' => '',
+            'type' => 'child',
+        ];
+    }
+
+    public function removeCoordinate($index)
+    {
+        unset($this->coordinates[$index]);
+        $this->coordinates = array_values($this->coordinates);
+    }
+
+    public function updateCoordinate($index, $field, $value)
+    {
+        $this->coordinates[$index][$field] = $value;
     }
 
     public function resetFields()
     {
         $this->reset(['tenant_id']);
-        $this->latitude = 10.6765;
-        $this->longitude = 122.9509;
+        $this->resetCoordinates();
         $this->dispatch('reset-map');
+    }
+
+    private function resetCoordinates()
+    {
+        $this->coordinates = [];
     }
 };
 ?>
@@ -125,32 +158,24 @@ class extends Component {
 
     @push('styles')
     <style>
-        /* Fix invisible options in glass-style selects */
         select option {
             background: #1e293b;
             color: #e2e8f0;
         }
-        .leaflet-container {
-            background: transparent !important;
-            border-radius: 0.75rem;
-        }
+        .leaflet-container { background: transparent !important; border-radius: 0.75rem; }
         .leaflet-control-zoom a {
             background: rgba(255,255,255,0.06) !important;
             backdrop-filter: blur(16px);
             color: #fff !important;
             border: 1px solid rgba(255,255,255,0.12) !important;
         }
-        .leaflet-control-zoom a:hover {
-            background: rgba(255,255,255,0.12) !important;
-        }
+        .leaflet-control-zoom a:hover { background: rgba(255,255,255,0.12) !important; }
         .leaflet-control-attribution {
             background: rgba(0,0,0,0.5) !important;
             color: rgba(255,255,255,0.4) !important;
             font-size: 10px !important;
         }
-        .leaflet-control-attribution a {
-            color: rgba(255,255,255,0.6) !important;
-        }
+        .leaflet-control-attribution a { color: rgba(255,255,255,0.6) !important; }
     </style>
     @endpush
 
@@ -163,7 +188,7 @@ class extends Component {
                     Super Admin · Map
                 </p>
                 <h1 class="font-display text-3xl md:text-4xl font-bold text-gray-900 dark:text-white">Master Map Control</h1>
-                <p class="text-sm text-gray-500 dark:text-white/50 mt-1">Plot and view all business locations simultaneously.</p>
+                <p class="text-sm text-gray-500 dark:text-white/50 mt-1">Plot and manage multiple locations for each business.</p>
             </div>
         </div>
 
@@ -174,10 +199,10 @@ class extends Component {
         @endif
 
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-6"
-            x-data="{
+             x-data="{
                 map: null,
-                activeMarker: null,
-                layerGroup: null,
+                activeMarkers: [],   // markers for the selected tenant
+                staticMarkers: [],   // markers from other tenants
                 tileLayer: null,
                 globalTenants: @js($this->allMappedTenants),
                 
@@ -190,60 +215,36 @@ class extends Component {
                     }, 100);
 
                     window.addEventListener('fly-to-location', (e) => {
-                        let lat = parseFloat(e.detail.lat);
-                        let lng = parseFloat(e.detail.lng);
-                        if(this.activeMarker) {
-                            this.activeMarker.setLatLng([lat, lng]);
-                            this.activeMarker.setOpacity(1);
-                        }
+                        const lat = parseFloat(e.detail.lat);
+                        const lng = parseFloat(e.detail.lng);
                         this.map.flyTo([lat, lng], 16, { animate: true, duration: 1.5 });
                     });
 
                     window.addEventListener('reset-map', () => {
-                        if(this.activeMarker) this.activeMarker.setOpacity(0);
+                        this.activeMarkers.forEach(m => this.map.removeLayer(m));
+                        this.activeMarkers = [];
                     });
                 },
                 
                 initMap() {
-                    let lat = parseFloat($wire.latitude) || 10.6765;
-                    let lng = parseFloat($wire.longitude) || 122.9509;
+                    const lat = parseFloat($wire.coordinates[0]?.lat ?? 10.6765);
+                    const lng = parseFloat($wire.coordinates[0]?.lng ?? 122.9509);
 
                     this.map = L.map($refs.mapContainer).setView([lat, lng], 12);
 
                     this.updateTileLayer();
                     new MutationObserver(() => this.updateTileLayer()).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
 
-                    this.layerGroup = L.layerGroup().addTo(this.map);
-                    this.plotGlobalPins();
-
-                    let activeIcon = L.icon({
-                        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
-                        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-                        iconSize: [25, 41],
-                        iconAnchor: [12, 41],
-                        popupAnchor: [1, -34],
-                        shadowSize: [41, 41]
-                    });
-
-                    this.activeMarker = L.marker([lat, lng], { 
-                        draggable: true, 
-                        icon: activeIcon,
-                        opacity: $wire.tenant_id ? 1 : 0 
-                    }).addTo(this.map);
-
-                    this.activeMarker.on('dragend', (e) => {
-                        if(!$wire.tenant_id) return;
-                        let pos = e.target.getLatLng();
-                        $wire.latitude = pos.lat.toFixed(6);
-                        $wire.longitude = pos.lng.toFixed(6);
-                    });
+                    this.plotStaticMarkers();
+                    this.plotActiveMarkers();
 
                     this.map.on('click', (e) => {
-                        if(!$wire.tenant_id) return;
-                        this.activeMarker.setLatLng(e.latlng);
-                        $wire.latitude = e.latlng.lat.toFixed(6);
-                        $wire.longitude = e.latlng.lng.toFixed(6);
-                        this.activeMarker.setOpacity(1);
+                        if (!$wire.tenant_id) return;
+                        $wire.addCoordinate();
+                        const idx = $wire.coordinates.length - 1;
+                        $wire.updateCoordinate(idx, 'lat', e.latlng.lat.toFixed(6));
+                        $wire.updateCoordinate(idx, 'lng', e.latlng.lng.toFixed(6));
+                        this.plotActiveMarkers();
                     });
 
                     setTimeout(() => { this.map.invalidateSize(); }, 300);
@@ -255,15 +256,17 @@ class extends Component {
                         ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
                         : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
                     const attribution = '&copy; <a href=&quot;https://www.openstreetmap.org/copyright&quot;>OpenStreetMap</a> contributors &copy; <a href=&quot;https://carto.com/&quot;>CARTO</a>';
-                    if (this.tileLayer) {
-                        this.map.removeLayer(this.tileLayer);
-                    }
+                    if (this.tileLayer) this.map.removeLayer(this.tileLayer);
                     this.tileLayer = L.tileLayer(url, { maxZoom: 19, attribution: attribution }).addTo(this.map);
                 },
 
-                plotGlobalPins() {
-                    this.layerGroup.clearLayers();
-                    let staticIcon = L.icon({
+                // Other tenants' markers (grey)
+                plotStaticMarkers() {
+                    if (this.staticMarkers.length) {
+                        this.staticMarkers.forEach(m => this.map.removeLayer(m));
+                    }
+                    this.staticMarkers = [];
+                    const staticIcon = L.icon({
                         iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-grey.png',
                         shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
                         iconSize: [25, 41],
@@ -273,39 +276,80 @@ class extends Component {
                     });
 
                     this.globalTenants.forEach(tenant => {
-                        if($wire.tenant_id == tenant.id) return; 
+                        if (tenant.id == $wire.tenant_id) return;
+                        tenant.markers.forEach(coord => {
+                            const marker = L.marker([coord.lat, coord.lng], { icon: staticIcon })
+                                .bindPopup(`<b>${tenant.name}</b><br>${coord.name ?? ''}`);
+                            marker.addTo(this.map);
+                            this.staticMarkers.push(marker);
+                        });
+                    });
+                },
 
-                        L.marker([tenant.latitude, tenant.longitude], { icon: staticIcon })
-                            .bindPopup(`<b>${tenant.name}</b>`)
-                            .addTo(this.layerGroup);
+                // Selected tenant's markers (red parent, orange child)
+                plotActiveMarkers() {
+                    if (this.activeMarkers.length) {
+                        this.activeMarkers.forEach(m => this.map.removeLayer(m));
+                    }
+                    this.activeMarkers = [];
+                    if (!$wire.tenant_id || !$wire.coordinates.length) return;
+
+                    const parentIcon = L.icon({
+                        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+                        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                        iconSize: [25, 41],
+                        iconAnchor: [12, 41],
+                        popupAnchor: [1, -34],
+                        shadowSize: [41, 41]
+                    });
+                    const childIcon = L.icon({
+                        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-orange.png',
+                        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                        iconSize: [25, 41],
+                        iconAnchor: [12, 41],
+                        popupAnchor: [1, -34],
+                        shadowSize: [41, 41]
+                    });
+
+                    $wire.coordinates.forEach((coord, index) => {
+                        const icon = coord.type === 'parent' ? parentIcon : childIcon;
+                        const marker = L.marker([coord.lat, coord.lng], { icon, draggable: true });
+                        marker.bindPopup(`<b>${coord.name ?? 'Marker ' + (index+1)}</b><br>${coord.type ?? ''}`);
+                        marker.on('dragend', (e) => {
+                            $wire.updateCoordinate(index, 'lat', e.target.getLatLng().lat.toFixed(6));
+                            $wire.updateCoordinate(index, 'lng', e.target.getLatLng().lng.toFixed(6));
+                        });
+                        marker.addTo(this.map);
+                        this.activeMarkers.push(marker);
                     });
                 },
 
                 getLocation() {
                     if (!$wire.tenant_id) return alert('Please select a tenant first!');
-                    
                     if (navigator.geolocation) {
                         navigator.geolocation.getCurrentPosition(
                             (position) => {
-                                let lat = position.coords.latitude;
-                                let lng = position.coords.longitude;
-                                this.activeMarker.setLatLng([lat, lng]);
-                                this.activeMarker.setOpacity(1);
+                                const lat = position.coords.latitude;
+                                const lng = position.coords.longitude;
+                                $wire.addCoordinate();
+                                const idx = $wire.coordinates.length - 1;
+                                $wire.updateCoordinate(idx, 'lat', lat.toFixed(6));
+                                $wire.updateCoordinate(idx, 'lng', lng.toFixed(6));
+                                $wire.updateCoordinate(idx, 'type', 'parent');
+                                this.plotActiveMarkers();
                                 this.map.flyTo([lat, lng], 17);
-                                $wire.latitude = lat.toFixed(6);
-                                $wire.longitude = lng.toFixed(6);
                             },
-                            (error) => alert('GPS failed. Please check permissions.')
+                            (error) => alert('GPS failed.')
                         );
                     }
                 }
-            }"
+             }"
         >
             <div class="lg:col-span-8 order-2 lg:order-1">
                 <div class="bg-white dark:bg-white/5 dark:backdrop-blur-md border border-gray-200 dark:border-white/10 rounded-2xl shadow-sm dark:shadow-none p-2 h-full min-h-[600px] relative overflow-hidden">
                     <div class="absolute top-4 right-4 z-[400] glass-card !rounded-lg !px-3 !py-2 text-xs text-white/80 flex flex-col gap-1">
-                        <div class="flex items-center gap-2"><div class="w-3 h-3 bg-red-500 rounded-full"></div> Active Pin</div>
-                        <div class="flex items-center gap-2"><div class="w-3 h-3 bg-gray-400 rounded-full"></div> Existing Spots</div>
+                        <div class="flex items-center gap-2"><div class="w-3 h-3 bg-red-500 rounded-full"></div> Active Pins</div>
+                        <div class="flex items-center gap-2"><div class="w-3 h-3 bg-gray-400 rounded-full"></div> Other Spots</div>
                     </div>
                     <div wire:ignore class="h-full">
                         <div x-ref="mapContainer" class="h-full rounded-lg" style="min-height: 600px;"></div>
@@ -316,7 +360,7 @@ class extends Component {
             <div class="lg:col-span-4 order-1 lg:order-2 space-y-6">
                 {{-- Location Setter --}}
                 <div class="bg-white dark:bg-white/5 dark:backdrop-blur-md border border-gray-200 dark:border-white/10 rounded-2xl shadow-sm dark:shadow-none p-4 sm:p-6">
-                    <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Set Location</h2>
+                    <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Set Locations</h2>
                     
                     <form wire:submit="store" class="space-y-4">
                         <div x-data="{
@@ -351,35 +395,54 @@ class extends Component {
                             @error('tenant_id') <span class="text-red-500 dark:text-red-400 text-xs mt-1">{{ $message }}</span> @enderror
                         </div>
 
-                        <div class="grid grid-cols-2 gap-4">
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 dark:text-white/70 mb-1">Lat</label>
-                                <input type="text" wire:model.live="latitude"
-                                       class="w-full rounded-xl bg-white dark:bg-white/10 border border-gray-300 dark:border-white/10 py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition {{ !$tenant_id ? 'opacity-50 cursor-not-allowed' : '' }}"
-                                       {{ !$tenant_id ? 'disabled' : '' }}>
-                                @error('latitude') <span class="text-red-500 dark:text-red-400 text-xs mt-1">{{ $message }}</span> @enderror
+                        {{-- Coordinates editor --}}
+                        @if($tenant_id)
+                            <div class="space-y-2">
+                                <label class="block text-sm font-medium text-gray-700 dark:text-white/70">Markers</label>
+                                @foreach($coordinates as $index => $coord)
+                                    <div class="flex items-start gap-2 border border-gray-200 dark:border-white/10 rounded-lg p-2">
+                                        <div class="flex-1 grid grid-cols-2 gap-1">
+                                            <div>
+                                                <input type="text" wire:model="coordinates.{{ $index }}.lat" placeholder="Lat"
+                                                       class="w-full rounded-md bg-white dark:bg-white/10 border border-gray-300 dark:border-white/10 py-1 px-2 text-xs text-gray-900 dark:text-white">
+                                            </div>
+                                            <div>
+                                                <input type="text" wire:model="coordinates.{{ $index }}.lng" placeholder="Lng"
+                                                       class="w-full rounded-md bg-white dark:bg-white/10 border border-gray-300 dark:border-white/10 py-1 px-2 text-xs text-gray-900 dark:text-white">
+                                            </div>
+                                            <div class="col-span-2">
+                                                <input type="text" wire:model="coordinates.{{ $index }}.name" placeholder="Name (optional)"
+                                                       class="w-full rounded-md bg-white dark:bg-white/10 border border-gray-300 dark:border-white/10 py-1 px-2 text-xs text-gray-900 dark:text-white">
+                                            </div>
+                                            <div class="col-span-2">
+                                                <select wire:model="coordinates.{{ $index }}.type"
+                                                        class="w-full rounded-md bg-white dark:bg-white/10 border border-gray-300 dark:border-white/10 py-1 px-2 text-xs text-gray-900 dark:text-white">
+                                                    <option value="parent">Parent (main spot)</option>
+                                                    <option value="child">Child (sub-location)</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                        <button type="button" wire:click="removeCoordinate({{ $index }})"
+                                                class="text-red-500 hover:text-red-700 text-xs mt-1">✕</button>
+                                    </div>
+                                @endforeach
+                                <button type="button" wire:click="addCoordinate"
+                                        class="text-sm text-brand-600 dark:text-brand-400 hover:underline">+ Add sub-location</button>
                             </div>
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 dark:text-white/70 mb-1">Lng</label>
-                                <input type="text" wire:model.live="longitude"
-                                       class="w-full rounded-xl bg-white dark:bg-white/10 border border-gray-300 dark:border-white/10 py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition {{ !$tenant_id ? 'opacity-50 cursor-not-allowed' : '' }}"
-                                       {{ !$tenant_id ? 'disabled' : '' }}>
-                                @error('longitude') <span class="text-red-500 dark:text-red-400 text-xs mt-1">{{ $message }}</span> @enderror
-                            </div>
-                        </div>
+                        @endif
 
                         <button type="button" @click="getLocation()"
                                 class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-500 dark:hover:text-brand-300 flex items-center disabled:opacity-50"
                                 {{ !$tenant_id ? 'disabled' : '' }}>
                             <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                            Sync to My GPS
+                            Sync to My GPS (adds parent)
                         </button>
 
                         <div class="pt-4 flex gap-2">
                             <button type="submit"
                                     class="bg-brand-600 hover:bg-brand-500 text-white font-medium py-2.5 px-4 rounded-xl shadow-lg shadow-brand-500/20 transition flex-1 disabled:opacity-50 disabled:cursor-not-allowed"
                                     {{ !$tenant_id ? 'disabled' : '' }}>
-                                Save Location
+                                Save All Locations
                             </button>
                             <button type="button" wire:click="resetFields"
                                     class="bg-gray-100 dark:bg-white/10 hover:bg-gray-200 dark:hover:bg-white/20 text-gray-700 dark:text-white/70 font-medium py-2.5 px-4 rounded-xl transition disabled:opacity-50"
@@ -403,9 +466,9 @@ class extends Component {
                                 <div class="flex justify-between items-start">
                                     <div>
                                         <div class="font-medium text-sm text-gray-900 dark:text-white">{{ $tenant->name }}</div>
-                                        @if($tenant->latitude && $tenant->longitude)
+                                        @if($tenant->coordinates)
                                             <span class="text-[10px] font-medium text-green-600 dark:text-green-400 flex items-center mt-1">
-                                                <div class="w-1.5 h-1.5 rounded-full bg-green-500 mr-1"></div> Mapped
+                                                <div class="w-1.5 h-1.5 rounded-full bg-green-500 mr-1"></div> {{ count($tenant->coordinates) }} marker(s)
                                             </span>
                                         @else
                                             <span class="text-[10px] font-medium text-gray-500 dark:text-white/40 flex items-center mt-1">
@@ -416,10 +479,10 @@ class extends Component {
                                     <div class="flex flex-col gap-1">
                                         <button wire:click="edit({{ $tenant->id }})"
                                                 class="text-xs bg-white dark:bg-white/10 border border-gray-200 dark:border-white/10 px-2 py-1 rounded-lg shadow-sm hover:bg-gray-50 dark:hover:bg-white/20 text-brand-600 dark:text-brand-400 transition">
-                                            Set Pin
+                                            Edit
                                         </button>
-                                        @if($tenant->latitude)
-                                            <button wire:click="removeLocation({{ $tenant->id }})" wire:confirm="Remove this pin?"
+                                        @if($tenant->coordinates)
+                                            <button wire:click="removeLocation({{ $tenant->id }})" wire:confirm="Remove all pins for this tenant?"
                                                     class="text-[10px] text-red-500 dark:text-red-400 hover:underline text-right">
                                                 Remove
                                             </button>

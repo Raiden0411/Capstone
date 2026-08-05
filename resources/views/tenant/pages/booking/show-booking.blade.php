@@ -3,7 +3,6 @@
 @section('content')
 <div class="p-4 sm:p-6 lg:p-10 max-w-7xl mx-auto space-y-6">
 
-    {{-- Back & Header --}}
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
             <a href="{{ route('tenant.bookings.index') }}" wire:navigate class="text-sm text-white/50 hover:text-white transition-colors">
@@ -11,7 +10,7 @@
             </a>
             <h1 class="text-2xl sm:text-3xl font-bold text-white mt-1">Booking #{{ $booking->booking_reference }}</h1>
             <p class="text-white/60 mt-1">
-                {{ $booking->customer->name }} • 
+                {{ $booking->user->name }} • 
                 {{ $booking->check_in->format('M d, Y') }} – {{ $booking->check_out->format('M d, Y') }}
             </p>
         </div>
@@ -158,24 +157,24 @@
             </div>
 
             {{-- Customer Info --}}
-            @if($booking->customer)
+            @if($booking->user)
             <div class="glass-card !rounded-xl p-5 sm:p-6">
-                <h2 class="text-lg font-semibold text-white mb-4">Customer</h2>
+                <h2 class="text-lg font-semibold text-white mb-4">Guest</h2>
                 <dl class="space-y-2 text-sm">
                     <div>
                         <dt class="text-white/50">Name</dt>
-                        <dd class="font-medium text-white">{{ $booking->customer->name }}</dd>
+                        <dd class="font-medium text-white">{{ $booking->user->name }}</dd>
                     </div>
-                    @if($booking->customer->phone)
+                    @if($booking->user->phone)
                     <div>
                         <dt class="text-white/50">Phone</dt>
-                        <dd class="text-white/80">{{ $booking->customer->phone }}</dd>
+                        <dd class="text-white/80">{{ $booking->user->phone }}</dd>
                     </div>
                     @endif
-                    @if($booking->customer->email)
+                    @if($booking->user->email)
                     <div>
                         <dt class="text-white/50">Email</dt>
-                        <dd class="text-white/80">{{ $booking->customer->email }}</dd>
+                        <dd class="text-white/80">{{ $booking->user->email }}</dd>
                     </div>
                     @endif
                 </dl>

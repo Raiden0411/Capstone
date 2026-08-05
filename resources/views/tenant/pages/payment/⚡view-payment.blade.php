@@ -21,14 +21,14 @@ class extends Component {
     #[Computed]
     public function payments()
     {
-        return Payment::with('booking.customer')
+        return Payment::with('booking.user')                    // 🆕 was booking.customer
             ->where('tenant_id', Auth::user()->tenant_id)
             ->when($this->search, function ($query) {
                 $query->where(function ($q) {
                     $q->where('reference_number', 'like', '%' . $this->search . '%')
                       ->orWhereHas('booking', function ($bq) {
                           $bq->where('booking_reference', 'like', '%' . $this->search . '%')
-                             ->orWhereHas('customer', fn($cq) => $cq->where('name', 'like', '%' . $this->search . '%'));
+                             ->orWhereHas('user', fn($uq) => $uq->where('name', 'like', '%' . $this->search . '%'));  // 🆕
                       });
                 });
             })
@@ -72,7 +72,7 @@ class extends Component {
                 <thead class="border-b border-white/10">
                     <tr>
                         <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-white/50 uppercase">Booking Ref</th>
-                        <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-white/50 uppercase hidden sm:table-cell">Customer</th>
+                        <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-white/50 uppercase hidden sm:table-cell">Guest</th>
                         <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-white/50 uppercase">Method</th>
                         <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-white/50 uppercase">Amount</th>
                         <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-white/50 uppercase hidden md:table-cell">Status</th>
@@ -92,7 +92,7 @@ class extends Component {
                                 @endif
                             </td>
                             <td class="px-4 sm:px-6 py-4 text-sm hidden sm:table-cell">
-                                {{ $payment->booking->customer->name ?? '—' }}
+                                {{ $payment->booking->user->name ?? '—' }}          {{-- 🆕 --}}
                             </td>
                             <td class="px-4 sm:px-6 py-4 text-sm capitalize">
                                 {{ str_replace('_', ' ', $payment->payment_method) }}
