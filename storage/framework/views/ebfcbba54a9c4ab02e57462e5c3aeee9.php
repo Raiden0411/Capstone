@@ -108,12 +108,11 @@
 <?php unset($__componentOriginala1f5baf47967cb18379ffb95063ad85d); ?>
 <?php endif; ?>
 
-    <?php echo \Livewire\Mechanisms\FrontendAssets\FrontendAssets::scripts(); ?>
-
+    
+    <script src="https://cdn.jsdelivr.net/npm/livewire@4.0.0/dist/livewire.js"></script>
 
     
     <script src="https://unpkg.com/preline/dist/preline.js"></script>
     <?php echo $__env->yieldPushContent('scripts'); ?>
 </body>
-</html>
-<?php /**PATH C:\laragon\www\Capstone\resources\views/layouts/app.blade.php ENDPATH**/ ?>
+</html><?php /**PATH C:\laragon\www\Capstone\resources\views/layouts/app.blade.php ENDPATH**/ ?>

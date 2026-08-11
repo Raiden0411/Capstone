@@ -64,7 +64,8 @@
 
     <x-footers.public-footer />
 
-    @livewireScripts
+    {{-- Livewire Scripts (using CDN to bypass local corruption) --}}
+    <script src="https://cdn.jsdelivr.net/npm/livewire@4.0.0/dist/livewire.js"></script>
 
     {{-- Preline JS --}}
     <script src="https://unpkg.com/preline/dist/preline.js"></script>

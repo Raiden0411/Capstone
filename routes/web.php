@@ -7,6 +7,7 @@ use Illuminate\Auth\Middleware\Authenticate;
 use App\Http\Middleware\IsSuperAdmin;
 use App\Http\Middleware\IsTenantAdmin;
 use App\Models\Booking;
+use App\Http\Controllers\Auth\LoginController;
 
 /*
 |--------------------------------------------------------------------------
@@ -16,7 +17,6 @@ use App\Models\Booking;
 Route::livewire('/', 'public::pages.index')->name('home');
 Route::livewire('/about', 'public::pages.about')->name('about');
 Route::livewire('/contact', 'public::pages.learnmore')->name('learnmore');
-Route::livewire('/', 'public::pages.index')->name('home');
 
 Route::livewire('/register-business', 'public::pages.register-business')->name('register_business');
 
@@ -34,7 +34,14 @@ Route::livewire('/destination/{id}', 'public::pages.tourist-spot-details')->name
 
 // Auth
 Route::livewire('/profile', 'public::pages.profile')->name('profile');
-Route::livewire('/login', 'public::auth.login')->name('login');
+
+// --- Traditional login routes (replaces broken Livewire login) ---
+Route::get('/login', [LoginController::class, 'showLoginForm'])->name('login');
+Route::post('/login', [LoginController::class, 'login']);
+
+// --- Livewire login route REMOVED ---
+// Route::livewire('/login', 'public::auth.login')->name('login');
+
 Route::livewire('/register', 'public::auth.register')->name('register');
 Route::post('/logout', function (Request $request) {
     Auth::logout();
@@ -164,4 +171,15 @@ Route::prefix('admin')->name('tenant.')->middleware([Authenticate::class, IsTena
 
     // Analytics Dashboard
     Route::livewire('/analytics', 'tenant::pages.analytics.dashboard')->name('analytics.index');
+});
+
+// ==========================================
+// 3. TEST LOGIN ROUTES (outside any middleware)
+// ==========================================
+Route::get('/test-login', fn () => view('test-login'));
+Route::post('/test-login', function (Request $request) {
+    if (Auth::attempt(['email' => $request->email, 'password' => $request->password])) {
+        return redirect()->route('superadmin.dashboard');
+    }
+    return back()->withErrors(['email' => 'Invalid credentials.']);
 });

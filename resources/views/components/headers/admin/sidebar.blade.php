@@ -4,7 +4,6 @@
     @toggle-superadmin-sidebar.window="mobileOpen = !mobileOpen"
     @keydown.escape.window="mobileOpen = false"
     :class="[minified ? 'w-13' : 'w-65', mobileOpen ? 'translate-x-0' : '-translate-x-full', 'lg:translate-x-0']"
-    id="hs-application-sidebar"
     class="
         fixed inset-y-0 start-0 z-60 h-full
         bg-white dark:bg-black/60 dark:backdrop-blur-xl border-e border-gray-200 dark:border-white/10
