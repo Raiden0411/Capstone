@@ -861,25 +861,36 @@ class extends Component {
                 </div>
             </div>
 
-            {{-- Logo --}}
+            {{-- Logo Upload with Live Preview --}}
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="field-logo">Business logo</label>
                 <div
-                    x-data="{ dragging: false }"
+                    x-data="{
+                        dragging: false,
+                        previewUrl: null,
+                        handleFile(event) {
+                            const file = event.target.files[0];
+                            if (file) {
+                                this.previewUrl = URL.createObjectURL(file);
+                            } else {
+                                this.previewUrl = null;
+                            }
+                        }
+                    }"
                     x-on:dragover.prevent="dragging = true"
                     x-on:dragleave.prevent="dragging = false"
-                    x-on:drop.prevent="dragging = false; $refs.logoInput.files = $event.dataTransfer.files; $refs.logoInput.dispatchEvent(new Event('change'))"
+                    x-on:drop.prevent="dragging = false; $refs.logoInput.files = $event.dataTransfer.files; $refs.logoInput.dispatchEvent(new Event('change'));"
                     :class="dragging ? 'border-primary-600 bg-blue-50 dark:bg-blue-500/10' : 'border-gray-300 dark:border-gray-600'"
                     class="relative flex items-center gap-4 rounded-xl border-2 border-dashed p-4 transition-colors"
                 >
-                    @php $logoPreview = $this->logoPreviewUrl(); @endphp
-                    @if ($logoPreview)
-                        <img src="{{ $logoPreview }}" class="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-700 shrink-0">
-                    @else
+                    <template x-if="previewUrl">
+                        <img :src="previewUrl" class="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-700 shrink-0">
+                    </template>
+                    <template x-if="!previewUrl">
                         <div class="h-16 w-16 rounded-lg bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-gray-400 shrink-0">
                             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M4 8h.01M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z"/></svg>
                         </div>
-                    @endif
+                    </template>
 
                     <div class="flex-1 min-w-0">
                         <span class="inline-flex items-center gap-1.5 text-sm font-semibold text-primary-600">
@@ -896,7 +907,7 @@ class extends Component {
                         <button type="button" wire:click="$set('logo', null)" class="relative z-10 shrink-0 text-xs font-semibold text-red-500 hover:text-red-700">Remove</button>
                     @endif
 
-                    <input x-ref="logoInput" id="field-logo" type="file" wire:model="logo" accept="image/*" class="absolute inset-0 opacity-0 cursor-pointer">
+                    <input x-ref="logoInput" id="field-logo" type="file" wire:model="logo" accept="image/*" class="absolute inset-0 opacity-0 cursor-pointer" @change="handleFile($event)">
                 </div>
                 @error('logo') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block" role="alert">{{ $message }}</span> @enderror
             </div>

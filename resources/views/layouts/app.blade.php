@@ -14,16 +14,16 @@
     <meta property="og:url" content="{{ url()->current() }}">
 
     <link rel="icon" href="{{ asset('favicon.ico') }}" sizes="any">
-    <link rel="icon" href="{{ asset('icon.svg') }}" type="image/svg+xml">
-    <link rel="apple-touch-icon" href="{{ asset('apple-touch-icon.png') }}">
 
-    {{-- Dark mode flash prevention --}}
+    {{-- Dark mode flash prevention + livewire:navigated re-apply --}}
     <script>
-        !function() {
+        function applyTheme() {
             var t = localStorage.getItem('hs_theme');
-            var dark = t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+            var dark = t === 'dark' || (t !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
             document.documentElement.classList.toggle('dark', dark);
-        }();
+        }
+        applyTheme();
+        document.addEventListener('livewire:navigated', applyTheme);
     </script>
 
     {{-- Fonts – Inter + Playfair Display --}}
@@ -52,12 +52,12 @@
 
     {{-- Subtle background decoration (light/dark aware) --}}
     <div class="fixed inset-0 -z-10 overflow-hidden pointer-events-none">
-        <div class="absolute inset-0 bg-gradient-to-br from-white via-[#F8F7F3] to-gray-100 dark:from-gray-900 dark:via-gray-900 dark:to-gray-900"></div>
+        <div class="absolute inset-0 bg-linear-to-br from-white via-[#F8F7F3] to-gray-100 dark:from-gray-900 dark:via-gray-900 dark:to-gray-900"></div>
     </div>
 
     <x-headers.public-header />
 
-    <main class="flex-1 pt-[68px]">
+    <main class="flex-1 pt-17">
         {{ $slot }}
     </main>
 

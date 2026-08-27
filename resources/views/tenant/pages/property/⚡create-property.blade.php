@@ -10,11 +10,10 @@ use App\Models\Property;
 use App\Models\PropertyType;
 use App\Models\PropertyImage;
 use App\Models\PropertyAvailability;
-use App\Scopes\TenantScope;
 use Illuminate\Support\Facades\Auth;
 use Carbon\Carbon;
 
-new 
+new
 #[Layout('tenant.layouts.app')]
 #[Title('Create Activity')]
 class extends Component {
@@ -22,33 +21,31 @@ class extends Component {
 
     #[Validate('required|string|max:255')]
     public $name = '';
-    
+
     #[Validate('nullable|string')]
     public $description = '';
-    
+
     #[Validate('required|exists:property_types,id')]
     public $property_type_id = '';
-    
+
     #[Validate('required|integer|min:1')]
     public $capacity = 1;
-    
+
     #[Validate('required|numeric|min:0|max:99999999.99')]
     public $price = 0.00;
-    
+
     #[Validate('required|in:available,occupied,maintenance')]
     public $status = 'available';
-    
+
     #[Validate('boolean')]
     public $is_active = true;
 
     public $images = [];
     public $temporaryImages = [];
-    
-    // Availability date range (optional)
+
     public ?string $unavailableFrom = null;
     public ?string $unavailableTo = null;
-    
-    // Quick add property type
+
     public bool $showNewTypeForm = false;
     public string $newTypeName = '';
 
@@ -62,11 +59,11 @@ class extends Component {
     public function updatedImages()
     {
         $this->validate(['images.*' => 'image|max:5120']);
-        
+
         $this->temporaryImages = [];
         foreach ($this->images as $image) {
             $this->temporaryImages[] = [
-                'url' => $image->temporaryUrl(),
+                'url'  => $image->temporaryUrl(),
                 'name' => $image->getClientOriginalName(),
             ];
         }
@@ -81,10 +78,9 @@ class extends Component {
 
     public function makePrimary($index)
     {
-        // Move image to first position (primary)
         if ($index > 0) {
             $image = $this->images[$index];
-            $temp = $this->temporaryImages[$index];
+            $temp  = $this->temporaryImages[$index];
             array_splice($this->images, $index, 1);
             array_splice($this->temporaryImages, $index, 1);
             array_unshift($this->images, $image);
@@ -101,16 +97,16 @@ class extends Component {
     public function createType()
     {
         $this->validate(['newTypeName' => 'required|string|max:255']);
-        
+
         $type = PropertyType::create([
             'tenant_id' => Auth::user()->tenant_id,
-            'name' => trim($this->newTypeName),
+            'name'      => trim($this->newTypeName),
         ]);
-        
+
         $this->property_type_id = (string) $type->id;
         $this->showNewTypeForm = false;
         $this->newTypeName = '';
-        
+
         session()->flash('message', 'New activity type created.');
     }
 
@@ -136,7 +132,6 @@ class extends Component {
 
     public function save()
     {
-        // Validate images explicitly
         $this->validate([
             'images.*' => 'image|max:5120',
         ]);
@@ -163,15 +158,14 @@ class extends Component {
             ]);
         }
 
-        // Optional: create availability records for unavailable dates
         if ($this->unavailableFrom && $this->unavailableTo) {
             $start = Carbon::parse($this->unavailableFrom);
             $end = Carbon::parse($this->unavailableTo);
             for ($d = $start; $d->lte($end); $d->addDay()) {
                 PropertyAvailability::create([
-                    'tenant_id'   => Auth::user()->tenant_id,
-                    'property_id' => $property->id,
-                    'date'        => $d->toDateString(),
+                    'tenant_id'    => Auth::user()->tenant_id,
+                    'property_id'  => $property->id,
+                    'date'         => $d->toDateString(),
                     'is_available' => false,
                 ]);
             }
@@ -206,7 +200,37 @@ class extends Component {
 </style>
 @endpush
 
-<div x-data="createProperty()" class="p-4 sm:p-6 lg:p-8 max-w-5xl mx-auto space-y-6">
+<div x-data="{
+    previews: [],
+    handleDrop(event) {
+        const files = event.dataTransfer.files;
+        if (files.length > 0) {
+            const input = document.getElementById('image-upload');
+            const dataTransfer = new DataTransfer();
+            for (let i = 0; i < files.length; i++) {
+                dataTransfer.items.add(files[i]);
+            }
+            input.files = dataTransfer.files;
+            input.dispatchEvent(new Event('change'));
+        }
+    },
+    handleInput(event) {
+        this.previews = [];
+        const files = event.target.files;
+        for (let i = 0; i < files.length; i++) {
+            this.previews.push(URL.createObjectURL(files[i]));
+        }
+    },
+    removeClientPreview(index) {
+        this.previews.splice(index, 1);
+        this.$wire.removeImage(index);
+    },
+    makePrimaryClient(index) {
+        const url = this.previews.splice(index, 1)[0];
+        this.previews.unshift(url);
+        this.$wire.makePrimary(index);
+    }
+}" class="p-4 sm:p-6 lg:p-8 max-w-5xl mx-auto space-y-6">
 
     {{-- Flash Message --}}
     @if (session()->has('message'))
@@ -345,6 +369,8 @@ class extends Component {
         {{-- Image Upload --}}
         <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
             <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Activity Images</h2>
+
+            {{-- Dropzone & Input --}}
             <div class="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl p-6 text-center hover:border-[#376df1]/50 transition cursor-pointer"
                  @dragover.prevent="$refs.dropzone.classList.add('dropzone-active')"
                  @dragleave.prevent="$refs.dropzone.classList.remove('dropzone-active')"
@@ -357,33 +383,29 @@ class extends Component {
                     <p class="text-xs text-gray-400 dark:text-gray-500">PNG, JPG up to 5MB each</p>
                 </label>
             </div>
+
             <div wire:loading wire:target="images" class="text-center text-sm text-gray-500 dark:text-gray-400">Uploading images…</div>
             @error('images.*') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
 
-            @if(count($temporaryImages) > 0)
-                <div class="image-preview-grid mt-4">
-                    @foreach($temporaryImages as $index => $image)
-                        <div class="relative group">
-                            <img src="{{ $image['url'] }}" class="h-24 w-full object-cover rounded-lg border border-gray-200 dark:border-gray-700">
-                            @if($index === 0)
-                                <span class="absolute bottom-1 left-1 bg-[#376df1] text-white text-[10px] px-2 py-0.5 rounded-full">Primary</span>
-                            @endif
-                            <div class="absolute top-1 right-1 flex gap-1">
-                                @if($index > 0)
-                                    <button type="button" wire:click="makePrimary({{ $index }})" title="Make primary"
-                                            class="bg-black/60 text-white rounded-full p-1 hover:bg-black/80 transition">
-                                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-                                    </button>
-                                @endif
-                                <button type="button" wire:click="removeImage({{ $index }})" title="Remove"
-                                        class="bg-red-600 text-white rounded-full p-1 hover:bg-red-700 transition">
-                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                                </button>
-                            </div>
+            {{-- Client-side Instant Preview (Alpine) --}}
+            <div class="image-preview-grid mt-4" x-show="previews.length > 0" x-cloak>
+                <template x-for="(url, index) in previews" :key="index">
+                    <div class="relative group">
+                        <img :src="url" class="h-24 w-full object-cover rounded-lg border border-gray-200 dark:border-gray-700">
+                        <span x-show="index === 0" class="absolute bottom-1 left-1 bg-[#376df1] text-white text-[10px] px-2 py-0.5 rounded-full">Primary</span>
+                        <div class="absolute top-1 right-1 flex gap-1">
+                            <button type="button" x-show="index > 0" @click="makePrimaryClient(index)" title="Make primary"
+                                    class="bg-black/60 text-white rounded-full p-1 hover:bg-black/80 transition">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                            </button>
+                            <button type="button" @click="removeClientPreview(index)" title="Remove"
+                                    class="bg-red-600 text-white rounded-full p-1 hover:bg-red-700 transition">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                            </button>
                         </div>
-                    @endforeach
-                </div>
-            @endif
+                    </div>
+                </template>
+            </div>
         </div>
 
         {{-- Form Actions --}}
@@ -410,27 +432,3 @@ class extends Component {
         </div>
     </form>
 </div>
-
-@push('scripts')
-<script>
-    function createProperty() {
-        return {
-            handleDrop(event) {
-                const files = event.dataTransfer.files;
-                if (files.length > 0) {
-                    const input = document.getElementById('image-upload');
-                    const dataTransfer = new DataTransfer();
-                    for (let i = 0; i < files.length; i++) {
-                        dataTransfer.items.add(files[i]);
-                    }
-                    input.files = dataTransfer.files;
-                    input.dispatchEvent(new Event('change'));
-                }
-            },
-            handleInput(event) {
-                // Livewire handles the file input automatically via wire:model
-            }
-        }
-    }
-</script>
-@endpush

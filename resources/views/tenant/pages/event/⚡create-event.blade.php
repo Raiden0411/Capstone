@@ -6,6 +6,7 @@ use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use App\Models\Event;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Str;
 
 new
 #[Layout('tenant.layouts.app')]
@@ -25,11 +26,27 @@ class extends Component
         return [
             'name'        => 'required|string|max:255',
             'barangay'    => 'required|string|max:255',
+            'description' => 'nullable|string|max:1000',
             'type'        => 'required|string',
             'start_date'  => 'required|date',
             'end_date'    => 'nullable|date|after_or_equal:start_date',
             'is_active'   => 'boolean',
         ];
+    }
+
+    public function getBarangaysProperty()
+    {
+        return collect(config('barangays', []))->sort()->values();
+    }
+
+    public function updatedName($value)
+    {
+        $this->name = trim($value);
+    }
+
+    public function updatedDescription($value)
+    {
+        $this->description = trim($value);
     }
 
     public function save()
@@ -55,79 +72,104 @@ class extends Component
 
 <div class="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto space-y-6">
 
-    <div class="flex items-center justify-between pb-6 border-b border-gray-200 dark:border-gray-700">
-        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Add Event</h1>
+    {{-- Flash Message --}}
+    @if(session()->has('message'))
+        <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium">
+            {{ session('message') }}
+        </div>
+    @endif
+
+    {{-- Header --}}
+    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
+        <div>
+            <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Add Event</h1>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Create a new event for your business.</p>
+        </div>
         <a href="{{ route('tenant.events.index') }}" wire:navigate
-           class="text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-[#376df1] dark:hover:text-blue-400 transition-colors">
-            &larr; Back to Events
+           class="btn-secondary focus-visible:ring-2 focus-visible:ring-primary-500/50">
+            ← Back to Events
         </a>
     </div>
 
-    <form wire:submit="save" class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm space-y-5">
+    <form wire:submit="save" class="card p-6 space-y-5">
 
+        {{-- Event Name --}}
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Event Name *</label>
-            <input type="text" wire:model="name"
-                   class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 focus:border-[#376df1] transition">
+            <input type="text" wire:model="name" class="input" placeholder="e.g. Sinulog Festival">
             @error('name') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
         </div>
 
+        {{-- Barangay and Type --}}
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Barangay *</label>
-                <input type="text" wire:model="barangay"
-                       class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 focus:border-[#376df1] transition">
+                <input type="text" wire:model="barangay" list="barangays-list" class="input" placeholder="Type or select barangay">
+                <datalist id="barangays-list">
+                    @foreach($this->barangays as $b)
+                        <option value="{{ $b }}">
+                    @endforeach
+                </datalist>
                 @error('barangay') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Type *</label>
-                <select wire:model="type"
-                        class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 focus:border-[#376df1] transition appearance-none">
+                <select wire:model="type" class="select">
                     <option value="fiesta">Fiesta</option>
                     <option value="sports">Sports</option>
                     <option value="environment">Environment</option>
                     <option value="entertainment">Entertainment</option>
                     <option value="adventure">Adventure</option>
+                    <option value="other">Other</option>
                 </select>
                 @error('type') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
         </div>
 
+        {{-- Description with counter --}}
         <div>
-            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Description</label>
-            <textarea wire:model="description" rows="3"
-                      class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 focus:border-[#376df1] transition"></textarea>
+            <div class="flex justify-between items-baseline mb-1">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Description</label>
+                <span class="text-xs text-gray-400 dark:text-gray-500">{{ Str::length($description) }}/1000</span>
+            </div>
+            <textarea wire:model.live="description" rows="4" class="textarea"
+                      placeholder="Describe the event..."></textarea>
             @error('description') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
         </div>
 
+        {{-- Dates --}}
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Start Date *</label>
-                <input type="datetime-local" wire:model="start_date"
-                       class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 focus:border-[#376df1] transition">
+                <input type="datetime-local" wire:model="start_date" class="input">
                 @error('start_date') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">End Date</label>
-                <input type="datetime-local" wire:model="end_date"
-                       class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 focus:border-[#376df1] transition">
+                <input type="datetime-local" wire:model="end_date" class="input">
                 @error('end_date') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
         </div>
 
+        {{-- Active Toggle --}}
         <div class="flex items-center gap-2">
             <input type="checkbox" wire:model="is_active"
-                   class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-[#376df1] focus:ring-[#376df1]">
+                   class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary-600 focus:ring-primary-500">
             <label class="text-sm text-gray-700 dark:text-gray-300">Active</label>
         </div>
 
-        <div class="pt-4 border-t border-gray-200 dark:border-gray-700 flex gap-3">
-            <button type="submit"
-                    class="bg-[#376df1] hover:bg-blue-700 text-white font-medium py-2.5 px-6 rounded-full shadow-lg shadow-blue-500/20 transition">
-                Save Event
+        {{-- Actions --}}
+        <div class="pt-4 border-t border-gray-200 dark:border-gray-700 flex flex-wrap gap-3">
+            <button type="submit" wire:loading.attr="disabled"
+                    class="btn-primary focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                <span wire:loading.remove>Save Event</span>
+                <span wire:loading class="inline-flex items-center gap-2">
+                    <svg class="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+                    Saving…
+                </span>
             </button>
             <a href="{{ route('tenant.events.index') }}" wire:navigate
-               class="bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 px-6 py-2.5 rounded-full transition">
+               class="btn-secondary focus-visible:ring-2 focus-visible:ring-primary-500/50">
                 Cancel
             </a>
         </div>

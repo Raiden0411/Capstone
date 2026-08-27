@@ -193,13 +193,13 @@ class extends Component
                 <option value="25">25</option>
                 <option value="50">50</option>
             </select>
-            <button wire:click="exportCsv"
+            <button type="button" wire:click="exportCsv"
                     class="px-4 py-2 rounded-xl bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                 Export CSV
             </button>
             @if($search || $typeFilter || $statusFilter !== '')
-                <button wire:click="clearFilters"
+                <button type="button" wire:click="clearFilters"
                         class="px-4 py-2 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 text-xs font-semibold transition focus-visible:ring-2 focus-visible:ring-primary-500/50">
                     ✕ Clear
                 </button>
@@ -252,7 +252,7 @@ class extends Component
                             </td>
                             <td class="px-4 sm:px-6 py-4 hidden xl:table-cell">{{ $event->tenant->name ?? 'Platform-wide' }}</td>
                             <td class="px-4 sm:px-6 py-4">
-                                <button wire:click="toggleActive({{ $event->id }})" title="Toggle active status" class="focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                                <button type="button" wire:click="toggleActive({{ $event->id }})" title="Toggle active status" class="focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
                                     @if($event->is_active)
                                         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 dark:bg-green-500/15 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-500/30 cursor-pointer">Active</span>
                                     @else
@@ -263,7 +263,7 @@ class extends Component
                             <td class="px-4 sm:px-6 py-4 text-right space-x-2 whitespace-nowrap">
                                 <a href="{{ route('superadmin.events.edit', $event) }}" wire:navigate
                                    class="text-primary-600 hover:text-primary-700 hover:underline text-xs focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">Edit</a>
-                                <button wire:click="deleteEvent({{ $event->id }})"
+                                <button type="button" wire:click="deleteEvent({{ $event->id }})"
                                         wire:confirm="Delete this event?"
                                         class="text-red-600 dark:text-red-400 hover:text-red-700 hover:underline text-xs focus-visible:ring-2 focus-visible:ring-red-500/50 rounded">Delete</button>
                             </td>

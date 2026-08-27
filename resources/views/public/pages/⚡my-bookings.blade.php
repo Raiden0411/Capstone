@@ -366,7 +366,7 @@ class extends Component
                     $logoPath = $tenant?->logo;
                     $paid = $booking->payments->where('payment_status', 'paid')->sum('amount');
                     $balance = $booking->total_amount - $paid;
-                    $deadline = $booking->getPaymentDeadlineAttribute();
+                    $deadline = $booking->payment_deadline; // accessor
                     $services = $booking->services;
                     $classification = $this->getBookingClassification($booking);
                 @endphp
@@ -438,10 +438,10 @@ class extends Component
 
                         <div class="flex flex-col items-end gap-2 sm:shrink-0">
                             {{-- Countdown & payment only if balance due --}}
-                            @if($booking->status === 'pending' && $balance > 0)
+                            @if($booking->status === 'pending' && $balance > 0 && $deadline)
                                 <div class="text-xs text-amber-700 dark:text-amber-300"
                                      x-data="{
-                                         deadline: @js($deadline?->toISOString()),
+                                         deadline: @js($deadline->toISOString()),
                                          remaining: null,
                                          timer: null,
                                          init() {
@@ -468,14 +468,14 @@ class extends Component
                                 </div>
 
                                 @if($booking->booking_type === 'full')
-                                    <button wire:click.stop="payFull({{ $booking->id }})"
+                                    <button type="button" wire:click.stop="payFull({{ $booking->id }})"
                                             wire:loading.attr="disabled"
                                             class="bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold uppercase tracking-wider py-2 px-5 rounded-full transition shadow-md shadow-primary-600/20 disabled:opacity-60 disabled:cursor-not-allowed">
                                         <span wire:loading.remove>Pay Now</span>
                                         <span wire:loading>Processing…</span>
                                     </button>
                                 @else
-                                    <button wire:click.stop="payReservation({{ $booking->id }})"
+                                    <button type="button" wire:click.stop="payReservation({{ $booking->id }})"
                                             wire:loading.attr="disabled"
                                             class="bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold uppercase tracking-wider py-2 px-5 rounded-full transition shadow-md shadow-primary-600/20 disabled:opacity-60 disabled:cursor-not-allowed">
                                         <span wire:loading.remove>Pay Reservation Fee (20%)</span>
@@ -619,14 +619,14 @@ class extends Component
                                 <div class="mt-4 space-y-2">
                                     @if($booking->status === 'pending' && $balance > 0)
                                         @if($booking->booking_type === 'full')
-                                            <button wire:click="payFull({{ $booking->id }})"
+                                            <button type="button" wire:click="payFull({{ $booking->id }})"
                                                     wire:loading.attr="disabled"
                                                     class="w-full py-2 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold uppercase tracking-wider transition disabled:opacity-60">
                                                 <span wire:loading.remove>Pay Full Amount</span>
                                                 <span wire:loading>Processing…</span>
                                             </button>
                                         @else
-                                            <button wire:click="payReservation({{ $booking->id }})"
+                                            <button type="button" wire:click="payReservation({{ $booking->id }})"
                                                     wire:loading.attr="disabled"
                                                     class="w-full py-2 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold uppercase tracking-wider transition disabled:opacity-60">
                                                 <span wire:loading.remove>Pay Reservation Fee (20%)</span>
@@ -635,7 +635,7 @@ class extends Component
                                         @endif
                                     @endif
 
-                                    <a href="{{ route('tenant.show', $tenant->slug ?? '#') }}" wire:navigate
+                                    <a href="{{ route('tenant.show', $tenant?->slug ?? '#') }}" wire:navigate
                                        class="block text-center py-2 rounded-xl border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white text-xs font-semibold uppercase tracking-wider transition">
                                         View Business
                                     </a>
@@ -662,7 +662,7 @@ class extends Component
                                     </a>
 
                                     @if(in_array($booking->status, [Booking::STATUS_PENDING, Booking::STATUS_CONFIRMED, Booking::STATUS_RESERVED]))
-                                        <button wire:click="requestCancellation({{ $booking->id }})"
+                                        <button type="button" wire:click="requestCancellation({{ $booking->id }})"
                                                 wire:confirm="Are you sure you want to cancel this booking?"
                                                 class="w-full py-2 rounded-xl border border-red-300 dark:border-red-500/40 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 text-xs font-bold uppercase tracking-wider transition">
                                             Cancel Booking

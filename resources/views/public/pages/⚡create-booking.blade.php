@@ -29,10 +29,10 @@ class extends Component
 
     #[Validate('required|string|max:255')]
     public $customerName = '';
+    #[Validate('required|email|max:255')]
+    public $customerEmail = '';
     #[Validate('nullable|string|max:20')]
     public $customerPhone = '';
-    #[Validate('nullable|email|max:255')]
-    public $customerEmail = '';
 
     #[Validate('required|date|after_or_equal:today')]
     public $check_in;
@@ -43,7 +43,7 @@ class extends Component
     public $totalAmount = 0;
     public $totalDays = 1;
 
-    public $bookingMode = 'full'; // full | reservation
+    public $bookingMode = 'full';
     #[Validate('required|in:gcash,paymaya,card')]
     public $paymentMethod = 'gcash';
 
@@ -195,9 +195,9 @@ class extends Component
 
             $payMongo = app(PayMongoService::class);
             $session = $payMongo->createCheckoutSession([
-                'customer_name'        => Auth::user()->name,
-                'customer_email'       => Auth::user()->email ?? 'guest@example.com',
-                'customer_phone'       => Auth::user()->phone,
+                'customer_name'        => $this->customerName,
+                'customer_email'       => $this->customerEmail,
+                'customer_phone'       => $this->customerPhone,
                 'amount'               => $chargeAmount,
                 'description'          => $this->bookingMode === Booking::TYPE_RESERVATION
                                             ? "Reservation fee for Booking #{$booking->booking_reference}"
@@ -246,19 +246,19 @@ class extends Component
          next() {
              if (this.step < this.maxStep) {
                  this.step++;
-                 this.$nextTick(() => this.$refs.stepHeading?.focus());
+                 this.$nextTick(() => this.$refs['stepHeading' + this.step]?.focus());
              }
          },
          prev() {
              if (this.step > 1) {
                  this.step--;
-                 this.$nextTick(() => this.$refs.stepHeading?.focus());
+                 this.$nextTick(() => this.$refs['stepHeading' + this.step]?.focus());
              }
          },
          goTo(s) {
              if (s <= this.maxStep && s !== this.step) {
                  this.step = s;
-                 this.$nextTick(() => this.$refs.stepHeading?.focus());
+                 this.$nextTick(() => this.$refs['stepHeading' + this.step]?.focus());
              }
          }
      }"
@@ -346,7 +346,7 @@ class extends Component
                 {{-- Step 1: Guest Details --}}
                 <div x-show="step === 1" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0 translate-x-4" x-transition:enter-end="opacity-100 translate-x-0" class="space-y-4">
                     <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm">
-                        <h2 class="font-display text-lg font-semibold text-gray-900 dark:text-white mb-4" x-ref="stepHeading" tabindex="-1">Your Details</h2>
+                        <h2 class="font-display text-lg font-semibold text-gray-900 dark:text-white mb-4" x-ref="stepHeading1" tabindex="-1">Your Details</h2>
 
                         @auth
                             <div class="flex items-center justify-between bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3 mb-4">
@@ -377,8 +377,8 @@ class extends Component
                                 @error('customerName') <p class="text-xs text-red-600 dark:text-red-300 mt-1">{{ $message }}</p> @enderror
                             </div>
                             <div>
-                                <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">Email</label>
-                                <input type="email" wire:model="customerEmail" placeholder="you@example.com"
+                                <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">Email *</label>
+                                <input type="email" wire:model="customerEmail" placeholder="you@example.com" required
                                        class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-600/50 focus:border-primary-600 transition-colors duration-200 @error('customerEmail') border-red-400/50 @enderror">
                                 @error('customerEmail') <p class="text-xs text-red-600 dark:text-red-300 mt-1">{{ $message }}</p> @enderror
                             </div>
@@ -391,14 +391,14 @@ class extends Component
                     </div>
 
                     <div class="flex justify-end">
-                        <button @click="next()" class="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-full text-sm font-bold uppercase tracking-widest transition">Continue →</button>
+                        <button type="button" @click="next()" class="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-full text-sm font-bold uppercase tracking-widest transition">Continue →</button>
                     </div>
                 </div>
 
                 {{-- Step 2: Visit Dates --}}
                 <div x-show="step === 2" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0 translate-x-4" x-transition:enter-end="opacity-100 translate-x-0" class="space-y-4">
                     <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm">
-                        <h2 class="font-display text-lg font-semibold text-gray-900 dark:text-white mb-4" x-ref="stepHeading" tabindex="-1">Visit Dates</h2>
+                        <h2 class="font-display text-lg font-semibold text-gray-900 dark:text-white mb-4" x-ref="stepHeading2" tabindex="-1">Visit Dates</h2>
 
                         <div class="grid grid-cols-[1fr_auto_1fr] items-end gap-3">
                             <div>
@@ -437,8 +437,8 @@ class extends Component
                     </div>
 
                     <div class="flex justify-between">
-                        <button @click="prev()" class="px-6 py-3 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-full text-sm font-bold uppercase tracking-widest transition">← Back</button>
-                        <button @click="next()" class="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-full text-sm font-bold uppercase tracking-widest transition">Continue →</button>
+                        <button type="button" @click="prev()" class="px-6 py-3 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-full text-sm font-bold uppercase tracking-widest transition">← Back</button>
+                        <button type="button" @click="next()" class="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-full text-sm font-bold uppercase tracking-widest transition">Continue →</button>
                     </div>
                 </div>
 
@@ -446,7 +446,7 @@ class extends Component
                 @if($this->availableServices->isNotEmpty())
                 <div x-show="step === 3" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0 translate-x-4" x-transition:enter-end="opacity-100 translate-x-0" class="space-y-4">
                     <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm">
-                        <h2 class="font-display text-lg font-semibold text-gray-900 dark:text-white mb-4" x-ref="stepHeading" tabindex="-1">Extra Services</h2>
+                        <h2 class="font-display text-lg font-semibold text-gray-900 dark:text-white mb-4" x-ref="stepHeading3" tabindex="-1">Extra Services</h2>
 
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4">
                             @foreach($this->availableServices as $service)
@@ -480,7 +480,7 @@ class extends Component
                                                     <td class="py-2.5 px-4 text-center text-gray-500 dark:text-gray-400">{{ $qty }}</td>
                                                     <td class="py-2.5 px-4 text-right text-gray-900 dark:text-white font-medium">₱{{ number_format($svc->price * $qty, 2) }}</td>
                                                     <td class="py-2.5 px-3">
-                                                        <button wire:click="removeService({{ $serviceId }})"
+                                                        <button type="button" wire:click="removeService({{ $serviceId }})"
                                                                 class="w-5 h-5 rounded-full border border-red-300 dark:border-red-500/40 text-red-500 dark:text-red-300 hover:bg-red-500 hover:text-white hover:border-transparent inline-flex items-center justify-center transition-all text-[11px]">
                                                             ✕
                                                         </button>
@@ -495,8 +495,8 @@ class extends Component
                     </div>
 
                     <div class="flex justify-between">
-                        <button @click="prev()" class="px-6 py-3 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-full text-sm font-bold uppercase tracking-widest transition">← Back</button>
-                        <button @click="next()" class="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-full text-sm font-bold uppercase tracking-widest transition">Continue →</button>
+                        <button type="button" @click="prev()" class="px-6 py-3 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-full text-sm font-bold uppercase tracking-widest transition">← Back</button>
+                        <button type="button" @click="next()" class="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-full text-sm font-bold uppercase tracking-widest transition">Continue →</button>
                     </div>
                 </div>
                 @endif
@@ -504,7 +504,7 @@ class extends Component
                 {{-- Step 4: Payment --}}
                 <div x-show="step === {{ $this->availableServices->isNotEmpty() ? 4 : 3 }}" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="opacity-0 translate-x-4" x-transition:enter-end="opacity-100 translate-x-0" class="space-y-4">
                     <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm">
-                        <h2 class="font-display text-lg font-semibold text-gray-900 dark:text-white mb-4" x-ref="stepHeading" tabindex="-1">Payment Method</h2>
+                        <h2 class="font-display text-lg font-semibold text-gray-900 dark:text-white mb-4" x-ref="{{ $this->availableServices->isNotEmpty() ? 'stepHeading4' : 'stepHeading3' }}" tabindex="-1">Payment Method</h2>
 
                         {{-- Booking Mode --}}
                         <div class="mb-4">
@@ -561,7 +561,7 @@ class extends Component
                     </div>
 
                     <div class="flex justify-between">
-                        <button @click="prev()" class="px-6 py-3 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-full text-sm font-bold uppercase tracking-widest transition">← Back</button>
+                        <button type="button" @click="prev()" class="px-6 py-3 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-full text-sm font-bold uppercase tracking-widest transition">← Back</button>
                         <button wire:click="submit" wire:loading.attr="disabled"
                                 class="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-full text-sm font-bold uppercase tracking-widest transition disabled:opacity-60 disabled:cursor-not-allowed">
                             <span wire:loading.remove>Proceed to Pay</span>
@@ -640,7 +640,7 @@ class extends Component
                     ₱{{ number_format($bookingMode === 'reservation' ? $reservationFee : $totalAmount, 2) }}
                 </p>
             </div>
-            <button @click="goTo({{ $this->availableServices->isNotEmpty() ? 4 : 3 }})"
+            <button type="button" @click="goTo({{ $this->availableServices->isNotEmpty() ? 4 : 3 }})"
                     class="shrink-0 px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-full text-sm font-bold uppercase tracking-widest transition shadow-lg shadow-primary-500/30">
                 Review
             </button>

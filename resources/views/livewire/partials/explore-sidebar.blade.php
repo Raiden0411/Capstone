@@ -1,5 +1,6 @@
 {{-- resources/views/livewire/partials/explore-sidebar.blade.php --}}
-<div class="flex h-full flex-col" x-data="{ filtersOpen: window.innerWidth >= 768 }">
+<div class="flex h-full flex-col" x-data="{ filtersOpen: window.innerWidth >= 768 }"
+     @resize.window="filtersOpen = window.innerWidth >= 768">
 
     {{-- Header --}}
     <div class="border-b border-gray-200 pl-4 pr-3 pt-3 pb-2 dark:border-gray-700 lg:pr-4">
@@ -23,6 +24,7 @@
 
                     @if(count($favorites) > 0)
                         <button
+                            type="button"
                             wire:click="$set('favoritesOnly', {{ $favoritesOnly ? 'false' : 'true' }})"
                             aria-pressed="{{ $favoritesOnly ? 'true' : 'false' }}"
                             class="flex items-center gap-0.5 rounded-full border px-2 py-0.5 transition
@@ -64,9 +66,10 @@
     {{-- Filter Toggle (Mobile only) --}}
     <div class="lg:hidden border-b border-gray-200 dark:border-gray-700 px-3 py-1.5">
         <button
+            type="button"
             @click="filtersOpen = !filtersOpen"
             class="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800"
-            aria-expanded="filtersOpen"
+            :aria-expanded="filtersOpen.toString()"
         >
             <span>Filters</span>
             <svg class="h-3.5 w-3.5 transition-transform" :class="filtersOpen ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"/></svg>
@@ -102,6 +105,7 @@
 
                 @if($search)
                     <button
+                        type="button"
                         wire:click="$set('search','')"
                         class="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-500 dark:hover:bg-gray-700 dark:hover:text-gray-200"
                         aria-label="Clear search"
@@ -114,6 +118,7 @@
             {{-- Category Chips --}}
             <div class="flex gap-1 overflow-x-auto pb-0.5 snap-x" style="-ms-overflow-style:none;scrollbar-width:none;" role="group" aria-label="Filter by category">
                 <button
+                    type="button"
                     wire:click="$set('categoryFilter','')"
                     aria-pressed="{{ $categoryFilter === '' ? 'true' : 'false' }}"
                     class="shrink-0 snap-start rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide transition-all
@@ -124,6 +129,7 @@
 
                 @foreach($this->categories as $cat)
                     <button
+                        type="button"
                         wire:click="$set('categoryFilter','{{ $cat->type }}')"
                         aria-pressed="{{ $categoryFilter === $cat->type ? 'true' : 'false' }}"
                         class="shrink-0 snap-start whitespace-nowrap rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide transition-all
@@ -155,6 +161,7 @@
             {{-- Sort Segmented Control --}}
             <div class="flex gap-0.5 rounded-lg border border-gray-200 bg-gray-50 p-0.5 dark:border-gray-700 dark:bg-gray-800">
                 <button
+                    type="button"
                     wire:click="$set('sortBy','name')"
                     aria-pressed="{{ $sortBy === 'name' ? 'true' : 'false' }}"
                     class="flex-1 rounded-md py-1 text-[10px] font-bold uppercase tracking-wide transition-all
@@ -164,6 +171,7 @@
                 </button>
 
                 <button
+                    type="button"
                     wire:click="$set('sortBy','distance')"
                     aria-pressed="{{ $sortBy === 'distance' ? 'true' : 'false' }}"
                     class="flex-1 rounded-md py-1 text-[10px] font-bold uppercase tracking-wide transition-all
@@ -173,6 +181,7 @@
                 </button>
 
                 <button
+                    type="button"
                     wire:click="$set('sortBy','newest')"
                     aria-pressed="{{ $sortBy === 'newest' ? 'true' : 'false' }}"
                     class="flex-1 rounded-md py-1 text-[10px] font-bold uppercase tracking-wide transition-all
@@ -188,35 +197,35 @@
                     @if($search)
                         <span class="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 py-0.5 pl-2 pr-1 text-[10px] font-semibold text-blue-700 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-300">
                             “{{ Str::limit($search, 14) }}”
-                            <button wire:click="$set('search','')" class="flex h-3.5 w-3.5 items-center justify-center rounded-full hover:bg-blue-200/60 dark:hover:bg-blue-500/20" aria-label="Clear search filter">✕</button>
+                            <button type="button" wire:click="$set('search','')" class="flex h-3.5 w-3.5 items-center justify-center rounded-full hover:bg-blue-200/60 dark:hover:bg-blue-500/20" aria-label="Clear search filter">✕</button>
                         </span>
                     @endif
                     @if($categoryFilter)
                         <span class="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 py-0.5 pl-2 pr-1 text-[10px] font-semibold text-blue-700 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-300">
                             {{ $categoryFilter }}
-                            <button wire:click="$set('categoryFilter','')" class="flex h-3.5 w-3.5 items-center justify-center rounded-full hover:bg-blue-200/60 dark:hover:bg-blue-500/20" aria-label="Clear category filter">✕</button>
+                            <button type="button" wire:click="$set('categoryFilter','')" class="flex h-3.5 w-3.5 items-center justify-center rounded-full hover:bg-blue-200/60 dark:hover:bg-blue-500/20" aria-label="Clear category filter">✕</button>
                         </span>
                     @endif
                     @if($openNow)
                         <span class="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 py-0.5 pl-2 pr-1 text-[10px] font-semibold text-blue-700 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-300">
                             Open Now
-                            <button wire:click="$set('openNow', false)" class="flex h-3.5 w-3.5 items-center justify-center rounded-full hover:bg-blue-200/60 dark:hover:bg-blue-500/20" aria-label="Clear open now filter">✕</button>
+                            <button type="button" wire:click="$set('openNow', false)" class="flex h-3.5 w-3.5 items-center justify-center rounded-full hover:bg-blue-200/60 dark:hover:bg-blue-500/20" aria-label="Clear open now filter">✕</button>
                         </span>
                     @endif
                     @if($hasOfferings)
                         <span class="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 py-0.5 pl-2 pr-1 text-[10px] font-semibold text-blue-700 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-300">
                             Has Offerings
-                            <button wire:click="$set('hasOfferings', false)" class="flex h-3.5 w-3.5 items-center justify-center rounded-full hover:bg-blue-200/60 dark:hover:bg-blue-500/20" aria-label="Clear offerings filter">✕</button>
+                            <button type="button" wire:click="$set('hasOfferings', false)" class="flex h-3.5 w-3.5 items-center justify-center rounded-full hover:bg-blue-200/60 dark:hover:bg-blue-500/20" aria-label="Clear offerings filter">✕</button>
                         </span>
                     @endif
                     @if($favoritesOnly)
                         <span class="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 py-0.5 pl-2 pr-1 text-[10px] font-semibold text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300">
                             ❤️ Favorites
-                            <button wire:click="$set('favoritesOnly', false)" class="flex h-3.5 w-3.5 items-center justify-center rounded-full hover:bg-rose-200/60 dark:hover:bg-rose-500/20" aria-label="Clear favorites filter">✕</button>
+                            <button type="button" wire:click="$set('favoritesOnly', false)" class="flex h-3.5 w-3.5 items-center justify-center rounded-full hover:bg-rose-200/60 dark:hover:bg-rose-500/20" aria-label="Clear favorites filter">✕</button>
                         </span>
                     @endif
 
-                    <button wire:click="resetFilters" class="text-[10px] font-bold text-gray-400 underline underline-offset-2 transition hover:text-red-500 dark:hover:text-red-400">
+                    <button type="button" wire:click="resetFilters" class="text-[10px] font-bold text-gray-400 underline underline-offset-2 transition hover:text-red-500 dark:hover:text-red-400">
                         Clear all
                     </button>
                 </div>
@@ -307,6 +316,7 @@
                     <div class="ml-auto flex shrink-0 items-center gap-1">
                         {{-- Favorite Toggle --}}
                         <button
+                            type="button"
                             wire:click.stop="toggleFavorite({{ $tenant->id }})"
                             wire:loading.attr="disabled"
                             wire:target="toggleFavorite({{ $tenant->id }})"
@@ -322,6 +332,7 @@
 
                         {{-- Directions Button --}}
                         <button
+                            type="button"
                             wire:click.stop="getDirectionsTo({{ $tenant->id }})"
                             wire:loading.attr="disabled"
                             wire:target="getDirectionsTo({{ $tenant->id }})"
@@ -335,6 +346,7 @@
 
                         @if($hasSubBranches)
                             <button
+                                type="button"
                                 @click.stop="expanded = !expanded"
                                 :aria-expanded="expanded.toString()"
                                 class="flex h-7 w-7 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-500 dark:hover:bg-gray-700 dark:hover:text-gray-200"
@@ -358,6 +370,7 @@
                             @php $subActualIndex = $subIndex + 1; @endphp
                             <div class="flex items-center justify-between gap-1.5 rounded-md px-1.5 py-1 transition hover:bg-gray-50 dark:hover:bg-gray-800/50">
                                 <button
+                                    type="button"
                                     wire:click="flyToTenantCoord({{ $tenant->id }}, {{ $subActualIndex }})"
                                     @click="mobileOpen = false"
                                     class="min-w-0 flex-1 truncate text-left text-[10px] text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
@@ -367,6 +380,7 @@
                                 </button>
 
                                 <button
+                                    type="button"
                                     wire:click="getDirectionsToCoord({{ $tenant->id }}, {{ $subActualIndex }})"
                                     wire:loading.attr="disabled"
                                     wire:target="getDirectionsToCoord({{ $tenant->id }}, {{ $subActualIndex }})"
@@ -395,6 +409,7 @@
 
                 @if($this->hasActiveFilters)
                     <button
+                        type="button"
                         wire:click="resetFilters"
                         class="mt-3 text-[11px] font-semibold text-primary-600 transition hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
                     >

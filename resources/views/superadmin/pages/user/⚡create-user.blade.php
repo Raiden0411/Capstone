@@ -214,7 +214,7 @@ class extends Component {
 @endpush
 
 <div class="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto space-y-6"
-     x-data="{ showPassword: false, showConfirmPassword: false }">
+     x-data="{ showPassword: false, showConfirmPassword: false, avatarPreview: null }">
 
     @if (session()->has('message'))
         <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium">
@@ -263,11 +263,13 @@ class extends Component {
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Profile Picture (Optional)</label>
                 <input type="file" wire:model="avatar" accept="image/*"
+                       x-ref="avatarInput"
+                       @change="avatarPreview = URL.createObjectURL($refs.avatarInput.files[0])"
                        class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                 @error('avatar') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-                @if($avatar)
-                    <img src="{{ $avatar->temporaryUrl() }}" class="mt-2 h-20 w-20 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
-                @endif
+                <div class="mt-2" x-show="avatarPreview" x-cloak>
+                    <img :src="avatarPreview" class="h-20 w-20 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
+                </div>
             </div>
         </div>
 

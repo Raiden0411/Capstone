@@ -1,3 +1,4 @@
+{{-- resources/views/tenant/pages/booking/⚡create-booking.blade.php --}}
 <?php
 
 use Livewire\Component;
@@ -11,7 +12,6 @@ use App\Models\Service;
 use App\Models\BookingItem;
 use App\Models\BookingService;
 use App\Models\Payment;
-use App\Services\PayMongoService;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -40,7 +40,7 @@ class extends Component {
     public $selectedProperties = [];
     public $selectedServices = [];
     
-    #[Validate('required|in:cash,card,gcash,paymaya')]
+    #[Validate('required|in:cash,qr')]
     public $payment_method = 'cash';
     
     public $createdBookingId = null;
@@ -127,11 +127,7 @@ class extends Component {
     public function calculateTotal()
     {
         $total = 0;
-        $days = 1;
-        if ($this->check_in && $this->check_out) {
-            $days = Carbon::parse($this->check_in)->diffInDays(Carbon::parse($this->check_out));
-            $days = max(1, $days);
-        }
+        $days = $this->getNumberOfDays();
         foreach ($this->selectedProperties as $item) {
             $total += $item['price'] * $item['quantity'] * $days;
         }
@@ -139,6 +135,15 @@ class extends Component {
             $total += $item['price'] * $item['quantity'];
         }
         $this->totalAmount = $total;
+    }
+
+    protected function getNumberOfDays(): int
+    {
+        if ($this->check_in && $this->check_out) {
+            $days = Carbon::parse($this->check_in)->diffInDays(Carbon::parse($this->check_out));
+            return max(1, $days);
+        }
+        return 1;
     }
 
     public function getAvailablePropertiesProperty()
@@ -156,7 +161,7 @@ class extends Component {
             ->orderBy('name')
             ->get();
 
-        $available = $properties->filter(function ($property) use ($checkIn, $checkOut) {
+        return $properties->filter(function ($property) use ($checkIn, $checkOut) {
             $hasConflict = BookingItem::where('property_id', $property->id)
                 ->whereHas('booking', function ($query) use ($checkIn, $checkOut) {
                     $query->whereNotIn('status', ['cancelled', 'completed'])
@@ -165,9 +170,7 @@ class extends Component {
                 })
                 ->exists();
             return !$hasConflict;
-        });
-
-        return $available->values();
+        })->values();
     }
 
     public function getAvailableServicesProperty()
@@ -185,6 +188,7 @@ class extends Component {
         $checkIn = $this->check_in;
         $checkOut = $this->check_out;
 
+        // Check availability again to avoid race conditions
         foreach ($this->selectedProperties as $propertyId => $item) {
             $conflict = BookingItem::where('property_id', $propertyId)
                 ->whereHas('booking', function ($query) use ($checkIn, $checkOut) {
@@ -198,7 +202,7 @@ class extends Component {
                 $property = Property::find($propertyId);
                 $this->addError(
                     'check_in',
-                    "The property '{$property->name}' is not available for the selected dates. Please remove it or change the dates."
+                    "The property '{$property->name}' is not available for the selected dates."
                 );
                 return;
             }
@@ -211,13 +215,16 @@ class extends Component {
         }
 
         DB::transaction(function () {
-            $user = User::create([
-                'tenant_id' => Auth::user()->tenant_id,
-                'name'      => $this->customerName,
-                'email'     => $this->customerEmail ?: ('guest_' . Str::random(8) . '@walkin.local'),
-                'password'  => bcrypt(Str::random(16)),
-                'is_active' => true,
-            ]);
+            // Create or find user by phone or email
+            $user = User::firstOrCreate(
+                ['email' => $this->customerEmail ?: ('guest_' . Str::random(8) . '@walkin.local')],
+                [
+                    'tenant_id' => Auth::user()->tenant_id,
+                    'name'      => $this->customerName,
+                    'password'  => bcrypt(Str::random(16)),
+                    'is_active' => true,
+                ]
+            );
 
             $booking = Booking::create([
                 'tenant_id'         => Auth::user()->tenant_id,
@@ -227,10 +234,10 @@ class extends Component {
                 'check_out'         => $this->check_out,
                 'total_amount'      => $this->totalAmount,
                 'status'            => 'pending',
+                'booking_type'      => 'full',
             ]);
 
-            $days = Carbon::parse($this->check_in)->diffInDays($this->check_out);
-            $days = max(1, $days);
+            $days = $this->getNumberOfDays();
 
             foreach ($this->selectedProperties as $propertyId => $item) {
                 BookingItem::create([
@@ -253,70 +260,25 @@ class extends Component {
                 ]);
             }
 
+            // Payment: both cash and QR are treated as paid immediately
+            Payment::create([
+                'tenant_id'       => Auth::user()->tenant_id,
+                'booking_id'      => $booking->id,
+                'amount'          => $this->totalAmount,
+                'payment_method'  => $this->payment_method, // 'cash' or 'qr'
+                'payment_status'  => 'paid',
+                'paid_at'         => now(),
+                'payment_type'    => 'full',
+            ]);
+
+            // Confirm booking since full payment received
+            $booking->update(['status' => 'confirmed']);
+
             $this->createdBookingId = $booking->id;
-
-            if ($this->payment_method === 'cash') {
-                Payment::create([
-                    'tenant_id'       => Auth::user()->tenant_id,
-                    'booking_id'      => $booking->id,
-                    'amount'          => $this->totalAmount,
-                    'payment_method'  => 'cash',
-                    'payment_status'  => 'paid',
-                    'paid_at'         => now(),
-                ]);
-
-                $totalPaid = $booking->payments()->where('payment_status', 'paid')->sum('amount');
-                if ($totalPaid >= $booking->total_amount && $booking->status === 'pending') {
-                    $booking->update(['status' => 'confirmed']);
-                }
-            }
         });
 
-        if ($this->payment_method === 'cash') {
-            session()->flash('message', 'Booking created and confirmed with cash payment.');
-            return $this->redirectRoute('tenant.bookings.show', ['booking' => $this->createdBookingId], navigate: true);
-        } else {
-            return $this->initiateOnlinePayment();
-        }
-    }
-
-    protected function initiateOnlinePayment()
-    {
-        $booking = Booking::find($this->createdBookingId);
-        $user = $booking->user;
-
-        $payMongo = app(PayMongoService::class);
-        $session = $payMongo->createCheckoutSession([
-            'customer_name'  => $user->name,
-            'customer_email' => $user->email ?? 'guest@example.com',
-            'customer_phone' => $this->customerPhone,
-            'amount'         => $this->totalAmount,
-            'description'    => "Booking #{$booking->booking_reference}",
-            'item_name'      => 'Accommodation Payment',
-            'success_url'    => route('tenant.payments.success', ['booking' => $booking->id]),
-            'cancel_url'     => route('tenant.payments.cancel', ['booking' => $booking->id]),
-            'metadata'       => [
-                'booking_id' => $booking->id,
-                'tenant_id'  => Auth::user()->tenant_id,
-            ],
-            'payment_method_types' => [$this->payment_method],
-        ]);
-
-        if (!$session) {
-            session()->flash('error', 'Unable to initiate payment. Please try again.');
-            return $this->redirectRoute('tenant.bookings.show', ['booking' => $booking->id], navigate: true);
-        }
-
-        Payment::create([
-            'tenant_id'           => Auth::user()->tenant_id,
-            'booking_id'          => $booking->id,
-            'amount'              => $this->totalAmount,
-            'payment_method'      => $this->payment_method,
-            'payment_status'      => 'unpaid',
-            'paymongo_session_id' => $session['data']['id'],
-        ]);
-
-        return redirect()->away($session['data']['attributes']['checkout_url']);
+        session()->flash('message', 'Booking created and confirmed with ' . ($this->payment_method === 'cash' ? 'cash' : 'QR') . ' payment.');
+        return $this->redirectRoute('tenant.bookings.show', ['booking' => $this->createdBookingId], navigate: true);
     }
 };
 ?>
@@ -350,14 +312,14 @@ class extends Component {
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Full Name *</label>
                     <input type="text" wire:model="customerName"
-                           class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 transition"
+                           class="input"
                            placeholder="Guest name">
                     @error('customerName') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Phone * <span class="text-gray-400 dark:text-gray-500 font-normal">(e.g. 09123456789)</span></label>
                     <input type="text" wire:model="customerPhone"
-                           class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 transition"
+                           class="input"
                            placeholder="09123456789">
                     @error('customerPhone') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
@@ -374,7 +336,7 @@ class extends Component {
                     <input type="date" wire:model.live="check_in"
                            min="{{ now()->format('Y-m-d') }}"
                            max="{{ now()->addDays(30)->format('Y-m-d') }}"
-                           class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 transition">
+                           class="input">
                     @error('check_in') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
@@ -382,13 +344,13 @@ class extends Component {
                     <input type="date" wire:model.live="check_out"
                            min="{{ now()->addDay()->format('Y-m-d') }}"
                            max="{{ now()->addDays(30)->format('Y-m-d') }}"
-                           class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 transition">
+                           class="input">
                     @error('check_out') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Booking Ref</label>
                     <input type="text" wire:model="booking_reference"
-                           class="w-full bg-gray-100 dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-500 dark:text-gray-400 cursor-not-allowed"
+                           class="input bg-gray-100 dark:bg-gray-900 cursor-not-allowed"
                            readonly>
                     <button type="button" wire:click="generateBookingReference" class="text-xs text-[#376df1] hover:text-blue-700 mt-1">Generate New</button>
                 </div>
@@ -437,8 +399,7 @@ class extends Component {
                     @foreach($selectedProperties as $id => $item)
                         @php
                             $prop = $this->availableProperties->firstWhere('id', $id) ?? App\Models\Property::find($id);
-                            $days = Carbon::parse($check_in)->diffInDays($check_out);
-                            $days = max(1, $days);
+                            $days = $this->getNumberOfDays();
                             $roomTotal = $item['price'] * $item['quantity'] * $days;
                         @endphp
                         <div class="flex items-center gap-4 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-200 dark:border-gray-700">
@@ -509,16 +470,20 @@ class extends Component {
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Payment Method *</label>
-                    <select wire:model.live="payment_method"
-                            class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 transition appearance-none">
+                    <select wire:model.live="payment_method" class="input">
                         <option value="cash">Cash</option>
-                        <option value="card">Credit/Debit Card</option>
-                        <option value="gcash">GCash</option>
-                        <option value="paymaya">PayMaya</option>
+                        <option value="qr">QR Code</option>
                     </select>
                     @error('payment_method') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             </div>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                @if($payment_method === 'cash')
+                    Payment will be recorded as cash and booking confirmed immediately.
+                @else
+                    QR payment will be recorded and booking confirmed immediately. You may scan the customer's QR code externally.
+                @endif
+            </p>
         </div>
 
         {{-- Total & Actions --}}
@@ -527,10 +492,8 @@ class extends Component {
             <div class="flex gap-3">
                 <button type="submit" 
                         wire:loading.attr="disabled"
-                        class="bg-[#376df1] hover:bg-blue-700 text-white font-semibold py-3 px-8 rounded-full shadow-lg shadow-blue-500/20 transition hover:scale-105 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
-                    <span wire:loading.remove>
-                        {{ $payment_method === 'cash' ? 'Complete Checkout' : 'Proceed to Pay' }}
-                    </span>
+                        class="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">
+                    <span wire:loading.remove>Complete Checkout</span>
                     <span wire:loading class="flex items-center gap-2">
                         <svg class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -540,9 +503,7 @@ class extends Component {
                     </span>
                 </button>
                 <a href="{{ route('tenant.bookings.index') }}" wire:navigate 
-                   class="bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 px-6 py-3 rounded-full font-medium transition">
-                    Cancel
-                </a>
+                   class="btn-secondary">Cancel</a>
             </div>
         </div>
     </form>

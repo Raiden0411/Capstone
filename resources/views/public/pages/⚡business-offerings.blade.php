@@ -31,6 +31,10 @@ class extends Component
 
         $this->coverPhoto      = $settings['spot_cover']       ?? null;
         $this->galleryImages   = $settings['business_gallery'] ?? [];
+        // Ensure it's an array even if stored as something else
+        if (!is_array($this->galleryImages)) {
+            $this->galleryImages = [];
+        }
         $this->galleryTitle    = $settings['gallery_title']    ?? '';
         $this->gallerySubtitle = $settings['gallery_subtitle'] ?? '';
     }
@@ -608,14 +612,14 @@ class extends Component
         </div>
     </div>
 
-    @push('scripts')
+    @script
     <script>
-    document.addEventListener('livewire:navigated', () => {
-        const obs = new IntersectionObserver(entries => {
-            entries.forEach(e => { if(e.isIntersecting){ e.target.classList.add('in'); obs.unobserve(e.target); } });
-        }, { threshold:.08 });
-        document.querySelectorAll('.reveal').forEach(el => obs.observe(el));
-    });
+        document.addEventListener('livewire:navigated', () => {
+            const obs = new IntersectionObserver(entries => {
+                entries.forEach(e => { if(e.isIntersecting){ e.target.classList.add('in'); obs.unobserve(e.target); } });
+            }, { threshold:.08 });
+            document.querySelectorAll('.reveal').forEach(el => obs.observe(el));
+        });
     </script>
-    @endpush
+    @endscript
 </div>

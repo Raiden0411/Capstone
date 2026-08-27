@@ -20,10 +20,6 @@ class PropertyType extends Model
 
     /**
      * Scope a query to only include property types available for a given tenant.
-     *
-     * @param Builder $query
-     * @param int|null $tenantId
-     * @return Builder
      */
     public function scopeAvailableForTenant(Builder $query, ?int $tenantId): Builder
     {

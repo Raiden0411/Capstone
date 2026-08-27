@@ -13,9 +13,9 @@ use App\Models\User;
 use App\Models\Tenant;
 use Spatie\Permission\Models\Role;
 
-new 
-#[Layout('superadmin.layouts.app')] 
-#[Title('Edit User')] 
+new
+#[Layout('superadmin.layouts.app')]
+#[Title('Edit User')]
 class extends Component {
 
     use WithFileUploads;
@@ -81,8 +81,8 @@ class extends Component {
     }
 
     #[Computed]
-    public function tenants() 
-    { 
+    public function tenants()
+    {
         return Tenant::orderBy('name')
             ->when($this->tenantSearch, fn($q) => $q->where('name', 'like', '%' . $this->tenantSearch . '%'))
             ->limit(50)
@@ -219,7 +219,7 @@ class extends Component {
 @endpush
 
 <div class="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto space-y-6"
-     x-data="{ showPassword: false, showConfirmPassword: false }">
+     x-data="{ showPassword: false, showConfirmPassword: false, avatarPreview: null }">
 
     @if (session()->has('message'))
         <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium">
@@ -265,14 +265,25 @@ class extends Component {
             </div>
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Profile Picture (Optional)</label>
-                <input type="file" wire:model="avatar" accept="image/*"
+                <input type="file"
+                       wire:model="avatar"
+                       x-ref="avatarInput"
+                       accept="image/*"
+                       @change="avatarPreview = URL.createObjectURL($refs.avatarInput.files[0])"
                        class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                 @error('avatar') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-                @if ($avatar)
-                    <img src="{{ $avatar->temporaryUrl() }}" class="mt-2 h-20 w-20 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
-                @elseif ($user->avatar)
-                    <img src="{{ asset('storage/' . $user->avatar) }}" class="mt-2 h-20 w-20 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
-                @endif
+
+                {{-- Preview area: show client-side preview if selected, otherwise existing avatar --}}
+                <div class="mt-3">
+                    <img x-show="avatarPreview"
+                         :src="avatarPreview"
+                         class="h-20 w-20 object-cover rounded-lg border border-gray-200 dark:border-gray-700"
+                         alt="Avatar preview">
+                    <img x-show="!avatarPreview && @js($user->avatar) !== null"
+                         src="{{ $user->avatar ? asset('storage/' . $user->avatar) : '' }}"
+                         class="h-20 w-20 object-cover rounded-lg border border-gray-200 dark:border-gray-700"
+                         alt="Current avatar">
+                </div>
             </div>
         </div>
 

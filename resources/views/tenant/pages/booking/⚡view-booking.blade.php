@@ -256,15 +256,15 @@ class extends Component {
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                 History
             </a>
-            <button wire:click="$refresh" class="inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 transition">
+            <button type="button" wire:click="$refresh" class="inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 transition">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h5M4 9a9 9 0 0014.5 4.5M20 20v-5h-5M20 15a9 9 0 00-14.5-4.5"/></svg>
                 Refresh
             </button>
-            <button wire:click="exportCsv" class="inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 transition">
+            <button type="button" wire:click="exportCsv" class="inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 transition">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                 Export CSV
             </button>
-            <a href="{{ route('tenant.customers.create') }}" wire:navigate
+            <a href="{{ route('tenant.bookings.create') }}" wire:navigate
                class="inline-flex items-center justify-center px-5 py-2.5 rounded-full bg-[#376df1] hover:bg-blue-700 text-white text-sm font-semibold shadow-lg shadow-blue-500/20 transition hover:scale-105">
                 New Reservation
             </a>
@@ -343,7 +343,7 @@ class extends Component {
                 <option value="amount_low">Amount (Low to High)</option>
             </select>
             @if($search || $statusFilter || $fromDate || $toDate || $userFilter)
-                <button wire:click="clearFilters"
+                <button type="button" wire:click="clearFilters"
                         class="px-4 py-2 rounded-full border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 text-xs font-semibold uppercase tracking-wider transition">
                     ✕ Clear
                 </button>
@@ -354,7 +354,7 @@ class extends Component {
     {{-- Status filters + legend --}}
     <div class="flex flex-wrap gap-2 items-center">
         @foreach(['' => 'All', 'pending' => 'Pending', 'reserved' => 'Reserved', 'confirmed' => 'Confirmed', 'checked_in' => 'Checked In'] as $val => $label)
-            <button wire:click="$set('statusFilter','{{ $val }}')" wire:key="pill-{{ $val }}"
+            <button type="button" wire:click="$set('statusFilter','{{ $val }}')" wire:key="pill-{{ $val }}"
                     class="px-4 py-1.5 rounded-full text-xs font-semibold uppercase tracking-wider transition border
                            {{ $statusFilter === $val ? 'bg-[#376df1] border-[#376df1] text-white' : 'border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:border-blue-400 hover:text-[#376df1] dark:hover:text-blue-400' }}">
                 {{ $label }}
@@ -469,8 +469,8 @@ class extends Component {
                                 <div class="flex items-center justify-end gap-1">
                                     <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate title="View" class="p-1.5 text-gray-400 dark:text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg></a>
                                     <a href="{{ route('tenant.bookings.edit', $booking->id) }}" wire:navigate title="Edit" class="p-1.5 text-blue-600 dark:text-blue-400 hover:text-white hover:bg-blue-500/20 rounded-lg transition"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg></a>
-                                    <button wire:click="delete({{ $booking->id }})" wire:confirm="Delete booking #{{ $booking->booking_reference }}?" title="Delete" class="p-1.5 text-red-600 dark:text-red-400 hover:text-white hover:bg-red-500/20 rounded-lg transition"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
-                                    <button wire:click="toggleExpand({{ $booking->id }})" title="Details" class="p-1.5 text-gray-400 dark:text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition"><svg class="w-4 h-4 transition-transform {{ $expandedId === $booking->id ? 'rotate-180' : '' }}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg></button>
+                                    <button type="button" wire:click="delete({{ $booking->id }})" wire:confirm="Delete booking #{{ $booking->booking_reference }}?" title="Delete" class="p-1.5 text-red-600 dark:text-red-400 hover:text-white hover:bg-red-500/20 rounded-lg transition"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
+                                    <button type="button" wire:click="toggleExpand({{ $booking->id }})" title="Details" class="p-1.5 text-gray-400 dark:text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition"><svg class="w-4 h-4 transition-transform {{ $expandedId === $booking->id ? 'rotate-180' : '' }}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg></button>
                                 </div>
                             </td>
                         </tr>

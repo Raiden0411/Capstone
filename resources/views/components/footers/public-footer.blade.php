@@ -43,7 +43,7 @@
                     <li><a href="{{ route('explore.map') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Tourist Spots & Landmarks</a></li>
                     <li><a href="{{ route('explore.map') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Dining & Local Cuisine</a></li>
                     <li><a href="{{ route('about') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Heritage & Architecture</a></li>
-                    <li><a href="{{ route('learnmore') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Local Markets & Shops</a></li>
+                    <li><a href="{{ route('explore.map') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Local Markets & Shops</a></li>
                     <li><a href="{{ route('explore.map') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Nature & Escapes</a></li>
                 </ul>
             </div>

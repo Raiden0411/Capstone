@@ -145,22 +145,12 @@ class extends Component
         }
     }
 
-    public function getPreviewUrl($property, $key, $default = null): ?string
+    public function getStoredImageUrl(string $key, ?string $default = null): ?string
     {
-        if ($this->{$property}) {
-            try {
-                return $this->{$property}->temporaryUrl();
-            } catch (\Exception $e) {
-                // ignore
-            }
-        }
-
         $stored = SiteSetting::getValue($key);
-
         if ($stored) {
             return asset('storage/' . $stored);
         }
-
         return $default;
     }
 };
@@ -208,11 +198,24 @@ class extends Component
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Hero Image</label>
-                    @if($preview = $this->getPreviewUrl('heroImage', 'about_hero_image', 'https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1920&q=80'))
-                        <img src="{{ $preview }}" class="w-full h-40 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
-                    @endif
-                    <input type="file" wire:model="heroImage" accept="image/*"
-                           class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+
+                    {{-- Alpine instant preview --}}
+                    <div x-data="{ preview: null }">
+                        <template x-if="preview">
+                            <img :src="preview" class="w-full h-40 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
+                        </template>
+                        <template x-if="!preview">
+                            @if($stored = $this->getStoredImageUrl('about_hero_image', 'https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1920&q=80'))
+                                <img src="{{ $stored }}" class="w-full h-40 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
+                            @endif
+                        </template>
+
+                        <input type="file" wire:model="heroImage" accept="image/*"
+                               @change="preview = URL.createObjectURL($event.target.files[0])"
+                               class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+
+                        <button type="button" x-show="preview" @click="preview = null; $wire.set('heroImage', null)" class="mt-2 text-xs text-red-500">Remove new image</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -227,14 +230,27 @@ class extends Component
                     <input type="text" wire:model="storyHeading"
                            class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
                 </div>
+
+                @foreach(['storyImage1' => 'about_story_image1', 'storyImage2' => 'about_story_image2', 'storyImage3' => 'about_story_image3'] as $prop => $key)
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Image 1</label>
-                    @if($preview = $this->getPreviewUrl('storyImage1', 'about_story_image1'))
-                        <img src="{{ $preview }}" class="w-full h-32 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
-                    @endif
-                    <input type="file" wire:model="storyImage1" accept="image/*"
-                           class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Image {{ $loop->iteration }}</label>
+                    <div x-data="{ preview: null }">
+                        <template x-if="preview">
+                            <img :src="preview" class="w-full h-32 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
+                        </template>
+                        <template x-if="!preview">
+                            @if($stored = $this->getStoredImageUrl($key))
+                                <img src="{{ $stored }}" class="w-full h-32 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
+                            @endif
+                        </template>
+                        <input type="file" wire:model="{{ $prop }}" accept="image/*"
+                               @change="preview = URL.createObjectURL($event.target.files[0])"
+                               class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                        <button type="button" x-show="preview" @click="preview = null; $wire.set('{{ $prop }}', null)" class="mt-2 text-xs text-red-500">Remove new image</button>
+                    </div>
                 </div>
+                @endforeach
+
                 <div class="md:col-span-2">
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Paragraph 1</label>
                     <textarea wire:model="storyText1" rows="3"
@@ -244,22 +260,6 @@ class extends Component
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Paragraph 2</label>
                     <textarea wire:model="storyText2" rows="3"
                               class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"></textarea>
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Image 2</label>
-                    @if($preview = $this->getPreviewUrl('storyImage2', 'about_story_image2'))
-                        <img src="{{ $preview }}" class="w-full h-32 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
-                    @endif
-                    <input type="file" wire:model="storyImage2" accept="image/*"
-                           class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Image 3</label>
-                    @if($preview = $this->getPreviewUrl('storyImage3', 'about_story_image3'))
-                        <img src="{{ $preview }}" class="w-full h-32 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
-                    @endif
-                    <input type="file" wire:model="storyImage3" accept="image/*"
-                           class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                 </div>
             </div>
         </div>
@@ -292,11 +292,20 @@ class extends Component
                     </div>
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Image</label>
-                        @if($preview = $this->getPreviewUrl("highlight{$n}Image", "about_highlight{$n}_image"))
-                            <img src="{{ $preview }}" class="w-full h-32 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
-                        @endif
-                        <input type="file" wire:model="highlight{{ $n }}Image" accept="image/*"
-                               class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                        <div x-data="{ preview: null }">
+                            <template x-if="preview">
+                                <img :src="preview" class="w-full h-32 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
+                            </template>
+                            <template x-if="!preview">
+                                @if($stored = $this->getStoredImageUrl("about_highlight{$n}_image"))
+                                    <img src="{{ $stored }}" class="w-full h-32 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
+                                @endif
+                            </template>
+                            <input type="file" wire:model="highlight{{ $n }}Image" accept="image/*"
+                                   @change="preview = URL.createObjectURL($event.target.files[0])"
+                                   class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                            <button type="button" x-show="preview" @click="preview = null; $wire.set('highlight{{ $n }}Image', null)" class="mt-2 text-xs text-red-500">Remove new image</button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -314,11 +323,20 @@ class extends Component
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Background Image</label>
-                    @if($preview = $this->getPreviewUrl('ctaBackgroundImage', 'about_cta_background_image'))
-                        <img src="{{ $preview }}" class="w-full h-32 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
-                    @endif
-                    <input type="file" wire:model="ctaBackgroundImage" accept="image/*"
-                           class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                    <div x-data="{ preview: null }">
+                        <template x-if="preview">
+                            <img :src="preview" class="w-full h-32 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
+                        </template>
+                        <template x-if="!preview">
+                            @if($stored = $this->getStoredImageUrl('about_cta_background_image'))
+                                <img src="{{ $stored }}" class="w-full h-32 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
+                            @endif
+                        </template>
+                        <input type="file" wire:model="ctaBackgroundImage" accept="image/*"
+                               @change="preview = URL.createObjectURL($event.target.files[0])"
+                               class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                        <button type="button" x-show="preview" @click="preview = null; $wire.set('ctaBackgroundImage', null)" class="mt-2 text-xs text-red-500">Remove new image</button>
+                    </div>
                 </div>
                 <div class="md:col-span-2">
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Text</label>

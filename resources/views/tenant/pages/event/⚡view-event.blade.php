@@ -16,8 +16,19 @@ class extends Component
     use WithPagination;
 
     public string $search = '';
+    public string $typeFilter = '';
 
     public function updatingSearch() { $this->resetPage(); }
+    public function updatingTypeFilter() { $this->resetPage(); }
+
+    public function getTypesProperty()
+    {
+        return Event::where('tenant_id', Auth::user()->tenant_id)
+            ->distinct()
+            ->pluck('type')
+            ->sort()
+            ->values();
+    }
 
     public function getEventsProperty()
     {
@@ -26,6 +37,7 @@ class extends Component
                 $q->where('name', 'like', '%'.$this->search.'%')
                   ->orWhere('barangay', 'like', '%'.$this->search.'%')
             )
+            ->when($this->typeFilter, fn($q) => $q->where('type', $this->typeFilter))
             ->latest()
             ->paginate(15);
     }
@@ -47,7 +59,7 @@ class extends Component
             <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Events</h1>
         </div>
         <a href="{{ route('tenant.events.create') }}" wire:navigate
-           class="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-[#376df1] hover:bg-blue-700 text-white text-sm font-semibold shadow-lg shadow-blue-500/20 transition hover:scale-105">
+           class="btn-primary focus-visible:ring-2 focus-visible:ring-primary-500/50">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
             Add Event
         </a>
@@ -60,15 +72,22 @@ class extends Component
         </div>
     @endif
 
-    {{-- Search --}}
+    {{-- Search & Type Filter --}}
     <div class="flex flex-col md:flex-row gap-4 items-start md:items-center">
         <div class="relative flex-1 max-w-md w-full">
             <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
             </svg>
             <input type="text" wire:model.live.debounce.300ms="search" placeholder="Search events..."
-                   class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 pl-10 pr-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 focus:border-[#376df1] transition">
+                   class="input pl-10">
         </div>
+        <select wire:model.live="typeFilter"
+                class="select md:w-56">
+            <option value="">All Types</option>
+            @foreach($this->types as $type)
+                <option value="{{ $type }}">{{ ucfirst($type) }}</option>
+            @endforeach
+        </select>
     </div>
 
     {{-- Events Table --}}
@@ -101,8 +120,8 @@ class extends Component
                             </td>
                             <td class="px-4 sm:px-6 py-4 text-right whitespace-nowrap space-x-2">
                                 <a href="{{ route('tenant.events.edit', $event) }}" wire:navigate
-                                   class="text-[#376df1] dark:text-blue-400 hover:text-blue-700 hover:underline text-xs font-medium">Edit</a>
-                                <button wire:click="deleteEvent({{ $event->id }})"
+                                   class="text-primary-600 dark:text-blue-400 hover:text-blue-700 hover:underline text-xs font-medium">Edit</a>
+                                <button type="button" wire:click="deleteEvent({{ $event->id }})"
                                         wire:confirm="Delete this event?"
                                         class="text-red-600 dark:text-red-400 hover:text-red-700 hover:underline text-xs font-medium">Delete</button>
                             </td>

@@ -105,23 +105,6 @@ class extends Component
             SiteSetting::setValue($key, $path);
         }
     }
-
-    public function getImagePreviewUrl($propertyName, $existingValue)
-    {
-        if ($this->{$propertyName}) {
-            try {
-                return $this->{$propertyName}->temporaryUrl();
-            } catch (\Exception $e) {
-                // fallback
-            }
-        }
-
-        if ($existingValue) {
-            return asset('storage/' . $existingValue);
-        }
-
-        return null;
-    }
 };
 ?>
 
@@ -152,61 +135,86 @@ class extends Component
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {{-- Background image --}}
-                <div>
+                <div x-data="{ previewUrl: null }">
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Hero Background</label>
-                    @php $bgPreview = $this->getImagePreviewUrl('heroBackgroundImage', $existingHeroBg); @endphp
-                    @if($bgPreview)
-                        <img src="{{ $bgPreview }}" class="w-full h-40 object-cover rounded-lg mb-3 border border-gray-200 dark:border-gray-700">
-                    @endif
+                    <div class="mb-3">
+                        <template x-if="previewUrl">
+                            <img :src="previewUrl" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
+                        </template>
+                        <template x-if="!previewUrl && @js($existingHeroBg)">
+                            <img src="{{ asset('storage/' . $existingHeroBg) }}" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
+                        </template>
+                    </div>
                     <input type="file" wire:model="heroBackgroundImage" accept="image/*"
+                           @change="previewUrl = URL.createObjectURL($event.target.files[0])"
                            class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                     @error('heroBackgroundImage') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
 
                 {{-- Side image 1 --}}
-                <div>
+                <div x-data="{ previewUrl: null }">
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Side Image 1 (Nature)</label>
-                    @php $side1Preview = $this->getImagePreviewUrl('heroSideImage1', $existingSide1); @endphp
-                    @if($side1Preview)
-                        <img src="{{ $side1Preview }}" class="w-full h-40 object-cover rounded-lg mb-3 border border-gray-200 dark:border-gray-700">
-                    @endif
+                    <div class="mb-3">
+                        <template x-if="previewUrl">
+                            <img :src="previewUrl" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
+                        </template>
+                        <template x-if="!previewUrl && @js($existingSide1)">
+                            <img src="{{ asset('storage/' . $existingSide1) }}" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
+                        </template>
+                    </div>
                     <input type="file" wire:model="heroSideImage1" accept="image/*"
+                           @change="previewUrl = URL.createObjectURL($event.target.files[0])"
                            class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                     @error('heroSideImage1') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
 
                 {{-- Side image 2 --}}
-                <div>
+                <div x-data="{ previewUrl: null }">
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Side Image 2 (The Sanctuary)</label>
-                    @php $side2Preview = $this->getImagePreviewUrl('heroSideImage2', $existingSide2); @endphp
-                    @if($side2Preview)
-                        <img src="{{ $side2Preview }}" class="w-full h-40 object-cover rounded-lg mb-3 border border-gray-200 dark:border-gray-700">
-                    @endif
+                    <div class="mb-3">
+                        <template x-if="previewUrl">
+                            <img :src="previewUrl" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
+                        </template>
+                        <template x-if="!previewUrl && @js($existingSide2)">
+                            <img src="{{ asset('storage/' . $existingSide2) }}" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
+                        </template>
+                    </div>
                     <input type="file" wire:model="heroSideImage2" accept="image/*"
+                           @change="previewUrl = URL.createObjectURL($event.target.files[0])"
                            class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                     @error('heroSideImage2') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
 
                 {{-- Side image 3 --}}
-                <div>
+                <div x-data="{ previewUrl: null }">
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Side Image 3 (Culture)</label>
-                    @php $side3Preview = $this->getImagePreviewUrl('heroSideImage3', $existingSide3); @endphp
-                    @if($side3Preview)
-                        <img src="{{ $side3Preview }}" class="w-full h-40 object-cover rounded-lg mb-3 border border-gray-200 dark:border-gray-700">
-                    @endif
+                    <div class="mb-3">
+                        <template x-if="previewUrl">
+                            <img :src="previewUrl" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
+                        </template>
+                        <template x-if="!previewUrl && @js($existingSide3)">
+                            <img src="{{ asset('storage/' . $existingSide3) }}" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
+                        </template>
+                    </div>
                     <input type="file" wire:model="heroSideImage3" accept="image/*"
+                           @change="previewUrl = URL.createObjectURL($event.target.files[0])"
                            class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                     @error('heroSideImage3') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
 
                 {{-- Side image 4 --}}
-                <div>
+                <div x-data="{ previewUrl: null }">
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Side Image 4 (Discover)</label>
-                    @php $side4Preview = $this->getImagePreviewUrl('heroSideImage4', $existingSide4); @endphp
-                    @if($side4Preview)
-                        <img src="{{ $side4Preview }}" class="w-full h-40 object-cover rounded-lg mb-3 border border-gray-200 dark:border-gray-700">
-                    @endif
+                    <div class="mb-3">
+                        <template x-if="previewUrl">
+                            <img :src="previewUrl" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
+                        </template>
+                        <template x-if="!previewUrl && @js($existingSide4)">
+                            <img src="{{ asset('storage/' . $existingSide4) }}" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
+                        </template>
+                    </div>
                     <input type="file" wire:model="heroSideImage4" accept="image/*"
+                           @change="previewUrl = URL.createObjectURL($event.target.files[0])"
                            class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                     @error('heroSideImage4') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>

@@ -3,14 +3,19 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Builder;
 
 class Tenant extends Model
 {
+    use HasFactory;
+
     protected $fillable = [
         'name',
         'slug',
         'type_of_tenant_id',
         'address',
+        'barangay',
         'contact_number',
         'email',
         'logo',
@@ -60,7 +65,7 @@ class Tenant extends Model
     {
         $coords = $this->coordinates;
         if (!empty($coords) && isset($coords[0])) {
-            return $coords[0]; // expects ['lat' => ..., 'lng' => ..., 'name' => ..., 'type' => 'parent']
+            return $coords[0];
         }
         return null;
     }
@@ -71,7 +76,7 @@ class Tenant extends Model
     }
 
     // ---------- Scopes ----------
-    public function scopeRecommended($query)
+    public function scopeRecommended(Builder $query)
     {
         return $query->where('is_recommended', true);
     }

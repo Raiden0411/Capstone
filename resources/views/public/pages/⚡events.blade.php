@@ -109,7 +109,9 @@ class extends Component
 };
 ?>
 
-<div x-data="{ filtersOpen: false }" @keydown.escape.window="if ($wire.selectedEventId) $wire.closeEvent()">
+<div x-data="{ filtersOpen: false, isDesktop: window.innerWidth >= 768 }"
+     @resize.window="isDesktop = window.innerWidth >= 768"
+     @keydown.escape.window="if ($wire.selectedEventId) $wire.closeEvent()">
     <div class="max-w-7xl mx-auto py-8 md:py-12 px-4 sm:px-6 lg:px-8 space-y-8">
 
         {{-- Header --}}
@@ -128,7 +130,7 @@ class extends Component
                 </h2>
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-5 md:gap-6">
                     @foreach($this->featuredEvents as $event)
-                        <button wire:click="openEvent({{ $event->id }})"
+                        <button type="button" wire:click="openEvent({{ $event->id }})"
                                 class="bg-white dark:bg-gray-800 border border-amber-200 dark:border-amber-500/30 rounded-2xl overflow-hidden group text-left hover:shadow-xl hover:border-amber-300 dark:hover:border-amber-500/60 transition-all cursor-pointer shadow-sm focus-visible:ring-2 focus-visible:ring-primary-600/50">
                             @if($event->image_path)
                                 <img src="{{ asset('storage/' . $event->image_path) }}" alt="{{ $event->name }}"
@@ -153,7 +155,7 @@ class extends Component
 
         {{-- Filters Toggle (Mobile) --}}
         <div class="md:hidden">
-            <button @click="filtersOpen = !filtersOpen"
+            <button type="button" @click="filtersOpen = !filtersOpen"
                     class="w-full flex items-center justify-between px-4 py-3 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-sm font-semibold text-gray-700 dark:text-gray-200">
                 <span>Filters</span>
                 <svg class="w-4 h-4 transition-transform" :class="filtersOpen ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
@@ -161,7 +163,7 @@ class extends Component
         </div>
 
         {{-- Filters Container --}}
-        <div x-show="filtersOpen || window.innerWidth >= 768"
+        <div x-show="filtersOpen || isDesktop"
              x-cloak
              class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-4 shadow-sm space-y-4 md:block">
 
@@ -172,7 +174,7 @@ class extends Component
                     'featured' => 'Featured',
                     'all' => 'All',
                 ] as $val => $label)
-                    <button wire:click="$set('statusFilter', '{{ $val }}')"
+                    <button type="button" wire:click="$set('statusFilter', '{{ $val }}')"
                             class="px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider transition
                                    {{ $statusFilter === $val ? 'bg-primary-600 text-white shadow-md shadow-primary-600/20' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 focus-visible:ring-2 focus-visible:ring-primary-600/50' }}">
                         {{ $label }}
@@ -208,7 +210,7 @@ class extends Component
         {{-- Events Grid --}}
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 md:gap-6">
             @forelse($this->events as $event)
-                <button wire:click="openEvent({{ $event->id }})"
+                <button type="button" wire:click="openEvent({{ $event->id }})"
                         class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl overflow-hidden hover:shadow-xl hover:border-primary-600/40 dark:hover:border-blue-500/40 transition-all group text-left cursor-pointer shadow-sm focus-visible:ring-2 focus-visible:ring-primary-600/50">
                     @if($event->image_path)
                         <img src="{{ asset('storage/' . $event->image_path) }}" alt="{{ $event->name }}"
@@ -277,7 +279,7 @@ class extends Component
                 @endif
 
                 <div class="p-6 md:p-8 space-y-5 overflow-y-auto">
-                    {{-- Type & Featured --}}
+                    {{-- Type --}}
                     <div class="flex flex-wrap items-center gap-3">
                         <span class="px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-primary-100 dark:bg-primary-500/15 text-primary-700 dark:text-blue-300">
                             {{ $event->type }}

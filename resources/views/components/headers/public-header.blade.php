@@ -68,6 +68,7 @@
                 {{-- Dark mode toggle --}}
                 <button type="button"
                         @click="
+                            dark = document.documentElement.classList.contains('dark');
                             dark = !dark;
                             document.documentElement.classList.toggle('dark', dark);
                             localStorage.setItem('hs_theme', dark ? 'dark' : 'light');

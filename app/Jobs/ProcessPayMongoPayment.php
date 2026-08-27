@@ -31,8 +31,9 @@ class ProcessPayMongoPayment implements ShouldQueue
         }
 
         DB::transaction(function () use ($checkout) {
-            // Use four-argument where to satisfy Intelephense
-            $payment = Payment::where('paymongo_session_id', '=', $this->sessionId, 'and')->first();
+            $payment = Payment::query()
+                ->where('paymongo_session_id', $this->sessionId)
+                ->first();
 
             if (!$payment || $payment->payment_status === 'paid') {
                 return;

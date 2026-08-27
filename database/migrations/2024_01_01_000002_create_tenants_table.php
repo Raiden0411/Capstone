@@ -14,12 +14,13 @@ return new class extends Migration
             $table->string('slug')->unique();
             $table->foreignId('type_of_tenant_id')->constrained('type_of_tenants')->cascadeOnDelete();
             $table->string('address');
+            $table->string('barangay')->nullable();               // ← added
             $table->string('contact_number');
             $table->string('email');
             $table->string('logo')->nullable();
-            $table->json('coordinates')->nullable();   // replaces latitude/longitude
+            $table->json('coordinates')->nullable();
             $table->boolean('is_active')->default(true);
-            $table->boolean('is_recommended')->default(false);   // ← recognized tourist attraction
+            $table->boolean('is_recommended')->default(false);
             $table->timestamps();
         });
     }

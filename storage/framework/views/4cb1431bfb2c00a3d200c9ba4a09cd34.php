@@ -8,14 +8,16 @@
 
     
     <script>
-        !function() {
+        function applyTheme() {
             var t = localStorage.getItem('hs_theme');
-            var dark = t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+            var dark = t === 'dark' || (t !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
             document.documentElement.classList.toggle('dark', dark);
-        }();
+        }
+        applyTheme();
+        document.addEventListener('livewire:navigated', applyTheme);
     </script>
 
-    <title><?php echo e($title ?? 'Business Dashboard'); ?></title>
+    <title><?php echo e($title ?? 'Super Admin Platform'); ?></title>
 
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -32,10 +34,13 @@
     </noscript>
 
     <?php echo app('Illuminate\Foundation\Vite')(['resources/css/app.css', 'resources/js/app.js']); ?>
-
+    
     <?php echo \Livewire\Mechanisms\FrontendAssets\FrontendAssets::styles(); ?>
 
     <?php echo view('livewire-mapcn::styles')->render(); ?>
+
+    
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
 </head>
 
 <body x-data="{ minified: false }"
@@ -43,14 +48,14 @@
 
     
     <div class="fixed inset-0 -z-10 overflow-hidden pointer-events-none">
-        <div class="absolute inset-0 bg-gradient-to-br from-white via-gray-50 to-gray-100 dark:from-gray-900 dark:via-gray-900 dark:to-gray-900"></div>
+        <div class="absolute inset-0 bg-linear-to-br from-white via-gray-50 to-gray-100 dark:from-gray-900 dark:via-gray-900 dark:to-gray-900"></div>
     </div>
 
     
-    <?php if (isset($component)) { $__componentOriginalce533146c48ec08ce0d62e944a6bd65b = $component; } ?>
-<?php if (isset($attributes)) { $__attributesOriginalce533146c48ec08ce0d62e944a6bd65b = $attributes; } ?>
-<?php $component = Illuminate\View\AnonymousComponent::resolve(['view' => 'components.headers.tenant.tenant-header','data' => []] + (isset($attributes) && $attributes instanceof Illuminate\View\ComponentAttributeBag ? $attributes->all() : [])); ?>
-<?php $component->withName('headers.tenant.tenant-header'); ?>
+    <?php if (isset($component)) { $__componentOriginal9b4d83abd5ac679e250eb1db9174b666 = $component; } ?>
+<?php if (isset($attributes)) { $__attributesOriginal9b4d83abd5ac679e250eb1db9174b666 = $attributes; } ?>
+<?php $component = Illuminate\View\AnonymousComponent::resolve(['view' => 'components.headers.admin.superadmin-header','data' => []] + (isset($attributes) && $attributes instanceof Illuminate\View\ComponentAttributeBag ? $attributes->all() : [])); ?>
+<?php $component->withName('headers.admin.superadmin-header'); ?>
 <?php if ($component->shouldRender()): ?>
 <?php $__env->startComponent($component->resolveView(), $component->data()); ?>
 <?php if (isset($attributes) && $attributes instanceof Illuminate\View\ComponentAttributeBag): ?>
@@ -61,20 +66,20 @@
 
 <?php echo $__env->renderComponent(); ?>
 <?php endif; ?>
-<?php if (isset($__attributesOriginalce533146c48ec08ce0d62e944a6bd65b)): ?>
-<?php $attributes = $__attributesOriginalce533146c48ec08ce0d62e944a6bd65b; ?>
-<?php unset($__attributesOriginalce533146c48ec08ce0d62e944a6bd65b); ?>
+<?php if (isset($__attributesOriginal9b4d83abd5ac679e250eb1db9174b666)): ?>
+<?php $attributes = $__attributesOriginal9b4d83abd5ac679e250eb1db9174b666; ?>
+<?php unset($__attributesOriginal9b4d83abd5ac679e250eb1db9174b666); ?>
 <?php endif; ?>
-<?php if (isset($__componentOriginalce533146c48ec08ce0d62e944a6bd65b)): ?>
-<?php $component = $__componentOriginalce533146c48ec08ce0d62e944a6bd65b; ?>
-<?php unset($__componentOriginalce533146c48ec08ce0d62e944a6bd65b); ?>
+<?php if (isset($__componentOriginal9b4d83abd5ac679e250eb1db9174b666)): ?>
+<?php $component = $__componentOriginal9b4d83abd5ac679e250eb1db9174b666; ?>
+<?php unset($__componentOriginal9b4d83abd5ac679e250eb1db9174b666); ?>
 <?php endif; ?>
 
     
-    <?php if (isset($component)) { $__componentOriginalc454d3bdd12954b32744a87789eb44f4 = $component; } ?>
-<?php if (isset($attributes)) { $__attributesOriginalc454d3bdd12954b32744a87789eb44f4 = $attributes; } ?>
-<?php $component = Illuminate\View\AnonymousComponent::resolve(['view' => 'components.headers.tenant.sidebar','data' => []] + (isset($attributes) && $attributes instanceof Illuminate\View\ComponentAttributeBag ? $attributes->all() : [])); ?>
-<?php $component->withName('headers.tenant.sidebar'); ?>
+    <?php if (isset($component)) { $__componentOriginal7dbaa7343efa386733e3ffc0d117a3f6 = $component; } ?>
+<?php if (isset($attributes)) { $__attributesOriginal7dbaa7343efa386733e3ffc0d117a3f6 = $attributes; } ?>
+<?php $component = Illuminate\View\AnonymousComponent::resolve(['view' => 'components.headers.admin.sidebar','data' => []] + (isset($attributes) && $attributes instanceof Illuminate\View\ComponentAttributeBag ? $attributes->all() : [])); ?>
+<?php $component->withName('headers.admin.sidebar'); ?>
 <?php if ($component->shouldRender()): ?>
 <?php $__env->startComponent($component->resolveView(), $component->data()); ?>
 <?php if (isset($attributes) && $attributes instanceof Illuminate\View\ComponentAttributeBag): ?>
@@ -85,30 +90,23 @@
 
 <?php echo $__env->renderComponent(); ?>
 <?php endif; ?>
-<?php if (isset($__attributesOriginalc454d3bdd12954b32744a87789eb44f4)): ?>
-<?php $attributes = $__attributesOriginalc454d3bdd12954b32744a87789eb44f4; ?>
-<?php unset($__attributesOriginalc454d3bdd12954b32744a87789eb44f4); ?>
+<?php if (isset($__attributesOriginal7dbaa7343efa386733e3ffc0d117a3f6)): ?>
+<?php $attributes = $__attributesOriginal7dbaa7343efa386733e3ffc0d117a3f6; ?>
+<?php unset($__attributesOriginal7dbaa7343efa386733e3ffc0d117a3f6); ?>
 <?php endif; ?>
-<?php if (isset($__componentOriginalc454d3bdd12954b32744a87789eb44f4)): ?>
-<?php $component = $__componentOriginalc454d3bdd12954b32744a87789eb44f4; ?>
-<?php unset($__componentOriginalc454d3bdd12954b32744a87789eb44f4); ?>
+<?php if (isset($__componentOriginal7dbaa7343efa386733e3ffc0d117a3f6)): ?>
+<?php $component = $__componentOriginal7dbaa7343efa386733e3ffc0d117a3f6; ?>
+<?php unset($__componentOriginal7dbaa7343efa386733e3ffc0d117a3f6); ?>
 <?php endif; ?>
 
     
     <div class="w-full transition-all duration-300"
-         :class="minified ? 'lg:ps-[3.25rem]' : 'lg:ps-64'">
+         :class="minified ? 'lg:ps-13' : 'lg:ps-64'">
         <div class="p-4 sm:p-6 space-y-4 sm:space-y-6">
-            <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if(isset($slot)): ?>
-                <?php echo e($slot); ?>
+            <?php echo e($slot); ?>
 
-            <?php else: ?>
-                <?php echo $__env->yieldContent('content'); ?>
-            <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
         </div>
     </div>
-
-    
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
 
     <?php echo \Livewire\Mechanisms\FrontendAssets\FrontendAssets::scripts(); ?>
 
@@ -118,4 +116,4 @@
     <script src="https://unpkg.com/preline/dist/preline.js"></script>
 </body>
 
-</html><?php /**PATH C:\laragon\www\Capstone\resources\views/tenant/layouts/app.blade.php ENDPATH**/ ?>
+</html><?php /**PATH C:\laragon\www\Capstone\resources\views/superadmin/layouts/app.blade.php ENDPATH**/ ?>

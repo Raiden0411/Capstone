@@ -17,7 +17,6 @@ class IsTenantAdmin
         }
 
         // 1. Require the user to be linked to a business.
-        //    This applies to everyone, including super-admins.
         if (!$user->tenant_id) {
             abort(403, 'Your account is not linked to a business.');
         }

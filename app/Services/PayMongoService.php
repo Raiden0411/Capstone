@@ -9,9 +9,6 @@ class PayMongoService
 {
     /**
      * Create a checkout session.
-     *
-     * @param array $data
-     * @return array|null
      */
     public function createCheckoutSession(array $data): ?array
     {

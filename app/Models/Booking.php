@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use App\Traits\BelongsToTenant;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 
 class Booking extends Model
 {
@@ -26,7 +27,7 @@ class Booking extends Model
         'check_out' => 'date',
     ];
 
-    public const PAYMENT_DEADLINE_MINUTES = 30;   // 30 minutes
+    public const PAYMENT_DEADLINE_MINUTES = 30;
 
     public const TYPE_FULL = 'full';
     public const TYPE_RESERVATION = 'reservation';
@@ -38,44 +39,21 @@ class Booking extends Model
     public const STATUS_COMPLETED = 'completed';
     public const STATUS_CHECKED_IN = 'checked_in';
 
-    // ---------- Relationships ----------
-    public function tenant()
-    {
-        return $this->belongsTo(Tenant::class);
-    }
+    // Relationships
+    public function tenant() { return $this->belongsTo(Tenant::class); }
+    public function user() { return $this->belongsTo(User::class); }
+    public function items() { return $this->hasMany(BookingItem::class); }
+    public function services() { return $this->hasMany(BookingService::class); }
+    public function payments() { return $this->hasMany(Payment::class); }
+    public function transactions() { return $this->hasMany(Transaction::class); }
 
-    public function user()
-    {
-        return $this->belongsTo(User::class);
-    }
-
-    public function items()
-    {
-        return $this->hasMany(BookingItem::class);
-    }
-
-    public function services()
-    {
-        return $this->hasMany(BookingService::class);
-    }
-
-    public function payments()
-    {
-        return $this->hasMany(Payment::class);
-    }
-
-    public function transactions()
-    {
-        return $this->hasMany(Transaction::class);
-    }
-
-    // ---------- Accessors ----------
-    public function getCheckInAttribute($value): ?Carbon
+    // Accessors
+    public function getCheckInAttribute(mixed $value): ?Carbon
     {
         return $value ? Carbon::parse($value) : null;
     }
 
-    public function getCheckOutAttribute($value): ?Carbon
+    public function getCheckOutAttribute(mixed $value): ?Carbon
     {
         return $value ? Carbon::parse($value) : null;
     }
@@ -88,7 +66,7 @@ class Booking extends Model
         return $this->created_at->addMinutes(self::PAYMENT_DEADLINE_MINUTES);
     }
 
-    // ---------- Helpers ----------
+    // Helpers
     public function isOverdue(): bool
     {
         if ($this->status !== self::STATUS_PENDING) {
@@ -108,7 +86,7 @@ class Booking extends Model
         }
     }
 
-    // ---------- Boot ----------
+    // Boot
     protected static function booted()
     {
         static::updated(function (Booking $booking) {
@@ -119,7 +97,9 @@ class Booking extends Model
                     ->values()
                     ->toArray();
 
-                Property::whereIn('id', $propertyIds, 'and', false)
+                // Use DB facade to avoid any method signature conflicts
+                DB::table('properties')
+                    ->whereIn('id', $propertyIds)
                     ->update(['status' => 'available']);
             }
         });

@@ -190,7 +190,7 @@ class extends Component {
                                 Business Name *
                             </label>
                             <div class="mt-1.5">
-                                <input type="text" id="business_name" wire:model="business_name" placeholder="Your resort or inn name"
+                                <input type="text" id="business_name" wire:model="business_name" placeholder="Your resort or inn name" autocomplete="organization"
                                        class="block w-full px-4 py-3 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
                             </div>
                             @error('business_name') <p class="mt-1 text-xs text-red-500">{{ $message }}</p> @enderror
@@ -215,7 +215,7 @@ class extends Component {
                                 Full Address *
                             </label>
                             <div class="mt-1.5">
-                                <input type="text" id="address" wire:model="address" placeholder="Complete street address"
+                                <input type="text" id="address" wire:model="address" placeholder="Complete street address" autocomplete="street-address"
                                        class="block w-full px-4 py-3 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
                             </div>
                             @error('address') <p class="mt-1 text-xs text-red-500">{{ $message }}</p> @enderror
@@ -225,7 +225,7 @@ class extends Component {
                                 Contact Number *
                             </label>
                             <div class="mt-1.5">
-                                <input type="text" id="contact_number" wire:model="contact_number" placeholder="09xxxxxxxxx"
+                                <input type="text" id="contact_number" wire:model="contact_number" placeholder="09xxxxxxxxx" autocomplete="tel"
                                        class="block w-full px-4 py-3 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
                             </div>
                             @error('contact_number') <p class="mt-1 text-xs text-red-500">{{ $message }}</p> @enderror
@@ -235,7 +235,7 @@ class extends Component {
                                 Business Email *
                             </label>
                             <div class="mt-1.5">
-                                <input type="email" id="business_email" wire:model="business_email" placeholder="hello@yourbusiness.com"
+                                <input type="email" id="business_email" wire:model="business_email" placeholder="hello@yourbusiness.com" autocomplete="email"
                                        class="block w-full px-4 py-3 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
                             </div>
                             @error('business_email') <p class="mt-1 text-xs text-red-500">{{ $message }}</p> @enderror
@@ -252,7 +252,7 @@ class extends Component {
                                 Full Name *
                             </label>
                             <div class="mt-1.5">
-                                <input type="text" id="owner_name" wire:model="owner_name" placeholder="Juan dela Cruz"
+                                <input type="text" id="owner_name" wire:model="owner_name" placeholder="Juan dela Cruz" autocomplete="name"
                                        class="block w-full px-4 py-3 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
                             </div>
                             @error('owner_name') <p class="mt-1 text-xs text-red-500">{{ $message }}</p> @enderror
@@ -262,7 +262,7 @@ class extends Component {
                                 Email *
                             </label>
                             <div class="mt-1.5">
-                                <input type="email" id="owner_email" wire:model="owner_email" placeholder="you@example.com"
+                                <input type="email" id="owner_email" wire:model="owner_email" placeholder="you@example.com" autocomplete="email"
                                        class="block w-full px-4 py-3 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
                             </div>
                             @error('owner_email') <p class="mt-1 text-xs text-red-500">{{ $message }}</p> @enderror
@@ -273,7 +273,7 @@ class extends Component {
                             </label>
                             <div class="relative mt-1.5">
                                 <input :type="showPassword ? 'text' : 'password'"
-                                       id="password" wire:model="password" placeholder="Min. 8 characters"
+                                       id="password" wire:model="password" placeholder="Min. 8 characters" autocomplete="new-password" minlength="8"
                                        class="block w-full px-4 py-3 pr-11 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
                                 <button type="button" @click="showPassword = !showPassword"
                                         class="absolute inset-y-0 flex items-center right-4 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
@@ -295,7 +295,7 @@ class extends Component {
                             </label>
                             <div class="relative mt-1.5">
                                 <input :type="showConfirmPassword ? 'text' : 'password'"
-                                       id="password_confirmation" wire:model="password_confirmation" placeholder="Re-enter password"
+                                       id="password_confirmation" wire:model="password_confirmation" placeholder="Re-enter password" autocomplete="new-password" minlength="8"
                                        class="block w-full px-4 py-3 pr-11 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
                                 <button type="button" @click="showConfirmPassword = !showConfirmPassword"
                                         class="absolute inset-y-0 flex items-center right-4 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"

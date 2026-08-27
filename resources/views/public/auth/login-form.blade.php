@@ -139,6 +139,7 @@
                                    value="{{ old('email') }}"
                                    required
                                    autofocus
+                                   autocomplete="email"
                                    placeholder="example@email.com"
                                    class="block w-full px-4 py-3 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
                         </div>
@@ -164,6 +165,7 @@
                                    id="password"
                                    name="password"
                                    required
+                                   autocomplete="current-password"
                                    placeholder="Enter your password"
                                    class="block w-full px-4 py-3 pr-11 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
 

@@ -6,13 +6,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="{{ csrf_token() }}">
 
-    {{-- Dark mode flash prevention --}}
+    {{-- Dark mode flash prevention + livewire:navigated re-apply --}}
     <script>
-        !function() {
+        function applyTheme() {
             var t = localStorage.getItem('hs_theme');
-            var dark = t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+            var dark = t === 'dark' || (t !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
             document.documentElement.classList.toggle('dark', dark);
-        }();
+        }
+        applyTheme();
+        document.addEventListener('livewire:navigated', applyTheme);
     </script>
 
     <title>{{ $title ?? 'Super Admin Platform' }}</title>
@@ -45,7 +47,7 @@
 
     {{-- Subtle background decoration (light/dark aware) --}}
     <div class="fixed inset-0 -z-10 overflow-hidden pointer-events-none">
-        <div class="absolute inset-0 bg-gradient-to-br from-white via-gray-50 to-gray-100 dark:from-gray-900 dark:via-gray-900 dark:to-gray-900"></div>
+        <div class="absolute inset-0 bg-linear-to-br from-white via-gray-50 to-gray-100 dark:from-gray-900 dark:via-gray-900 dark:to-gray-900"></div>
     </div>
 
     {{-- Top bar --}}
@@ -56,7 +58,7 @@
 
     {{-- Content wrapper --}}
     <div class="w-full transition-all duration-300"
-         :class="minified ? 'lg:ps-[3.25rem]' : 'lg:ps-64'">
+         :class="minified ? 'lg:ps-13' : 'lg:ps-64'">
         <div class="p-4 sm:p-6 space-y-4 sm:space-y-6">
             {{ $slot }}
         </div>

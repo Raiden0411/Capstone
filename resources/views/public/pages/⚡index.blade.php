@@ -15,6 +15,7 @@ new
 class extends Component
 {
     public ?int $homeHighlightedLocation = null;
+    public string $searchQuery = '';
 
     #[Computed]
     public function tenants()
@@ -138,6 +139,13 @@ class extends Component
         $this->dispatch('map:fly-to', center: [(float) $coord['lng'], (float) $coord['lat']], zoom: 15);
     }
 
+    public function search(): void
+    {
+        if (trim($this->searchQuery) !== '') {
+            $this->redirectRoute('explore.map', ['q' => $this->searchQuery], navigate: true);
+        }
+    }
+
     public function getHeroBackgroundUrl(): string
     {
         $path = SiteSetting::getValue('hero_background_image');
@@ -191,38 +199,46 @@ class extends Component
     <div class="relative z-10">
 
         {{-- ========== 1. HERO ========== --}}
-        <section class="relative w-full h-[80vh] min-h-[500px] md:h-[600px] overflow-hidden bg-gray-900">
+        <section class="relative w-full h-screen min-h-[600px] overflow-hidden bg-gray-900">
             <img src="{{ $this->getHeroBackgroundUrl() }}"
                  alt="{{ $this->getHeroSubtitle() }}"
-                 class="absolute inset-0 w-full h-full object-cover">
-            <div class="absolute inset-0 bg-gradient-to-b from-black/60 via-black/30 to-black/70"></div>
+                 class="absolute inset-0 w-full h-full object-cover scale-105">
+            <div class="absolute inset-0 bg-gradient-to-b from-black/70 via-black/40 to-black/80"></div>
 
-            <div class="relative z-10 flex flex-col justify-end h-full pb-10 md:pb-16 px-4 sm:px-6 lg:px-12 max-w-6xl mx-auto">
-                <div class="mb-6 md:mb-8">
-                    <p class="text-yellow-400 font-semibold tracking-[0.3em] uppercase text-xs md:text-sm">
-                        {{ $this->getHeroTitle() }}
-                    </p>
-                    <h1 class="text-white font-display text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-bold leading-tight mt-3">
-                        {{ $this->getHeroSubtitle() }}
-                    </h1>
-                </div>
+            <div class="relative z-10 flex flex-col items-center justify-center h-full px-4 sm:px-6 lg:px-12 text-center">
+                <p class="text-yellow-400 font-semibold tracking-[0.35em] uppercase text-sm md:text-base mb-4">
+                    {{ $this->getHeroTitle() }}
+                </p>
+                <h1 class="text-white font-display text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-bold leading-tight max-w-4xl">
+                    {{ $this->getHeroSubtitle() }}
+                </h1>
 
-                <div class="w-full max-w-2xl bg-white dark:bg-gray-800 border-2 border-primary-600 dark:border-blue-500 shadow-xl rounded-full pl-4 pr-1.5 h-14 md:h-16 flex items-center">
-                    <input type="text" placeholder="Search destinations..."
-                           class="w-full h-full text-sm md:text-base text-gray-900 dark:text-white outline-none bg-transparent placeholder-gray-500 dark:placeholder-gray-400">
-                    <button type="button" class="ml-2 md:ml-4 px-5 md:px-6 py-2 md:py-2.5 rounded-full bg-primary-600 hover:bg-primary-700 text-white text-sm md:text-base font-bold shrink-0 transition-colors">Search</button>
-                </div>
+                {{-- Centered, simple destination search bar --}}
+                <form wire:submit.prevent="search"
+                      class="mt-10 w-full max-w-3xl bg-white/95 dark:bg-gray-800/95 backdrop-blur border-2 border-primary-600 dark:border-blue-500 shadow-2xl rounded-full pl-6 pr-2 h-16 md:h-20 flex items-center">
+                    <svg class="shrink-0 text-gray-400 dark:text-gray-500 mr-3 w-5 h-5"
+                         fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                    </svg>
+                    <input type="text"
+                           wire:model="searchQuery"
+                           placeholder="Search destinations, attractions, or activities..."
+                           class="w-full h-full text-base md:text-lg text-gray-900 dark:text-white outline-none bg-transparent placeholder-gray-500 dark:placeholder-gray-400">
+                    <button type="submit"
+                            class="ml-4 px-8 py-3 md:px-10 md:py-3.5 rounded-full bg-primary-600 hover:bg-primary-700 text-white text-sm md:text-base font-bold shrink-0 transition-colors focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                        Search
+                    </button>
+                </form>
 
                 {{-- Scroll indicator --}}
-                <div class="mt-6 md:mt-8 flex justify-center">
-                    <div class="animate-bounce w-6 h-10 border-2 border-white/40 rounded-full flex items-start justify-center p-1">
-                        <div class="w-1 h-2 bg-white/60 rounded-full"></div>
-                    </div>
+                <div class="mt-10 animate-bounce w-6 h-10 border-2 border-white/40 rounded-full flex items-start justify-center p-1">
+                    <div class="w-1 h-2 bg-white/60 rounded-full"></div>
                 </div>
             </div>
         </section>
 
-        {{-- ========== 2. POPULAR DESTINATIONS (Recommended Only) ========== --}}
+        {{-- ========== 2. POPULAR DESTINATIONS (ORIGINAL GRID) ========== --}}
         <section class="max-w-6xl px-4 sm:px-6 lg:px-8 mx-auto mt-16 md:mt-24 mb-12 md:mb-16">
             <h2 class="mb-6 md:mb-8 text-2xl md:text-3xl font-bold text-gray-900 dark:text-white">Popular Destinations</h2>
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 md:gap-6">

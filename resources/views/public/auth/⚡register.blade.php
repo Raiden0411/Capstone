@@ -182,6 +182,7 @@ class extends Component {
                                    wire:model="name"
                                    required
                                    autofocus
+                                   autocomplete="name"
                                    placeholder="Juan Dela Cruz"
                                    class="block w-full px-4 py-3 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
                         </div>
@@ -200,6 +201,7 @@ class extends Component {
                                    type="email"
                                    wire:model="email"
                                    required
+                                   autocomplete="email"
                                    placeholder="example@email.com"
                                    class="block w-full px-4 py-3 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
                         </div>
@@ -217,6 +219,7 @@ class extends Component {
                             <input id="phone"
                                    type="text"
                                    wire:model="phone"
+                                   autocomplete="tel"
                                    placeholder="09123456789"
                                    class="block w-full px-4 py-3 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
                         </div>
@@ -235,6 +238,8 @@ class extends Component {
                                    id="password"
                                    wire:model="password"
                                    required
+                                   autocomplete="new-password"
+                                   minlength="8"
                                    placeholder="••••••••"
                                    class="block w-full px-4 py-3 pr-11 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
 
@@ -265,6 +270,8 @@ class extends Component {
                                    id="password_confirmation"
                                    wire:model="password_confirmation"
                                    required
+                                   autocomplete="new-password"
+                                   minlength="8"
                                    placeholder="••••••••"
                                    class="block w-full px-4 py-3 pr-11 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
 

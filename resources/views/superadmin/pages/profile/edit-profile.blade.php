@@ -59,11 +59,6 @@ class extends Component {
         }
     }
 
-    public function updatedSiteLogo()
-    {
-        $this->validateOnly('siteLogo', ['siteLogo' => 'nullable|image|max:2048']);
-    }
-
     public function getCurrentSiteLogoUrlProperty()
     {
         $path = SiteSetting::getValue('site_logo');
@@ -179,7 +174,7 @@ class extends Component {
         {{-- Name --}}
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Name</label>
-            <input type="text" wire:model="name"
+            <input type="text" wire:model="name" autocomplete="name"
                    class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
             @error('name') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
         </div>
@@ -187,7 +182,7 @@ class extends Component {
         {{-- Email --}}
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email</label>
-            <input type="email" wire:model="email"
+            <input type="email" wire:model="email" autocomplete="email"
                    class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
             @error('email') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
         </div>
@@ -199,21 +194,21 @@ class extends Component {
 
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Current Password</label>
-            <input type="password" wire:model="current_password"
+            <input type="password" wire:model="current_password" autocomplete="current-password"
                    class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
             @error('current_password') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
         </div>
 
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">New Password</label>
-            <input type="password" wire:model="new_password"
+            <input type="password" wire:model="new_password" autocomplete="new-password" minlength="8"
                    class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
             @error('new_password') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
         </div>
 
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Confirm New Password</label>
-            <input type="password" wire:model="new_password_confirmation"
+            <input type="password" wire:model="new_password_confirmation" autocomplete="new-password" minlength="8"
                    class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
         </div>
 
@@ -247,16 +242,18 @@ class extends Component {
 
         <form wire:submit="saveBranding" class="space-y-6">
             <div class="flex flex-col sm:flex-row items-start gap-6">
-                {{-- Logo Preview --}}
-                <div class="shrink-0">
-                    @if($this->previewLogoUrl)
-                        <img src="{{ $this->previewLogoUrl }}" alt="Site logo"
-                             class="w-24 h-24 object-contain bg-gray-50 dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 p-2">
-                    @else
-                        <div class="w-24 h-24 rounded-lg bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 flex items-center justify-center text-gray-400 dark:text-gray-500 text-3xl font-bold">
-                            {{ strtoupper(substr($this->siteName, 0, 1)) }}
-                        </div>
-                    @endif
+                {{-- Logo Preview with Alpine instant preview --}}
+                <div class="shrink-0" x-data="{ previewUrl: null }">
+                    @php $currentLogoUrl = $this->currentSiteLogoUrl; @endphp
+                    <img x-show="previewUrl || @js($currentLogoUrl) !== null"
+                         :src="previewUrl || '{{ $currentLogoUrl }}'"
+                         alt="Site logo"
+                         class="w-24 h-24 object-contain bg-gray-50 dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 p-2"
+                         x-cloak>
+                    <div x-show="!previewUrl && !@js($currentLogoUrl)"
+                         class="w-24 h-24 rounded-lg bg-gray-100 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 flex items-center justify-center text-gray-400 dark:text-gray-500 text-3xl font-bold">
+                        {{ strtoupper(substr($this->siteName, 0, 1)) }}
+                    </div>
                 </div>
 
                 <div class="flex-1 space-y-4">
@@ -273,7 +270,9 @@ class extends Component {
                     <div>
                         <label for="site-logo" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Upload Logo</label>
                         <input type="file" id="site-logo" wire:model="siteLogo"
+                               x-ref="siteLogoInput"
                                accept="image/png,image/jpeg,image/svg+xml,image/webp"
+                               @change="previewUrl = URL.createObjectURL($refs.siteLogoInput.files[0])"
                                class="block w-full text-sm text-gray-600 dark:text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                         @error('siteLogo') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>

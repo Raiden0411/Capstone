@@ -9,13 +9,15 @@
     @vite(['resources/css/app.css', 'resources/js/app.js'])
     @livewireStyles
 
-    {{-- Dark mode flash prevention --}}
+    {{-- Dark mode flash prevention + livewire:navigated re-apply --}}
     <script>
-        !function() {
+        function applyTheme() {
             var t = localStorage.getItem('hs_theme');
-            var dark = t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+            var dark = t === 'dark' || (t !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
             document.documentElement.classList.toggle('dark', dark);
-        }();
+        }
+        applyTheme();
+        document.addEventListener('livewire:navigated', applyTheme);
     </script>
 
     {{-- Fonts --}}

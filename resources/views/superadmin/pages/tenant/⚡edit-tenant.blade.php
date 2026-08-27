@@ -587,15 +587,27 @@ class extends Component {
                 </div>
             </div>
 
+            {{-- Business logo with instant Alpine preview --}}
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Business logo</label>
-                <input type="file" wire:model="logo" accept="image/*" class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition">
-                @error('logo') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-                @if ($logo)
-                    <img src="{{ $logo->temporaryUrl() }}" class="mt-2 h-24 w-24 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
-                @elseif ($tenantRecord->logo)
-                    <img src="{{ asset('storage/' . $tenantRecord->logo) }}" class="mt-2 h-24 w-24 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
-                @endif
+                <div x-data="{ previewUrl: null }">
+                    <input type="file"
+                           wire:model="logo"
+                           x-ref="logoInput"
+                           accept="image/*"
+                           @change="previewUrl = URL.createObjectURL($refs.logoInput.files[0])"
+                           class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition">
+                    @error('logo') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+
+                    <div class="mt-3">
+                        <template x-if="previewUrl">
+                            <img :src="previewUrl" class="h-24 w-24 object-cover rounded-lg border border-gray-200 dark:border-gray-700" alt="New logo preview">
+                        </template>
+                        <template x-if="!previewUrl && @js($tenantRecord->logo)">
+                            <img src="{{ asset('storage/' . $tenantRecord->logo) }}" class="h-24 w-24 object-cover rounded-lg border border-gray-200 dark:border-gray-700" alt="Current logo">
+                        </template>
+                    </div>
+                </div>
             </div>
 
             <div class="flex items-center justify-between">
@@ -697,7 +709,7 @@ class extends Component {
                         :dark-style="$satellite ? route('map.satellite.style') : null"
                         theme="auto"
                         class="h-full w-full"
-                        :events="['click', 'marker-clicked']"
+                        :events="['click', 'marker-clicked', 'marker-drag-end']"
                     >
                         <x-map-controls
                             :zoom="true"

@@ -22,25 +22,25 @@ class extends Component {
     use WithFileUploads;
 
     public Property $property;
-    
+
     #[Validate('required|string|max:255')]
     public $name = '';
-    
+
     #[Validate('nullable|string')]
     public $description = '';
-    
+
     #[Validate('required|exists:property_types,id')]
     public $property_type_id = '';
-    
+
     #[Validate('required|integer|min:1')]
     public $capacity = 1;
-    
+
     #[Validate('required|numeric|min:0|max:99999999.99')]
     public $price = 0.00;
-    
+
     #[Validate('required|in:available,occupied,maintenance')]
     public $status = 'available';
-    
+
     #[Validate('boolean')]
     public $is_active = true;
 
@@ -103,16 +103,16 @@ class extends Component {
     public function createType()
     {
         $this->validate(['newTypeName' => 'required|string|max:255']);
-        
+
         $type = PropertyType::create([
             'tenant_id' => Auth::user()->tenant_id,
             'name' => trim($this->newTypeName),
         ]);
-        
+
         $this->property_type_id = (string) $type->id;
         $this->showNewTypeForm = false;
         $this->newTypeName = '';
-        
+
         session()->flash('message', 'New activity type created.');
     }
 
@@ -229,7 +229,37 @@ class extends Component {
 </style>
 @endpush
 
-<div x-data="editProperty()" class="p-4 sm:p-6 lg:p-8 max-w-5xl mx-auto space-y-6">
+<div x-data="{
+    previews: [],
+    handleDrop(event) {
+        const files = event.dataTransfer.files;
+        if (files.length > 0) {
+            const input = document.getElementById('edit-image-upload');
+            const dataTransfer = new DataTransfer();
+            for (let i = 0; i < files.length; i++) {
+                dataTransfer.items.add(files[i]);
+            }
+            input.files = dataTransfer.files;
+            input.dispatchEvent(new Event('change'));
+        }
+    },
+    handleInput(event) {
+        this.previews = [];
+        const files = event.target.files;
+        for (let i = 0; i < files.length; i++) {
+            this.previews.push(URL.createObjectURL(files[i]));
+        }
+    },
+    removeClientPreview(index) {
+        this.previews.splice(index, 1);
+        this.$wire.removeNewImage(index);
+    },
+    makePrimaryClient(index) {
+        const url = this.previews.splice(index, 1)[0];
+        this.previews.unshift(url);
+        this.$wire.makePrimaryNewImage(index);
+    }
+}" class="p-4 sm:p-6 lg:p-8 max-w-5xl mx-auto space-y-6">
 
     {{-- Flash Message --}}
     @if (session()->has('message'))
@@ -403,30 +433,25 @@ class extends Component {
                 <div wire:loading wire:target="newImages" class="text-center text-sm text-gray-500 dark:text-gray-400">Uploading images…</div>
                 @error('newImages.*') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
 
-                @if(count($newImages) > 0)
-                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
-                        @foreach($newImages as $index => $image)
-                            <div class="relative group">
-                                <img src="{{ $image->temporaryUrl() }}" class="w-full h-24 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
-                                @if($index === 0)
-                                    <span class="absolute bottom-1 left-1 bg-[#376df1] text-white text-[10px] px-2 py-0.5 rounded-full">Primary</span>
-                                @endif
-                                <div class="absolute top-1 right-1 flex gap-1">
-                                    @if($index > 0)
-                                        <button type="button" wire:click="makePrimaryNewImage({{ $index }})" title="Make primary"
-                                                class="bg-black/60 text-white rounded-full p-1 hover:bg-black/80 transition">
-                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-                                        </button>
-                                    @endif
-                                    <button type="button" wire:click="removeNewImage({{ $index }})" title="Remove"
-                                            class="bg-red-600 text-white rounded-full p-1 hover:bg-red-700 transition">
-                                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                                    </button>
-                                </div>
+                {{-- Client-side Instant Preview --}}
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3" x-show="previews.length > 0" x-cloak>
+                    <template x-for="(url, index) in previews" :key="index">
+                        <div class="relative group">
+                            <img :src="url" class="w-full h-24 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
+                            <span x-show="index === 0" class="absolute bottom-1 left-1 bg-[#376df1] text-white text-[10px] px-2 py-0.5 rounded-full">Primary</span>
+                            <div class="absolute top-1 right-1 flex gap-1">
+                                <button type="button" x-show="index > 0" @click="makePrimaryClient(index)" title="Make primary"
+                                        class="bg-black/60 text-white rounded-full p-1 hover:bg-black/80 transition">
+                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                                </button>
+                                <button type="button" @click="removeClientPreview(index)" title="Remove"
+                                        class="bg-red-600 text-white rounded-full p-1 hover:bg-red-700 transition">
+                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                </button>
                             </div>
-                        @endforeach
-                    </div>
-                @endif
+                        </div>
+                    </template>
+                </div>
             </div>
         </div>
 
@@ -454,27 +479,3 @@ class extends Component {
         </div>
     </form>
 </div>
-
-@push('scripts')
-<script>
-    function editProperty() {
-        return {
-            handleDrop(event) {
-                const files = event.dataTransfer.files;
-                if (files.length > 0) {
-                    const input = document.getElementById('edit-image-upload');
-                    const dataTransfer = new DataTransfer();
-                    for (let i = 0; i < files.length; i++) {
-                        dataTransfer.items.add(files[i]);
-                    }
-                    input.files = dataTransfer.files;
-                    input.dispatchEvent(new Event('change'));
-                }
-            },
-            handleInput(event) {
-                // Livewire handles automatically via wire:model
-            }
-        }
-    }
-</script>
-@endpush
