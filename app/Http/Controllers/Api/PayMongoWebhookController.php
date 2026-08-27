@@ -13,54 +13,60 @@ class PayMongoWebhookController extends Controller
         $payload = $request->getContent();
         $signatureHeader = $request->header('Paymongo-Signature');
 
-        // Verify webhook signature
         if (!$this->verifySignature($payload, $signatureHeader)) {
             Log::warning('PayMongo webhook signature verification failed', [
                 'ip' => $request->ip(),
+                'header' => $signatureHeader,
             ]);
             return response()->json(['error' => 'Invalid signature'], 401);
         }
 
         $data = $request->json()->all();
+
         $eventType = $data['data']['attributes']['type'] ?? null;
+        $sessionId = $data['data']['attributes']['data']['id'] ?? null;
 
-        if ($eventType === 'checkout_session.payment.paid') {
-            $sessionId = $data['data']['attributes']['data']['id'] ?? null;
-
-            if ($sessionId) {
-                \App\Jobs\ProcessPayMongoPayment::dispatch($sessionId);
-                Log::info('PayMongo webhook received: payment.paid', ['session_id' => $sessionId]);
-            }
+        if ($eventType === 'checkout_session.payment.paid' && $sessionId) {
+            \App\Jobs\ProcessPayMongoPayment::dispatch($sessionId);
+            Log::info('PayMongo webhook received: checkout_session.payment.paid', [
+                'session_id' => $sessionId,
+            ]);
         }
 
         return response()->json(['status' => 'ok']);
     }
 
-    /**
-     * Verify PayMongo webhook signature.
-     */
     protected function verifySignature(string $payload, ?string $signatureHeader): bool
     {
         if (!$signatureHeader) {
             return false;
         }
 
-        $secret = config('paymongo.webhook_secret');
+        $secret = config('paymongo.webhook_secret') ?: env('PAYMONGO_WEBHOOK_SECRET');
 
-        // Parse signature header: format is "t=timestamp,te=test_signature,li=live_signature"
+        if (!$secret) {
+            Log::error('PayMongo webhook secret is not set.');
+            return false;
+        }
+
         $parts = [];
-        parse_str(str_replace(',', '&', $signatureHeader), $parts);
+        foreach (explode(',', $signatureHeader) as $part) {
+            $kv = explode('=', $part, 2);
+            if (count($kv) === 2) {
+                $parts[trim($kv[0])] = trim($kv[1]);
+            }
+        }
 
-        $signature = $parts['te'] ?? $parts['li'] ?? '';
         $timestamp = $parts['t'] ?? '';
+        $signature = $parts['te'] ?? $parts['li'] ?? '';
 
-        if (!$signature || !$timestamp) {
+        if (!$timestamp || !$signature) {
             return false;
         }
 
         $signedPayload = "{$timestamp}.{$payload}";
-        $computedSignature = hash_hmac('sha256', $signedPayload, $secret);
+        $expectedSignature = hash_hmac('sha256', $signedPayload, $secret);
 
-        return hash_equals($computedSignature, $signature);
+        return hash_equals($expectedSignature, $signature);
     }
 }

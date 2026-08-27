@@ -19,6 +19,7 @@ return new class extends Migration
             $table->string('logo')->nullable();
             $table->json('coordinates')->nullable();   // replaces latitude/longitude
             $table->boolean('is_active')->default(true);
+            $table->boolean('is_recommended')->default(false);   // ← recognized tourist attraction
             $table->timestamps();
         });
     }

@@ -1,97 +1,129 @@
-<?php
+{{-- resources/views/components/footers/public-footer.blade.php --}}
+@php
+    $siteName = \App\Models\SiteSetting::getValue('site_name', config('app.name', 'Victorias City'));
+    $logoPath = \App\Models\SiteSetting::getValue('site_logo');
+    $logoUrl = $logoPath ? asset('storage/' . $logoPath) : null;
+@endphp
 
-use Livewire\Component;
+<footer class="bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-700 font-sans pt-12 pb-6 px-4 sm:px-6 lg:px-16 w-full">
+    <div class="mx-auto max-w-[90rem]">
 
-new class extends Component
-{
-    //
-};
-?>
-
-<footer class="relative z-10 mt-auto w-full bg-[#020c08]/90 backdrop-blur-xl border-t border-white/10 pt-12 pb-8 px-4 sm:px-6 lg:px-8 font-sans text-white">
-    <div class="max-w-7xl mx-auto">
-
-        {{-- Top grid --}}
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8 mb-10">
-
-            {{-- Brand column --}}
-            <div class="col-span-1 sm:col-span-2 lg:col-span-1">
-                <a href="{{ route('home') }}" wire:navigate class="flex items-center gap-2 mb-4">
-                    <div class="w-8 h-8 rounded-lg bg-brand-600 flex items-center justify-center text-white font-black text-sm">V</div>
-                    <span class="font-display text-xl font-semibold tracking-tight text-white">Victorias</span>
+        {{-- Top Section: Brand & Badge --}}
+        <div class="flex flex-col items-start justify-between gap-6 mb-10 md:flex-row md:items-end">
+            <div>
+                <a href="{{ route('home') }}" wire:navigate class="flex items-center gap-4 mb-3">
+                    @if($logoUrl)
+                        <img src="{{ $logoUrl }}" alt="{{ $siteName }} logo"
+                             class="w-12 h-12 object-contain rounded-lg shrink-0">
+                    @endif
+                    <h2 class="font-display text-3xl md:text-5xl text-gray-900 dark:text-white tracking-tight">
+                        {{ $siteName }}
+                    </h2>
                 </a>
-                <p class="text-sm text-white/50 leading-relaxed mb-5">
-                    Discover the sweet city of the North — breathtaking nature, rich heritage, and warm Filipino hospitality.
+                <p class="text-xs font-medium tracking-[0.2em] text-gray-500 dark:text-gray-400 uppercase">
+                    Discover the Sweet City of the North — Nature, Heritage & Warm Hospitality
                 </p>
-                {{-- Newsletter signup --}}
-                <form class="flex gap-2" x-data="{ email: '' }">
-                    <input type="email" x-model="email" placeholder="Your email"
-                           class="flex-1 bg-white/5 border border-white/10 rounded-xl py-2.5 px-4 text-sm text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 transition">
-                    <button type="submit"
-                            class="bg-brand-600 hover:bg-brand-500 text-white font-medium text-sm px-5 rounded-xl transition shadow-lg shadow-brand-500/20">
-                        Join
+            </div>
+
+            <div class="px-4 py-2 text-[11px] font-medium tracking-widest text-gray-500 dark:text-gray-400 uppercase border border-gray-300 dark:border-gray-600 rounded-full">
+                Est. 1998 // N° 01
+            </div>
+        </div>
+
+        {{-- Divider --}}
+        <hr class="border-gray-200 dark:border-gray-700 mb-10">
+
+        {{-- Middle Section: 4 Columns --}}
+        <div class="grid grid-cols-1 gap-10 mb-14 sm:grid-cols-2 lg:grid-cols-4 lg:gap-8">
+
+            {{-- Column 1: Explore --}}
+            <div>
+                <h3 class="mb-5 text-lg font-semibold text-primary-600 dark:text-blue-400">Explore</h3>
+                <ul class="space-y-3 text-sm text-gray-600 dark:text-gray-300">
+                    <li><a href="{{ route('explore.map') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Tourist Spots & Landmarks</a></li>
+                    <li><a href="{{ route('explore.map') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Dining & Local Cuisine</a></li>
+                    <li><a href="{{ route('about') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Heritage & Architecture</a></li>
+                    <li><a href="{{ route('learnmore') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Local Markets & Shops</a></li>
+                    <li><a href="{{ route('explore.map') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Nature & Escapes</a></li>
+                </ul>
+            </div>
+
+            {{-- Column 2: Community --}}
+            <div>
+                <h3 class="mb-5 text-lg font-semibold text-primary-600 dark:text-blue-400">Community</h3>
+                <ul class="space-y-3 text-sm text-gray-600 dark:text-gray-300">
+                    <li><a href="#" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Local Artisans & Makers</a></li>
+                    <li><a href="#" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Local Stories & Narratives</a></li>
+                    <li><a href="#" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Travel Guides & Bulletins</a></li>
+                    <li><a href="{{ route('events') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Festivals & Events Calendar</a></li>
+                    <li><a href="{{ route('register_business') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Submit a Place</a></li>
+                </ul>
+            </div>
+
+            {{-- Column 3: About --}}
+            <div>
+                <h3 class="mb-5 text-lg font-semibold text-primary-600 dark:text-blue-400">About</h3>
+                <ul class="space-y-3 text-sm text-gray-600 dark:text-gray-300">
+                    <li><a href="{{ route('about') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">The Victorias Story</a></li>
+                    <li><a href="#" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Tourism Office</a></li>
+                    <li><a href="#" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Press & Media Kit</a></li>
+                    <li><a href="#" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Careers & Opportunities</a></li>
+                    <li><a href="#" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Partnerships & Linkages</a></li>
+                </ul>
+            </div>
+
+            {{-- Column 4: Visitor Dispatch --}}
+            <div>
+                <h3 class="mb-5 text-lg font-semibold text-primary-600 dark:text-blue-400">Visitor Dispatch</h3>
+                <p class="text-sm leading-relaxed text-gray-600 dark:text-gray-300 mb-5 pr-4">
+                    Sign up for our weekly tourism digest mapping city attractions, cultural events, and travel tips.
+                </p>
+
+                {{-- Email Newsletter Form --}}
+                <form class="flex items-center p-1.5 mb-7 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-full focus-within:border-primary-600 dark:focus-within:border-blue-400 transition-colors">
+                    <input type="email" placeholder="Enter your email address"
+                           class="w-full px-4 text-sm text-gray-900 dark:text-white bg-transparent outline-none placeholder:text-gray-400 dark:placeholder:text-gray-500">
+                    <button type="submit" class="flex items-center justify-center w-10 h-10 transition-colors bg-primary-600 text-white rounded-full hover:bg-primary-700 focus-visible:ring-2 focus-visible:ring-primary-600/50">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
                     </button>
                 </form>
-                <p class="text-xs text-white/30 mt-2">Stay updated with the latest spots and events.</p>
-            </div>
 
-            {{-- Quick Links --}}
-            <div>
-                <h4 class="text-xs font-semibold text-white uppercase tracking-widest mb-4">Quick Links</h4>
-                <ul class="space-y-3 text-sm">
-                    <li><a href="{{ route('home') }}" wire:navigate class="text-white/50 hover:text-brand-400 transition-colors">Home</a></li>
-                    <li><a href="{{ route('about') }}" wire:navigate class="text-white/50 hover:text-brand-400 transition-colors">About Victorias</a></li>
-                    <li><a href="{{ route('explore.map') }}" wire:navigate class="text-white/50 hover:text-brand-400 transition-colors">Explore Map</a></li>
-                    <li><a href="{{ route('learnmore') }}" wire:navigate class="text-white/50 hover:text-brand-400 transition-colors">Places to Visit</a></li>
-                </ul>
-            </div>
-
-            {{-- Information --}}
-            <div>
-                <h4 class="text-xs font-semibold text-white uppercase tracking-widest mb-4">Information</h4>
-                <ul class="space-y-3 text-sm">
-                    <li><a href="#" class="text-white/50 hover:text-brand-400 transition-colors">Tourist Spot Directory</a></li>
-                    <li><a href="#" class="text-white/50 hover:text-brand-400 transition-colors">Cultural Heritage</a></li>
-                    <li><a href="#" class="text-white/50 hover:text-brand-400 transition-colors">Travel Guidelines</a></li>
-                    <li><a href="#" class="text-white/50 hover:text-brand-400 transition-colors">Local Government</a></li>
-                </ul>
-            </div>
-
-            {{-- Connect --}}
-            <div>
-                <h4 class="text-xs font-semibold text-white uppercase tracking-widest mb-4">Connect</h4>
-                <ul class="space-y-3 text-sm">
-                    <li><a href="#" class="text-white/50 hover:text-brand-400 transition-colors">Contact Us</a></li>
-                    <li><a href="#" class="text-white/50 hover:text-brand-400 transition-colors">Facebook Page</a></li>
-                    <li><a href="#" class="text-white/50 hover:text-brand-400 transition-colors">Instagram</a></li>
-                    <li><a href="#" class="text-white/50 hover:text-brand-400 transition-colors">Twitter / X</a></li>
-                </ul>
-                <div class="flex items-center gap-3 mt-5">
-                    <a href="#" class="text-white/30 hover:text-brand-400 transition-colors" aria-label="Facebook">
-                        <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M9 8H6v4h3v12h5V12h3.642L18 8h-4V6.333C14 5.378 14.192 5 15.115 5H18V0h-3.808C10.596 0 9 1.583 9 4.615V8z"/></svg>
-                    </a>
-                    <a href="#" class="text-white/30 hover:text-brand-400 transition-colors" aria-label="Instagram">
-                        <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M9 2h6a7 7 0 017 7v6a7 7 0 01-7 7H9a7 7 0 01-7-7V9a7 7 0 017-7zm0 2a5 5 0 00-5 5v6a5 5 0 005 5h6a5 5 0 005-5V9a5 5 0 00-5-5H9zm6.5 1.5a1.5 1.5 0 110 3 1.5 1.5 0 010-3z"/></svg>
-                    </a>
-                    <a href="#" class="text-white/30 hover:text-brand-400 transition-colors" aria-label="Twitter / X">
-                        <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
-                    </a>
-                    <a href="#" class="text-white/30 hover:text-brand-400 transition-colors" aria-label="YouTube">
-                        <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0C.488 3.45.029 5.804 0 12c.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0C23.512 20.55 23.971 18.196 24 12c-.029-6.185-.484-8.549-4.385-8.816zM9 16V8l8 4-8 4z"/></svg>
-                    </a>
+                {{-- Contact Info --}}
+                <div class="text-gray-600 dark:text-gray-300 text-sm leading-relaxed">
+                    <h4 class="mb-1 text-sm font-semibold tracking-wide text-gray-900 dark:text-white uppercase">VICTORIAS CITY TOURISM OFFICE</h4>
+                    <p>City Hall Complex, Victorias City, Negros Occidental, Philippines</p>
+                    <p><a href="mailto:tourism@victoriascity.gov.ph" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">tourism@victoriascity.gov.ph</a></p>
                 </div>
             </div>
         </div>
 
-        {{-- Bottom bar --}}
-        <div class="pt-6 mt-6 border-t border-white/10 flex flex-col sm:flex-row justify-between items-center gap-4">
-            <p class="text-xs text-white/30">
-                &copy; {{ date('Y') }} Victorias City Tourism. Negros Occidental, Philippines.
-            </p>
-            <div class="flex gap-6 text-xs text-white/30">
-                <a href="#" class="hover:text-brand-400 transition-colors">Privacy Policy</a>
-                <a href="#" class="hover:text-brand-400 transition-colors">Terms of Service</a>
-                <a href="#" class="hover:text-brand-400 transition-colors">Accessibility</a>
+        {{-- Divider --}}
+        <hr class="border-gray-200 dark:border-gray-700 mb-6">
+
+        {{-- Bottom Section: Legal & Socials --}}
+        <div class="flex flex-col items-center justify-between gap-6 md:flex-row text-sm text-gray-500 dark:text-gray-400">
+
+            <div class="flex flex-col items-center gap-4 md:flex-row lg:gap-8">
+                <span>© {{ date('Y') }} {{ $siteName }}. All rights reserved.</span>
+                <div class="flex gap-6">
+                    <a href="#" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Privacy Policy</a>
+                    <a href="#" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Terms of Service</a>
+                </div>
+            </div>
+
+            {{-- Social Icons --}}
+            <div class="flex items-center gap-3">
+                @foreach([
+                    'instagram' => '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 7.5h.01M12 15a3 3 0 100-6 3 3 0 000 6zM5.25 9.5a4.25 4.25 0 014.25-4.25h5a4.25 4.25 0 014.25 4.25v5a4.25 4.25 0 01-4.25 4.25h-5a4.25 4.25 0 01-4.25-4.25v-5z"></path></svg>',
+                    'x' => '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"></path></svg>',
+                    'facebook' => '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 2C6.477 2 2 6.477 2 12c0 4.991 3.657 9.128 8.438 9.879V14.89h-2.54V12h2.54V9.797c0-2.506 1.492-3.89 3.777-3.89 1.094 0 2.238.195 2.238.195v2.46h-1.26c-1.243 0-1.63.771-1.63 1.562V12h2.773l-.443 2.89h-2.33v6.989C18.343 21.129 22 16.99 22 12c0-5.523-4.477-10-10-10z"></path></svg>',
+                    'twitter' => '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M23 3a10.9 10.9 0 01-3.14 1.53 4.48 4.48 0 00-7.86 3v1A10.66 10.66 0 013 4s-4 9 5 13a11.64 11.64 0 01-7 2c9 5 20 0 20-11.5a4.5 4.5 0 00-.08-.83A7.72 7.72 0 0023 3z"></path></svg>'
+                ] as $name => $icon)
+                    <a href="#" aria-label="{{ ucfirst($name) }}"
+                       class="flex items-center justify-center w-10 h-10 transition-colors border border-gray-300 dark:border-gray-600 rounded-full text-gray-500 dark:text-gray-400 hover:border-primary-600 hover:text-primary-600 dark:hover:border-blue-400 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50">
+                        {!! $icon !!}
+                    </a>
+                @endforeach
             </div>
         </div>
     </div>

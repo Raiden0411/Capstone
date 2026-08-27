@@ -11,12 +11,13 @@ return new class extends Migration
         Schema::create('bookings', function (Blueprint $table) {
             $table->id();
             $table->foreignId('tenant_id')->constrained('tenants')->cascadeOnDelete();
-            $table->foreignId('user_id')->constrained('users')->cascadeOnDelete();   // was customer_id
+            $table->foreignId('user_id')->constrained('users')->cascadeOnDelete();
             $table->string('booking_reference')->unique();
             $table->date('check_in');
             $table->date('check_out');
             $table->decimal('total_amount', 10, 2)->default(0);
-            $table->string('status')->default('pending'); 
+            $table->string('status')->default('pending');
+            $table->string('booking_type')->default('full');   // full | reservation
             $table->timestamps();
         });
     }

@@ -5,7 +5,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="{{ csrf_token() }}">
-    <meta name="color-scheme" content="dark light">
+    <meta name="color-scheme" content="light dark">
     <meta name="description" content="{{ $description ?? config('app.name') . ' — Book your perfect stay.' }}">
 
     <meta property="og:title" content="{{ $title ?? config('app.name') }}">
@@ -17,7 +17,7 @@
     <link rel="icon" href="{{ asset('icon.svg') }}" type="image/svg+xml">
     <link rel="apple-touch-icon" href="{{ asset('apple-touch-icon.png') }}">
 
-    {{-- Dark mode flash prevention (Preline theme) --}}
+    {{-- Dark mode flash prevention --}}
     <script>
         !function() {
             var t = localStorage.getItem('hs_theme');
@@ -44,16 +44,15 @@
 
     @vite(['resources/css/app.css', 'resources/js/app.js'])
     @livewireStyles
+    @livewireMapStyles
     @stack('styles')
 </head>
 
-<body class="font-sans antialiased flex flex-col min-h-screen bg-[#071412] text-white">
+<body class="font-sans antialiased flex flex-col min-h-screen bg-[#F8F7F3] dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-300">
 
-    {{-- Animated background orbs – fixed behind everything --}}
+    {{-- Subtle background decoration (light/dark aware) --}}
     <div class="fixed inset-0 -z-10 overflow-hidden pointer-events-none">
-        <div class="orb orb-1"></div>
-        <div class="orb orb-2"></div>
-        <div class="orb orb-3"></div>
+        <div class="absolute inset-0 bg-gradient-to-br from-white via-[#F8F7F3] to-gray-100 dark:from-gray-900 dark:via-gray-900 dark:to-gray-900"></div>
     </div>
 
     <x-headers.public-header />
@@ -66,6 +65,7 @@
 
     {{-- Livewire Scripts (using CDN to bypass local corruption) --}}
     <script src="https://cdn.jsdelivr.net/npm/livewire@4.0.0/dist/livewire.js"></script>
+    @livewireMapScripts
 
     {{-- Preline JS --}}
     <script src="https://unpkg.com/preline/dist/preline.js"></script>

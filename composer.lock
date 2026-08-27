@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "ea4077e14a60396d8fcca7df8453637e",
+    "content-hash": "3ffc835aa5b25772e2dd522c9163d180",
     "packages": [
         {
             "name": "brick/math",
@@ -1052,6 +1052,85 @@
                 }
             ],
             "time": "2025-08-22T14:27:06+00:00"
+        },
+        {
+            "name": "kwasii/livewire-mapcn",
+            "version": "v1.1.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/kwasii1/livewire-mapcn.git",
+                "reference": "68d07fa2171c213c7a61beabf819f2f0825e441d"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/kwasii1/livewire-mapcn/zipball/68d07fa2171c213c7a61beabf819f2f0825e441d",
+                "reference": "68d07fa2171c213c7a61beabf819f2f0825e441d",
+                "shasum": ""
+            },
+            "require": {
+                "illuminate/contracts": "^11.0||^12.0||^13.0",
+                "livewire/livewire": "^3.0||^4.0",
+                "php": "^8.3",
+                "spatie/laravel-package-tools": "^1.16"
+            },
+            "require-dev": {
+                "larastan/larastan": "^3.0",
+                "laravel/pint": "^1.14",
+                "nunomaduro/collision": "^8.8",
+                "orchestra/testbench": "^9.0.0||^10.0.0||^11.0.0",
+                "pestphp/pest": "^4.0",
+                "pestphp/pest-plugin-arch": "^4.0",
+                "pestphp/pest-plugin-laravel": "^4.0",
+                "phpstan/extension-installer": "^1.4",
+                "phpstan/phpstan-deprecation-rules": "^2.0",
+                "phpstan/phpstan-phpunit": "^2.0"
+            },
+            "type": "library",
+            "extra": {
+                "laravel": {
+                    "aliases": {
+                        "LivewireMapcn": "Kwasii\\LivewireMapcn\\Facades\\LivewireMapcn"
+                    },
+                    "providers": [
+                        "Kwasii\\LivewireMapcn\\LivewireMapcnServiceProvider"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Kwasii\\LivewireMapcn\\": "src/",
+                    "Kwasii\\LivewireMapcn\\Database\\Factories\\": "database/factories/"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Kwasi Sakyi Baidoo",
+                    "email": "kesbijnr@gmail.com",
+                    "role": "Developer"
+                }
+            ],
+            "description": "Mapcn inspired laravel livewire package to add maps to your laravel livewire project",
+            "homepage": "https://github.com/kwasii/livewire-mapcn",
+            "keywords": [
+                "kwasii",
+                "laravel",
+                "livewire-mapcn"
+            ],
+            "support": {
+                "issues": "https://github.com/kwasii1/livewire-mapcn/issues",
+                "source": "https://github.com/kwasii1/livewire-mapcn/tree/v1.1.0"
+            },
+            "funding": [
+                {
+                    "url": "https://github.com/kwasii",
+                    "type": "github"
+                }
+            ],
+            "time": "2026-06-07T11:30:47+00:00"
         },
         {
             "name": "laravel/framework",

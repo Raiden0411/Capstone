@@ -3,7 +3,6 @@
 use Livewire\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
-use Livewire\Attributes\Validate;
 use App\Models\TypeOfTenant;
 use Illuminate\Validation\Rule;
 
@@ -14,10 +13,7 @@ class extends Component {
 
     public TypeOfTenant $type;
 
-    #[Validate]
     public $typeName = '';
-    
-    #[Validate('nullable|string')]
     public $description = '';
 
     public function mount(TypeOfTenant $type)
@@ -43,6 +39,7 @@ class extends Component {
                 'max:255',
                 Rule::unique('type_of_tenants', 'type')->ignore($this->type->id),
             ],
+            'description' => ['nullable', 'string', 'max:1000'],
         ];
     }
 
@@ -55,46 +52,57 @@ class extends Component {
             'description' => $this->description,
         ]);
 
-        session()->flash('success', 'Tenant type updated successfully.');
+        session()->flash('message', 'Tenant type updated successfully.');
         return $this->redirectRoute('superadmin.tenant-types.index', navigate: true);
     }
 };
 ?>
 
-<div class="max-w-2xl mx-auto py-8 px-4 sm:px-6 lg:px-8 space-y-6">
+<div class="p-4 sm:p-6 lg:p-8 max-w-2xl mx-auto space-y-6">
 
     {{-- Flash Message --}}
-    @if (session()->has('success'))
-        <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-400 font-medium">
-            {{ session('success') }}
+    @if (session()->has('message'))
+        <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium">
+            {{ session('message') }}
         </div>
     @endif
 
-    <div class="flex items-center justify-between">
-        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Edit Tenant Type</h1>
-        <a href="{{ route('superadmin.tenant-types.index') }}" wire:navigate class="text-sm font-medium text-gray-500 dark:text-white/50 hover:text-brand-600 dark:hover:text-brand-400 transition-colors flex items-center gap-1">
-            &larr; Back to Tenant Types
+    {{-- Header --}}
+    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
+        <div>
+            <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Edit Tenant Type</h1>
+        </div>
+        <a href="{{ route('superadmin.tenant-types.index') }}" wire:navigate
+           class="inline-flex items-center gap-2 px-5 py-2.5 rounded-full border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 text-sm font-semibold transition">
+            ← Back to Tenant Types
         </a>
     </div>
 
-    <form wire:submit="update" class="space-y-5 bg-white dark:bg-white/5 dark:backdrop-blur-md border border-gray-200 dark:border-white/10 rounded-2xl p-5 sm:p-6 shadow-sm dark:shadow-none">
+    <form wire:submit="update" class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm space-y-5">
+
         <div>
-            <label class="block text-sm font-medium text-gray-700 dark:text-white/70 mb-1">Type Name</label>
-            <input type="text" wire:model="typeName" 
-                   class="w-full bg-white dark:bg-white/10 border border-gray-300 dark:border-white/10 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
+            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Type Name *</label>
+            <input type="text" wire:model="typeName"
+                   class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 transition"
+                   placeholder="e.g. Resort, Inn, Eco Park">
             @error('typeName') <span class="text-red-500 dark:text-red-400 text-xs mt-1 inline-block">{{ $message }}</span> @enderror
         </div>
 
         <div>
-            <label class="block text-sm font-medium text-gray-700 dark:text-white/70 mb-1">Description <span class="text-gray-400 dark:text-white/40">(Optional)</span></label>
-            <textarea wire:model="description" rows="3" 
-                      class="w-full bg-white dark:bg-white/10 border border-gray-300 dark:border-white/10 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"></textarea>
+            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Description <span class="text-gray-400 dark:text-gray-500">(Optional)</span>
+            </label>
+            <textarea wire:model="description" rows="4"
+                      class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 transition"
+                      placeholder="Short description of this category"></textarea>
+            @error('description') <span class="text-red-500 dark:text-red-400 text-xs mt-1 inline-block">{{ $message }}</span> @enderror
         </div>
 
-        <div class="flex items-center gap-3 pt-2">
+        {{-- Form Actions --}}
+        <div class="flex flex-wrap items-center gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
             <button type="submit"
                     wire:loading.attr="disabled"
-                    class="bg-brand-600 hover:bg-brand-500 text-white font-medium py-2.5 px-6 rounded-xl shadow-lg shadow-brand-500/20 transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                    class="bg-[#376df1] hover:bg-blue-700 text-white font-medium py-2.5 px-5 rounded-full shadow-lg shadow-blue-500/20 transition hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 flex items-center gap-2">
                 <span wire:loading.remove>Update Type</span>
                 <span wire:loading class="flex items-center gap-2">
                     <svg class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -104,7 +112,8 @@ class extends Component {
                     Saving…
                 </span>
             </button>
-            <a href="{{ route('superadmin.tenant-types.index') }}" wire:navigate class="bg-white dark:bg-white/5 text-gray-700 dark:text-white/70 border border-gray-300 dark:border-white/10 hover:bg-gray-50 dark:hover:bg-white/10 font-medium py-2.5 px-6 rounded-xl transition-colors">
+            <a href="{{ route('superadmin.tenant-types.index') }}" wire:navigate
+               class="bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 font-medium py-2.5 px-5 rounded-full transition-colors hover:scale-[1.02]">
                 Cancel
             </a>
         </div>

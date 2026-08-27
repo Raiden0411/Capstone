@@ -4,920 +4,1298 @@
 use Livewire\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
+use Livewire\Attributes\Url;
+use Livewire\Attributes\Computed;
+use Livewire\Attributes\On;
 use App\Models\Tenant;
+use App\Models\TypeOfTenant;
 
 new
 #[Layout('layouts.app')]
 #[Title('Explore Map · Victorias City')]
 class extends Component
 {
-    public string $search         = '';
+    #[Url(as: 'q')]
+    public string $search = '';
+
+    #[Url(as: 'category', history: true)]
     public string $categoryFilter = '';
-    public string $sortBy         = 'name';
-    public ?int   $highlightedId  = null;
 
-    public function getTenantsProperty()
+    #[Url(as: 'sort', history: true)]
+    public string $sortBy = 'name';
+
+    #[Url(as: 'open', history: true)]
+    public bool $openNow = false;
+
+    #[Url(as: 'offers', history: true)]
+    public bool $hasOfferings = false;
+
+    #[Url(as: 'saved', history: true)]
+    public bool $favoritesOnly = false;
+
+    public ?float $userLat = null;
+    public ?float $userLng = null;
+    public bool $followMode = false;
+
+    public ?int    $highlightedId        = null;
+    public array   $routeCoords          = [];
+    public ?string $routeDestinationName = null;
+    public ?int    $routeTenantId        = null;
+    public string  $routeId              = 'tourist-route';
+    public string  $directionsProfile    = 'driving';
+    public bool    $satellite            = false;
+    public bool    $sidebarOpen          = true;
+
+    public ?int $pendingMarkerId = null;
+    public bool $autoDirections = false;
+
+    public array $favorites = [];
+
+    public ?float $currentLat = null;
+    public ?float $currentLng = null;
+    public ?int   $currentZoom = null;
+
+    public int $locationVersion = 0;
+    public string $filtersHash = '';
+    public int $routeVersion = 0;
+    public ?array $pendingFitBounds = null;
+
+    public ?int $pendingDirectionsTenantId = null;
+    public ?int $pendingDirectionsCoordIndex = 0;
+
+    public array $markerTypes = [
+        'restaurant' => 'Restaurant',
+        'cafe'       => 'Café',
+        'inn'        => 'Inn / Hotel',
+        'shop'       => 'Shop',
+        'viewpoint'  => 'Viewpoint',
+        'parking'    => 'Parking',
+        'entrance'   => 'Entrance',
+        'other'      => 'Other',
+    ];
+
+    public array $markerColors = [
+        'restaurant' => '#f97316',
+        'cafe'       => '#a855f7',
+        'inn'        => '#3b82f6',
+        'shop'       => '#14b8a6',
+        'viewpoint'  => '#eab308',
+        'parking'    => '#6b7280',
+        'entrance'   => '#22c55e',
+        'other'      => '#94a3b8',
+    ];
+
+    public array $markerEmojis = [
+        'restaurant' => '🍽️',
+        'cafe'       => '☕',
+        'inn'        => '🏨',
+        'shop'       => '🛍️',
+        'viewpoint'  => '🌄',
+        'parking'    => '🅿️',
+        'entrance'   => '🚪',
+        'other'      => '📍',
+    ];
+
+    private const CITY_CENTER = [123.07055771888716, 10.900977766937142];
+
+    public function mount(): void
     {
-        return Tenant::where('is_active', true)
+        $this->favorites   = session($this->favoritesStorageKey(), []);
+        $this->sidebarOpen = request()->cookie('hs_sidebar_open') !== '0';
+        $this->filtersHash = $this->computeFiltersHash();
+
+        $this->hydrateFromQueryString();
+    }
+
+    protected function computeFiltersHash(): string
+    {
+        return md5(json_encode([
+            $this->search,
+            $this->categoryFilter,
+            $this->openNow,
+            $this->hasOfferings,
+            $this->favoritesOnly,
+        ]));
+    }
+
+    protected function hydrateFromQueryString(): void
+    {
+        if (request()->filled('lat') && request()->filled('lng')) {
+            $this->userLat = (float) request('lat');
+            $this->userLng = (float) request('lng');
+            $this->currentLat = $this->userLat;
+            $this->currentLng = $this->userLng;
+            $this->locationVersion++;
+        }
+
+        if (request()->filled('marker')) {
+            $this->pendingMarkerId = (int) request('marker');
+        }
+
+        if ($this->pendingMarkerId && request()->boolean('directions')) {
+            $this->autoDirections = true;
+        }
+
+        if (request()->filled('profile') && in_array(request('profile'), ['driving', 'walking', 'cycling'], true)) {
+            $this->directionsProfile = request('profile');
+        }
+    }
+
+    #[Computed]
+    public function tenants()
+    {
+        $term = trim($this->search);
+
+        $tenants = Tenant::query()
+            ->where('is_active', true)
             ->whereNotNull('coordinates')
-            ->when($this->search, fn($q) => $q->where('name', 'like', '%' . $this->search . '%'))
-            ->when($this->categoryFilter, fn($q) => $q->whereHas(
-                'typeOfTenant', fn($sub) => $sub->where('type', $this->categoryFilter)
+            ->with([
+                'typeOfTenant',
+                'settings' => fn ($q) => $q->where('key', 'business_info'),
+            ])
+            ->withCount(['properties', 'services'])
+            ->when($term !== '', function ($q) use ($term) {
+                $like = '%' . $term . '%';
+                $q->where(function ($sub) use ($like) {
+                    $sub->where('name', 'like', $like)
+                        ->orWhere('address', 'like', $like)
+                        ->orWhereHas('typeOfTenant', fn ($t) => $t->where('type', 'like', $like));
+                });
+            })
+            ->when($this->categoryFilter, fn ($q) => $q->whereHas(
+                'typeOfTenant',
+                fn ($sub) => $sub->where('type', $this->categoryFilter)
             ))
-            ->orderBy('name')
+            ->when($this->favoritesOnly, fn ($q) => $q->whereIn('id', $this->favorites ?: [0]))
             ->get();
+
+        if ($this->hasOfferings) {
+            $tenants = $tenants->filter(fn ($t) => $t->properties_count > 0 || $t->services_count > 0);
+        }
+
+        if ($this->openNow) {
+            $tenants = $tenants->filter(fn ($t) => $this->isOpenNow($t));
+        }
+
+        return match ($this->sortBy) {
+            'distance' => $this->userLat && $this->userLng
+                ? $tenants->sortBy(fn ($t) => $this->calculateDistance(
+                    (float) $t->coordinates[0]['lat'],
+                    (float) $t->coordinates[0]['lng']
+                ))->values()
+                : $tenants->sortBy('name')->values(),
+            'newest'  => $tenants->sortByDesc('created_at')->values(),
+            'popular' => $tenants->sortByDesc(fn ($t) => $t->properties_count + $t->services_count)->values(),
+            default   => $tenants->sortBy('name')->values(),
+        };
     }
 
-    public function getCategoriesProperty()
+    #[Computed]
+    public function geoJsonData()
     {
-        return \App\Models\TypeOfTenant::has('tenants')->orderBy('type')->pluck('type');
+        return $this->tenants->flatMap(function ($tenant) {
+            $status = $this->statusEmoji($this->tenantOpenStatus($tenant));
+
+            return collect($tenant->coordinates)->map(function ($coord) use ($tenant, $status) {
+                return [
+                    'type'       => 'Feature',
+                    'properties' => [
+                        'name'      => $coord['name'] ?? $tenant->name,
+                        'type'      => $tenant->typeOfTenant?->type ?? 'Business',
+                        'tenant_id' => $tenant->id,
+                        'slug'      => $tenant->slug,
+                        'logo'      => $tenant->logo,
+                        'address'   => $tenant->address,
+                        'phone'     => $tenant->contact_number,
+                        'email'     => $tenant->email,
+                        'offerings' => $tenant->properties_count + $tenant->services_count,
+                        'favorite'  => in_array($tenant->id, $this->favorites, true),
+                        'status'    => $status,
+                    ],
+                    'geometry' => [
+                        'type'        => 'Point',
+                        'coordinates' => [(float) $coord['lng'], (float) $coord['lat']],
+                    ],
+                ];
+            });
+        })->values()->toArray();
     }
 
-    public function updatedSearch(): void
+    #[Computed]
+    public function categories()
     {
-        $this->dispatch('map-tenants-updated', tenants: $this->tenants->toArray());
+        return TypeOfTenant::query()
+            ->withCount(['tenants' => fn ($q) => $q->where('is_active', true)])
+            ->whereHas('tenants', fn ($q) => $q->where('is_active', true))
+            ->orderBy('type')
+            ->get(['id', 'type']);
     }
 
-    public function updatedCategoryFilter(): void
+    #[Computed]
+    public function hasActiveFilters(): bool
     {
-        $this->dispatch('map-tenants-updated', tenants: $this->tenants->toArray());
+        return $this->search !== ''
+            || $this->categoryFilter !== ''
+            || $this->openNow
+            || $this->hasOfferings
+            || $this->favoritesOnly;
+    }
+
+    #[Computed]
+    public function initialCenter(): array
+    {
+        if ($this->currentLat && $this->currentLng) {
+            return [(float) $this->currentLng, (float) $this->currentLat];
+        }
+
+        if ($this->userLat && $this->userLng) {
+            return [(float) $this->userLng, (float) $this->userLat];
+        }
+
+        return self::CITY_CENTER;
+    }
+
+    #[Computed]
+    public function initialZoom(): int
+    {
+        return $this->currentZoom ?? ($this->userLat && $this->userLng ? 14 : 12);
+    }
+
+    protected function isOpenNow(Tenant $tenant): bool
+    {
+        $hours = $tenant->settings->first()?->value['opening_hours'] ?? null;
+
+        if (!$hours) {
+            return false;
+        }
+
+        $days = $hours['days'] ?? null;
+
+        if (is_array($days) && !in_array((int) now()->dayOfWeek, array_map('intval', $days), true)) {
+            return false;
+        }
+
+        $now     = now()->format('H:i');
+        $opening = $hours['opening'] ?? '00:00';
+        $closing = $hours['closing'] ?? '23:59';
+
+        return $opening <= $closing
+            ? $now >= $opening && $now <= $closing
+            : $now >= $opening || $now <= $closing;
+    }
+
+    public function tenantOpenStatus(Tenant $tenant): ?bool
+    {
+        $hours = $tenant->settings->first()?->value['opening_hours'] ?? null;
+
+        return $hours ? $this->isOpenNow($tenant) : null;
+    }
+
+    protected function statusEmoji(?bool $isOpen): string
+    {
+        return match ($isOpen) {
+            true    => '🟢 Open now',
+            false   => '⚪ Closed now',
+            default => '',
+        };
+    }
+
+    public function calculateDistance($lat2, $lng2)
+    {
+        if (!$this->userLat || !$this->userLng) {
+            return PHP_FLOAT_MAX;
+        }
+
+        $R    = 6371;
+        $dLat = deg2rad($lat2 - $this->userLat);
+        $dLng = deg2rad($lng2 - $this->userLng);
+        $a    = sin($dLat / 2) ** 2 + cos(deg2rad($this->userLat)) * cos(deg2rad($lat2)) * sin($dLng / 2) ** 2;
+
+        return $R * 2 * atan2(sqrt($a), sqrt(1 - $a));
+    }
+
+    public function formatDistance(float $km): string
+    {
+        return $km < 1
+            ? round($km * 1000) . ' m'
+            : number_format($km, 1) . ' km';
+    }
+
+    public function highlightMatch(string $text): \Illuminate\Support\HtmlString
+    {
+        $escaped = e($text);
+        $term    = trim($this->search);
+
+        if ($term === '') {
+            return new \Illuminate\Support\HtmlString($escaped);
+        }
+
+        $pattern     = '/(' . preg_quote(e($term), '/') . ')/i';
+        $highlighted = preg_replace(
+            $pattern,
+            '<mark class="rounded-sm bg-amber-200 px-0.5 text-inherit dark:bg-amber-400/40">$1</mark>',
+            $escaped
+        );
+
+        return new \Illuminate\Support\HtmlString($highlighted ?? $escaped);
+    }
+
+    protected function favoritesStorageKey(): string
+    {
+        return auth()->check()
+            ? 'explore_map_favorites_user_' . auth()->id()
+            : 'explore_map_favorites_guest';
+    }
+
+    public function toggleFavorite(int $id): void
+    {
+        if (in_array($id, $this->favorites, true)) {
+            $this->favorites = array_values(array_diff($this->favorites, [$id]));
+            $this->notify('Removed from favorites.', 'info');
+        } else {
+            $this->favorites[] = $id;
+            $this->notify('Saved to favorites.', 'success');
+        }
+
+        session([$this->favoritesStorageKey() => $this->favorites]);
+    }
+
+    protected function notify(string $message, string $type = 'info'): void
+    {
+        $this->dispatch('notify', type: $type, message: $message);
+    }
+
+    public function updatedSearch(): void { $this->filtersHash = $this->computeFiltersHash(); }
+    public function updatedCategoryFilter(): void { $this->filtersHash = $this->computeFiltersHash(); }
+    public function updatedOpenNow(): void { $this->filtersHash = $this->computeFiltersHash(); }
+    public function updatedHasOfferings(): void { $this->filtersHash = $this->computeFiltersHash(); }
+    public function updatedFavoritesOnly(): void { $this->filtersHash = $this->computeFiltersHash(); }
+
+    public function updatedSortBy(string $value): void
+    {
+        if ($value === 'distance' && !$this->userLat) {
+            $this->dispatch('request-location-for-distance');
+        }
+    }
+
+    public function setUserLocation($lat, $lng): void
+    {
+        $this->userLat = round((float) $lat, 6);
+        $this->userLng = round((float) $lng, 6);
+        $this->currentLat = $this->userLat;
+        $this->currentLng = $this->userLng;
+        $this->currentZoom = 15;
+        $this->locationVersion++;
+
+        if ($this->pendingDirectionsTenantId) {
+            $tenantId = $this->pendingDirectionsTenantId;
+            $coordIdx = $this->pendingDirectionsCoordIndex;
+            $this->pendingDirectionsTenantId = null;
+            $this->pendingDirectionsCoordIndex = 0;
+
+            $tenant = $this->resolveTenant($tenantId);
+
+            if (!$tenant || empty($tenant->coordinates[$coordIdx])) {
+                $this->notify('That destination is no longer available.', 'error');
+                return;
+            }
+
+            $label = $tenant->coordinates[$coordIdx]['name'] ?? $tenant->name;
+            $this->routeToCoordinate($tenant, $coordIdx, $label);
+
+            return;
+        }
+
+        if ($this->autoDirections && $this->highlightedId) {
+            $this->autoDirections = false;
+            $this->getDirectionsTo($this->highlightedId);
+            $this->notify('Location found — charting your route.', 'success');
+            return;
+        }
+
+        if ($this->sortBy !== 'distance') {
+            $this->sortBy = 'distance';
+        }
+
+        $this->dispatch('map:fly-to', center: [$this->userLng, $this->userLat], zoom: 15);
+        $this->notify('Location found — sorted by distance.', 'success');
+    }
+
+    public function locationFailed(string $reason = 'unavailable'): void
+    {
+        $wasForDirections = $this->autoDirections;
+        $wasForPendingDirections = $this->pendingDirectionsTenantId !== null;
+
+        $this->autoDirections = false;
+        $this->pendingDirectionsTenantId = null;
+        $this->pendingDirectionsCoordIndex = 0;
+
+        if ($wasForPendingDirections) {
+            $this->notify('We couldn\'t get your location, so directions didn\'t start automatically. Try "Use My Location" instead.', 'warning');
+            return;
+        }
+
+        if ($wasForDirections) {
+            $this->notify('We couldn\'t get your location, so directions didn\'t start automatically. Try "Use My Location" instead.', 'warning');
+            return;
+        }
+
+        $this->notify(match ($reason) {
+            'denied'  => 'Location access was denied — you can still search and browse manually.',
+            'timeout' => 'Finding your location took too long. Please try again.',
+            default   => 'Your location could not be determined right now.',
+        }, $reason === 'unavailable' ? 'error' : 'warning');
+    }
+
+    public function toggleFollowMode(bool $enabled): void
+    {
+        $this->followMode = $enabled;
+        $this->notify($enabled ? 'Follow mode on — the map will track your location.' : 'Follow mode off.', 'info');
+    }
+
+    #[On('map:loaded')]
+    public function onMapReady(): void
+    {
+        if ($this->pendingMarkerId) {
+            $tenant = $this->resolveTenant($this->pendingMarkerId);
+            $this->pendingMarkerId = null;
+
+            if (!$tenant || empty($tenant->coordinates)) {
+                $this->notify('That destination link is no longer available.', 'error');
+                $this->autoDirections = false;
+                return;
+            }
+
+            $this->highlightedId = $tenant->id;
+            $coord = $tenant->coordinates[0];
+
+            $this->dispatch('map:fly-to', center: [(float) $coord['lng'], (float) $coord['lat']], zoom: 16);
+            $this->dispatch('tenant-viewed', id: $tenant->id, name: $tenant->name, type: $tenant->typeOfTenant?->type ?? 'Business');
+
+            if ($this->autoDirections) {
+                $this->dispatch('locate-me-for-directions');
+            }
+        }
+
+        if ($this->pendingFitBounds) {
+            $this->dispatch('map:fit-bounds', ...$this->pendingFitBounds);
+            $this->pendingFitBounds = null;
+        }
     }
 
     public function flyToTenant(int $id): void
     {
-        $tenant = Tenant::find($id);
-        if ($tenant?->coordinates && count($tenant->coordinates) > 0) {
-            $this->highlightedId = $id;
-            $this->dispatch('fly-to-tenant', tenant: $tenant->toArray());
+        $tenant = $this->resolveTenant($id);
+
+        if (!$tenant || empty($tenant->coordinates)) {
+            $this->notify('This business has no map location yet.', 'error');
+            return;
+        }
+
+        $this->highlightedId = $id;
+        $coord = $tenant->coordinates[0];
+
+        $this->dispatch('map:fly-to', center: [(float) $coord['lng'], (float) $coord['lat']], zoom: 16);
+        $this->dispatch('tenant-viewed', id: $tenant->id, name: $tenant->name, type: $tenant->typeOfTenant?->type ?? 'Business');
+    }
+
+    public function flyToTenantCoord(int $id, int $index): void
+    {
+        $tenant = $this->resolveTenant($id);
+
+        if (!$tenant || empty($tenant->coordinates[$index])) {
+            $this->notify('That location could not be found.', 'error');
+            return;
+        }
+
+        $this->highlightedId = $id;
+        $coord = $tenant->coordinates[$index];
+
+        $this->dispatch('map:fly-to', center: [(float) $coord['lng'], (float) $coord['lat']], zoom: 17);
+    }
+
+    public function getDirectionsTo(int $id): void
+    {
+        $tenant = $this->resolveTenant($id);
+
+        if (!$tenant || empty($tenant->coordinates)) {
+            $this->notify('This business has no map location yet.', 'error');
+            return;
+        }
+
+        if (!$this->userLat || !$this->userLng) {
+            $this->pendingDirectionsTenantId = $id;
+            $this->pendingDirectionsCoordIndex = 0;
+            $this->notify('Finding your location…', 'info');
+            $this->dispatch('locate-me-for-directions');
+            return;
+        }
+
+        $this->routeToCoordinate($tenant, 0, $tenant->name);
+    }
+
+    public function getDirectionsToCoord(int $id, int $index): void
+    {
+        $tenant = $this->resolveTenant($id);
+
+        if (!$tenant || empty($tenant->coordinates[$index])) {
+            $this->notify('That location could not be found.', 'error');
+            return;
+        }
+
+        if (!$this->userLat || !$this->userLng) {
+            $this->pendingDirectionsTenantId = $id;
+            $this->pendingDirectionsCoordIndex = $index;
+            $this->notify('Finding your location…', 'info');
+            $this->dispatch('locate-me-for-directions');
+            return;
+        }
+
+        $label = $tenant->coordinates[$index]['name'] ?? $tenant->name;
+        $this->routeToCoordinate($tenant, $index, $label);
+    }
+
+    protected function routeToCoordinate(Tenant $tenant, int $index, string $label): void
+    {
+        $coord = $tenant->coordinates[$index];
+
+        $start = [(float) $this->userLng, (float) $this->userLat];
+        $end   = [(float) $coord['lng'], (float) $coord['lat']];
+
+        $this->routeCoords          = ['start' => $start, 'end' => $end];
+        $this->routeDestinationName = $label;
+        $this->routeTenantId        = $tenant->id;
+        $this->highlightedId        = $tenant->id;
+
+        $this->routeVersion++;
+        $this->pendingFitBounds = [
+            'bounds'  => [$start, $end],
+            'padding' => 90,
+        ];
+    }
+
+    public function setDirectionsProfile(string $profile): void
+    {
+        if (!in_array($profile, ['driving', 'walking', 'cycling'], true)) {
+            return;
+        }
+
+        $this->directionsProfile = $profile;
+        $this->routeVersion++;
+
+        if (!empty($this->routeCoords)) {
+            $this->pendingFitBounds = [
+                'bounds'  => [$this->routeCoords['start'], $this->routeCoords['end']],
+                'padding' => 90,
+            ];
+        }
+    }
+
+    public function clearRoute(): void
+    {
+        $this->routeCoords          = [];
+        $this->routeDestinationName = null;
+        $this->routeTenantId        = null;
+        $this->pendingFitBounds     = null;
+        $this->routeVersion++;
+        $this->notify('Route cleared.', 'info');
+    }
+
+    public function fitAllLocations(): void
+    {
+        $bounds = collect($this->geoJsonData)
+            ->map(fn ($feature) => $feature['geometry']['coordinates'])
+            ->values()
+            ->toArray();
+
+        if (count($bounds) < 2) {
+            $this->notify('Add more destinations to your filters to fit them all.', 'info');
+            return;
+        }
+
+        $this->dispatch('map:fit-bounds', bounds: $bounds, padding: 60);
+    }
+
+    public function resetView(): void
+    {
+        $this->dispatch('map:fly-to', center: self::CITY_CENTER, zoom: 12);
+    }
+
+    public function toggleSatellite(): void
+    {
+        $this->satellite = !$this->satellite;
+        $this->notify($this->satellite ? 'Satellite view on.' : 'Standard map view on.', 'info');
+    }
+
+    public function resetFilters(): void
+    {
+        $this->reset(['search', 'categoryFilter', 'openNow', 'hasOfferings', 'favoritesOnly']);
+        $this->filtersHash = $this->computeFiltersHash();
+        $this->notify('Filters cleared.', 'info');
+    }
+
+    public function shareLocation(): void
+    {
+        if (!$this->userLat || !$this->userLng) {
+            $this->notify('Find your location first, then share it.', 'info');
+            return;
+        }
+
+        $url = $this->buildShareUrl(['lat' => $this->userLat, 'lng' => $this->userLng]);
+
+        $this->dispatch('copy-to-clipboard', text: $url);
+        $this->notify('Map link copied to clipboard.', 'success');
+    }
+
+    public function shareMarker(int $id): void
+    {
+        $tenant = $this->resolveTenant($id);
+
+        if (!$tenant) {
+            $this->notify('That destination could not be found.', 'error');
+            return;
+        }
+
+        $url = $this->buildShareUrl(['marker' => $id]);
+
+        $this->dispatch('copy-to-clipboard', text: $url);
+        $this->notify('Marker link copied to clipboard.', 'success');
+    }
+
+    public function shareRoute(): void
+    {
+        if (!$this->routeTenantId) {
+            $this->notify('Start a route first, then share it.', 'info');
+            return;
+        }
+
+        $url = $this->buildShareUrl([
+            'marker'     => $this->routeTenantId,
+            'directions' => 1,
+            'profile'    => $this->directionsProfile,
+        ]);
+
+        $this->dispatch('copy-to-clipboard', text: $url);
+        $this->notify('Directions link copied — it will ask them for their own location.', 'success');
+    }
+
+    protected function buildShareUrl(array $params): string
+    {
+        $params = array_filter($params, fn ($v) => $v !== null && $v !== '');
+
+        return request()->url() . '?' . http_build_query($params);
+    }
+
+    public function printMap(): void
+    {
+        $this->dispatch('print-map');
+        $this->notify('Preparing print view…', 'info');
+    }
+
+    protected function resolveTenant(int $id): ?Tenant
+    {
+        return $this->tenants->firstWhere('id', $id)
+            ?? Tenant::query()
+                ->where('is_active', true)
+                ->with([
+                    'typeOfTenant',
+                    'settings' => fn ($q) => $q->where('key', 'business_info'),
+                ])
+                ->find($id);
+    }
+
+    public function updateViewport(?float $lat = null, ?float $lng = null, ?int $zoom = null): void
+    {
+        if ($lat !== null) {
+            $this->currentLat = round($lat, 6);
+        }
+
+        if ($lng !== null) {
+            $this->currentLng = round($lng, 6);
+        }
+
+        if ($zoom !== null) {
+            $this->currentZoom = $zoom;
         }
     }
 };
 ?>
 
-<div class="relative z-10 h-[calc(100vh-64px)] flex overflow-hidden">
+<div class="relative z-10 flex h-[calc(100vh-64px)] overflow-hidden"
+     x-data="{
+        mobileOpen: false,
+        sidebarOpen: @entangle('sidebarOpen'),
+        locating: false,
+        followMode: @entangle('followMode'),
+        online: navigator.onLine,
+        helpOpen: false,
+        helpTrigger: null,
+        viewport: { lat: null, lng: null, zoom: null },
+        toasts: [],
+        pendingDirectionRequest: false,
+        userHeading: null,
 
-    {{-- Leaflet CSS --}}
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
+        addToast(type, message) {
+            const id = Date.now() + Math.random();
+            const duration = 4200;
+            const toast = { id, type, message, duration, remaining: duration, paused: false, _timer: null, _tick: null };
+            toast._timer = setTimeout(() => this.removeToast(id), duration);
+            toast._tick = setInterval(() => {
+                if (!toast.paused) toast.remaining = Math.max(0, toast.remaining - 100);
+            }, 100);
+            this.toasts.push(toast);
+            if (this.toasts.length > 4) {
+                const oldest = this.toasts.shift();
+                clearTimeout(oldest._timer);
+                clearInterval(oldest._tick);
+            }
+        },
+        pauseToast(toast) {
+            toast.paused = true;
+            clearTimeout(toast._timer);
+        },
+        resumeToast(toast) {
+            toast.paused = false;
+            toast._timer = setTimeout(() => this.removeToast(toast.id), Math.max(toast.remaining, 300));
+        },
+        removeToast(id) {
+            const toast = this.toasts.find(t => t.id === id);
+            if (toast) { clearTimeout(toast._timer); clearInterval(toast._tick); }
+            this.toasts = this.toasts.filter(t => t.id !== id);
+        },
 
-    <style>
-        :root {
-            --em      : #22c55e;
-            --em-dim  : rgba(34,197,94,.18);
-            --em-glow : rgba(34,197,94,.30);
-            --surface : rgba(10,14,24,0.96);
-            --border  : rgba(255,255,255,0.07);
-            --border-em: rgba(34,197,94,0.22);
-            --text    : #f1f5f9;
-            --text-2  : #94a3b8;
-            --text-3  : #475569;
+        locate() {
+            if (!navigator.geolocation) {
+                $wire.locationFailed('unavailable');
+                return;
+            }
+            this.locating = true;
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    this.locating = false;
+                    this.userHeading = pos.coords.heading || 0;
+                    $wire.setUserLocation(pos.coords.latitude, pos.coords.longitude);
+                    if (this.pendingDirectionRequest) {
+                        this.pendingDirectionRequest = false;
+                        setTimeout(() => this.startFollowMode(), 500);
+                    }
+                },
+                (err) => {
+                    this.locating = false;
+                    this.pendingDirectionRequest = false;
+                    const reason = err.code === err.PERMISSION_DENIED ? 'denied'
+                        : err.code === err.TIMEOUT ? 'timeout' : 'unavailable';
+                    $wire.locationFailed(reason);
+                },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+            );
+        },
+
+        startFollowMode() {
+            if (this.followMode) return;
+            if (!navigator.geolocation) {
+                $wire.locationFailed('unavailable');
+                return;
+            }
+            this.followMode = true;
+            $wire.toggleFollowMode(true);
+            let lastUpdate = 0;
+            this.watchId = navigator.geolocation.watchPosition(
+                (pos) => {
+                    const now = Date.now();
+                    if (now - lastUpdate < 2000) return;
+                    lastUpdate = now;
+                    this.userHeading = pos.coords.heading || 0;
+                    $wire.dispatch('map:fly-to', {
+                        center: [pos.coords.longitude, pos.coords.latitude],
+                        zoom: 16,
+                        essential: true
+                    });
+                },
+                (err) => {
+                    this.followMode = false;
+                    $wire.toggleFollowMode(false);
+                    $wire.locationFailed(err.code === err.PERMISSION_DENIED ? 'denied' : 'unavailable');
+                },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+            );
+        },
+
+        stopFollowMode() {
+            this.followMode = false;
+            $wire.toggleFollowMode(false);
+            if (this.watchId) {
+                navigator.geolocation.clearWatch(this.watchId);
+                this.watchId = null;
+            }
+        },
+
+        async copyText(text) {
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(text);
+                } else {
+                    const ta = document.createElement('textarea');
+                    ta.value = text;
+                    ta.style.position = 'fixed';
+                    ta.style.opacity = '0';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(ta);
+                }
+                this.addToast('success', 'Link copied to clipboard.');
+            } catch (e) {
+                this.addToast('error', 'Could not copy the link automatically.');
+            }
+        },
+     }"
+     x-init="
+        $watch('mobileOpen', (open) => document.body.classList.toggle('overflow-hidden', open));
+        $watch('sidebarOpen', (open) => {
+            document.cookie = 'hs_sidebar_open=' + (open ? '1' : '0') + ';path=/;max-age=31536000;samesite=Lax';
+            setTimeout(() => $wire.dispatch('map:resize'), 320);
+        });
+        window.addEventListener('online', () => online = true);
+        window.addEventListener('offline', () => online = false);
+     "
+     x-on:notify.window="addToast($event.detail.type, $event.detail.message)"
+     x-on:copy-to-clipboard.window="copyText($event.detail.text)"
+     x-on:request-location-for-distance.window="locate()"
+     x-on:locate-me-for-directions.window="pendingDirectionRequest = true; locate()"
+     x-on:tenant-viewed.window="addRecent($event.detail)"
+     x-on:print-map.window="window.print()"
+     x-on:map:center-changed.window="
+        viewport.lat = $event.detail.lat;
+        viewport.lng = $event.detail.lng;
+        $wire.updateViewport(viewport.lat, viewport.lng, viewport.zoom);
+     "
+     x-on:map:zoom-changed.window="
+        viewport.zoom = $event.detail.zoom;
+        $wire.updateViewport(viewport.lat, viewport.lng, viewport.zoom);
+     "
+     x-on:keydown.window="
+        const typing = ['INPUT','TEXTAREA'].includes(document.activeElement?.tagName);
+        const hasModifier = $event.ctrlKey || $event.metaKey || $event.altKey;
+
+        if ($event.key === '/' && !typing) {
+            $event.preventDefault();
+            $refs.searchInput && $refs.searchInput.focus();
+            return;
         }
 
-        * { box-sizing: border-box; }
-
-        .leaflet-container { background: transparent !important; }
-
-        .leaflet-popup-content-wrapper {
-            background      : rgba(8,12,22,0.97) !important;
-            backdrop-filter : blur(24px) saturate(180%) !important;
-            border-radius   : 18px !important;
-            border          : 1px solid var(--border) !important;
-            box-shadow      : 0 32px 64px rgba(0,0,0,.65), 0 0 0 1px rgba(255,255,255,.03) !important;
-            color           : var(--text) !important;
-        }
-        .leaflet-popup-tip { background: rgba(8,12,22,0.97) !important; }
-        .leaflet-popup-content { margin: 14px 16px !important; }
-        .leaflet-popup-close-button {
-            color: var(--text-2) !important; font-size: 20px !important;
-            top: 8px !important; right: 10px !important;
-            width: 24px !important; height: 24px !important;
-            display: flex !important; align-items: center !important; justify-content: center !important;
-            border-radius: 6px !important; transition: all .15s !important;
-        }
-        .leaflet-popup-close-button:hover { color: #fff !important; background: rgba(255,255,255,.08) !important; }
-
-        .leaflet-control-zoom {
-            border:none !important; border-radius:14px !important; overflow:hidden;
-            box-shadow:0 8px 32px rgba(0,0,0,.5) !important;
-        }
-        .leaflet-control-zoom a {
-            background:rgba(8,12,22,0.92) !important; backdrop-filter:blur(12px) !important;
-            color:var(--text-2) !important; border:1px solid var(--border) !important;
-            transition:all .2s !important;
-        }
-        .leaflet-control-zoom a:hover { background:var(--em-dim) !important; color:var(--em) !important; border-color:var(--border-em) !important; }
-
-        .marker-cluster-small,
-        .marker-cluster-medium,
-        .marker-cluster-large { border-radius:50%; display:flex; align-items:center; justify-content:center; }
-        .marker-cluster-small      { background: rgba(34,197,94,.12) !important; }
-        .marker-cluster-small  div { background: #22c55e !important; color:#fff !important; font-weight:700; font-size:12px; }
-        .marker-cluster-medium     { background: rgba(6,182,212,.14) !important; }
-        .marker-cluster-medium div { background: #06b6d4 !important; color:#fff !important; font-weight:700; font-size:12px; }
-        .marker-cluster-large      { background: rgba(245,158,11,.18) !important; }
-        .marker-cluster-large  div { background: #f59e0b !important; color:#000 !important; font-weight:700; font-size:12px; }
-
-        /* ── Logo parent marker ── */
-        .logo-marker {
-            width: 44px; height: 44px;
-            border-radius: 50%;
-            background: white;
-            box-shadow: 0 4px 12px rgba(0,0,0,.4), 0 0 0 3px var(--c, #22c55e);
-            display: flex; align-items: center; justify-content: center;
-            overflow: hidden;
-            transition: transform .2s ease;
-        }
-        .logo-marker:hover { transform: scale(1.15); }
-        .logo-marker img {
-            width: 100%; height: 100%;
-            object-fit: cover;
-        }
-        .logo-marker .fallback {
-            font-weight: 800; font-size: 15px;
-            color: white;
-            background: var(--c, #22c55e);
-            width: 100%; height: 100%;
-            display: flex; align-items: center; justify-content: center;
+        if ($event.key === 'Escape') {
+            if (helpOpen) { helpOpen = false; helpTrigger?.focus(); helpTrigger = null; }
+            else if (typing && document.activeElement === $refs.searchInput) { $refs.searchInput.blur(); }
+            else if (mobileOpen) { mobileOpen = false; }
+            return;
         }
 
-        /* ── Child dot marker ── */
-        .child-marker {
-            width: 18px; height: 18px;
-            border-radius: 50%;
-            background: white;
-            box-shadow: 0 2px 6px rgba(0,0,0,.35);
-            display: flex; align-items: center; justify-content: center;
+        if (typing || hasModifier) return;
+
+        switch ($event.key.toLowerCase()) {
+            case 'l': locate(); break;
+            case 'f': followMode ? stopFollowMode() : startFollowMode(); break;
+            case 's': $wire.toggleSatellite(); break;
+            case 'p': $wire.printMap(); break;
+            case 'r': $wire.resetFilters(); break;
+            case '?': helpOpen = true; break;
         }
-        .child-marker::after {
-            content: '';
-            width: 10px; height: 10px;
-            border-radius: 50%;
-            background: var(--c, #22c55e);
-            display: block;
-        }
+     ">
 
-        /* ── Route panel ── */
-        .route-glass {
-            background:rgba(8,12,22,0.94); backdrop-filter:blur(20px) saturate(160%);
-            border:1px solid var(--border-em); border-radius:16px;
-        }
+    {{-- Mobile overlay --}}
+    <div
+        class="fixed inset-0 z-[1090] bg-black/50 transition-opacity duration-300 motion-reduce:transition-none lg:hidden print:hidden"
+        :class="mobileOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'"
+        @click="mobileOpen = false"
+        aria-hidden="true"
+    ></div>
 
-        .sb-scroll::-webkit-scrollbar       { width:3px; }
-        .sb-scroll::-webkit-scrollbar-track { background:transparent; }
-        .sb-scroll::-webkit-scrollbar-thumb { background:rgba(255,255,255,.1); border-radius:4px; }
+    {{-- Sidebar --}}
+    <aside
+        class="fixed inset-y-0 left-0 z-[1100] w-[85%] max-w-[360px] -translate-x-full border-r border-gray-200 bg-white shadow-2xl transition-transform duration-300 ease-out motion-reduce:transition-none dark:border-gray-700 dark:bg-gray-900 lg:static lg:z-auto lg:max-w-none lg:translate-x-0 lg:overflow-hidden lg:transition-[width] lg:duration-300 print:hidden"
+        :class="[
+            mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',
+            sidebarOpen ? 'lg:w-[360px]' : 'lg:w-0',
+        ]"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Destinations sidebar"
+    >
+        <div class="relative h-full w-[85vw] max-w-[360px] lg:w-[360px]">
+            <button
+                @click="mobileOpen = false"
+                class="absolute right-3 top-3 z-10 flex h-8 w-8 items-center justify-center rounded-lg text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-500 dark:hover:bg-gray-800 dark:hover:text-gray-200 lg:hidden"
+                aria-label="Close destinations list"
+            >
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
 
-        .dest-row { position:relative; overflow:hidden; }
-        .dest-row::before {
-            content:''; position:absolute; inset:0;
-            background:linear-gradient(90deg, var(--em-dim) 0%, transparent 100%);
-            opacity:0; transition:opacity .2s; border-radius:14px;
-        }
-        .dest-row.dest-active::before { opacity:1; }
+            @include('livewire.partials.explore-sidebar')
+        </div>
+    </aside>
 
-        #xtoast {
-            position:fixed; bottom:28px; left:50%; transform:translateX(-50%) translateY(20px);
-            background:rgba(8,12,22,0.96); border:1px solid var(--border);
-            border-radius:12px; padding:10px 18px;
-            color:var(--text); font-size:13px; font-weight:500;
-            pointer-events:none; opacity:0; transition:opacity .25s, transform .25s cubic-bezier(.34,1.56,.64,1);
-            z-index:9999; white-space:nowrap;
-        }
-        #xtoast.show { opacity:1; transform:translateX(-50%) translateY(0); }
-    </style>
+    {{-- Desktop sidebar collapse toggle --}}
+    <button
+        @click="sidebarOpen = !sidebarOpen"
+        class="absolute left-0 top-1/2 z-[1000] hidden h-16 w-6 -translate-y-1/2 items-center justify-center rounded-r-xl border border-l-0 border-gray-200 bg-white text-gray-500 shadow-lg transition-[left] duration-300 hover:text-primary-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:text-blue-400 lg:flex print:hidden"
+        :style="`left: ${sidebarOpen ? 360 : 0}px`"
+        :aria-expanded="sidebarOpen.toString()"
+        aria-label="Toggle sidebar"
+    >
+        <svg x-show="sidebarOpen" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+        <svg x-show="!sidebarOpen" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+    </button>
 
-    {{-- Tenant data bridge --}}
-    <script>
-        window.__mapTenants = @json($this->tenants);
+    {{-- Map Area --}}
+    <div class="relative h-full min-w-0 flex-1 bg-gray-100 dark:bg-gray-800 print:bg-white">
 
-        window.__pinColor = function(idx) {
-            const hues = [142,200,35,280,48,330,15,170,210,260,95,55,310,120,190,65,245,10];
-            return `hsl(${hues[idx % hues.length]},68%,62%)`;
-        };
+        <div class="absolute inset-0 bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-800 dark:to-gray-900 print:hidden" aria-hidden="true"></div>
 
-        window.__haversine = function(lat1,lng1,lat2,lng2) {
-            const R  = 6371;
-            const dL = (lat2-lat1)*Math.PI/180;
-            const dN = (lng2-lng1)*Math.PI/180;
-            const a  = Math.sin(dL/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dN/2)**2;
-            return (R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a))).toFixed(1);
-        };
+        <div
+            x-show="!online"
+            x-transition
+            class="absolute inset-x-0 top-0 z-[1200] flex items-center justify-center gap-2 bg-amber-500 px-4 py-2 text-center text-[12px] font-semibold text-white print:hidden"
+            role="status"
+        >
+            ⚠️ You're offline — map tiles and directions may not load until your connection returns.
+        </div>
 
-        window.__buildPopup = function(tenantIdx, userCoords, coordIdx = 0) {
-            const t = window.__mapTenants[tenantIdx];
-            if (!t) return '';
-            const coord = t.coordinates[coordIdx];
-            const color = window.__pinColor(tenantIdx);
+        <div class="pointer-events-none absolute left-4 top-4 z-[50] hidden rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-900 print:block">
+            Victorias City · Explore Map — {{ now()->format('F j, Y') }} · {{ $this->tenants->count() }} {{ Str::plural('destination', $this->tenants->count()) }} shown
+        </div>
 
-            const avatar = t.logo
-                ? `<img src="/storage/${t.logo}" alt="${t.name}"
-                        style="width:46px;height:46px;border-radius:12px;object-fit:cover;
-                               border:2px solid ${color};flex-shrink:0;">`
-                : `<div style="width:46px;height:46px;border-radius:12px;
-                               background:linear-gradient(135deg,${color}33,${color}99);
-                               border:1.5px solid ${color}66;
-                               display:flex;align-items:center;justify-content:center;
-                               color:#fff;font-weight:800;font-size:14px;flex-shrink:0;
-                               font-family:'Outfit',sans-serif;letter-spacing:-.5px;">
-                       ${t.name.substring(0,2).toUpperCase()}
-                   </div>`;
-
-            const km = userCoords
-                ? window.__haversine(userCoords.lat,userCoords.lng,coord.lat,coord.lng)
-                : null;
-
-            const distBadge = km
-                ? `<span style="display:inline-flex;align-items:center;gap:3px;
-                               padding:3px 8px;border-radius:99px;
-                               background:${color}18;border:1px solid ${color}33;
-                               font-size:10px;font-weight:700;color:${color};
-                               font-family:'Outfit',sans-serif;letter-spacing:.03em;">
-                       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-                         <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/>
-                       </svg>
-                       ${km} km away
-                   </span>`
-                : '';
-
-            return `
-<div style="min-width:252px;max-width:288px;font-family:'Outfit',sans-serif;">
-  <div style="height:3px;background:linear-gradient(90deg,${color},${color}44);
-              margin:-14px -16px 14px;border-radius:0;"></div>
-  <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px;">
-    ${avatar}
-    <div style="min-width:0;flex:1;">
-      <h3 style="font-size:15px;font-weight:700;margin:0 0 2px;color:#f1f5f9;
-                 white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.3px;">
-        ${coord.name || t.name}
-      </h3>
-      <p style="font-size:10.5px;color:#64748b;margin:0 0 6px;font-weight:500;">
-        ${t.type_of_tenant?.type ?? 'Business'}
-      </p>
-      ${distBadge}
-    </div>
-  </div>
-  ${t.address ? `<p style="font-size:10.5px;color:#475569;margin:0 0 12px;line-height:1.55;
-                            display:flex;align-items:flex-start;gap:4px;">
-    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="2.5" style="flex-shrink:0;margin-top:2px;">
-      <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/>
-    </svg>${t.address}</p>` : ''}
-  <a href="/business/${t.slug}/offerings"
-     style="display:block;width:100%;padding:9px 0;text-align:center;
-            font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;
-            border-radius:10px;background:${color};color:#fff;text-decoration:none;
-            margin-bottom:7px;transition:opacity .18s;box-shadow:0 4px 14px ${color}40;"
-     onmouseover="this.style.opacity='.82'" onmouseout="this.style.opacity='1'">
-     View Offerings →
-  </a>
-  <button onclick="window.__mapCtrl?.getDirections(${tenantIdx},${coordIdx})"
-     style="display:block;width:100%;padding:8px 0;font-size:11.5px;font-weight:700;
-            text-transform:uppercase;letter-spacing:.08em;border-radius:10px;
-            border:1.5px solid ${color}55;color:${color};background:transparent;cursor:pointer;
-            transition:all .2s;font-family:'Outfit',sans-serif;"
-     onmouseover="this.style.background='${color}18';this.style.borderColor='${color}'"
-     onmouseout="this.style.background='transparent';this.style.borderColor='${color}55'">
-     Get Directions
-  </button>
-</div>`;
-        };
-
-        function __xToast(msg, ms = 2400) {
-            const el = document.getElementById('xtoast');
-            if (!el) return;
-            el.textContent = msg;
-            el.classList.add('show');
-            clearTimeout(el.__t);
-            el.__t = setTimeout(() => el.classList.remove('show'), ms);
-        }
-    </script>
-
-    {{-- Sidebar (unchanged) --}}
-    <div x-data="{
-             open  : window.innerWidth >= 1024,
-             resize() { if(window.innerWidth >= 1024) this.open = true; }
-         }"
-         @resize.window.debounce.120ms="resize()"
-         class="relative z-50 flex-shrink-0 hidden lg:block">
-
-        <aside class="h-full w-[360px] flex flex-col shadow-2xl
-                      bg-[rgba(8,12,22,0.97)] backdrop-blur-2xl border-r border-white/[0.055]">
-
-            {{-- Header --}}
-            <div class="px-5 pt-5 pb-4 border-b border-white/[0.055]">
-                <div class="flex items-start justify-between mb-3">
-                    <div>
-                        <p class="text-[10px] font-bold uppercase tracking-[.18em] text-emerald-500 mb-1 flex items-center gap-1.5">
-                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                            Victorias City
-                        </p>
-                        <h2 class="text-[18px] font-extrabold text-white tracking-tight leading-none">Explore Destinations</h2>
-                    </div>
-                    <div class="flex flex-col items-end gap-1">
-                        <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20">
-                            <span class="text-[11px] font-bold text-emerald-400 tabular-nums">{{ $this->tenants->count() }}</span>
-                            <span class="text-[10px] text-emerald-600 font-semibold uppercase tracking-wider">spots</span>
-                        </div>
-                        <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/[.04] border border-white/[.07]">
-                            <span class="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">{{ $this->categories->count() }} categories</span>
-                        </div>
-                    </div>
-                </div>
-                <div class="flex items-center gap-3 text-[11px]">
-                    <a href="{{ route('home') }}" wire:navigate class="flex items-center gap-1 text-zinc-600 hover:text-white transition font-medium">
-                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/></svg>Home
-                    </a>
-                    @auth
-                        <span class="w-px h-3 bg-white/10"></span>
-                        <a href="{{ route('my-bookings') }}" wire:navigate class="flex items-center gap-1 text-emerald-500/80 hover:text-emerald-400 transition font-medium">
-                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>Reservations
-                        </a>
-                    @endauth
-                </div>
-            </div>
-
-            {{-- Filters --}}
-            <div class="px-4 py-3.5 border-b border-white/[0.055] space-y-2.5">
-                <div class="relative">
-                    <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-600 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-                    <input type="text" wire:model.live.debounce.280ms="search" placeholder="Search destinations…"
-                           class="w-full bg-white/[.04] border border-white/[.08] rounded-xl py-2.5 pl-9 pr-8 text-[13px] text-white placeholder-zinc-700 focus:outline-none focus:border-emerald-500/40 focus:ring-1 focus:ring-emerald-500/20 transition">
-                    @if($search)
-                        <button wire:click="$set('search','')" class="absolute right-2.5 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded-md text-zinc-600 hover:text-white hover:bg-white/10 transition">
-                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
-                        </button>
-                    @endif
-                </div>
-
-                <div class="flex gap-1.5 overflow-x-auto pb-0.5 scrollbar-none" style="-ms-overflow-style:none;scrollbar-width:none;">
-                    <button wire:click="$set('categoryFilter','')"
-                            class="shrink-0 px-3 py-1.5 rounded-full text-[10.5px] font-bold uppercase tracking-[.07em] transition-all border {{ $categoryFilter === '' ? 'bg-emerald-500 border-emerald-500 text-white shadow-lg shadow-emerald-500/25' : 'border-white/[.08] text-zinc-600 hover:border-white/20 hover:text-zinc-300' }}">All</button>
-                    @foreach($this->categories as $cat)
-                        <button wire:click="$set('categoryFilter','{{ $cat }}')"
-                                class="shrink-0 px-3 py-1.5 rounded-full text-[10.5px] font-bold uppercase tracking-[.07em] transition-all border whitespace-nowrap {{ $categoryFilter === $cat ? 'bg-emerald-500 border-emerald-500 text-white shadow-lg shadow-emerald-500/25' : 'border-white/[.08] text-zinc-600 hover:border-white/20 hover:text-zinc-300' }}">{{ $cat }}</button>
-                    @endforeach
-                </div>
-
-                <div class="flex gap-1.5 bg-white/[.025] rounded-xl p-1 border border-white/[.06]">
-                    <button wire:click="$set('sortBy','name')"
-                            class="flex-1 py-1.5 rounded-lg text-[10.5px] font-bold uppercase tracking-[.07em] transition-all {{ $sortBy === 'name' ? 'bg-white/[.08] text-white shadow-sm' : 'text-zinc-600 hover:text-zinc-400' }}">A – Z</button>
-                    <button wire:click="$set('sortBy','distance')" @click="window.__mapCtrl?.enableDistanceSort()"
-                            class="flex-1 py-1.5 rounded-lg text-[10.5px] font-bold uppercase tracking-[.07em] transition-all {{ $sortBy === 'distance' ? 'bg-white/[.08] text-white shadow-sm' : 'text-zinc-600 hover:text-zinc-400' }}">Near Me</button>
-                </div>
-            </div>
-
-            {{-- List --}}
-            <div class="flex-1 overflow-y-auto sb-scroll py-2">
-                @forelse($this->tenants as $index => $tenant)
-                    @php $hue = ($index * 137) % 360; @endphp
-                    <div wire:key="dest-{{ $tenant->id }}" wire:click="flyToTenant({{ $tenant->id }})"
-                         class="dest-row group cursor-pointer mx-2.5 my-0.5 px-3 py-2.5 rounded-[14px] flex items-center gap-3 transition-all duration-150 border {{ $highlightedId === $tenant->id ? 'dest-active border-emerald-500/25' : 'border-transparent hover:bg-white/[.028] hover:border-white/[.06]' }}"
-                         data-tenant-id="{{ $tenant->id }}">
-                        @if($tenant->logo)
-                            <img src="{{ asset('storage/'.$tenant->logo) }}" alt="{{ $tenant->name }}" class="w-11 h-11 rounded-xl object-cover border border-white/10 flex-shrink-0">
-                        @else
-                            <div class="w-11 h-11 rounded-xl flex items-center justify-center text-[13px] font-black flex-shrink-0 text-white select-none"
-                                 style="background: linear-gradient(135deg, hsl({{ $hue }},55%,38%) 0%, hsl({{ $hue }},60%,52%) 100%); box-shadow:0 4px 14px hsl({{ $hue }},55%,38%,.4);">
-                                {{ strtoupper(substr($tenant->name, 0, 2)) }}
-                            </div>
-                        @endif
-                        <div class="flex-1 min-w-0">
-                            <p class="text-[13px] font-semibold text-white truncate leading-snug">{{ $tenant->name }}</p>
-                            <p class="text-[10.5px] text-zinc-600 mt-0.5 font-medium">{{ $tenant->typeOfTenant?->type ?? 'Business' }}</p>
-                            <span class="xdist-badge hidden text-[10px] font-bold mt-0.5 inline-block"
-                                  data-lat="{{ $tenant->coordinates[0]['lat'] ?? '' }}"
-                                  data-lng="{{ $tenant->coordinates[0]['lng'] ?? '' }}"
-                                  style="color: hsl({{ $hue }},65%,60%)"></span>
-                        </div>
-                        <button onclick="event.stopPropagation(); window.__mapCtrl?.getDirections({{ $index }}, 0)"
-                                class="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-transparent text-zinc-700 hover:text-emerald-400 hover:border-emerald-500/25 hover:bg-emerald-500/[.07] opacity-0 group-hover:opacity-100 transition-all duration-150" title="Get directions">
-                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
-                        </button>
-                    </div>
-                @empty
-                    <div class="text-center py-16 px-6">
-                        <div class="w-14 h-14 rounded-2xl bg-white/[.03] border border-white/[.06] flex items-center justify-center mx-auto mb-4">
-                            <svg class="w-6 h-6 text-zinc-700" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/></svg>
-                        </div>
-                        <p class="text-zinc-500 text-[13px] font-medium">No destinations match.</p>
-                        @if($search || $categoryFilter)
-                            <button wire:click="$set('search',''); $set('categoryFilter','')" class="mt-3 text-emerald-500 hover:text-emerald-400 text-xs font-semibold transition">← Clear filters</button>
-                        @endif
-                    </div>
-                @endforelse
-            </div>
-
-            <div class="px-4 py-2.5 border-t border-white/[.055] flex justify-between items-center">
-                <span class="text-[11px] text-zinc-700 font-medium">{{ $this->tenants->count() }} {{ Str::plural('place', $this->tenants->count()) }}</span>
-                <span class="text-[11px] text-zinc-700 font-medium">Leaflet · CARTO · OSRM</span>
-            </div>
-        </aside>
-    </div>
-
-    {{-- Map canvas --}}
-    <div x-data="mapExplorer()"
-         x-init="boot()"
-         @fly-to-tenant.window="flyTo($event.detail.tenant)"
-         @map-tenants-updated.window="refreshTenants($event.detail.tenants)"
-         class="flex-1 relative min-w-0 h-full">
-
-        <div x-show="!mapReady"
-             x-transition:leave="transition-opacity duration-700 ease-in"
-             x-transition:leave-start="opacity-100"
-             x-transition:leave-end="opacity-0"
-             class="absolute inset-0 z-[900] flex flex-col items-center justify-center gap-5 bg-[rgba(6,9,18,0.98)]">
-            <div class="relative w-14 h-14">
-                <div class="absolute inset-0 rounded-full border-2 border-emerald-500/20 border-t-emerald-400 animate-spin"></div>
-                <div class="absolute inset-2 rounded-full border-2 border-emerald-400/10 border-b-emerald-500/50 animate-spin" style="animation-direction:reverse;animation-duration:1.4s;"></div>
-            </div>
+        <div
+            x-data="{ show: true }"
+            x-init="
+                const hide = () => { show = false };
+                window.addEventListener('map:loaded', hide, { once: true });
+                setTimeout(hide, 6000);
+            "
+            x-show="show"
+            x-transition:leave="transition-opacity duration-500 ease-in motion-reduce:transition-none"
+            x-transition:leave-start="opacity-100"
+            x-transition:leave-end="opacity-0"
+            class="absolute inset-0 z-[900] flex items-center justify-center bg-gray-100 dark:bg-gray-900 print:hidden"
+        >
             <div class="text-center">
-                <p class="text-[13px] font-semibold text-white/70 tracking-wide">Loading map</p>
-                <p class="text-[11px] text-zinc-700 mt-1">Victorias City, Philippines</p>
+                <div class="mx-auto mb-3 h-12 w-12 animate-spin motion-reduce:animate-none rounded-full border-4 border-primary-600 border-t-transparent"></div>
+                <p class="text-sm text-gray-600 dark:text-gray-300">Loading map…</p>
             </div>
         </div>
 
-        <div wire:ignore x-ref="mapEl" class="absolute inset-0 w-full h-full"></div>
+        <div
+            wire:key="tourist-map-{{ $satellite ? 'satellite' : 'normal' }}-{{ $locationVersion }}-{{ $filtersHash }}-{{ $routeVersion }}"
+            class="absolute inset-0"
+        >
+            <x-map
+                id="tourist-map"
+                :center="$this->initialCenter"
+                :zoom="$this->initialZoom"
+                height="100%"
+                :provider="$satellite ? 'custom' : 'carto-voyager'"
+                :style="$satellite ? route('map.satellite.style') : null"
+                :light-style="$satellite ? route('map.satellite.style') : null"
+                :dark-style="$satellite ? route('map.satellite.style') : null"
+                theme="auto"
+                :max-zoom="$satellite ? 19 : 22"
+                class="h-full w-full"
+            >
+                <x-map-controls
+                    :zoom="true"
+                    :compass="true"
+                    :locate="false"
+                    :fullscreen="true"
+                    :scale="true"
+                    position="top-right"
+                />
 
-        <div class="absolute top-4 right-4 z-[800] flex gap-1.5">
-            @foreach(['dark' => ['🌑','Dark'], 'light' => ['🗺️','Light'], 'satellite' => ['🛰️','Satellite']] as $s => $meta)
-                <button @click="setStyle('{{ $s }}')"
-                        :class="mapStyle === '{{ $s }}' ? 'bg-emerald-500 border-emerald-400 text-white shadow-emerald-500/30 shadow-lg scale-105' : 'bg-[rgba(8,12,22,0.90)] border-white/[.09] text-zinc-500 hover:bg-white/[.06] hover:text-white'"
-                        class="w-9 h-9 rounded-xl border backdrop-blur-xl text-[15px] flex items-center justify-center transition-all duration-200 shadow-lg" title="{{ $meta[1] }}">{{ $meta[0] }}</button>
-            @endforeach
+                @if($userLat && $userLng)
+                    <x-map-marker
+                        :key="'user-location'"
+                        wire:key="marker-user-location"
+                        :lat="$userLat"
+                        :lng="$userLng"
+                        color="#22c55e"
+                        id="user-location"
+                    >
+                        <x-marker-content>
+                            <div class="relative flex h-10 w-10 items-center justify-center">
+                                @if(!empty($routeCoords))
+                                    <span class="absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75 animate-ping"></span>
+                                @endif
+                                <div class="relative flex h-8 w-8 items-center justify-center rounded-full border-2 shadow-lg transition-colors"
+                                     :class="{ 'bg-blue-500 border-white': @js(!empty($routeCoords)), 'bg-green-500 border-white': @js(empty($routeCoords)) }">
+                                    <svg x-show="userHeading !== null && userHeading !== undefined"
+                                         :style="'transform: rotate(' + (userHeading || 0) + 'deg)'"
+                                         class="h-4 w-4 text-white"
+                                         fill="currentColor"
+                                         viewBox="0 0 24 24">
+                                        <path d="M12 2 L19 21 L12 17 L5 21 Z" />
+                                    </svg>
+                                    <svg x-show="!userHeading"
+                                         class="h-3 w-3 text-white"
+                                         fill="currentColor"
+                                         viewBox="0 0 24 24">
+                                        <circle cx="12" cy="12" r="4" />
+                                    </svg>
+                                </div>
+                            </div>
+                        </x-marker-content>
+                        <x-marker-popup>
+                            <div class="p-2">
+                                <strong class="text-gray-900 dark:text-white">
+                                    {{ !empty($routeCoords) ? 'Route Start' : 'You are here' }}
+                                </strong>
+                                <button @click="$wire.shareLocation()" class="mt-1 block text-[11px] font-semibold text-primary-600 hover:text-blue-700 dark:text-blue-400">🔗 Share this location</button>
+                            </div>
+                        </x-marker-popup>
+                    </x-map-marker>
+                @endif
+
+                @foreach($this->tenants as $tenant)
+                    @php
+                        $hue = ($loop->index * 137) % 360;
+                        $tenantColor = 'hsl(' . $hue . ', 65%, 55%)';
+                        $isRouteDestination = $routeTenantId === $tenant->id && !empty($routeCoords);
+                    @endphp
+
+                    @foreach($tenant->coordinates as $coordIndex => $coord)
+                        @php
+                            $isParent = $coordIndex === 0 || ($coord['type'] ?? '') === 'parent';
+                            $logoUrl = $tenant->logo ? asset('storage/' . $tenant->logo) : null;
+
+                            // Determine sub-marker icon if type is set
+                            $coordType = $coord['type'] ?? null;
+                            $isCategoryType = !$isParent && $coordType && isset($this->markerTypes[$coordType]);
+                        @endphp
+
+                        <x-map-marker
+                            :key="'tenant-'.$tenant->id.'-'.$coordIndex"
+                            wire:key="marker-{{ $tenant->id }}-{{ $coordIndex }}"
+                            :lat="$coord['lat']"
+                            :lng="$coord['lng']"
+                            :color="$isParent ? $tenantColor : ($isCategoryType ? $this->markerColors[$coordType] : $tenantColor)"
+                            id="tenant-{{ $tenant->id }}-{{ $coordIndex }}"
+                        >
+                            <x-marker-content>
+                                @if($isParent)
+                                    <div class="flex h-11 w-11 items-center justify-center rounded-full border-2 bg-white shadow-lg
+                                                {{ $isRouteDestination ? 'ring-4 ring-blue-300/50' : '' }}"
+                                         style="border-color: {{ $tenantColor }};">
+                                        @if($logoUrl)
+                                            <img src="{{ $logoUrl }}" alt="{{ $tenant->name }}"
+                                                 class="h-full w-full rounded-full object-cover"
+                                                 loading="lazy">
+                                        @else
+                                            <span class="text-sm font-black text-gray-800">
+                                                {{ strtoupper(substr($tenant->name, 0, 2)) }}
+                                            </span>
+                                        @endif
+                                    </div>
+                                @elseif($isCategoryType)
+                                    <div class="flex h-10 w-10 items-center justify-center rounded-full border-2 bg-white shadow-lg text-xl
+                                                {{ $isRouteDestination ? 'ring-4 ring-blue-300/50' : '' }}"
+                                         style="border-color: {{ $this->markerColors[$coordType] }};">
+                                        <span class="leading-none">{{ $this->markerEmojis[$coordType] }}</span>
+                                    </div>
+                                @else
+                                    <div class="flex h-5 w-5 items-center justify-center rounded-full border-2 bg-white shadow
+                                                {{ $isRouteDestination ? 'ring-4 ring-blue-300/50' : '' }}"
+                                         style="border-color: {{ $tenantColor }};">
+                                        <span class="block h-2.5 w-2.5 rounded-full" style="background: {{ $tenantColor }};"></span>
+                                    </div>
+                                @endif
+                            </x-marker-content>
+
+                            <x-marker-popup>
+                                <div class="min-w-[240px] p-3">
+                                    <h3 class="font-bold text-gray-900 dark:text-white">{{ $coord['name'] ?? $tenant->name }}</h3>
+                                    <p class="text-xs text-gray-500 dark:text-gray-400">
+                                        {{ $isParent ? ($tenant->typeOfTenant?->type ?? 'Business') : ($isCategoryType ? $this->markerTypes[$coordType] : 'Sub-location') }}
+                                    </p>
+                                    @if($userLat && $userLng)
+                                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                            📍 {{ $this->formatDistance($this->calculateDistance($coord['lat'], $coord['lng'])) }} away
+                                        </p>
+                                    @endif
+                                    @if($tenant->address)
+                                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ $tenant->address }}</p>
+                                    @endif
+                                    <div class="mt-3 flex gap-2">
+                                        <a href="{{ route('business.offerings', $tenant->slug) }}" class="flex-1 rounded-lg bg-primary-600 px-3 py-2 text-center text-xs font-semibold text-white transition hover:bg-blue-700">View</a>
+                                        <button wire:click="{{ $isParent ? 'getDirectionsTo('.$tenant->id.')' : 'getDirectionsToCoord('.$tenant->id.','.$coordIndex.')' }}" class="flex-1 rounded-lg border border-primary-600 px-3 py-2 text-xs font-semibold text-primary-600 transition hover:bg-blue-50 dark:hover:bg-blue-500/10">Directions</button>
+                                    </div>
+                                </div>
+                            </x-marker-popup>
+                        </x-map-marker>
+                    @endforeach
+                @endforeach
+
+                @if(!empty($routeCoords))
+                    <x-map-route
+                        wire:key="route-primary-{{ md5(serialize($routeCoords)) }}-{{ $directionsProfile }}"
+                        id="{{ $routeId }}"
+                        :coordinates="[$routeCoords['start'], $routeCoords['end']]"
+                        :fetch-directions="true"
+                        :alternatives="true"
+                        :directions-profile="$directionsProfile"
+                        color="#22c55e"
+                        :width="5"
+                        :with-stops="true"
+                        alternative-color="#06b6d4"
+                    />
+
+                    <x-map-route
+                        wire:key="route-reference-{{ md5(serialize($routeCoords)) }}"
+                        :coordinates="[$routeCoords['start'], $routeCoords['end']]"
+                        color="#f59e0b"
+                        :width="3"
+                        :opacity="0.7"
+                        :dash-array="[8, 6]"
+                    />
+
+                    <x-map-route-list
+                        route-id="{{ $routeId }}"
+                        map-id="tourist-map"
+                        title="Available Routes"
+                        width="w-60"
+                        position="bottom-left"
+                        container-class="z-[850] print:hidden"
+                    />
+                @endif
+            </x-map>
         </div>
 
-        <div class="absolute bottom-6 right-4 z-[800] flex flex-col gap-2">
-
-            <button @click="locateMe()"
-                    :class="locating ? 'text-emerald-400 border-emerald-500/50 bg-emerald-500/[.10]' : 'text-zinc-500 border-white/[.09] hover:text-emerald-400 hover:border-emerald-500/25 hover:bg-emerald-500/[.06]'"
-                    class="w-11 h-11 rounded-xl bg-[rgba(8,12,22,0.92)] backdrop-blur-xl border flex items-center justify-center shadow-lg transition-all" title="Locate me">
-                <svg class="w-5 h-5" :class="locating ? 'animate-pulse' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" stroke-width="2"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2v2m0 16v2M2 12h2m16 0h2"/><circle cx="12" cy="12" r="7" stroke-width="1.5" opacity=".5"/></svg>
+        <div class="absolute left-3 top-3 z-[1000] flex flex-col gap-1.5 sm:left-4 sm:top-4 sm:gap-2 print:hidden" role="toolbar" aria-label="Map tools">
+            <button @click="mobileOpen = true" class="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-600 shadow-lg transition hover:text-primary-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:text-blue-400 lg:hidden" aria-label="Open destinations list" title="Destinations">
+                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 6h16M4 12h16M4 18h16"/></svg>
             </button>
 
-            <button @click="fitAll()"
-                    class="w-11 h-11 rounded-xl bg-[rgba(8,12,22,0.92)] backdrop-blur-xl border border-white/[.09] text-zinc-500 hover:text-white hover:border-white/20 hover:bg-white/[.06] flex items-center justify-center shadow-lg transition-all" title="Fit all destinations">
-                <svg class="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/></svg>
+            <button type="button" @click="locate()" :disabled="locating" class="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-600 shadow-lg transition hover:text-primary-600 disabled:cursor-wait disabled:opacity-60 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:text-blue-400" aria-label="Use my location" title="Use my location (L)">
+                <svg x-show="!locating" class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 21c-4.5-4.5-7.5-8.24-7.5-11.5A7.5 7.5 0 0112 2a7.5 7.5 0 017.5 7.5c0 3.26-3 7-7.5 11.5z"/><circle cx="12" cy="9.5" r="2.5" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+                <svg x-show="locating" class="h-4 w-4 animate-spin motion-reduce:animate-none" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
             </button>
 
-            <button @click="toggleCompass()"
-                    :class="compassActive ? 'border-emerald-500/40 bg-emerald-500/[.06]' : 'border-white/[.09] hover:border-white/20'"
-                    class="w-11 h-11 rounded-xl bg-[rgba(8,12,22,0.92)] backdrop-blur-xl border flex flex-col items-center justify-center shadow-lg transition-all" title="Compass">
-                <div x-ref="compassRose" class="w-7 h-7 transition-transform duration-75">
-                    <svg viewBox="0 0 28 28" class="w-full h-full" xmlns="http://www.w3.org/2000/svg">
-                        <polygon points="14,3 12.5,14 14,12.5 15.5,14" fill="#ef4444"/>
-                        <polygon points="14,25 12.5,14 14,15.5 15.5,14" fill="#e2e8f0" opacity=".28"/>
-                        <circle cx="14" cy="14" r="2.2" fill="#f8fafc"/>
-                        <text x="14" y="1.8" text-anchor="middle" fill="#ef4444" font-size="3.5" font-weight="700">N</text>
-                    </svg>
-                </div>
-                <span class="text-[9px] font-bold leading-none mt-0.5" :class="compassActive ? 'text-emerald-400' : 'text-zinc-700'" x-text="compassActive ? compassDeg + '°' : ''"></span>
+            {{-- Follow mode button with new icon --}}
+            <button type="button" @click="followMode ? stopFollowMode() : startFollowMode()" aria-pressed="{{ $followMode ? 'true' : 'false' }}" class="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-xl border shadow-lg transition {{ $followMode ? 'border-primary-600 bg-primary-600 text-white' : 'border-gray-200 bg-white text-gray-600 hover:text-primary-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:text-blue-400' }}" aria-label="Toggle follow mode" title="Follow my location (F)">
+                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                    <path d="M12 2 L21 21 L12 17 L3 21 Z" fill="currentColor" stroke="none"/>
+                </svg>
             </button>
-        </div>
 
-        <div x-show="routeInfo"
-             x-transition:enter="transition ease-out duration-250"
-             x-transition:enter-start="opacity-0 translate-y-4"
-             x-transition:enter-end="opacity-100 translate-y-0"
-             x-transition:leave="transition ease-in duration-180"
-             x-transition:leave-start="opacity-100 translate-y-0"
-             x-transition:leave-end="opacity-0 translate-y-4"
-             class="absolute bottom-6 left-4 z-[800] lg:left-4">
-            <div class="route-glass flex items-center gap-4 px-4 py-3 max-w-[300px]">
-                <div class="w-9 h-9 rounded-xl bg-emerald-500/15 border border-emerald-500/25 flex items-center justify-center flex-shrink-0">
-                    <svg class="w-4.5 h-4.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
-                </div>
-                <div class="flex-1 min-w-0">
-                    <p class="text-[10px] uppercase tracking-wider text-zinc-600 font-semibold">Route to</p>
-                    <p class="text-[12.5px] font-bold text-white truncate mt-0.5" x-text="routeInfo?.name ?? ''"></p>
-                    <p class="text-[11px] font-semibold mt-0.5" :class="routeInfo?.duration ? 'text-emerald-400' : 'text-amber-400'">
-                        <span x-text="(routeInfo?.distance ?? '?') + ' km'"></span>
-                        <span x-show="routeInfo?.duration" x-text="' · ~' + routeInfo?.duration + ' min'"></span>
-                        <span x-show="!routeInfo?.duration" class="text-zinc-600"> (straight-line)</span>
-                    </p>
-                </div>
-                <button @click="clearRoute()"
-                        class="flex-shrink-0 w-7 h-7 rounded-lg bg-white/[.05] border border-white/[.08] flex items-center justify-center text-zinc-600 hover:text-white hover:bg-white/[.10] transition">
-                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
+            <button wire:click="fitAllLocations" @disabled(count($this->geoJsonData) < 2) class="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-600 shadow-lg transition hover:text-primary-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:disabled:hover:text-gray-300" aria-label="Show all destinations" title="Fit all destinations">
+                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4h4M4 4l5 5M16 4h4v4M20 4l-5 5M4 16v4h4M4 20l5-5M16 20h4v-4M20 20l-5-5"/></svg>
+            </button>
+
+            <button wire:click="toggleSatellite" aria-pressed="{{ $satellite ? 'true' : 'false' }}" class="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-xl border text-lg shadow-lg transition {{ $satellite ? 'border-primary-600 bg-primary-600 text-white' : 'border-gray-200 bg-white text-gray-600 hover:text-primary-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:text-blue-400' }}" aria-label="Toggle satellite view" title="Satellite view (S)">🛰️</button>
+
+            {{-- Cancel route button (visible only when route active) --}}
+            @if(!empty($routeCoords))
+                <button wire:click="clearRoute" class="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-xl border border-red-200 bg-white text-red-500 shadow-lg transition hover:bg-red-50 dark:border-red-500/30 dark:bg-gray-800 dark:text-red-400 dark:hover:bg-red-500/10" aria-label="Cancel route" title="Cancel route">
+                    <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                 </button>
+            @endif
+
+            <div class="relative" x-data="{ open: false }" @click.outside="open = false" @keydown.escape.window="open = false">
+                <button @click="open = !open" :aria-expanded="open.toString()" aria-haspopup="true" class="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-600 shadow-lg transition hover:text-primary-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:text-blue-400" aria-label="More map options" title="More options">
+                    <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg>
+                </button>
+                <div x-show="open" x-transition:enter="transition ease-out duration-120" x-transition:enter-start="opacity-0 -translate-x-1" x-transition:enter-end="opacity-100 translate-x-0" x-transition:leave="transition ease-in duration-100" x-transition:leave-start="opacity-100 translate-x-0" x-transition:leave-end="opacity-0 -translate-x-1" style="display: none;" class="absolute left-full top-0 ml-2 w-52 overflow-hidden rounded-xl border border-gray-200 bg-white py-1.5 shadow-xl dark:border-gray-700 dark:bg-gray-800" role="menu">
+                    <button role="menuitem" @click="open = false; $wire.printMap()" class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] font-medium text-gray-700 transition hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/60">🖨️ Print map</button>
+                    <button role="menuitem" @click="open = false; $wire.shareLocation()" class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] font-medium text-gray-700 transition hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/60">🔗 Share my location</button>
+                    <button role="menuitem" @click="open = false; $wire.resetView()" class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] font-medium text-gray-700 transition hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/60">🎯 Recenter map</button>
+                    <div class="my-1 border-t border-gray-100 dark:border-gray-700"></div>
+                    <button role="menuitem" @click="open = false; helpTrigger = $el; helpOpen = true" class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] font-medium text-gray-700 transition hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/60">❓ Help &amp; shortcuts</button>
+                </div>
             </div>
         </div>
     </div>
 
-    {{-- Toast --}}
-    <div id="xtoast"></div>
+    {{-- Toast stack --}}
+    <div
+        class="pointer-events-none fixed z-[1300] flex flex-col gap-2 print:hidden
+               inset-x-4 top-20 items-center
+               sm:inset-x-auto sm:right-4 sm:top-4 sm:items-end"
+        aria-live="polite"
+        aria-atomic="false"
+    >
+        <template x-for="toast in toasts" :key="toast.id">
+            <div @mouseenter="pauseToast(toast)" @mouseleave="resumeToast(toast)"
+                 x-transition:enter="transition ease-out duration-200"
+                 x-transition:enter-start="opacity-0 translate-y-2 scale-95"
+                 x-transition:enter-end="opacity-100 translate-y-0 scale-100"
+                 x-transition:leave="transition ease-in duration-150"
+                 x-transition:leave-start="opacity-100"
+                 x-transition:leave-end="opacity-0"
+                 class="pointer-events-auto w-full max-w-sm overflow-hidden rounded-xl border bg-white/95 shadow-xl backdrop-blur dark:bg-gray-800/95 sm:w-auto"
+                 :class="{
+                    'border-emerald-200 dark:border-emerald-500/30': toast.type === 'success',
+                    'border-red-200 dark:border-red-500/30': toast.type === 'error',
+                    'border-blue-200 dark:border-blue-500/30': toast.type === 'info',
+                    'border-amber-200 dark:border-amber-500/30': toast.type === 'warning'
+                 }"
+            >
+                <div class="flex items-center gap-2.5 px-4 py-3 text-[13px] font-medium"
+                     :class="{
+                        'text-emerald-800 dark:text-emerald-300': toast.type === 'success',
+                        'text-red-800 dark:text-red-300': toast.type === 'error',
+                        'text-blue-800 dark:text-blue-300': toast.type === 'info',
+                        'text-amber-800 dark:text-amber-300': toast.type === 'warning'
+                     }"
+                >
+                    <span x-show="toast.type === 'success'">✅</span>
+                    <span x-show="toast.type === 'error'">⚠️</span>
+                    <span x-show="toast.type === 'info'">ℹ️</span>
+                    <span x-show="toast.type === 'warning'">🔶</span>
+                    <span class="flex-1" x-text="toast.message"></span>
+                    <button @click="removeToast(toast.id)" class="text-gray-400 transition hover:text-gray-700 dark:hover:text-gray-200" aria-label="Dismiss notification">✕</button>
+                </div>
+                <div class="h-0.5 w-full bg-black/5 dark:bg-white/5">
+                    <div class="h-full transition-[width] duration-100 ease-linear motion-reduce:transition-none"
+                         :class="{
+                            'bg-emerald-400': toast.type === 'success',
+                            'bg-red-400': toast.type === 'error',
+                            'bg-blue-400': toast.type === 'info',
+                            'bg-amber-400': toast.type === 'warning'
+                         }"
+                         :style="'width: ' + ((toast.remaining / toast.duration) * 100) + '%'"
+                    ></div>
+                </div>
+            </div>
+        </template>
+    </div>
 
-    {{-- Leaflet JS --}}
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
-
-    <script>
-    function mapExplorer() {
-        return {
-            map          : null,
-            clusters     : null,
-            tileLayer    : null,
-            routeLayer   : null,
-            userMarker   : null,
-            userCoords   : null,
-            mapStyle     : 'dark',
-            mapReady     : false,
-            locating     : false,
-            routeInfo    : null,
-            compassActive: false,
-            compassDeg   : 0,
-            _orientFn    : null,
-
-            boot() {
-                window.__mapCtrl = this;
-                const poll = setInterval(() => {
-                    if (typeof L !== 'undefined' && typeof L.markerClusterGroup !== 'undefined') {
-                        clearInterval(poll);
-                        this.$nextTick(() => this.initMap());
-                    }
-                }, 80);
-            },
-
-            initMap() {
-                const el = this.$refs.mapEl;
-                if (!el || el.offsetHeight < 10) { setTimeout(() => this.initMap(), 200); return; }
-
-                this.map = L.map(el, {
-                    center: [10.9010, 123.0706],
-                    zoom  : 12,
-                    zoomControl: true,
-                });
-
-                this.tileLayer = L.tileLayer('', {
-                    maxZoom    : 19,
-                    attribution: '© <a href="https://carto.com">CARTO</a>',
-                }).addTo(this.map);
-
-                this.setStyle(this.mapStyle);
-                this.plotMarkers();
-
-                setTimeout(() => { this.mapReady = true; }, 1000);
-
-                new MutationObserver(() => {
-                    if (this.mapStyle !== 'satellite') {
-                        const dark = document.documentElement.classList.contains('dark');
-                        this.tileLayer.setUrl(dark
-                            ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-                            : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png');
-                    }
-                }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
-
-                window.addEventListener('resize', () => setTimeout(() => this.map?.invalidateSize(), 120));
-
-                navigator.geolocation?.getCurrentPosition(
-                    pos => {
-                        this.userCoords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-                        this.placeUserMarker(false);
-                        this._updateDistanceBadges();
-                    },
-                    () => {}
-                );
-            },
-
-            setStyle(style) {
-                const urls = {
-                    dark     : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-                    light    : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-                    satellite: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-                };
-                this.mapStyle = style;
-                this.tileLayer?.setUrl(urls[style] ?? urls.dark);
-            },
-
-            plotMarkers() {
-                if (this.clusters) this.map.removeLayer(this.clusters);
-
-                this.clusters = L.markerClusterGroup({
-                    maxClusterRadius  : 52,
-                    showCoverageOnHover: false,
-                    spiderfyOnMaxZoom : true,
-                });
-
-                window.__mapTenants.forEach((t, tenantIdx) => {
-                    const coords = t.coordinates;
-                    if (!coords?.length) return;
-
-                    coords.forEach((coord, coordIdx) => {
-                        const color    = window.__pinColor(tenantIdx);
-                        const isParent = coord.type === 'parent' || coordIdx === 0;
-                        const logoUrl  = t.logo ? `/storage/${t.logo}` : null;
-
-                        let icon;
-                        if (isParent) {
-                            // Parent marker: logo or coloured initial
-                            const html = logoUrl
-                                ? `<div class="logo-marker" style="--c:${color}">
-                                       <img src="${logoUrl}" alt="${t.name}" loading="lazy">
-                                   </div>`
-                                : `<div class="logo-marker" style="--c:${color}">
-                                       <div class="fallback" style="background:${color}">
-                                           ${t.name.substring(0,2).toUpperCase()}
-                                       </div>
-                                   </div>`;
-
-                            icon = L.divIcon({
-                                className: '',
-                                html,
-                                iconSize  : [44, 44],
-                                iconAnchor: [22, 22],
-                            });
-                        } else {
-                            // Child marker: small coloured dot
-                            const html = `<div class="child-marker" style="--c:${color}"></div>`;
-                            icon = L.divIcon({
-                                className: '',
-                                html,
-                                iconSize  : [18, 18],
-                                iconAnchor: [9, 9],
-                            });
-                        }
-
-                        const marker = L.marker([coord.lat, coord.lng], { icon })
-                            .bindPopup(
-                                () => window.__buildPopup(tenantIdx, this.userCoords, coordIdx),
-                                { maxWidth: 308, minWidth: 264, closeButton: true }
-                            );
-
-                        this.clusters.addLayer(marker);
-                    });
-                });
-
-                this.map.addLayer(this.clusters);
-                this.$nextTick(() => this.fitAll());
-            },
-
-            refreshTenants(newTenants) {
-                window.__mapTenants = newTenants;
-                this.plotMarkers();
-                if (this.userCoords) this._updateDistanceBadges();
-            },
-
-            fitAll() {
-                const pts = [];
-                window.__mapTenants.forEach(t => (t.coordinates || []).forEach(c => pts.push([c.lat, c.lng])));
-                if (!pts.length) return;
-                if (pts.length === 1) { this.map.setView(pts[0], 15); return; }
-                const b = L.latLngBounds(pts);
-                if (b.isValid()) this.map.fitBounds(b, { padding: [60, 60], maxZoom: 15 });
-            },
-
-            flyTo(tenant) {
-                if (!tenant.coordinates?.length) return;
-                const coord = tenant.coordinates[0];
-                this.map.flyTo([coord.lat, coord.lng], 16, { duration: 1.35, easeLinearity: 0.26 });
-
-                setTimeout(() => {
-                    this.clusters?.eachLayer(mk => {
-                        const p = mk.getLatLng();
-                        if (Math.abs(p.lat - coord.lat) < 0.0003 && Math.abs(p.lng - coord.lng) < 0.0003) {
-                            mk.openPopup();
-                        }
-                    });
-                }, 1350);
-            },
-
-            enableDistanceSort() {
-                if (!this.userCoords) {
-                    this.locateMe().then(() => this._sortSidebarByDistance());
-                } else {
-                    this._sortSidebarByDistance();
-                }
-            },
-
-            _sortSidebarByDistance() {
-                if (!this.userCoords) return;
-                const rows = [...document.querySelectorAll('[data-tenant-id]')];
-                rows.sort((a, b) => {
-                    const getKm = el => {
-                        const badge = el.querySelector('.xdist-badge');
-                        if (!badge) return 9999;
-                        const lat = parseFloat(badge.dataset.lat);
-                        const lng = parseFloat(badge.dataset.lng);
-                        if (isNaN(lat) || isNaN(lng)) return 9999;
-                        return parseFloat(window.__haversine(this.userCoords.lat, this.userCoords.lng, lat, lng));
-                    };
-                    return getKm(a) - getKm(b);
-                });
-                const list = rows[0]?.parentElement;
-                if (list) rows.forEach(r => list.appendChild(r));
-                __xToast('Sorted by distance 📍');
-            },
-
-            _updateDistanceBadges() {
-                if (!this.userCoords) return;
-                document.querySelectorAll('.xdist-badge').forEach(el => {
-                    const lat = parseFloat(el.dataset.lat);
-                    const lng = parseFloat(el.dataset.lng);
-                    if (!isNaN(lat) && !isNaN(lng)) {
-                        el.textContent = `${window.__haversine(this.userCoords.lat, this.userCoords.lng, lat, lng)} km`;
-                        el.classList.remove('hidden');
-                    }
-                });
-            },
-
-            locateMe() {
-                return new Promise((resolve, reject) => {
-                    if (!navigator.geolocation) {
-                        __xToast('Geolocation not supported');
-                        return reject();
-                    }
-                    this.locating = true;
-                    navigator.geolocation.getCurrentPosition(
-                        pos => {
-                            this.locating = false;
-                            this.userCoords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-                            this.placeUserMarker(false);
-                            this.map.flyTo([pos.coords.latitude, pos.coords.longitude], 14, { duration: 1.2 });
-                            this._updateDistanceBadges();
-                            __xToast('Location found ✓');
-                            resolve(this.userCoords);
-                        },
-                        () => {
-                            this.locating = false;
-                            __xToast('Location access denied');
-                            reject();
-                        }
-                    );
-                });
-            },
-
-            placeUserMarker(panTo) {
-                if (!this.userCoords) return;
-                const { lat, lng } = this.userCoords;
-                if (this.userMarker) this.map.removeLayer(this.userMarker);
-
-                const icon = L.divIcon({
-                    className: '',
-                    html: `<div class="user-dot" style="
-                        width:14px;height:14px;border-radius:50%;
-                        background:#22c55e;border:3px solid #fff;
-                        box-shadow:0 0 0 4px rgba(34,197,94,.25);
-                    "></div>`,
-                    iconSize  : [14, 14],
-                    iconAnchor: [7, 7],
-                });
-
-                this.userMarker = L.marker([lat, lng], { icon, zIndexOffset: 1000 })
-                    .bindPopup('<span style="color:#f1f5f9;font-weight:700;font-size:13px;font-family:Outfit,sans-serif;">📍 You are here</span>')
-                    .addTo(this.map);
-
-                if (panTo) this.map.panTo([lat, lng]);
-            },
-
-            getDirections(tenantIdx, coordIdx = 0) {
-                const t = window.__mapTenants[tenantIdx];
-                if (!t?.coordinates?.length) return;
-                const coord = t.coordinates[coordIdx];
-                if (!coord?.lat || !coord?.lng) return;
-
-                const proceed = () => this._fetchRoute(coord, t.name);
-                if (!this.userCoords) {
-                    this.locateMe().then(proceed).catch(() => {});
-                } else {
-                    proceed();
-                }
-            },
-
-            _fetchRoute(coord, name) {
-                if (!this.userCoords) return;
-                const { lat: uLat, lng: uLng } = this.userCoords;
-
-                this.map.fitBounds(
-                    L.latLngBounds([[uLat, uLng], [coord.lat, coord.lng]]),
-                    { padding: [80, 80] }
-                );
-
-                const osrmUrl = `https://router.project-osrm.org/route/v1/driving/`
-                              + `${uLng},${uLat};${coord.lng},${coord.lat}`
-                              + `?overview=full&geometries=geojson`;
-
-                fetch(osrmUrl)
-                    .then(r => r.json())
-                    .then(data => {
-                        if (this.routeLayer) this.map.removeLayer(this.routeLayer);
-
-                        if (data.code === 'Ok' && data.routes?.length) {
-                            const route = data.routes[0];
-                            this.routeLayer = L.geoJSON(route.geometry, {
-                                style: {
-                                    color   : '#22c55e',
-                                    weight  : 5,
-                                    opacity : 0.88,
-                                    lineCap : 'round',
-                                    lineJoin: 'round',
-                                },
-                            }).addTo(this.map);
-
-                            this.routeInfo = {
-                                distance: (route.distance / 1000).toFixed(1),
-                                duration: Math.round(route.duration / 60),
-                                name,
-                            };
-                        } else {
-                            this.routeLayer = L.polyline([[uLat, uLng], [coord.lat, coord.lng]], {
-                                color    : '#f59e0b',
-                                weight   : 3,
-                                dashArray: '10 8',
-                                opacity  : 0.78,
-                            }).addTo(this.map);
-
-                            this.routeInfo = {
-                                distance: window.__haversine(uLat, uLng, coord.lat, coord.lng),
-                                duration: null,
-                                name,
-                            };
-                        }
-                    })
-                    .catch(() => {
-                        this.routeInfo = {
-                            distance: window.__haversine(uLat, uLng, coord.lat, coord.lng),
-                            duration: null,
-                            name,
-                        };
-                    });
-            },
-
-            clearRoute() {
-                if (this.routeLayer) { this.map.removeLayer(this.routeLayer); this.routeLayer = null; }
-                this.routeInfo = null;
-            },
-
-            toggleCompass() {
-                if (this.compassActive) {
-                    this.compassActive = false;
-                    if (this._orientFn) window.removeEventListener('deviceorientation', this._orientFn);
-                    this._orientFn = null;
-                    if (this.$refs.compassRose) this.$refs.compassRose.style.transform = '';
-                    this.compassDeg = 0;
-                    return;
-                }
-
-                const activate = () => {
-                    this.compassActive = true;
-                    this._orientFn = (e) => {
-                        const heading = e.webkitCompassHeading != null
-                            ? e.webkitCompassHeading
-                            : (e.alpha != null ? 360 - e.alpha : null);
-                        if (heading == null) return;
-                        this.compassDeg = Math.round(heading);
-                        if (this.$refs.compassRose)
-                            this.$refs.compassRose.style.transform = `rotate(${-heading}deg)`;
-                    };
-                    window.addEventListener('deviceorientation', this._orientFn, true);
-                    __xToast('Compass active');
-                };
-
-                if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
-                    DeviceOrientationEvent.requestPermission()
-                        .then(r => { if (r === 'granted') activate(); })
-                        .catch(() => {});
-                } else {
-                    activate();
-                }
-            },
-        };
-    }
-    </script>
+    {{-- Help modal --}}
+    <div x-show="helpOpen" x-transition.opacity style="display: none;" class="fixed inset-0 z-[1500] flex items-center justify-center bg-black/50 p-4 print:hidden" role="dialog" aria-modal="true" aria-labelledby="help-modal-title" @click.self="helpOpen = false; helpTrigger?.focus(); helpTrigger = null" x-init="$watch('helpOpen', (open) => { if (open) $nextTick(() => $refs.helpCloseBtn && $refs.helpCloseBtn.focus()) })">
+        <div x-show="helpOpen" x-transition:enter="transition ease-out duration-150" x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100" class="w-full max-w-sm overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-gray-800">
+            <div class="flex items-center justify-between border-b border-gray-100 px-5 py-4 dark:border-gray-700">
+                <h2 id="help-modal-title" class="text-[15px] font-extrabold text-gray-900 dark:text-white">Legend &amp; shortcuts</h2>
+                <button x-ref="helpCloseBtn" @click="helpOpen = false; helpTrigger?.focus(); helpTrigger = null" class="flex h-7 w-7 items-center justify-center rounded-lg text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200" aria-label="Close help">✕</button>
+            </div>
+            <div class="max-h-[70vh] overflow-y-auto px-5 py-4">
+                <section>
+                    <h3 class="mb-2 text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Map legend</h3>
+                    <ul class="space-y-2 text-[12.5px] text-gray-600 dark:text-gray-300">
+                        <li class="flex items-center gap-2.5"><span class="h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500"></span> Your current location</li>
+                        <li class="flex items-center gap-2.5"><span class="h-2.5 w-2.5 shrink-0 rounded-full bg-primary-600"></span> Destinations &amp; clusters</li>
+                        <li class="flex items-center gap-2.5"><span class="h-1 w-4 shrink-0 rounded-full bg-emerald-500"></span> Active route</li>
+                        <li class="flex items-center gap-2.5"><span class="h-1 w-4 shrink-0 rounded-full bg-cyan-500"></span> Alternative route</li>
+                        <li class="flex items-center gap-2.5"><span class="h-1 w-4 shrink-0 rounded-full border-t-2 border-dashed border-amber-500"></span> Straight-line reference</li>
+                    </ul>
+                </section>
+                <section class="mt-5">
+                    <h3 class="mb-2 text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Keyboard shortcuts</h3>
+                    <dl class="space-y-1.5 text-[12.5px]">
+                        @foreach(['/' => 'Focus search','L' => 'Use my location','F' => 'Toggle follow mode','S' => 'Toggle satellite view','P' => 'Print map','R' => 'Clear filters','Esc' => 'Close panels','?' => 'Toggle this help'] as $key => $label)
+                            <div class="flex items-center justify-between">
+                                <dt class="text-gray-600 dark:text-gray-300">{{ $label }}</dt>
+                                <dd><kbd class="rounded-md border border-gray-300 bg-gray-50 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-gray-600 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-300">{{ $key }}</kbd></dd>
+                            </div>
+                        @endforeach
+                    </dl>
+                </section>
+            </div>
+        </div>
+    </div>
 </div>
-
-@push('scripts')
-<script>
-(function() {
-    const params     = new URLSearchParams(window.location.search);
-    const tenantId   = params.get('fly_to');
-    const directions = params.get('directions');
-    if (!tenantId) return;
-
-    function tryAct() {
-        const ctrl    = window.__mapCtrl;
-        const tenants = window.__mapTenants;
-        if (!ctrl || !ctrl.map || !tenants?.length) { setTimeout(tryAct, 200); return; }
-
-        const idx    = tenants.findIndex(t => t.id == tenantId);
-        if (idx === -1) return;
-        const tenant = tenants[idx];
-        const coord  = tenant.coordinates?.[0];
-        if (!coord) return;
-
-        ctrl.map.flyTo([coord.lat, coord.lng], 16, { duration: 1.4, easeLinearity: 0.28 });
-        setTimeout(() => {
-            ctrl.clusters?.eachLayer(mk => {
-                const p = mk.getLatLng();
-                if (Math.abs(p.lat - coord.lat) < 0.0003 && Math.abs(p.lng - coord.lng) < 0.0003)
-                    mk.openPopup();
-            });
-        }, 1400);
-
-        if (directions === '1' || directions === 'true')
-            setTimeout(() => ctrl.getDirections(idx, 0), 1600);
-    }
-
-    document.addEventListener('livewire:navigated', tryAct, { once: true });
-    if (document.readyState === 'complete') tryAct();
-    else window.addEventListener('load', tryAct, { once: true });
-})();
-</script>
-@endpush

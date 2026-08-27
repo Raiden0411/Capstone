@@ -36,6 +36,8 @@ class RoleSeeder extends Seeder
             'edit employees',
             // Analytics
             'view analytics',
+            // Events
+            'manage events',               // ← added
         ];
 
         foreach ($permissions as $perm) {

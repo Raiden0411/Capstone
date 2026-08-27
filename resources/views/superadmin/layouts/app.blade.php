@@ -34,19 +34,18 @@
     @vite(['resources/css/app.css', 'resources/js/app.js'])
     
     @livewireStyles
+    @livewireMapStyles
 
-    {{-- Chart.js for analytics (CDN) – ensures it's available before any component script --}}
+    {{-- Chart.js for analytics (CDN) --}}
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
 </head>
 
 <body x-data="{ minified: false }"
-      class="font-sans antialiased min-h-screen text-white">
+      class="font-sans antialiased min-h-screen bg-[#F8F7F3] dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-300">
 
-    {{-- Animated background orbs – same as public & tenant layouts --}}
+    {{-- Subtle background decoration (light/dark aware) --}}
     <div class="fixed inset-0 -z-10 overflow-hidden pointer-events-none">
-        <div class="orb orb-1"></div>
-        <div class="orb orb-2"></div>
-        <div class="orb orb-3"></div>
+        <div class="absolute inset-0 bg-gradient-to-br from-white via-gray-50 to-gray-100 dark:from-gray-900 dark:via-gray-900 dark:to-gray-900"></div>
     </div>
 
     {{-- Top bar --}}
@@ -55,7 +54,7 @@
     {{-- Sidebar --}}
     <x-headers.admin.sidebar />
 
-    {{-- Content wrapper – reacts to minified state --}}
+    {{-- Content wrapper --}}
     <div class="w-full transition-all duration-300"
          :class="minified ? 'lg:ps-[3.25rem]' : 'lg:ps-64'">
         <div class="p-4 sm:p-6 space-y-4 sm:space-y-6">
@@ -64,8 +63,9 @@
     </div>
 
     @livewireScripts
+    @livewireMapScripts
 
-    {{-- Preline JS (as used on the public & tenant sides) --}}
+    {{-- Preline JS --}}
     <script src="https://unpkg.com/preline/dist/preline.js"></script>
 </body>
 

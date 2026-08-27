@@ -8,6 +8,7 @@ use App\Http\Middleware\IsSuperAdmin;
 use App\Http\Middleware\IsTenantAdmin;
 use App\Models\Booking;
 use App\Http\Controllers\Auth\LoginController;
+use App\Scopes\TenantScope;
 
 /*
 |--------------------------------------------------------------------------
@@ -23,6 +24,33 @@ Route::livewire('/register-business', 'public::pages.register-business')->name('
 // Explore Map (public interactive map)
 Route::livewire('/explore/map', 'public::pages.explore-map')->name('explore.map');
 
+// Satellite style for MapLibre (used by Explore Map satellite toggle)
+Route::get('/map/satellite-style', function () {
+    return response()->json([
+        'version' => 8,
+        'sources' => [
+            'satellite' => [
+                'type' => 'raster',
+                'tiles' => [
+                    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+                ],
+                'tileSize' => 256,
+                'maxzoom' => 19,
+                'attribution' => 'Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics',
+            ],
+        ],
+        'layers' => [
+            [
+                'id' => 'satellite-layer',
+                'type' => 'raster',
+                'source' => 'satellite',
+                'minzoom' => 0,
+                'maxzoom' => 22,
+            ],
+        ],
+    ], 200, [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+})->name('map.satellite.style');
+
 // Tenant Profile / Details (public view of a business)
 Route::livewire('/business/{slug}', 'public::pages.tenant-show')->name('tenant.show');
 
@@ -32,15 +60,20 @@ Route::livewire('/business/{slug}/offerings', 'public::pages.business-offerings'
 // Tourist Spot Details Profile (Public View)
 Route::livewire('/destination/{id}', 'public::pages.tourist-spot-details')->name('destination.details');
 
+// ★ Events & Fiestas (Public)
+Route::livewire('/events', 'public::pages.events')->name('events');
+
+// Event direct link redirect
+Route::get('/events/{event}', function ($event) {
+    return redirect()->route('events', ['event' => $event]);
+})->name('event.show');
+
 // Auth
 Route::livewire('/profile', 'public::pages.profile')->name('profile');
 
 // --- Traditional login routes (replaces broken Livewire login) ---
 Route::get('/login', [LoginController::class, 'showLoginForm'])->name('login');
 Route::post('/login', [LoginController::class, 'login']);
-
-// --- Livewire login route REMOVED ---
-// Route::livewire('/login', 'public::auth.login')->name('login');
 
 Route::livewire('/register', 'public::auth.register')->name('register');
 Route::post('/logout', function (Request $request) {
@@ -54,9 +87,71 @@ Route::post('/logout', function (Request $request) {
 // Authenticated Customer Routes (Booking, My Bookings, etc.)
 Route::middleware(['auth'])->group(function () {
     Route::livewire('/booking/create/{publicproperty}', 'public::pages.create-booking')->name('booking.create');
-    // NEW: Tourist bookings history and management
     Route::livewire('/my-bookings', 'public::pages.my-bookings')->name('my-bookings');
+
+    // ★ Receipt route (printable)
+    Route::get('/booking/receipt/{booking}', function ($bookingId) {
+        // Fetch booking WITHOUT the TenantScope so tourists can see their own bookings
+        $booking = Booking::withoutGlobalScope(TenantScope::class)->findOrFail($bookingId);
+
+        // Ensure the authenticated user owns this booking
+        if (Auth::id() !== $booking->user_id) {
+            abort(403);
+        }
+
+        // Load relationships without global scopes (for tourist)
+        $booking->loadMissing([
+            'items' => fn($q) => $q->withoutGlobalScope(TenantScope::class),
+            'items.property' => fn($q) => $q->withoutGlobalScope(TenantScope::class),
+            'items.property.tenant' => fn($q) => $q->withoutGlobalScope(TenantScope::class),
+            'services' => fn($q) => $q->withoutGlobalScope(TenantScope::class),
+            'services.service' => fn($q) => $q->withoutGlobalScope(TenantScope::class),
+            'payments' => fn($q) => $q->withoutGlobalScope(TenantScope::class),
+        ]);
+
+        return view('public.pages.booking-receipt', [
+            'booking' => $booking,
+            'property' => $booking->items->first()->property ?? null,
+            'tenant' => $booking->items->first()->property->tenant ?? null,
+        ]);
+    })->name('booking.receipt');
 });
+
+// ★ Public payment callbacks (PayMongo redirects for tourists)
+Route::get('/booking/payment/success/{booking}', function ($bookingId) {
+    $booking = Booking::withoutGlobalScope(TenantScope::class)->findOrFail($bookingId);
+
+    if (Auth::id() !== $booking->user_id) {
+        abort(403);
+    }
+
+    return redirect()->route('my-bookings')->with('message', 'Payment successful! Your booking is updated.');
+})->name('booking.payment.success');
+
+Route::get('/booking/payment/cancel/{booking}', function ($bookingId) {
+    $booking = Booking::withoutGlobalScope(TenantScope::class)->findOrFail($bookingId);
+
+    if (Auth::id() !== $booking->user_id) {
+        abort(403);
+    }
+
+    if ($booking->status === Booking::STATUS_PENDING) {
+        $booking->update(['status' => Booking::STATUS_CANCELLED]);
+    }
+
+    // ★ Fixed: use withoutGlobalScope() when retrieving the first booking item
+    $propertyId = $booking->items()
+        ->withoutGlobalScope(TenantScope::class)
+        ->first()
+        ->property_id ?? null;
+
+    if ($propertyId) {
+        return redirect()->route('booking.create', ['publicproperty' => $propertyId])
+            ->with('error', 'Payment was cancelled. The temporary booking has been cancelled.');
+    }
+
+    return redirect()->route('my-bookings')->with('error', 'Payment cancelled.');
+})->name('booking.payment.cancel');
 
 /*
 |--------------------------------------------------------------------------
@@ -71,7 +166,7 @@ Route::prefix('platform')->name('superadmin.')->middleware([Authenticate::class,
     // Dashboard
     Route::livewire('/dashboard', 'superadmin::pages.dashboard.dashboard-page')->name('dashboard');
 
-    // Analytics 
+    // Analytics
     Route::livewire('/analytics', 'superadmin::pages.analytics.platform-analytics')->name('analytics');
 
     Route::livewire('/profile', 'superadmin::pages.profile.edit-profile')->name('profile');
@@ -84,6 +179,7 @@ Route::prefix('platform')->name('superadmin.')->middleware([Authenticate::class,
     // Tenants
     Route::livewire('/tenants', 'superadmin::pages.tenant.view-tenant')->name('tenants.index');
     Route::livewire('/tenants/create', 'superadmin::pages.tenant.create-tenant')->name('tenants.create');
+    Route::livewire('/tenants/{tenant}/preview', 'superadmin::pages.tenant.preview-tenant')->name('tenants.preview');
     Route::livewire('/tenants/{tenant}/edit', 'superadmin::pages.tenant.edit-tenant')->name('tenants.edit');
 
     // Roles
@@ -99,16 +195,24 @@ Route::prefix('platform')->name('superadmin.')->middleware([Authenticate::class,
     // Map Markers (Master Map Control)
     Route::livewire('/map-markers', 'superadmin::pages.map-marker.manage-map-markers')->name('map-markers.index');
 
-    // ★ Homepage Editor (new)
+    // ★ Homepage Editor
     Route::livewire('/homepage-editor', 'superadmin::pages.homepage.homepage-editor')->name('homepage.editor');
     Route::livewire('/about-editor', 'superadmin::pages.homepage.about-editor')->name('about.editor');
+
+    // ★ Events Management (Super Admin)
+    Route::livewire('/events', 'superadmin::pages.event.view-event')->name('events.index');
+    Route::livewire('/events/create', 'superadmin::pages.event.create-event')->name('events.create');
+    Route::livewire('/events/{event}/edit', 'superadmin::pages.event.edit-event')->name('events.edit');
 });
 
 
 // ==========================================
 // 2. TENANT ADMIN ROUTES (Business Level)
 // ==========================================
-Route::prefix('admin')->name('tenant.')->middleware([Authenticate::class, IsTenantAdmin::class])->group(function () {
+Route::prefix('admin')->name('tenant.')->middleware([
+    Authenticate::class,
+    IsTenantAdmin::class,
+])->group(function () {
     // Dashboard & Settings
     Route::livewire('/dashboard', 'tenant::pages.dashboard.dashboard-page')->name('dashboard');
     Route::livewire('/settings', 'tenant::pages.settings.business-profile')->name('settings.index');
@@ -117,12 +221,17 @@ Route::prefix('admin')->name('tenant.')->middleware([Authenticate::class, IsTena
     // Bookings
     Route::livewire('/bookings', 'tenant::pages.booking.view-booking')->name('bookings.index');
     Route::livewire('/bookings/create', 'tenant::pages.booking.create-booking')->name('bookings.create');
-    Route::livewire('/bookings/{booking}/edit', 'tenant::pages.booking.edit-booking')->name('bookings.edit'); 
+    Route::livewire('/bookings/{booking}/edit', 'tenant::pages.booking.edit-booking')->name('bookings.edit');
     Route::livewire('/bookings/history', 'tenant::pages.booking.history')->name('bookings.history');
     // Booking show page
     Route::get('/bookings/{booking}', function (Booking $booking) {
         return view('tenant.pages.booking.show-booking', ['booking' => $booking]);
     })->name('bookings.show');
+    // Booking delete route
+    Route::delete('/bookings/{booking}', function (Booking $booking) {
+        $booking->forceDelete();
+        return redirect()->route('tenant.bookings.index')->with('message', 'Booking deleted successfully.');
+    })->name('bookings.destroy');
 
     // Customers – only the creation form is kept
     Route::livewire('/customers/create', 'tenant::pages.customer.create-customer')->name('customers.create');
@@ -153,14 +262,14 @@ Route::prefix('admin')->name('tenant.')->middleware([Authenticate::class, IsTena
     Route::livewire('/payments/create/{booking}', 'tenant::pages.payment.create-payment')->name('payments.create');
     Route::livewire('/payments/{payment}/edit', 'tenant::pages.payment.edit-payment')->name('payments.edit');
 
-    // PayMongo Payment Routes
+    // PayMongo Payment Routes (admin) – now redirect to Payments index
     Route::get('/payments/success/{booking}', function (Booking $booking) {
-        return redirect()->route('tenant.bookings.show', $booking)
-            ->with('message', 'Payment completed! Processing may take a moment.');
+        return redirect()->route('tenant.payments.index')
+            ->with('message', 'Payment completed! The payment record has been updated.');
     })->name('payments.success');
 
     Route::get('/payments/cancel/{booking}', function (Booking $booking) {
-        return redirect()->route('tenant.bookings.show', $booking)
+        return redirect()->route('tenant.payments.index')
             ->with('error', 'Payment was cancelled.');
     })->name('payments.cancel');
 
@@ -171,15 +280,9 @@ Route::prefix('admin')->name('tenant.')->middleware([Authenticate::class, IsTena
 
     // Analytics Dashboard
     Route::livewire('/analytics', 'tenant::pages.analytics.dashboard')->name('analytics.index');
-});
 
-// ==========================================
-// 3. TEST LOGIN ROUTES (outside any middleware)
-// ==========================================
-Route::get('/test-login', fn () => view('test-login'));
-Route::post('/test-login', function (Request $request) {
-    if (Auth::attempt(['email' => $request->email, 'password' => $request->password])) {
-        return redirect()->route('superadmin.dashboard');
-    }
-    return back()->withErrors(['email' => 'Invalid credentials.']);
+    // ★ Events Management (Tenant Admin)
+    Route::livewire('/events', 'tenant::pages.event.view-event')->name('events.index');
+    Route::livewire('/events/create', 'tenant::pages.event.create-event')->name('events.create');
+    Route::livewire('/events/{event}/edit', 'tenant::pages.event.edit-event')->name('events.edit');
 });

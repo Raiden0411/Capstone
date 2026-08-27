@@ -1,3 +1,4 @@
+{{-- resources/views/superadmin/pages/analytics/platform-analytics.blade.php --}}
 <?php
 
 use Livewire\Component;
@@ -5,431 +6,459 @@ use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use App\Models\Tenant;
 use App\Models\User;
-use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 use Carbon\CarbonPeriod;
 
-new 
+new
 #[Layout('superadmin.layouts.app')]
 #[Title('Platform Analytics')]
 class extends Component
 {
     public ?string $startDate = null;
     public ?string $endDate = null;
+    public string $preset = 'this_year';
 
     public function mount(): void
     {
-        $this->startDate = now()->startOfYear()->toDateString();
-        $this->endDate   = now()->toDateString();
+        $this->applyPreset('this_year');
     }
 
-    public function getStats()
+    public function applyPreset($preset): void
     {
+        $this->preset = $preset;
+        $now = now();
+
+        switch ($preset) {
+            case 'today':
+                $this->startDate = $now->toDateString();
+                $this->endDate   = $now->toDateString();
+                break;
+            case '7d':
+                $this->startDate = $now->copy()->subDays(6)->toDateString();
+                $this->endDate   = now()->toDateString();
+                break;
+            case '30d':
+                $this->startDate = $now->copy()->subDays(29)->toDateString();
+                $this->endDate   = now()->toDateString();
+                break;
+            case 'this_month':
+                $this->startDate = $now->copy()->startOfMonth()->toDateString();
+                $this->endDate   = $now->copy()->endOfMonth()->toDateString();
+                break;
+            case 'this_year':
+            default:
+                $this->startDate = $now->copy()->startOfYear()->toDateString();
+                $this->endDate   = $now->copy()->endOfYear()->toDateString();
+                break;
+            case 'custom':
+                // keep current dates
+                break;
+        }
+
+        $this->dispatch('refreshCharts', $this->getChartData(), $this->getTenantStatusData());
+    }
+
+    public function refreshAnalytics(): void
+    {
+        $this->dispatch('refreshCharts', $this->getChartData(), $this->getTenantStatusData());
+    }
+
+    public function updatedStartDate(): void
+    {
+        $this->preset = 'custom';
+        $this->dispatch('refreshCharts', $this->getChartData(), $this->getTenantStatusData());
+    }
+
+    public function updatedEndDate(): void
+    {
+        $this->preset = 'custom';
+        $this->dispatch('refreshCharts', $this->getChartData(), $this->getTenantStatusData());
+    }
+
+    public function getStats(): array
+    {
+        $now = now();
         return [
-            'total_tenants'   => Tenant::count(),
-            'active_tenants'  => Tenant::where('is_active', true)->count(),
-            'pending_tenants' => Tenant::where('is_active', false)->count(),
-            'new_this_month'  => Tenant::whereMonth('created_at', now()->month)
-                                        ->whereYear('created_at', now()->year)
-                                        ->count(),
-            'total_users'     => User::count(),
-            'active_users'    => User::where('is_active', true)->count(),
+            'total_tenants'       => Tenant::count(),
+            'active_tenants'      => Tenant::where('is_active', true)->count(),
+            'pending_tenants'     => Tenant::where('is_active', false)->count(),
+            'total_users'         => User::count(),
+            'active_users'        => User::where('is_active', true)->count(),
+            'new_this_month'      => Tenant::whereMonth('created_at', $now->month)
+                                            ->whereYear('created_at', $now->year)
+                                            ->count(),
+            'new_this_week'       => Tenant::where('created_at', '>=', $now->copy()->subDays(7))->count(),
+            'new_users_this_month'=> User::whereMonth('created_at', $now->month)
+                                            ->whereYear('created_at', $now->year)
+                                            ->count(),
         ];
     }
 
     public function getChartData(): array
     {
-        $start = $this->startDate
-            ? Carbon::parse($this->startDate)->startOfMonth()
-            : now()->startOfYear();
-        $end = $this->endDate
-            ? Carbon::parse($this->endDate)->endOfMonth()
-            : now()->endOfMonth();
+        $start = $this->startDate ? Carbon::parse($this->startDate)->startOfDay() : now()->startOfYear();
+        $end   = $this->endDate ? Carbon::parse($this->endDate)->endOfDay() : now()->endOfYear();
 
-        $period = CarbonPeriod::create($start, '1 month', $end);
-        $months = [];
+        $diffInDays = $start->diffInDays($end);
+        $isDaily = $diffInDays <= 31;
+
+        if ($isDaily) {
+            $phpFormat  = 'Y-m-d';
+            $sqlFormat  = '%Y-%m-%d';
+            $labelFormat= 'M d';
+            $period = CarbonPeriod::create($start, '1 day', $end);
+        } else {
+            $phpFormat  = 'Y-m';
+            $sqlFormat  = '%Y-%m';
+            $labelFormat= 'M Y';
+            $period = CarbonPeriod::create($start->copy()->startOfMonth(), '1 month', $end->copy()->endOfMonth());
+        }
+
+        $labels = [];
+        $keys = [];
         foreach ($period as $dt) {
-            $months[] = $dt->format('Y-m');
+            $key = $dt->format($phpFormat);
+            $keys[] = $key;
+            $labels[] = $dt->format($labelFormat);
         }
 
         $tenantGrowth = Tenant::whereBetween('created_at', [$start, $end])
-            ->selectRaw("DATE_FORMAT(created_at, '%Y-%m') as month, COUNT(*) as total")
-            ->groupBy('month')->orderBy('month')->get()->pluck('total', 'month');
+            ->selectRaw("DATE_FORMAT(created_at, '{$sqlFormat}') as period, COUNT(*) as total")
+            ->groupBy('period')->orderBy('period')->get()->pluck('total', 'period');
 
-        $tenantsData = [];
-        foreach ($months as $m) {
-            $tenantsData[] = $tenantGrowth[$m] ?? 0;
+        $userGrowth = User::whereBetween('created_at', [$start, $end])
+            ->selectRaw("DATE_FORMAT(created_at, '{$sqlFormat}') as period, COUNT(*) as total")
+            ->groupBy('period')->orderBy('period')->get()->pluck('total', 'period');
+
+        $tenants = [];
+        $users = [];
+        foreach ($keys as $key) {
+            $tenants[] = $tenantGrowth[$key] ?? 0;
+            $users[] = $userGrowth[$key] ?? 0;
         }
 
         return [
-            'labels'  => $months,
-            'tenants' => $tenantsData,
+            'labels'  => $labels,
+            'tenants' => $tenants,
+            'users'   => $users,
+            'isDaily' => $isDaily,
         ];
     }
 
-    public function updatedStartDate()
+    public function getTenantStatusData(): array
     {
-        $this->dispatch('refreshChart', $this->getChartData());
+        $active = Tenant::where('is_active', true)->count();
+        $inactive = Tenant::where('is_active', false)->count();
+        return [
+            'labels' => ['Active', 'Pending'],
+            'values' => [$active, $inactive],
+            'colors' => ['#34D399', '#FBBF24'],
+        ];
     }
 
-    public function updatedEndDate()
+    public function exportCsv()
     {
-        $this->dispatch('refreshChart', $this->getChartData());
+        $data = $this->getChartData();
+        $filename = 'platform-analytics-' . now()->format('Y-m-d-His') . '.csv';
+
+        return response()->streamDownload(function () use ($data) {
+            $out = fopen('php://output', 'w');
+            fputcsv($out, ['Period', 'New Tenants', 'New Users']);
+            foreach ($data['labels'] as $i => $label) {
+                fputcsv($out, [$label, $data['tenants'][$i], $data['users'][$i]]);
+            }
+            fclose($out);
+        }, $filename);
     }
 };
 ?>
 
-@push('styles')
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
-<style>
-    :root {
-        --bg:        #07090F;
-        --bg1:       #0D1117;
-        --bg2:       #131820;
-        --bg3:       #1C2333;
-        --line:      rgba(255,255,255,0.06);
-        --line2:     rgba(255,255,255,0.10);
-        --cyan:      #22D3EE;
-        --cyan-dim:  rgba(34,211,238,0.10);
-        --amber:     #FBBF24;
-        --green:     #34D399;
-        --purple:    #A78BFA;
-        --text1:     #E2E8F0;
-        --text2:     #8892A4;
-        --text3:     #4A5568;
-        --mono:      'JetBrains Mono', monospace;
-        --sans:      'DM Sans', sans-serif;
-        --display:   'Syne', sans-serif;
-    }
+<div class="p-4 sm:p-6 lg:p-8 max-w-[1440px] mx-auto space-y-6"
+     wire:poll.60s="refreshAnalytics">
 
-    .an-wrap { font-family: var(--sans); background: var(--bg); min-height: 100vh; color: var(--text1); }
-
-    .an-wrap::before {
-        content: '';
-        position: fixed; inset: 0; pointer-events: none; z-index: 0;
-        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
-        opacity: .4;
-    }
-
-    .an-inner { position: relative; z-index: 1; padding: 2.5rem 2.5rem 4rem; max-width: 1400px; margin: 0 auto; }
-    @media(max-width:640px){ .an-inner { padding: 1.5rem 1.25rem 3rem; } }
-
-    @keyframes fadeUp {
-        from { opacity:0; transform:translateY(12px); }
-        to   { opacity:1; transform:translateY(0); }
-    }
-    .au  { animation: fadeUp .5s cubic-bezier(.22,.68,0,1.1) both; }
-    .d1  { animation-delay: .07s; }
-    .d2  { animation-delay: .14s; }
-    .d3  { animation-delay: .21s; }
-
-    /* ── Page header ─────────────────────────────────────── */
-    .page-header {
-        display: flex; align-items: flex-end; justify-content: space-between;
-        gap: 1.5rem; margin-bottom: 2.5rem; flex-wrap: wrap;
-        padding-bottom: 1.75rem;
-        border-bottom: 1px solid var(--line);
-    }
-    .page-eyebrow {
-        font-family: var(--mono); font-size: .68rem;
-        letter-spacing: .2em; text-transform: uppercase;
-        color: var(--cyan); margin-bottom: .5rem;
-        display: flex; align-items: center; gap: .5rem;
-    }
-    .page-eyebrow::before {
-        content: ''; width: 6px; height: 6px; border-radius: 50%;
-        background: var(--cyan); box-shadow: 0 0 8px var(--cyan); flex-shrink:0;
-    }
-    .page-title {
-        font-family: var(--display); font-size: clamp(1.75rem,3vw,2.4rem);
-        font-weight: 700; color: var(--text1); letter-spacing: -.025em; line-height: 1;
-    }
-
-    /* ── Date range picker ───────────────────────────────── */
-    .date-row {
-        display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
-    }
-    .date-sep { font-family: var(--mono); font-size: .7rem; color: var(--text3); }
-    .date-input {
-        background: var(--bg2); border: 1px solid var(--line2);
-        color: var(--text1); border-radius: 6px;
-        padding: .55rem .875rem;
-        font-family: var(--mono); font-size: .72rem;
-        outline: none; transition: border-color .15s, box-shadow .15s;
-        color-scheme: dark;
-    }
-    .date-input:focus { border-color: rgba(34,211,238,.4); box-shadow: 0 0 0 3px rgba(34,211,238,.06); }
-
-    /* ── KPI grid ────────────────────────────────────────── */
-    .kpi-grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 1px; background: var(--line);
-        border: 1px solid var(--line); border-radius: 10px;
-        overflow: hidden; margin-bottom: 1.5rem;
-    }
-    @media(max-width:900px){ .kpi-grid { grid-template-columns: 1fr 1fr; } }
-    @media(max-width:560px){ .kpi-grid { grid-template-columns: 1fr; } }
-
-    .kpi-cell {
-        background: var(--bg1); padding: 1.75rem 2rem;
-        position: relative; overflow: hidden;
-        transition: background .2s;
-    }
-    .kpi-cell:hover { background: var(--bg2); }
-    .kpi-cell::after {
-        content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
-    }
-    .kpi-cell.c-cyan::after   { background: var(--cyan);   box-shadow: 0 0 12px var(--cyan); }
-    .kpi-cell.c-green::after  { background: var(--green);  box-shadow: 0 0 12px var(--green); }
-    .kpi-cell.c-amber::after  { background: var(--amber);  box-shadow: 0 0 12px var(--amber); }
-    .kpi-cell.c-purple::after { background: var(--purple); box-shadow: 0 0 12px var(--purple); }
-
-    .kpi-label {
-        font-family: var(--mono); font-size: .62rem; letter-spacing: .14em;
-        text-transform: uppercase; color: var(--text3); margin-bottom: .75rem;
-    }
-    .kpi-value {
-        font-family: var(--mono); font-size: clamp(2rem,4vw,2.8rem);
-        font-weight: 300; line-height: 1; margin-bottom: .5rem;
-    }
-    .kpi-value.cyan   { color: var(--cyan); }
-    .kpi-value.green  { color: var(--green); }
-    .kpi-value.amber  { color: var(--amber); }
-    .kpi-value.purple { color: var(--purple); }
-
-    .kpi-pill {
-        display: inline-flex; align-items: center; gap: .3rem;
-        padding: .2rem .55rem; border-radius: 3px;
-        font-family: var(--mono); font-size: .6rem;
-        font-weight: 500; letter-spacing: .06em;
-    }
-    .kpi-pill::before { content:''; width:5px; height:5px; border-radius:50%; background:currentColor; }
-    .p-green  { background:rgba(52,211,153,.1);  color:var(--green); }
-    .p-cyan   { background:rgba(34,211,238,.1);  color:var(--cyan);  }
-    .p-amber  { background:rgba(251,191,36,.1);  color:var(--amber); }
-    .p-purple { background:rgba(167,139,250,.1); color:var(--purple);}
-
-    /* ── Chart panel ─────────────────────────────────────── */
-    .chart-panel {
-        background: var(--bg1); border: 1px solid var(--line);
-        border-radius: 10px; overflow: hidden;
-    }
-    .chart-panel-head {
-        display: flex; align-items: center; justify-content: space-between;
-        padding: 1.25rem 1.75rem; border-bottom: 1px solid var(--line);
-        flex-wrap: wrap; gap: .75rem;
-    }
-    .chart-panel-title {
-        font-family: var(--display); font-size: 1rem; font-weight: 600;
-        color: var(--text1); letter-spacing: -.01em;
-    }
-    .chart-panel-sub { font-size: .72rem; color: var(--text3); margin-top: 2px; }
-    .chart-loading {
-        display: flex; align-items: center; gap: .4rem;
-        font-family: var(--mono); font-size: .68rem; color: var(--cyan);
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .spin-icon { animation: spin .8s linear infinite; width: 14px; height: 14px; }
-
-    .chart-body { padding: 1.5rem 1.75rem; }
-
-    /* Grid lines overlay for chart area */
-    .chart-wrap { position: relative; }
-    .chart-wrap canvas { display: block; }
-
-    /* Empty state */
-    .chart-empty {
-        text-align: center; padding: 4rem 2rem;
-        font-family: var(--mono); font-size: .72rem; color: var(--text3);
-    }
-    .chart-empty svg { width: 40px; height: 40px; margin: 0 auto .75rem; opacity: .2; }
-</style>
-@endpush
-
-<div class="an-wrap"
-     x-data="{}"
-     x-init="initCharts(@js($this->getChartData()))">
-
-<div class="an-inner">
-
-    {{-- ── Header ── --}}
-    <div class="page-header au">
+    {{-- Header --}}
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-            <div class="page-eyebrow">Super Admin · Analytics</div>
-            <h1 class="page-title">Platform Analytics</h1>
+            <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Platform Analytics</h1>
         </div>
-        <div class="date-row">
-            <input type="date" wire:model.live="startDate" class="date-input" value="{{ $startDate }}">
-            <span class="date-sep">→</span>
-            <input type="date" wire:model.live="endDate" class="date-input" value="{{ $endDate }}">
+        <div class="flex gap-2">
+            <button wire:click="exportCsv"
+                    class="px-4 py-2 rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                Export CSV
+            </button>
+            <button onclick="window.print()"
+                    class="px-4 py-2 rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2m-6-4h.01M6 18v4h12v-4"/></svg>
+                Print
+            </button>
         </div>
     </div>
 
-    {{-- ── KPI Cards ── --}}
-    @php $stats = $this->getStats(); @endphp
-    <div class="kpi-grid au d1">
-
-        <div class="kpi-cell c-cyan">
-            <div class="kpi-label">Total tenants</div>
-            <div class="kpi-value cyan">{{ $stats['total_tenants'] }}</div>
-            <div style="display:flex;gap:.4rem;flex-wrap:wrap">
-                <span class="kpi-pill p-green">{{ $stats['active_tenants'] }} active</span>
-                <span class="kpi-pill p-amber">{{ $stats['pending_tenants'] }} pending</span>
-            </div>
-        </div>
-
-        <div class="kpi-cell c-green">
-            <div class="kpi-label">New this month</div>
-            <div class="kpi-value green">{{ $stats['new_this_month'] }}</div>
-            <div><span class="kpi-pill p-green">New registrations</span></div>
-        </div>
-
-        <div class="kpi-cell c-purple">
-            <div class="kpi-label">Platform users</div>
-            <div class="kpi-value purple">{{ $stats['total_users'] }}</div>
-            <div><span class="kpi-pill p-cyan">{{ $stats['active_users'] }} active</span></div>
-        </div>
-
-    </div>
-
-    {{-- ── Tenant Growth Chart ── --}}
-    <div class="chart-panel au d2">
-        <div class="chart-panel-head">
-            <div>
-                <div class="chart-panel-title">Tenant growth</div>
-                <div class="chart-panel-sub">New businesses registered per month</div>
-            </div>
-            <div wire:loading wire:target="startDate,endDate" class="chart-loading">
-                <svg class="spin-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" opacity=".25"/>
-                    <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" opacity=".75"/>
-                </svg>
-                Updating
-            </div>
-        </div>
-        <div class="chart-body">
-            <div class="chart-wrap" style="height:280px;">
-                <canvas id="trendChart" style="height:280px!important"></canvas>
-                <div id="emptyState" class="chart-empty hidden">
-                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
-                    </svg>
-                    No data for this period.
+    {{-- Date Range Selector --}}
+    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+        <div class="flex flex-wrap items-center gap-2">
+            @foreach([
+                'today' => 'Today',
+                '7d' => '7 Days',
+                '30d' => '30 Days',
+                'this_month' => 'This Month',
+                'this_year' => 'This Year',
+            ] as $val => $label)
+                <button wire:click="applyPreset('{{ $val }}')"
+                        class="px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50
+                               {{ $preset === $val ? 'bg-primary-600 text-white shadow-md shadow-primary-600/20' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600' }}">
+                    {{ $label }}
+                </button>
+            @endforeach
+            <button wire:click="applyPreset('custom')"
+                    class="px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50
+                           {{ $preset === 'custom' ? 'bg-primary-600 text-white shadow-md shadow-primary-600/20' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600' }}">
+                Custom
+            </button>
+            @if($preset === 'custom')
+                <div class="flex gap-2 items-center">
+                    <input type="date" wire:model.live="startDate"
+                           class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50">
+                    <span class="text-gray-500 dark:text-gray-400">to</span>
+                    <input type="date" wire:model.live="endDate"
+                           class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50">
                 </div>
+            @endif
+        </div>
+    </div>
+
+    {{-- KPI Cards --}}
+    @php $stats = $this->getStats(); @endphp
+    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total Tenants</p>
+            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $stats['total_tenants'] }}</p>
+            <p class="text-xs text-green-600 dark:text-green-400 mt-1">{{ $stats['active_tenants'] }} active</p>
+        </div>
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Active</p>
+            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $stats['active_tenants'] }}</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">operational</p>
+        </div>
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Pending</p>
+            <p class="text-2xl font-bold text-amber-600 dark:text-amber-400 mt-2">{{ $stats['pending_tenants'] }}</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">awaiting activation</p>
+        </div>
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Platform Users</p>
+            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $stats['total_users'] }}</p>
+            <p class="text-xs text-green-600 dark:text-green-400 mt-1">{{ $stats['active_users'] }} active</p>
+        </div>
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">New This Month</p>
+            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $stats['new_this_month'] }}</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">{{ $stats['new_users_this_month'] }} new users</p>
+        </div>
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">New This Week</p>
+            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $stats['new_this_week'] }}</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">businesses onboarded</p>
+        </div>
+    </div>
+
+    {{-- Charts Grid --}}
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {{-- Tenant Growth --}}
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm lg:col-span-2">
+            <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Tenant Growth</h2>
+            <div class="w-full h-80 relative">
+                <div wire:loading wire:target="applyPreset,updatedStartDate,updatedEndDate" class="absolute inset-0 flex items-center justify-center bg-white/60 dark:bg-gray-800/60 rounded-xl">
+                    <svg class="animate-spin h-6 w-6 text-primary-600 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                    <span class="text-sm text-gray-500">Updating chart…</span>
+                </div>
+                <canvas id="tenantChart"></canvas>
+            </div>
+        </div>
+
+        {{-- User Growth --}}
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm">
+            <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">User Growth</h2>
+            <div class="w-full h-80 relative">
+                <div wire:loading wire:target="applyPreset,updatedStartDate,updatedEndDate" class="absolute inset-0 flex items-center justify-center bg-white/60 dark:bg-gray-800/60 rounded-xl">
+                    <svg class="animate-spin h-6 w-6 text-primary-600 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                    <span class="text-sm text-gray-500">Updating chart…</span>
+                </div>
+                <canvas id="userChart"></canvas>
+            </div>
+        </div>
+
+        {{-- Tenant Status --}}
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm">
+            <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Tenant Status</h2>
+            <div class="w-full h-80 relative">
+                <div wire:loading wire:target="applyPreset,updatedStartDate,updatedEndDate" class="absolute inset-0 flex items-center justify-center bg-white/60 dark:bg-gray-800/60 rounded-xl">
+                    <svg class="animate-spin h-6 w-6 text-primary-600 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                    <span class="text-sm text-gray-500">Updating chart…</span>
+                </div>
+                <canvas id="statusChart"></canvas>
             </div>
         </div>
     </div>
 
-</div>
-</div>
+    @script
+    <script>
+        let tenantChart = null;
+        let userChart = null;
+        let statusChart = null;
 
-@script
-<script>
-    let trendChart = null;
+        let latestChartData = @js($this->getChartData());
+        let latestStatusData = @js($this->getTenantStatusData());
 
-    window.renderChart = function(data) {
-        const canvas = document.getElementById('trendChart');
-        const empty  = document.getElementById('emptyState');
-
-        const hasData = data && data.labels && data.labels.length > 0 && data.tenants.reduce((a,b) => a+b, 0) > 0;
-
-        if (!hasData) {
-            if (canvas)  canvas.style.display = 'none';
-            if (empty)   empty.classList.remove('hidden');
-            if (trendChart) { trendChart.destroy(); trendChart = null; }
-            return;
+        function isDarkMode() {
+            return document.documentElement.classList.contains('dark');
         }
 
-        canvas.style.display = 'block';
-        empty.classList.add('hidden');
+        function getChartTheme() {
+            return isDarkMode() ? {
+                textColor: '#9ca3af',
+                gridColor: 'rgba(255,255,255,0.06)',
+                tenantLineColor: '#22d3ee',
+                userLineColor: '#a78bfa',
+            } : {
+                textColor: '#4b5563',
+                gridColor: 'rgba(0,0,0,0.08)',
+                tenantLineColor: '#0891b2',
+                userLineColor: '#7c3aed',
+            };
+        }
 
-        if (trendChart) { trendChart.destroy(); trendChart = null; }
+        function destroyCharts() {
+            if (tenantChart) { tenantChart.destroy(); tenantChart = null; }
+            if (userChart) { userChart.destroy(); userChart = null; }
+            if (statusChart) { statusChart.destroy(); statusChart = null; }
+        }
 
-        const ctx = canvas.getContext('2d');
+        function renderLineChart(canvasId, chartInstance, labels, values, label, color) {
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) return null;
 
-        /* Gradient fill under the line */
-        const grad = ctx.createLinearGradient(0, 0, 0, 280);
-        grad.addColorStop(0, 'rgba(34,211,238,0.18)');
-        grad.addColorStop(1, 'rgba(34,211,238,0.00)');
+            if (chartInstance) chartInstance.destroy();
 
-        trendChart = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: data.labels,
-                datasets: [{
-                    label: 'New Tenants',
-                    data: data.tenants,
-                    borderColor: '#22D3EE',
-                    backgroundColor: grad,
-                    fill: true,
-                    tension: 0.4,
-                    pointRadius: 4,
-                    pointBackgroundColor: '#07090F',
-                    pointBorderColor: '#22D3EE',
-                    pointBorderWidth: 2,
-                    pointHoverRadius: 6,
-                    pointHoverBackgroundColor: '#22D3EE',
-                    borderWidth: 1.5,
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                interaction: { intersect: false, mode: 'index' },
-                plugins: {
-                    legend: { display: false },
-                    tooltip: {
-                        backgroundColor: '#131820',
-                        borderColor: 'rgba(34,211,238,0.25)',
-                        borderWidth: 1,
-                        titleColor: '#8892A4',
-                        bodyColor: '#E2E8F0',
-                        titleFont: { family: "'JetBrains Mono', monospace", size: 11 },
-                        bodyFont: { family: "'JetBrains Mono', monospace", size: 13 },
-                        padding: 10,
-                        callbacks: {
-                            label: (ctx) => '  ' + ctx.raw + ' tenants'
-                        }
-                    }
+            const theme = getChartTheme();
+            const ctx = canvas.getContext('2d');
+            return new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: label,
+                        data: values,
+                        borderColor: color,
+                        backgroundColor: 'transparent',
+                        tension: 0.4,
+                        fill: false,
+                        borderWidth: 2,
+                        pointRadius: 3,
+                        pointBackgroundColor: color,
+                    }]
                 },
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        grid: { color: 'rgba(255,255,255,0.05)', drawBorder: false },
-                        ticks: {
-                            color: '#4A5568',
-                            font: { family: "'JetBrains Mono', monospace", size: 11 },
-                            stepSize: 1
-                        },
-                        border: { display: false }
-                    },
-                    x: {
-                        grid: { display: false },
-                        ticks: {
-                            color: '#4A5568',
-                            font: { family: "'JetBrains Mono', monospace", size: 11 },
-                            maxTicksLimit: 12, autoSkip: true
-                        },
-                        border: { display: false }
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: { beginAtZero: true, ticks: { color: theme.textColor }, grid: { color: theme.gridColor } },
+                        x: { ticks: { color: theme.textColor }, grid: { display: false } }
                     }
                 }
-            }
-        });
-    };
-
-    function initCharts(initialData) {
-        if (typeof Chart === 'undefined') {
-            setTimeout(() => initCharts(initialData), 100);
-            return;
+            });
         }
-        renderChart(initialData);
-        Livewire.on('refreshChart', (payload) => {
-            renderChart(payload[0] || payload);
-        });
-    }
 
-    window.initCharts = initCharts;
-</script>
-@endscript
+        function renderDoughnutChart(canvasId, chartInstance, data) {
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) return null;
+
+            if (chartInstance) chartInstance.destroy();
+
+            const theme = getChartTheme();
+            const ctx = canvas.getContext('2d');
+            return new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: data.labels,
+                    datasets: [{
+                        data: data.values,
+                        backgroundColor: data.colors,
+                        borderColor: 'transparent',
+                        borderWidth: 0,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { position: 'bottom', labels: { color: theme.textColor } } }
+                }
+            });
+        }
+
+        function initCharts(chartData, statusData) {
+            if (chartData) latestChartData = chartData;
+            if (statusData) latestStatusData = statusData;
+
+            destroyCharts();
+
+            const theme = getChartTheme();
+
+            const tenantCanvas = document.getElementById('tenantChart');
+            if (tenantCanvas) {
+                tenantChart = renderLineChart('tenantChart', tenantChart, latestChartData.labels, latestChartData.tenants, 'New Tenants', theme.tenantLineColor);
+            }
+
+            const userCanvas = document.getElementById('userChart');
+            if (userCanvas) {
+                userChart = renderLineChart('userChart', userChart, latestChartData.labels, latestChartData.users, 'New Users', theme.userLineColor);
+            }
+
+            const statusCanvas = document.getElementById('statusChart');
+            if (statusCanvas) {
+                statusChart = renderDoughnutChart('statusChart', statusChart, latestStatusData);
+            }
+        }
+
+        function safeInitCharts(chartData, statusData) {
+            if (typeof Chart !== 'undefined') {
+                initCharts(chartData, statusData);
+            } else {
+                // Wait for Chart.js to load (CDN may be delayed)
+                let attempts = 0;
+                const checkChart = setInterval(() => {
+                    if (typeof Chart !== 'undefined' || ++attempts > 20) {
+                        clearInterval(checkChart);
+                        if (typeof Chart !== 'undefined') initCharts(chartData, statusData);
+                    }
+                }, 100);
+            }
+        }
+
+        // Initial render
+        safeInitCharts(latestChartData, latestStatusData);
+
+        Livewire.on('refreshCharts', (payload) => {
+            const chartData = payload[0] || null;
+            const statusData = payload[1] || null;
+
+            if (chartData) latestChartData = chartData;
+            if (statusData) latestStatusData = statusData;
+
+            initCharts(latestChartData, latestStatusData);
+        });
+
+        Livewire.hook('morphed', () => {
+            initCharts(@js($this->getChartData()), @js($this->getTenantStatusData()));
+        });
+
+        const themeObserver = new MutationObserver(() => {
+            initCharts(latestChartData, latestStatusData);
+        });
+        themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    </script>
+    @endscript
+
+</div>

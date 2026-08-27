@@ -9,6 +9,9 @@ class PayMongoService
 {
     /**
      * Create a checkout session.
+     *
+     * @param array $data
+     * @return array|null
      */
     public function createCheckoutSession(array $data): ?array
     {
@@ -21,7 +24,7 @@ class PayMongoService
                 ],
                 'line_items' => [[
                     'currency' => 'PHP',
-                    'amount' => (int) ($data['amount'] * 100), // in centavos
+                    'amount' => (int) ($data['amount'] * 100), // centavos
                     'description' => $data['description'],
                     'name' => $data['item_name'] ?? 'Booking Payment',
                     'quantity' => 1,
@@ -32,7 +35,15 @@ class PayMongoService
                 'metadata' => $data['metadata'] ?? [],
             ]);
 
-            return $checkout->toArray();
+            $checkoutData = method_exists($checkout, 'getData')
+                ? $checkout->getData()
+                : [];
+
+            return [
+                'id'           => $checkoutData['id'] ?? null,
+                'checkout_url' => $checkoutData['checkout_url'] ?? null,
+                'status'       => $checkoutData['status'] ?? null,
+            ];
         } catch (\Exception $e) {
             Log::error('PayMongo Checkout Error: ' . $e->getMessage());
             return null;

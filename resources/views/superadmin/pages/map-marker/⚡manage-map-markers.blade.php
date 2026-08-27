@@ -1,22 +1,25 @@
+{{-- resources/views/superadmin/pages/map-marker/⚡manage-map-markers.blade.php --}}
 <?php
 
 use Livewire\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
+use Livewire\Attributes\On;
 use Livewire\WithPagination;
 use App\Models\Tenant;
 
 new 
 #[Layout('superadmin.layouts.app')]
-#[Title('Master Map Control')]
+#[Title('Map Markers')]
 class extends Component
 {
     use WithPagination;
-    
+
     public string $tenant_id = '';
-    public array $coordinates = [];   // current marker set for editing
+    public array $coordinates = [];
     public string $search = '';
+    public string $tenantSearch = '';
 
     public function updatingSearch()
     {
@@ -29,8 +32,8 @@ class extends Component
             $tenant = Tenant::find($value);
             if ($tenant) {
                 $this->coordinates = $tenant->coordinates ?? [];
-                if (count($this->coordinates) > 0) {
-                    $this->dispatch('fly-to-location', lat: $this->coordinates[0]['lat'], lng: $this->coordinates[0]['lng']);
+                if (!empty($this->coordinates)) {
+                    $this->dispatch('map:fly-to', center: [(float)$this->coordinates[0]['lng'], (float)$this->coordinates[0]['lat']], zoom: 15);
                 }
             }
         } else {
@@ -41,13 +44,18 @@ class extends Component
     #[Computed]
     public function availableTenants()
     {
-        return Tenant::orderBy('name')->select('id', 'name')->get();
+        return Tenant::orderBy('name')
+            ->when($this->tenantSearch, fn($q) => $q->where('name', 'like', '%' . $this->tenantSearch . '%'))
+            ->select('id', 'name', 'logo')
+            ->limit(50)
+            ->get();
     }
 
     #[Computed]
     public function tenants()
     {
-        return Tenant::when($this->search, function($query) {
+        return Tenant::with('typeOfTenant')
+            ->when($this->search, function ($query) {
                 $query->where('name', 'like', '%' . $this->search . '%');
             })
             ->latest()
@@ -62,9 +70,12 @@ class extends Component
             ->map(function ($tenant) {
                 $coords = $tenant->coordinates;
                 if (!$coords) return null;
+
                 return [
-                    'id' => $tenant->id,
-                    'name' => $tenant->name,
+                    'id'      => $tenant->id,
+                    'name'    => $tenant->name,
+                    'slug'    => $tenant->slug,
+                    'logo'    => $tenant->logo ? asset('storage/' . $tenant->logo) : null,
                     'markers' => $coords,
                 ];
             })
@@ -72,11 +83,36 @@ class extends Component
             ->values();
     }
 
+    #[On('map:click')]
+    public function onMapClick($lat, $lng)
+    {
+        if (!$this->tenant_id) return;
+
+        $this->coordinates[] = [
+            'lat'  => round((float) $lat, 6),
+            'lng'  => round((float) $lng, 6),
+            'name' => '',
+            'type' => 'child',
+        ];
+    }
+
+    #[On('map:marker-drag-end')]
+    public function onMarkerDragEnd($id, $lat, $lng)
+    {
+        if (str_starts_with($id, 'active-')) {
+            $index = (int) substr($id, 7);
+            if (isset($this->coordinates[$index])) {
+                $this->coordinates[$index]['lat'] = round((float) $lat, 6);
+                $this->coordinates[$index]['lng'] = round((float) $lng, 6);
+            }
+        }
+    }
+
     public function store()
     {
         $this->validate([
-            'tenant_id' => 'required|exists:tenants,id',
-            'coordinates' => 'required|array|min:1',
+            'tenant_id'         => 'required|exists:tenants,id',
+            'coordinates'       => 'required|array|min:1',
             'coordinates.*.lat' => 'required|numeric',
             'coordinates.*.lng' => 'required|numeric',
             'coordinates.*.name' => 'nullable|string',
@@ -89,7 +125,6 @@ class extends Component
 
         session()->flash('message', 'Locations updated successfully.');
         $this->resetCoordinates();
-        unset($this->allMappedTenants, $this->tenants);
     }
 
     public function edit($id)
@@ -97,8 +132,9 @@ class extends Component
         $tenant = Tenant::findOrFail($id);
         $this->tenant_id = (string) $tenant->id;
         $this->coordinates = $tenant->coordinates ?? [];
-        if (count($this->coordinates) > 0) {
-            $this->dispatch('fly-to-location', lat: $this->coordinates[0]['lat'], lng: $this->coordinates[0]['lng']);
+
+        if (!empty($this->coordinates)) {
+            $this->dispatch('map:fly-to', center: [(float)$this->coordinates[0]['lng'], (float)$this->coordinates[0]['lat']], zoom: 15);
         }
     }
 
@@ -107,17 +143,17 @@ class extends Component
         $tenant = Tenant::findOrFail($id);
         $tenant->update(['coordinates' => null]);
         session()->flash('message', "All locations removed for {$tenant->name}.");
+
         if ($this->tenant_id == $id) {
             $this->resetCoordinates();
         }
-        unset($this->allMappedTenants);
     }
 
     public function addCoordinate()
     {
         $this->coordinates[] = [
-            'lat' => 10.6765,
-            'lng' => 122.9509,
+            'lat'  => 10.6765,
+            'lng'  => 122.9509,
             'name' => '',
             'type' => 'child',
         ];
@@ -129,16 +165,10 @@ class extends Component
         $this->coordinates = array_values($this->coordinates);
     }
 
-    public function updateCoordinate($index, $field, $value)
-    {
-        $this->coordinates[$index][$field] = $value;
-    }
-
     public function resetFields()
     {
         $this->reset(['tenant_id']);
         $this->resetCoordinates();
-        $this->dispatch('reset-map');
     }
 
     private function resetCoordinates()
@@ -148,356 +178,424 @@ class extends Component
 };
 ?>
 
-<div>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" data-navigate-once />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" data-navigate-once></script>
+<div class="p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto space-y-6">
 
-    <link href="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/css/tom-select.css" rel="stylesheet" data-navigate-once>
-    <link href="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/css/tom-select.dark.css" rel="stylesheet" data-navigate-once>
-    <script src="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/js/tom-select.complete.min.js" data-navigate-once></script>
+    {{-- Header --}}
+    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
+        <div>
+            <h1 class="font-display text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Map Markers</h1>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Manage business locations, logo markers, and sub‑locations.
+            </p>
+        </div>
 
-    @push('styles')
-    <style>
-        select option {
-            background: #1e293b;
-            color: #e2e8f0;
-        }
-        .leaflet-container { background: transparent !important; border-radius: 0.75rem; }
-        .leaflet-control-zoom a {
-            background: rgba(255,255,255,0.06) !important;
-            backdrop-filter: blur(16px);
-            color: #fff !important;
-            border: 1px solid rgba(255,255,255,0.12) !important;
-        }
-        .leaflet-control-zoom a:hover { background: rgba(255,255,255,0.12) !important; }
-        .leaflet-control-attribution {
-            background: rgba(0,0,0,0.5) !important;
-            color: rgba(255,255,255,0.4) !important;
-            font-size: 10px !important;
-        }
-        .leaflet-control-attribution a { color: rgba(255,255,255,0.6) !important; }
-    </style>
-    @endpush
+        @if($tenant_id)
+            <div class="flex items-center gap-2 text-sm font-medium text-primary-600 dark:text-primary-400">
+                <span class="inline-block h-2 w-2 rounded-full bg-primary-600 dark:bg-primary-400"></span>
+                Editing: {{ \App\Models\Tenant::find($tenant_id)?->name ?? 'Unknown' }}
+            </div>
+        @endif
+    </div>
 
-    <div class="max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8 space-y-6">
+    {{-- Flash Message --}}
+    @if (session()->has('message'))
+        <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-lg text-sm text-green-700 dark:text-green-300 font-medium">
+            {{ session('message') }}
+        </div>
+    @endif
 
-        <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-white/10">
-            <div>
-                <p class="text-xs font-semibold uppercase tracking-[0.22em] text-brand-600 dark:text-brand-400 flex items-center gap-2 mb-2">
-                    <span class="w-1.5 h-1.5 rounded-full bg-brand-500 shadow-[0_0_8px_var(--color-brand-500)]"></span>
-                    Super Admin · Map
-                </p>
-                <h1 class="font-display text-3xl md:text-4xl font-bold text-gray-900 dark:text-white">Master Map Control</h1>
-                <p class="text-sm text-gray-500 dark:text-white/50 mt-1">Plot and manage multiple locations for each business.</p>
+    {{-- Quick Stats --}}
+    @php
+        $totalTenants = Tenant::count();
+        $mappedTenants = Tenant::whereNotNull('coordinates')->count();
+        $unmappedTenants = $totalTenants - $mappedTenants;
+    @endphp
+
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div class="card p-4">
+            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total Businesses</p>
+            <p class="mt-2 text-2xl font-bold text-gray-900 dark:text-white">{{ $totalTenants }}</p>
+        </div>
+        <div class="card p-4">
+            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Mapped</p>
+            <p class="mt-2 text-2xl font-bold text-green-600 dark:text-green-400">{{ $mappedTenants }}</p>
+        </div>
+        <div class="card p-4">
+            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Unmapped</p>
+            <p class="mt-2 text-2xl font-bold text-amber-600 dark:text-amber-400">{{ $unmappedTenants }}</p>
+        </div>
+    </div>
+
+    {{-- Main Grid --}}
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+        {{-- Map Column --}}
+        <div class="lg:col-span-8 order-2 lg:order-1">
+            <div class="card overflow-hidden relative min-h-[650px]">
+
+                {{-- Legend --}}
+                <div class="absolute top-4 left-4 z-[1000] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl px-3 py-2 text-xs text-gray-700 dark:text-gray-300 shadow-sm space-y-1.5">
+                    <div class="flex items-center gap-2">
+                        <span class="h-3 w-3 rounded-full bg-red-500"></span> Active (draggable)
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="h-3 w-3 rounded-full bg-gray-400"></span> Other spots
+                    </div>
+                    @if($tenant_id)
+                        <p class="pt-1 text-[10px] text-gray-400 dark:text-gray-500">
+                            Click map to add marker
+                        </p>
+                    @endif
+                </div>
+
+                {{-- Map Wrapper --}}
+                <div wire:key="admin-map-{{ $tenant_id }}-{{ md5(serialize($coordinates)) }}"
+                     class="absolute inset-0">
+                    <x-map
+                        id="admin-map"
+                        :center="[122.9509, 10.6765]"
+                        :zoom="12"
+                        height="100%"
+                        provider="carto-voyager"
+                        theme="auto"
+                        class="h-full w-full"
+                    >
+                        <x-map-controls
+                            :zoom="true"
+                            :compass="true"
+                            :locate="false"
+                            :fullscreen="true"
+                            :scale="true"
+                            position="top-right"
+                        />
+
+                        {{-- Static markers for other tenants --}}
+                        @foreach($this->allMappedTenants as $tenant)
+                            @if($tenant['id'] != $tenant_id)
+                                @foreach($tenant['markers'] as $idx => $coord)
+                                    @php
+                                        $isParent = $coord['type'] === 'parent' || $idx === 0;
+                                        $color = '#9ca3af';
+                                    @endphp
+
+                                    <x-map-marker
+                                        :lat="$coord['lat']"
+                                        :lng="$coord['lng']"
+                                        color="{{ $color }}"
+                                        id="static-{{ $tenant['id'] }}-{{ $idx }}"
+                                    >
+                                        <x-marker-content>
+                                            @if($isParent && $tenant['logo'])
+                                                <div class="flex h-11 w-11 items-center justify-center rounded-full border-2 bg-white shadow-lg"
+                                                     style="border-color: {{ $color }};">
+                                                    <img src="{{ $tenant['logo'] }}" alt="{{ $tenant['name'] }}"
+                                                         class="h-full w-full rounded-full object-cover">
+                                                </div>
+                                            @elseif($isParent)
+                                                <div class="flex h-11 w-11 items-center justify-center rounded-full border-2 bg-white shadow-lg"
+                                                     style="border-color: {{ $color }};">
+                                                    <span class="text-sm font-black text-gray-600">
+                                                        {{ strtoupper(substr($tenant['name'], 0, 2)) }}
+                                                    </span>
+                                                </div>
+                                            @else
+                                                <div class="flex h-5 w-5 items-center justify-center rounded-full border-2 bg-white shadow"
+                                                     style="border-color: {{ $color }};">
+                                                    <span class="block h-2.5 w-2.5 rounded-full" style="background: {{ $color }};"></span>
+                                                </div>
+                                            @endif
+                                        </x-marker-content>
+
+                                        <x-marker-popup>
+                                            <div class="p-3 min-w-[220px]">
+                                                <div class="flex items-center gap-2 mb-2">
+                                                    @if($tenant['logo'])
+                                                        <img src="{{ $tenant['logo'] }}" alt="{{ $tenant['name'] }}"
+                                                             class="h-8 w-8 rounded-full object-cover">
+                                                    @endif
+                                                    <div class="min-w-0">
+                                                        <strong class="block truncate text-gray-900 dark:text-white">{{ $tenant['name'] }}</strong>
+                                                        <p class="text-xs text-gray-500 dark:text-gray-400">{{ $coord['name'] ?? '' }}</p>
+                                                    </div>
+                                                </div>
+                                                <p class="text-xs text-gray-400 dark:text-gray-500">{{ $isParent ? 'Main location' : 'Sub-location' }}</p>
+                                                <button
+                                                    wire:click="edit({{ $tenant['id'] }})"
+                                                    class="mt-2 w-full rounded-lg bg-primary-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary-700 transition focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                                                >
+                                                    Edit this business
+                                                </button>
+                                            </div>
+                                        </x-marker-popup>
+                                    </x-map-marker>
+                                @endforeach
+                            @endif
+                        @endforeach
+
+                        {{-- Active tenant markers --}}
+                        @if($tenant_id)
+                            @php $activeTenant = \App\Models\Tenant::find($tenant_id); @endphp
+                            @foreach($coordinates as $idx => $coord)
+                                @php
+                                    $isParent = ($coord['type'] ?? 'child') === 'parent' || $idx === 0;
+                                    $color = $isParent ? '#ef4444' : '#f97316';
+                                @endphp
+
+                                <x-map-marker
+                                    :lat="$coord['lat']"
+                                    :lng="$coord['lng']"
+                                    color="{{ $color }}"
+                                    id="active-{{ $idx }}"
+                                    draggable
+                                >
+                                    <x-marker-content>
+                                        @if($isParent && $activeTenant?->logo)
+                                            <div class="flex h-11 w-11 items-center justify-center rounded-full border-2 bg-white shadow-lg"
+                                                 style="border-color: {{ $color }};">
+                                                <img src="{{ asset('storage/'.$activeTenant->logo) }}" alt="{{ $activeTenant->name }}"
+                                                     class="h-full w-full rounded-full object-cover">
+                                            </div>
+                                        @elseif($isParent)
+                                            <div class="flex h-11 w-11 items-center justify-center rounded-full border-2 bg-white shadow-lg"
+                                                 style="border-color: {{ $color }};">
+                                                <span class="text-sm font-black text-gray-700">
+                                                    {{ strtoupper(substr($activeTenant?->name ?? 'T', 0, 2)) }}
+                                                </span>
+                                            </div>
+                                        @else
+                                            <div class="flex h-5 w-5 items-center justify-center rounded-full border-2 bg-white shadow"
+                                                 style="border-color: {{ $color }};">
+                                                <span class="block h-2.5 w-2.5 rounded-full" style="background: {{ $color }};"></span>
+                                            </div>
+                                        @endif
+                                    </x-marker-content>
+
+                                    <x-marker-popup>
+                                        <div class="p-3 min-w-[180px]">
+                                            <strong class="text-gray-900 dark:text-white">{{ $coord['name'] ?? 'Marker ' . ($idx + 1) }}</strong>
+                                            <p class="text-xs text-gray-500 dark:text-gray-400">{{ $isParent ? 'Main location' : 'Sub-location' }}</p>
+                                            <p class="mt-1 text-[10px] text-gray-400 dark:text-gray-500">
+                                                {{ $coord['lat'] }}, {{ $coord['lng'] }}
+                                            </p>
+                                            <p class="mt-2 text-[10px] text-gray-400 dark:text-gray-500">
+                                                Drag to move · Edit in form to remove
+                                            </p>
+                                        </div>
+                                    </x-marker-popup>
+                                </x-map-marker>
+                            @endforeach
+                        @endif
+                    </x-map>
+                </div>
             </div>
         </div>
 
-        @if (session()->has('message'))
-            <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-400 font-medium">
-                {{ session('message') }}
-            </div>
-        @endif
+        {{-- Sidebar Column --}}
+        <div class="lg:col-span-4 order-1 lg:order-2 space-y-6">
 
-        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6"
-             x-data="{
-                map: null,
-                activeMarkers: [],   // markers for the selected tenant
-                staticMarkers: [],   // markers from other tenants
-                tileLayer: null,
-                globalTenants: @js($this->allMappedTenants),
-                
-                init() {
-                    let checkInterval = setInterval(() => {
-                        if (typeof L !== 'undefined') {
-                            clearInterval(checkInterval);
-                            this.initMap();
-                        }
-                    }, 100);
+            {{-- Location Setter --}}
+            <div class="card p-6">
+                <h2 class="font-display text-lg font-semibold text-gray-900 dark:text-white mb-4">
+                    Set Locations
+                </h2>
 
-                    window.addEventListener('fly-to-location', (e) => {
-                        const lat = parseFloat(e.detail.lat);
-                        const lng = parseFloat(e.detail.lng);
-                        this.map.flyTo([lat, lng], 16, { animate: true, duration: 1.5 });
-                    });
-
-                    window.addEventListener('reset-map', () => {
-                        this.activeMarkers.forEach(m => this.map.removeLayer(m));
-                        this.activeMarkers = [];
-                    });
-                },
-                
-                initMap() {
-                    const lat = parseFloat($wire.coordinates[0]?.lat ?? 10.6765);
-                    const lng = parseFloat($wire.coordinates[0]?.lng ?? 122.9509);
-
-                    this.map = L.map($refs.mapContainer).setView([lat, lng], 12);
-
-                    this.updateTileLayer();
-                    new MutationObserver(() => this.updateTileLayer()).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
-
-                    this.plotStaticMarkers();
-                    this.plotActiveMarkers();
-
-                    this.map.on('click', (e) => {
-                        if (!$wire.tenant_id) return;
-                        $wire.addCoordinate();
-                        const idx = $wire.coordinates.length - 1;
-                        $wire.updateCoordinate(idx, 'lat', e.latlng.lat.toFixed(6));
-                        $wire.updateCoordinate(idx, 'lng', e.latlng.lng.toFixed(6));
-                        this.plotActiveMarkers();
-                    });
-
-                    setTimeout(() => { this.map.invalidateSize(); }, 300);
-                },
-
-                updateTileLayer() {
-                    const isDark = document.documentElement.classList.contains('dark');
-                    const url = isDark
-                        ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-                        : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
-                    const attribution = '&copy; <a href=&quot;https://www.openstreetmap.org/copyright&quot;>OpenStreetMap</a> contributors &copy; <a href=&quot;https://carto.com/&quot;>CARTO</a>';
-                    if (this.tileLayer) this.map.removeLayer(this.tileLayer);
-                    this.tileLayer = L.tileLayer(url, { maxZoom: 19, attribution: attribution }).addTo(this.map);
-                },
-
-                // Other tenants' markers (grey)
-                plotStaticMarkers() {
-                    if (this.staticMarkers.length) {
-                        this.staticMarkers.forEach(m => this.map.removeLayer(m));
-                    }
-                    this.staticMarkers = [];
-                    const staticIcon = L.icon({
-                        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-grey.png',
-                        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-                        iconSize: [25, 41],
-                        iconAnchor: [12, 41],
-                        popupAnchor: [1, -34],
-                        shadowSize: [41, 41]
-                    });
-
-                    this.globalTenants.forEach(tenant => {
-                        if (tenant.id == $wire.tenant_id) return;
-                        tenant.markers.forEach(coord => {
-                            const marker = L.marker([coord.lat, coord.lng], { icon: staticIcon })
-                                .bindPopup(`<b>${tenant.name}</b><br>${coord.name ?? ''}`);
-                            marker.addTo(this.map);
-                            this.staticMarkers.push(marker);
-                        });
-                    });
-                },
-
-                // Selected tenant's markers (red parent, orange child)
-                plotActiveMarkers() {
-                    if (this.activeMarkers.length) {
-                        this.activeMarkers.forEach(m => this.map.removeLayer(m));
-                    }
-                    this.activeMarkers = [];
-                    if (!$wire.tenant_id || !$wire.coordinates.length) return;
-
-                    const parentIcon = L.icon({
-                        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
-                        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-                        iconSize: [25, 41],
-                        iconAnchor: [12, 41],
-                        popupAnchor: [1, -34],
-                        shadowSize: [41, 41]
-                    });
-                    const childIcon = L.icon({
-                        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-orange.png',
-                        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-                        iconSize: [25, 41],
-                        iconAnchor: [12, 41],
-                        popupAnchor: [1, -34],
-                        shadowSize: [41, 41]
-                    });
-
-                    $wire.coordinates.forEach((coord, index) => {
-                        const icon = coord.type === 'parent' ? parentIcon : childIcon;
-                        const marker = L.marker([coord.lat, coord.lng], { icon, draggable: true });
-                        marker.bindPopup(`<b>${coord.name ?? 'Marker ' + (index+1)}</b><br>${coord.type ?? ''}`);
-                        marker.on('dragend', (e) => {
-                            $wire.updateCoordinate(index, 'lat', e.target.getLatLng().lat.toFixed(6));
-                            $wire.updateCoordinate(index, 'lng', e.target.getLatLng().lng.toFixed(6));
-                        });
-                        marker.addTo(this.map);
-                        this.activeMarkers.push(marker);
-                    });
-                },
-
-                getLocation() {
-                    if (!$wire.tenant_id) return alert('Please select a tenant first!');
-                    if (navigator.geolocation) {
-                        navigator.geolocation.getCurrentPosition(
-                            (position) => {
-                                const lat = position.coords.latitude;
-                                const lng = position.coords.longitude;
-                                $wire.addCoordinate();
-                                const idx = $wire.coordinates.length - 1;
-                                $wire.updateCoordinate(idx, 'lat', lat.toFixed(6));
-                                $wire.updateCoordinate(idx, 'lng', lng.toFixed(6));
-                                $wire.updateCoordinate(idx, 'type', 'parent');
-                                this.plotActiveMarkers();
-                                this.map.flyTo([lat, lng], 17);
-                            },
-                            (error) => alert('GPS failed.')
-                        );
-                    }
-                }
-             }"
-        >
-            <div class="lg:col-span-8 order-2 lg:order-1">
-                <div class="bg-white dark:bg-white/5 dark:backdrop-blur-md border border-gray-200 dark:border-white/10 rounded-2xl shadow-sm dark:shadow-none p-2 h-full min-h-[600px] relative overflow-hidden">
-                    <div class="absolute top-4 right-4 z-[400] glass-card !rounded-lg !px-3 !py-2 text-xs text-white/80 flex flex-col gap-1">
-                        <div class="flex items-center gap-2"><div class="w-3 h-3 bg-red-500 rounded-full"></div> Active Pins</div>
-                        <div class="flex items-center gap-2"><div class="w-3 h-3 bg-gray-400 rounded-full"></div> Other Spots</div>
-                    </div>
-                    <div wire:ignore class="h-full">
-                        <div x-ref="mapContainer" class="h-full rounded-lg" style="min-height: 600px;"></div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="lg:col-span-4 order-1 lg:order-2 space-y-6">
-                {{-- Location Setter --}}
-                <div class="bg-white dark:bg-white/5 dark:backdrop-blur-md border border-gray-200 dark:border-white/10 rounded-2xl shadow-sm dark:shadow-none p-4 sm:p-6">
-                    <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Set Locations</h2>
-                    
-                    <form wire:submit="store" class="space-y-4">
-                        <div x-data="{
-                                ts: null,
-                                init() {
-                                    const isDark = document.documentElement.classList.contains('dark');
-                                    this.ts = new TomSelect(this.$refs.select, {
-                                        create: false,
-                                        placeholder: 'Search establishments...',
-                                        sortField: { field: 'text', direction: 'asc' },
-                                        className: isDark ? 'dark' : '',
-                                        onChange: (value) => {
-                                            $wire.tenant_id = value;
-                                        }
-                                    });
-
-                                    $wire.$watch('tenant_id', (value) => {
-                                        this.ts.setValue(value, true); 
-                                    });
-                                }
-                            }"
+                <form wire:submit="store" class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            Business / Tenant
+                        </label>
+                        <input
+                            type="text"
+                            wire:model.live.debounce.300ms="tenantSearch"
+                            placeholder="Search businesses…"
+                            class="input mb-2 focus:ring-primary-500/50 focus:border-primary-500"
                         >
-                            <label class="block text-sm font-medium text-gray-700 dark:text-white/70 mb-1">Establishment / Tenant</label>
-                            <div wire:ignore>
-                                <select x-ref="select" class="w-full text-sm">
-                                    <option value="">Search establishments...</option>
-                                    @foreach($this->availableTenants as $tenantOption)
-                                        <option value="{{ $tenantOption->id }}">{{ $tenantOption->name }}</option>
-                                    @endforeach
-                                </select>
-                            </div>
-                            @error('tenant_id') <span class="text-red-500 dark:text-red-400 text-xs mt-1">{{ $message }}</span> @enderror
-                        </div>
+                        <select wire:model.live="tenant_id" class="select focus:ring-primary-500/50 focus:border-primary-500">
+                            <option value="">-- Select a business --</option>
+                            @foreach($this->availableTenants as $tenantOption)
+                                <option value="{{ $tenantOption->id }}">{{ $tenantOption->name }}</option>
+                            @endforeach
+                        </select>
+                        @error('tenant_id')
+                            <span class="mt-1 block text-xs text-red-500 dark:text-red-400">{{ $message }}</span>
+                        @enderror
+                    </div>
 
-                        {{-- Coordinates editor --}}
-                        @if($tenant_id)
-                            <div class="space-y-2">
-                                <label class="block text-sm font-medium text-gray-700 dark:text-white/70">Markers</label>
-                                @foreach($coordinates as $index => $coord)
-                                    <div class="flex items-start gap-2 border border-gray-200 dark:border-white/10 rounded-lg p-2">
-                                        <div class="flex-1 grid grid-cols-2 gap-1">
-                                            <div>
-                                                <input type="text" wire:model="coordinates.{{ $index }}.lat" placeholder="Lat"
-                                                       class="w-full rounded-md bg-white dark:bg-white/10 border border-gray-300 dark:border-white/10 py-1 px-2 text-xs text-gray-900 dark:text-white">
-                                            </div>
-                                            <div>
-                                                <input type="text" wire:model="coordinates.{{ $index }}.lng" placeholder="Lng"
-                                                       class="w-full rounded-md bg-white dark:bg-white/10 border border-gray-300 dark:border-white/10 py-1 px-2 text-xs text-gray-900 dark:text-white">
-                                            </div>
-                                            <div class="col-span-2">
-                                                <input type="text" wire:model="coordinates.{{ $index }}.name" placeholder="Name (optional)"
-                                                       class="w-full rounded-md bg-white dark:bg-white/10 border border-gray-300 dark:border-white/10 py-1 px-2 text-xs text-gray-900 dark:text-white">
-                                            </div>
-                                            <div class="col-span-2">
-                                                <select wire:model="coordinates.{{ $index }}.type"
-                                                        class="w-full rounded-md bg-white dark:bg-white/10 border border-gray-300 dark:border-white/10 py-1 px-2 text-xs text-gray-900 dark:text-white">
-                                                    <option value="parent">Parent (main spot)</option>
-                                                    <option value="child">Child (sub-location)</option>
-                                                </select>
-                                            </div>
+                    @if($tenant_id)
+                        <div class="space-y-2">
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                                Markers
+                            </label>
+
+                            @foreach($coordinates as $index => $coord)
+                                <div class="flex items-start gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-gray-700 dark:bg-gray-700/50">
+                                    <div class="grid flex-1 grid-cols-2 gap-1">
+                                        <div>
+                                            <input
+                                                type="text"
+                                                wire:model.live.debounce.500ms="coordinates.{{ $index }}.lat"
+                                                placeholder="Lat"
+                                                class="w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 placeholder-gray-400 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600/50 dark:border-gray-600 dark:bg-gray-900 dark:text-white dark:placeholder-gray-500"
+                                            >
                                         </div>
-                                        <button type="button" wire:click="removeCoordinate({{ $index }})"
-                                                class="text-red-500 hover:text-red-700 text-xs mt-1">✕</button>
+                                        <div>
+                                            <input
+                                                type="text"
+                                                wire:model.live.debounce.500ms="coordinates.{{ $index }}.lng"
+                                                placeholder="Lng"
+                                                class="w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 placeholder-gray-400 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600/50 dark:border-gray-600 dark:bg-gray-900 dark:text-white dark:placeholder-gray-500"
+                                            >
+                                        </div>
+                                        <div class="col-span-2">
+                                            <input
+                                                type="text"
+                                                wire:model.live.debounce.500ms="coordinates.{{ $index }}.name"
+                                                placeholder="Name (optional)"
+                                                class="w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 placeholder-gray-400 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600/50 dark:border-gray-600 dark:bg-gray-900 dark:text-white dark:placeholder-gray-500"
+                                            >
+                                        </div>
+                                        <div class="col-span-2">
+                                            <select
+                                                wire:model.live="coordinates.{{ $index }}.type"
+                                                class="w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600/50 dark:border-gray-600 dark:bg-gray-900 dark:text-white"
+                                            >
+                                                <option value="parent">Parent (main spot)</option>
+                                                <option value="child">Child (sub-location)</option>
+                                            </select>
+                                        </div>
                                     </div>
-                                @endforeach
-                                <button type="button" wire:click="addCoordinate"
-                                        class="text-sm text-brand-600 dark:text-brand-400 hover:underline">+ Add sub-location</button>
-                            </div>
-                        @endif
+                                    <button
+                                        type="button"
+                                        wire:click="removeCoordinate({{ $index }})"
+                                        class="mt-1 text-xs text-red-600 hover:text-red-700 dark:text-red-400"
+                                    >
+                                        ✕
+                                    </button>
+                                </div>
+                            @endforeach
 
-                        <button type="button" @click="getLocation()"
-                                class="text-sm text-brand-600 dark:text-brand-400 hover:text-brand-500 dark:hover:text-brand-300 flex items-center disabled:opacity-50"
-                                {{ !$tenant_id ? 'disabled' : '' }}>
-                            <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                            Sync to My GPS (adds parent)
-                        </button>
-
-                        <div class="pt-4 flex gap-2">
-                            <button type="submit"
-                                    class="bg-brand-600 hover:bg-brand-500 text-white font-medium py-2.5 px-4 rounded-xl shadow-lg shadow-brand-500/20 transition flex-1 disabled:opacity-50 disabled:cursor-not-allowed"
-                                    {{ !$tenant_id ? 'disabled' : '' }}>
-                                Save All Locations
-                            </button>
-                            <button type="button" wire:click="resetFields"
-                                    class="bg-gray-100 dark:bg-white/10 hover:bg-gray-200 dark:hover:bg-white/20 text-gray-700 dark:text-white/70 font-medium py-2.5 px-4 rounded-xl transition disabled:opacity-50"
-                                    {{ !$tenant_id ? 'disabled' : '' }}>
-                                Clear
+                            <button
+                                type="button"
+                                wire:click="addCoordinate"
+                                class="text-sm font-medium text-primary-600 hover:text-primary-700 hover:underline focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded"
+                            >
+                                + Add sub-location
                             </button>
                         </div>
-                    </form>
+                    @endif
+
+                    <div class="flex gap-2 pt-4">
+                        <button
+                            type="submit"
+                            class="btn-primary flex-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                            {{ !$tenant_id ? 'disabled' : '' }}
+                        >
+                            Save Locations
+                        </button>
+                        <button
+                            type="button"
+                            wire:click="resetFields"
+                            class="btn-secondary disabled:opacity-50 disabled:cursor-not-allowed"
+                            {{ !$tenant_id ? 'disabled' : '' }}
+                        >
+                            Clear
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            {{-- Tenant List --}}
+            <div class="card flex h-[400px] flex-col">
+                <div class="border-b border-gray-200 p-4 dark:border-gray-700">
+                    <input
+                        type="text"
+                        wire:model.live.debounce.300ms="search"
+                        placeholder="Filter list…"
+                        class="input focus:ring-primary-500/50 focus:border-primary-500"
+                    >
                 </div>
 
-                {{-- Tenant List --}}
-                <div class="bg-white dark:bg-white/5 dark:backdrop-blur-md border border-gray-200 dark:border-white/10 rounded-2xl shadow-sm dark:shadow-none flex flex-col h-[400px]">
-                    <div class="p-4 border-b border-gray-200 dark:border-white/10">
-                        <input type="text" wire:model.live.debounce.300ms="search" placeholder="Filter list..." 
-                               class="w-full rounded-xl bg-white dark:bg-white/10 border border-gray-300 dark:border-white/10 py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
-                    </div>
-                    
-                    <div class="flex-1 overflow-y-auto p-4 space-y-3">
-                        @forelse ($this->tenants as $tenant)
-                            <div class="p-3 border border-gray-200 dark:border-white/10 rounded-xl hover:border-brand-400/50 dark:hover:border-brand-400/50 transition-colors {{ $tenant_id == $tenant->id ? 'border-brand-500/50 bg-brand-50 dark:bg-brand-500/10' : '' }}">
-                                <div class="flex justify-between items-start">
-                                    <div>
-                                        <div class="font-medium text-sm text-gray-900 dark:text-white">{{ $tenant->name }}</div>
-                                        @if($tenant->coordinates)
-                                            <span class="text-[10px] font-medium text-green-600 dark:text-green-400 flex items-center mt-1">
-                                                <div class="w-1.5 h-1.5 rounded-full bg-green-500 mr-1"></div> {{ count($tenant->coordinates) }} marker(s)
-                                            </span>
+                <div class="flex-1 space-y-3 overflow-y-auto p-4">
+                    @forelse ($this->tenants as $tenant)
+                        <div
+                            wire:click="edit({{ $tenant->id }})"
+                            class="cursor-pointer rounded-xl border border-gray-200 p-3 transition-all duration-150 dark:border-gray-700
+                                   {{ $tenant_id == $tenant->id
+                                       ? 'border-primary-600/60 bg-primary-50 ring-2 ring-primary-600/20 dark:border-primary-500/50 dark:bg-primary-500/10 dark:ring-primary-500/20'
+                                       : 'hover:border-primary-600/40 hover:bg-gray-50 dark:hover:border-primary-500/40 dark:hover:bg-gray-800/50' }}"
+                        >
+                            <div class="flex items-start justify-between gap-2">
+                                <div class="min-w-0 flex-1">
+                                    <div class="flex items-center gap-2">
+                                        @if($tenant->logo)
+                                            <img src="{{ asset('storage/'.$tenant->logo) }}"
+                                                 alt="{{ $tenant->name }}"
+                                                 class="h-8 w-8 shrink-0 rounded-full object-cover border border-gray-200 dark:border-gray-700">
                                         @else
-                                            <span class="text-[10px] font-medium text-gray-500 dark:text-white/40 flex items-center mt-1">
-                                                <div class="w-1.5 h-1.5 rounded-full bg-gray-300 dark:bg-white/20 mr-1"></div> Unmapped
+                                            <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-600 text-xs font-bold text-white">
+                                                {{ strtoupper(substr($tenant->name, 0, 1)) }}
                                             </span>
                                         @endif
+
+                                        <div class="min-w-0">
+                                            <p class="truncate text-sm font-medium text-gray-900 dark:text-white">
+                                                {{ $tenant->name }}
+                                            </p>
+                                            @if($tenant->typeOfTenant)
+                                                <p class="truncate text-[10px] text-gray-500 dark:text-gray-400">
+                                                    {{ $tenant->typeOfTenant->type }}
+                                                </p>
+                                            @endif
+                                        </div>
                                     </div>
-                                    <div class="flex flex-col gap-1">
-                                        <button wire:click="edit({{ $tenant->id }})"
-                                                class="text-xs bg-white dark:bg-white/10 border border-gray-200 dark:border-white/10 px-2 py-1 rounded-lg shadow-sm hover:bg-gray-50 dark:hover:bg-white/20 text-brand-600 dark:text-brand-400 transition">
-                                            Edit
+
+                                    @if($tenant->coordinates)
+                                        <span class="mt-1.5 flex items-center text-[10px] font-medium text-green-600 dark:text-green-400">
+                                            <svg class="mr-1 h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
+                                                <path d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
+                                            </svg>
+                                            {{ count($tenant->coordinates) }} marker(s)
+                                        </span>
+                                    @else
+                                        <span class="mt-1.5 flex items-center text-[10px] font-medium text-gray-500 dark:text-gray-400">
+                                            <span class="mr-1 h-1.5 w-1.5 rounded-full bg-gray-300 dark:bg-gray-600"></span>
+                                            Unmapped
+                                        </span>
+                                    @endif
+                                </div>
+
+                                <div class="flex flex-col items-end gap-1">
+                                    <button
+                                        wire:click.stop="edit({{ $tenant->id }})"
+                                        class="rounded-lg border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-primary-600 transition hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:hover:bg-gray-700 focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                                        title="Edit this business"
+                                    >
+                                        Edit
+                                    </button>
+
+                                    @if($tenant->coordinates)
+                                        <button
+                                            wire:click.stop="removeLocation({{ $tenant->id }})"
+                                            wire:confirm="Remove all pins for this tenant?"
+                                            class="text-[10px] text-red-600 hover:text-red-700 hover:underline dark:text-red-400"
+                                            title="Remove all markers"
+                                        >
+                                            Remove
                                         </button>
-                                        @if($tenant->coordinates)
-                                            <button wire:click="removeLocation({{ $tenant->id }})" wire:confirm="Remove all pins for this tenant?"
-                                                    class="text-[10px] text-red-500 dark:text-red-400 hover:underline text-right">
-                                                Remove
-                                            </button>
-                                        @endif
-                                    </div>
+                                    @endif
                                 </div>
                             </div>
-                        @empty
-                            <div class="text-center text-gray-500 dark:text-white/40 text-sm py-4">No businesses found.</div>
-                        @endforelse
-                    </div>
-                    
-                    <div class="p-3 border-t border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 rounded-b-2xl">
-                        {{ $this->tenants->links(data: ['scrollTo' => false]) }}
-                    </div>
+                        </div>
+                    @empty
+                        <div class="py-4 text-center text-sm text-gray-500 dark:text-gray-400">
+                            No businesses found.
+                        </div>
+                    @endforelse
+                </div>
+
+                <div class="rounded-b-2xl border-t border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800">
+                    {{ $this->tenants->links(data: ['scrollTo' => false]) }}
                 </div>
             </div>
         </div>

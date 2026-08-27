@@ -13,7 +13,7 @@ class LoginController extends Controller
      */
     public function showLoginForm()
     {
-       return view('public.auth.login-form');
+        return view('public.auth.login-form');
     }
 
     /**
@@ -33,12 +33,18 @@ class LoginController extends Controller
                 Auth::logout();
                 return back()->withErrors([
                     'email' => 'Your account is not yet active. Please wait for approval.',
-                ]);
+                ])->onlyInput('email');
             }
 
             session()->regenerate();
 
-            // Role‑based redirect
+            // If a redirect target was provided, send the user back there.
+            $redirect = $request->input('redirect');
+            if ($redirect) {
+                return redirect()->to($redirect);
+            }
+
+            // Role-based redirect
             if ($user->hasRole('super-admin')) {
                 return redirect()->route('superadmin.dashboard');
             }
@@ -53,6 +59,6 @@ class LoginController extends Controller
 
         return back()->withErrors([
             'email' => 'The provided credentials do not match our records.',
-        ]);
+        ])->onlyInput('email');
     }
 }

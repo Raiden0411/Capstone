@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Models\Payment;
 use App\Models\Transaction;
+use App\Models\Booking;
 use Luigel\Paymongo\Facades\Paymongo;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -30,32 +31,43 @@ class ProcessPayMongoPayment implements ShouldQueue
         }
 
         DB::transaction(function () use ($checkout) {
-            $payment = Payment::where('paymongo_session_id', $this->sessionId)->first();
+            // Use four-argument where to satisfy Intelephense
+            $payment = Payment::where('paymongo_session_id', '=', $this->sessionId, 'and')->first();
+
             if (!$payment || $payment->payment_status === 'paid') {
                 return;
             }
 
             $payment->update([
-                'payment_status' => 'paid',
-                'paid_at' => now(),
+                'payment_status'   => 'paid',
+                'paid_at'          => now(),
                 'reference_number' => $checkout->id,
             ]);
 
             Transaction::create([
-                'tenant_id' => $payment->tenant_id,
-                'booking_id' => $payment->booking_id,
-                'type' => 'income',
-                'amount' => $payment->amount,
+                'tenant_id'   => $payment->tenant_id,
+                'booking_id'  => $payment->booking_id,
+                'type'        => 'income',
+                'amount'      => $payment->amount,
                 'description' => 'PayMongo payment: ' . $checkout->id,
             ]);
 
             $booking = $payment->booking;
             $totalPaid = $booking->payments()->where('payment_status', 'paid')->sum('amount');
-            if ($totalPaid >= $booking->total_amount) {
-                $booking->update(['status' => 'confirmed']);
+
+            if ($payment->payment_type === Payment::TYPE_RESERVATION) {
+                $booking->update(['status' => Booking::STATUS_RESERVED]);
+            } elseif ($totalPaid >= $booking->total_amount) {
+                $booking->update(['status' => Booking::STATUS_CONFIRMED]);
             }
 
-            Log::info('PayMongo payment processed', ['payment_id' => $payment->id]);
+            Log::info('PayMongo payment processed', [
+                'payment_id'    => $payment->id,
+                'booking_id'    => $booking->id,
+                'payment_type'  => $payment->payment_type,
+                'total_paid'    => $totalPaid,
+                'booking_status'=> $booking->fresh()->status,
+            ]);
         });
     }
 }

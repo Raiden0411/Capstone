@@ -16,17 +16,23 @@ class IsTenantAdmin
             abort(403, 'Unauthorized access.');
         }
 
-        // 1. Always allow super‑admins and business owners
+        // 1. Require the user to be linked to a business.
+        //    This applies to everyone, including super-admins.
+        if (!$user->tenant_id) {
+            abort(403, 'Your account is not linked to a business.');
+        }
+
+        // 2. Always allow business owners (admin) and super-admins if they have a tenant_id.
         if ($user->hasAnyRole(['super-admin', 'admin'])) {
             return $next($request);
         }
 
-        // 2. Allow employees / staff who have been given permissions via a custom role
-        if ($user->tenant_id && $user->getAllPermissions()->count() > 0) {
+        // 3. Allow employees / staff who have permissions via a custom role.
+        if ($user->getAllPermissions()->count() > 0) {
             return $next($request);
         }
 
-        // 3. Everyone else (tourists) is blocked
+        // 4. Everyone else is blocked.
         abort(403, 'Unauthorized access.');
     }
 }

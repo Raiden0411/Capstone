@@ -11,14 +11,24 @@ return new class extends Migration
      */
     public function up(): void
     {
-       Schema::create('services', function (Blueprint $table) {
-    $table->id();
-    $table->foreignId('tenant_id')->constrained('tenants')->cascadeOnDelete();
-    $table->string('name'); // tour guide, boat ride, entrance fee
-    $table->decimal('price', 10, 2);
-    $table->boolean('is_active')->default(true);
-    $table->timestamps();
-});
+        Schema::create('services', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('tenant_id')->constrained('tenants')->cascadeOnDelete();
+            $table->string('name'); // tour guide, boat ride, entrance fee
+            $table->decimal('price', 10, 2);
+            $table->boolean('is_active')->default(true);
+            $table->timestamps();
+        });
+
+        // Date‑based service availability
+        Schema::create('service_availability', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('tenant_id')->constrained('tenants')->cascadeOnDelete();
+            $table->foreignId('service_id')->constrained('services')->cascadeOnDelete();
+            $table->date('date');
+            $table->boolean('is_available')->default(true);
+            $table->timestamps();
+        });
     }
 
     /**
@@ -26,6 +36,7 @@ return new class extends Migration
      */
     public function down(): void
     {
+        Schema::dropIfExists('service_availability');
         Schema::dropIfExists('services');
     }
 };

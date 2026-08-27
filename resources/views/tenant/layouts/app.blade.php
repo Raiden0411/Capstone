@@ -33,20 +33,16 @@
 
     @vite(['resources/css/app.css', 'resources/js/app.js'])
 
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
     @livewireStyles
+    @livewireMapStyles
 </head>
 
 <body x-data="{ minified: false }"
-      class="font-sans antialiased min-h-screen text-white">
+      class="font-sans antialiased min-h-screen bg-[#F8F7F3] dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-300">
 
-    {{-- Animated background orbs – same as public layout --}}
+    {{-- Subtle background decoration (light/dark aware) --}}
     <div class="fixed inset-0 -z-10 overflow-hidden pointer-events-none">
-        <div class="orb orb-1"></div>
-        <div class="orb orb-2"></div>
-        <div class="orb orb-3"></div>
+        <div class="absolute inset-0 bg-gradient-to-br from-white via-gray-50 to-gray-100 dark:from-gray-900 dark:via-gray-900 dark:to-gray-900"></div>
     </div>
 
     {{-- Top bar (tenant header) --}}
@@ -67,12 +63,13 @@
         </div>
     </div>
 
-    {{-- Chart.js for analytics – guaranteed to be available --}}
+    {{-- Chart.js for analytics --}}
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
 
     @livewireScripts
+    @livewireMapScripts
 
-    {{-- Preline JS (as used on the public side) --}}
+    {{-- Preline JS --}}
     <script src="https://unpkg.com/preline/dist/preline.js"></script>
 </body>
 

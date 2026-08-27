@@ -1,3 +1,4 @@
+{{-- resources/views/tenant/pages/service/⚡create-service.blade.php --}}
 <?php
 
 use Livewire\Component;
@@ -9,7 +10,7 @@ use Illuminate\Support\Facades\Auth;
 
 new 
 #[Layout('tenant.layouts.app')]
-#[Title('Create Service')]
+#[Title('Add Service')]
 class extends Component {
     #[Validate('required|string|max:255')]
     public $name = '';
@@ -42,45 +43,50 @@ class extends Component {
 };
 ?>
 
-<div class="max-w-3xl mx-auto py-8 px-4 sm:px-6 lg:px-8 space-y-6">
+<div class="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto space-y-6">
 
-    {{-- Flash Message (shown after redirect) --}}
+    {{-- Flash Message --}}
     @if (session()->has('message'))
-        <div class="glass-card border-l-4 border-l-brand-400 p-4 text-sm text-white/80 flex items-center gap-3">
-            <svg class="w-4 h-4 text-brand-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+        <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium flex items-center gap-3">
+            <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
             {{ session('message') }}
         </div>
     @endif
 
-    <div class="flex items-center justify-between">
-        <h1 class="text-2xl sm:text-3xl font-bold text-white">Add Service</h1>
-        <a href="{{ route('tenant.services.index') }}" wire:navigate class="text-sm font-medium text-white/50 hover:text-brand-400 transition-colors flex items-center gap-1">
+    <div class="flex items-center justify-between pb-6 border-b border-gray-200 dark:border-gray-700">
+        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Add Service</h1>
+        <a href="{{ route('tenant.services.index') }}" wire:navigate
+           class="text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-[#376df1] dark:hover:text-blue-400 transition-colors">
             &larr; Back to Services
         </a>
     </div>
 
-    <form wire:submit="save" class="space-y-5 glass-card !rounded-xl p-5 sm:p-6">
+    <form wire:submit="save" class="space-y-5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm">
+
         <div>
-            <label class="block text-sm font-medium text-white/70 mb-1">Service Name *</label>
+            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Service Name *</label>
             <input type="text" wire:model="name"
-                   class="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-sm text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
-            @error('name') <span class="text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                   class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 focus:border-[#376df1] transition">
+            @error('name') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
         </div>
+
         <div>
-            <label class="block text-sm font-medium text-white/70 mb-1">Price (₱) *</label>
+            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Price (₱) *</label>
             <input type="number" step="0.01" wire:model="price"
-                   class="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-sm text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
-            @error('price') <span class="text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                   class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 focus:border-[#376df1] transition">
+            @error('price') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
         </div>
+
         <div class="flex items-center gap-3">
             <input type="checkbox" wire:model="is_active"
-                   class="rounded border-white/20 bg-white/5 text-brand-600 focus:ring-brand-500">
-            <label class="text-sm text-white/70">Active (available for bookings)</label>
+                   class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-[#376df1] focus:ring-[#376df1]">
+            <label class="text-sm text-gray-700 dark:text-gray-300">Active (available for bookings)</label>
         </div>
-        <div class="flex items-center gap-3 pt-4 border-t border-white/10">
+
+        <div class="flex items-center gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
             <button type="submit"
                     wire:loading.attr="disabled"
-                    class="bg-brand-600 hover:bg-brand-500 text-white font-medium py-2.5 px-6 rounded-xl shadow-lg shadow-brand-500/20 transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                    class="bg-[#376df1] hover:bg-blue-700 text-white font-medium py-2.5 px-6 rounded-full shadow-lg shadow-blue-500/20 transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
                 <span wire:loading.remove>Save Service</span>
                 <span wire:loading class="flex items-center gap-2">
                     <svg class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -90,7 +96,8 @@ class extends Component {
                     Saving...
                 </span>
             </button>
-            <a href="{{ route('tenant.services.index') }}" wire:navigate class="glass px-6 py-3 rounded-xl text-white/80 hover:bg-white/10 font-medium transition">
+            <a href="{{ route('tenant.services.index') }}" wire:navigate
+               class="px-6 py-3 rounded-full bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 font-medium transition">
                 Cancel
             </a>
         </div>

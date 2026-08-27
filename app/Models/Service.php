@@ -1,4 +1,5 @@
 <?php
+
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
@@ -8,7 +9,20 @@ class Service extends Model
 {
     use BelongsToTenant;
 
-    protected $fillable = ['tenant_id', 'name', 'price', 'is_active'];
+    protected $fillable = [
+        'tenant_id',
+        'name',
+        'price',
+        'is_active',
+    ];
 
-    public function bookingServices() { return $this->hasMany(BookingService::class); }
+    public function bookingServices()
+    {
+        return $this->hasMany(BookingService::class);
+    }
+
+    public function availabilities()
+    {
+        return $this->hasMany(ServiceAvailability::class);
+    }
 }

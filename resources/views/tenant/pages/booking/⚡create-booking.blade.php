@@ -19,7 +19,7 @@ use Carbon\Carbon;
 
 new 
 #[Layout('tenant.layouts.app')]
-#[Title('Walk‑In Checkout')]
+#[Title('Walk-In Booking')]
 class extends Component {
     #[Validate('required|string|max:255')]
     public $customerName = '';
@@ -321,91 +321,83 @@ class extends Component {
 };
 ?>
 
-@push('styles')
-<style>
-    select option {
-        background: #1e293b;
-        color: #e2e8f0;
-    }
-</style>
-@endpush
+<div class="p-4 sm:p-6 lg:p-8 max-w-[1440px] mx-auto space-y-6">
 
-<div class="p-4 sm:p-6 lg:p-10 max-w-7xl mx-auto space-y-6">
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-6">
+    {{-- Header --}}
+    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
         <div>
-            <p class="text-xs font-semibold uppercase tracking-[0.22em] text-brand-400 flex items-center gap-2 mb-2">
-                <span class="w-4 h-px bg-brand-400"></span>Quick Reservation
-            </p>
-            <h1 class="font-display text-3xl md:text-4xl font-bold text-white">
-                Walk‑In <em class="italic text-brand-400">Checkout</em>
-            </h1>
-            <p class="text-sm text-white/50 mt-1">Quickly register a guest and complete their booking.</p>
+            <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Walk-In Booking</h1>
         </div>
+        <a href="{{ route('tenant.bookings.index') }}" wire:navigate
+           class="text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-[#376df1] dark:hover:text-blue-400 transition-colors">
+            &larr; Back to Bookings
+        </a>
     </div>
 
+    {{-- Flash Error --}}
     @if (session()->has('error'))
-        <div class="glass-card border-l-4 border-l-red-400 p-4 text-sm text-white/80 flex items-center gap-3">
-            <svg class="w-4 h-4 text-red-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.293 10.293a1 1 0 011.414 0L12 10.586l.293-.293a1 1 0 111.414 1.414L13.414 12l.293.293a1 1 0 01-1.414 1.414L12 13.414l-.293.293a1 1 0 01-1.414-1.414L10.586 12l-.293-.293a1 1 0 010-1.414z"/></svg>
+        <div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 border-l-4 border-l-red-500 p-4 rounded-md text-sm text-red-700 dark:text-red-300 font-medium">
             {{ session('error') }}
         </div>
     @endif
 
     <form wire:submit="submit" class="space-y-6">
+
         {{-- Customer Information --}}
-        <div class="glass-card !rounded-xl p-5 sm:p-6">
-            <h2 class="text-lg font-semibold text-white mb-4">Guest Information</h2>
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Guest Information</h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-white/70 mb-1">Full Name *</label>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Full Name *</label>
                     <input type="text" wire:model="customerName"
-                           class="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-sm text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
+                           class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 transition"
                            placeholder="Guest name">
-                    @error('customerName') <span class="text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    @error('customerName') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-white/70 mb-1">Phone * <span class="text-white/40 font-normal">(e.g. 09123456789)</span></label>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Phone * <span class="text-gray-400 dark:text-gray-500 font-normal">(e.g. 09123456789)</span></label>
                     <input type="text" wire:model="customerPhone"
-                           class="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-sm text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition"
+                           class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 transition"
                            placeholder="09123456789">
-                    @error('customerPhone') <span class="text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    @error('customerPhone') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             </div>
-            <p class="text-xs text-white/40 mt-2">* Required for walk‑in. Phone must be 11 digits (09XXXXXXXXX or +639XXXXXXXXX).</p>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">* Required for walk-in. Phone must be 11 digits (09XXXXXXXXX or +639XXXXXXXXX).</p>
         </div>
 
         {{-- Dates & Reference --}}
-        <div class="glass-card !rounded-xl p-5 sm:p-6">
-            <h2 class="text-lg font-semibold text-white mb-4">Stay Details</h2>
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Stay Details</h2>
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-white/70 mb-1">Check‑in *</label>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Check-in *</label>
                     <input type="date" wire:model.live="check_in"
                            min="{{ now()->format('Y-m-d') }}"
                            max="{{ now()->addDays(30)->format('Y-m-d') }}"
-                           class="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-sm text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
-                    @error('check_in') <span class="text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                           class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 transition">
+                    @error('check_in') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-white/70 mb-1">Check‑out *</label>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Check-out *</label>
                     <input type="date" wire:model.live="check_out"
                            min="{{ now()->addDay()->format('Y-m-d') }}"
                            max="{{ now()->addDays(30)->format('Y-m-d') }}"
-                           class="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-sm text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
-                    @error('check_out') <span class="text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                           class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 transition">
+                    @error('check_out') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-white/70 mb-1">Booking Ref</label>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Booking Ref</label>
                     <input type="text" wire:model="booking_reference"
-                           class="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-sm text-white/60 cursor-not-allowed"
+                           class="w-full bg-gray-100 dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-500 dark:text-gray-400 cursor-not-allowed"
                            readonly>
-                    <button type="button" wire:click="generateBookingReference" class="text-xs text-brand-400 hover:underline mt-1">Generate New</button>
+                    <button type="button" wire:click="generateBookingReference" class="text-xs text-[#376df1] hover:text-blue-700 mt-1">Generate New</button>
                 </div>
             </div>
         </div>
 
         {{-- Property Selection --}}
-        <div class="glass-card !rounded-xl p-5 sm:p-6">
-            <h2 class="text-lg font-semibold text-white mb-6">Select Items — Tap to add</h2>
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-6">Select Property</h2>
 
             @if(count($this->availableProperties) > 0)
                 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -415,20 +407,20 @@ class extends Component {
                             $firstImg = $property->images->first();
                         @endphp
                         <div class="relative group cursor-pointer rounded-2xl border-2 transition-all duration-200 overflow-hidden
-                                    {{ $isSelected ? 'border-brand-400 ring-2 ring-brand-500/30' : 'border-white/10 hover:border-brand-400/50' }}"
+                                    {{ $isSelected ? 'border-[#376df1] ring-2 ring-blue-500/30' : 'border-gray-200 dark:border-gray-700 hover:border-blue-400/50' }}"
                              wire:click="toggleProperty({{ $property->id }}, {{ $property->price }})">
-                            <div class="aspect-4/4 overflow-hidden rounded-t-2xl">
-                                <img class="size-full object-cover group-hover:scale-105 transition duration-700"
+                            <div class="aspect-[4/3] overflow-hidden rounded-t-2xl">
+                                <img class="w-full h-full object-cover group-hover:scale-105 transition duration-700"
                                      src="{{ $firstImg ? asset('storage/'. $firstImg->image_path) : asset('images/placeholder-room.jpg') }}"
                                      alt="{{ $property->name }}">
                             </div>
-                            <div class="p-4">
-                                <h3 class="font-medium text-white">{{ $property->name }}</h3>
-                                <p class="mt-1 text-sm text-white/60">₱{{ number_format($property->price, 2) }} / day</p>
-                                <p class="text-xs text-white/40 mt-1">Capacity: {{ $property->capacity }} persons</p>
+                            <div class="p-4 bg-white dark:bg-gray-800">
+                                <h3 class="font-medium text-gray-900 dark:text-white">{{ $property->name }}</h3>
+                                <p class="mt-1 text-sm text-gray-600 dark:text-gray-400">₱{{ number_format($property->price, 2) }} / day</p>
+                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Capacity: {{ $property->capacity }} persons</p>
                             </div>
                             @if($isSelected)
-                                <div class="absolute top-3 right-3 bg-brand-600 text-white rounded-full p-1 shadow">
+                                <div class="absolute top-3 right-3 bg-[#376df1] text-white rounded-full p-1 shadow">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
                                 </div>
                             @endif
@@ -436,12 +428,12 @@ class extends Component {
                     @endforeach
                 </div>
             @else
-                <p class="text-white/50 text-center py-8">No available items for selected dates.</p>
+                <p class="text-gray-500 dark:text-gray-400 text-center py-8">No available items for selected dates.</p>
             @endif
 
             @if(count($selectedProperties) > 0)
                 <div class="mt-8 space-y-3">
-                    <h3 class="font-medium text-white mb-4">Selected Items</h3>
+                    <h3 class="font-medium text-gray-900 dark:text-white mb-4">Selected Items</h3>
                     @foreach($selectedProperties as $id => $item)
                         @php
                             $prop = $this->availableProperties->firstWhere('id', $id) ?? App\Models\Property::find($id);
@@ -449,25 +441,25 @@ class extends Component {
                             $days = max(1, $days);
                             $roomTotal = $item['price'] * $item['quantity'] * $days;
                         @endphp
-                        <div class="flex items-center gap-4 p-3 bg-white/5 rounded-xl border border-white/10">
-                            <div class="w-12 h-12 rounded-lg overflow-hidden bg-white/10 shrink-0">
+                        <div class="flex items-center gap-4 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-200 dark:border-gray-700">
+                            <div class="w-12 h-12 rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-700 shrink-0">
                                 @if($prop && $prop->images->isNotEmpty())
                                     <img src="{{ asset('storage/'. $prop->images->first()->image_path) }}" class="w-full h-full object-cover" alt="{{ $prop->name }}">
                                 @else
-                                    <div class="w-full h-full flex items-center justify-center text-white/30">
+                                    <div class="w-full h-full flex items-center justify-center text-gray-400 dark:text-gray-500">
                                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
                                     </div>
                                 @endif
                             </div>
                             <div class="flex-1 min-w-0">
-                                <p class="font-medium text-white truncate">{{ $prop->name ?? 'Item' }}</p>
-                                <p class="text-xs text-white/50 mt-0.5">
+                                <p class="font-medium text-gray-900 dark:text-white truncate">{{ $prop->name ?? 'Item' }}</p>
+                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
                                     ₱{{ number_format($item['price'], 2) }} / day · {{ $days }} day{{ $days > 1 ? 's' : '' }}
                                 </p>
-                                <p class="text-sm font-semibold text-white mt-1">₱{{ number_format($roomTotal, 2) }}</p>
+                                <p class="text-sm font-semibold text-gray-900 dark:text-white mt-1">₱{{ number_format($roomTotal, 2) }}</p>
                             </div>
                             <button type="button" wire:click="toggleProperty({{ $id }}, {{ $item['price'] }})" 
-                                    class="p-1 text-white/40 hover:text-red-400 transition" title="Remove item">
+                                    class="p-1 text-gray-400 dark:text-gray-500 hover:text-red-600 dark:hover:text-red-400 transition" title="Remove item">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                             </button>
                         </div>
@@ -476,17 +468,17 @@ class extends Component {
             @endif
         </div>
 
-        {{-- Add‑On Services --}}
-        <div class="glass-card !rounded-xl p-5 sm:p-6">
-            <h2 class="text-lg font-semibold text-white mb-4">Add‑On Services</h2>
+        {{-- Add-On Services --}}
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Add-On Services</h2>
             <div class="flex flex-wrap gap-2 mb-4">
                 @foreach($this->availableServices as $service)
                     @php $isServiceSelected = isset($selectedServices[$service->id]); @endphp
                     <button type="button" wire:click="toggleService({{ $service->id }}, {{ $service->price }})"
                             class="border rounded-full px-4 py-2 text-sm transition-colors
                                    {{ $isServiceSelected 
-                                      ? 'bg-brand-500/20 border-brand-400/50 text-brand-300'
-                                      : 'border-white/10 hover:bg-white/5 text-white/70' }}">
+                                      ? 'bg-blue-50 dark:bg-blue-500/15 border-blue-200 dark:border-blue-500/30 text-[#376df1] dark:text-blue-400'
+                                      : 'border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300' }}">
                         {{ $service->name }} (₱{{ number_format($service->price, 2) }})
                     </button>
                 @endforeach
@@ -496,13 +488,13 @@ class extends Component {
                 <div class="space-y-2">
                     @foreach($selectedServices as $id => $item)
                         @php $service = App\Models\Service::find($id); @endphp
-                        <div class="flex items-center gap-3 p-3 bg-white/5 rounded-xl border border-white/10">
+                        <div class="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-200 dark:border-gray-700">
                             <div class="flex-1">
-                                <p class="font-medium text-white">{{ $service->name ?? 'Service' }}</p>
-                                <p class="text-xs text-white/50">₱{{ number_format($item['price'], 2) }}</p>
+                                <p class="font-medium text-gray-900 dark:text-white">{{ $service->name ?? 'Service' }}</p>
+                                <p class="text-xs text-gray-500 dark:text-gray-400">₱{{ number_format($item['price'], 2) }}</p>
                             </div>
-                            <p class="text-sm font-semibold text-white w-20 text-right">₱{{ number_format($item['price'], 2) }}</p>
-                            <button type="button" wire:click="toggleService({{ $id }}, {{ $item['price'] }})" class="p-1 text-white/40 hover:text-red-400 transition" title="Remove service">
+                            <p class="text-sm font-semibold text-gray-900 dark:text-white w-20 text-right">₱{{ number_format($item['price'], 2) }}</p>
+                            <button type="button" wire:click="toggleService({{ $id }}, {{ $item['price'] }})" class="p-1 text-gray-400 dark:text-gray-500 hover:text-red-600 dark:hover:text-red-400 transition" title="Remove service">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                             </button>
                         </div>
@@ -512,30 +504,30 @@ class extends Component {
         </div>
 
         {{-- Payment Method --}}
-        <div class="glass-card !rounded-xl p-5 sm:p-6">
-            <h2 class="text-lg font-semibold text-white mb-4">Payment</h2>
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Payment</h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-white/70 mb-1">Payment Method *</label>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Payment Method *</label>
                     <select wire:model.live="payment_method"
-                            class="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-sm text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition appearance-none">
+                            class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 transition appearance-none">
                         <option value="cash">Cash</option>
                         <option value="card">Credit/Debit Card</option>
                         <option value="gcash">GCash</option>
                         <option value="paymaya">PayMaya</option>
                     </select>
-                    @error('payment_method') <span class="text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    @error('payment_method') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             </div>
         </div>
 
         {{-- Total & Actions --}}
-        <div class="glass-card !rounded-xl p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-            <span class="text-xl font-bold text-white">Total: ₱{{ number_format($totalAmount, 2) }}</span>
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <span class="text-xl font-bold text-gray-900 dark:text-white">Total: ₱{{ number_format($totalAmount, 2) }}</span>
             <div class="flex gap-3">
                 <button type="submit" 
                         wire:loading.attr="disabled"
-                        class="bg-brand-600 hover:bg-brand-500 text-white font-semibold py-3 px-8 rounded-xl shadow-lg shadow-brand-500/20 transition hover:scale-105 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                        class="bg-[#376df1] hover:bg-blue-700 text-white font-semibold py-3 px-8 rounded-full shadow-lg shadow-blue-500/20 transition hover:scale-105 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
                     <span wire:loading.remove>
                         {{ $payment_method === 'cash' ? 'Complete Checkout' : 'Proceed to Pay' }}
                     </span>
@@ -548,7 +540,7 @@ class extends Component {
                     </span>
                 </button>
                 <a href="{{ route('tenant.bookings.index') }}" wire:navigate 
-                   class="glass px-6 py-3 rounded-xl text-white/80 hover:bg-white/10 font-medium transition">
+                   class="bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 px-6 py-3 rounded-full font-medium transition">
                     Cancel
                 </a>
             </div>

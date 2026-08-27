@@ -1,10 +1,17 @@
+{{-- resources/views/public/pages/about.blade.php --}}
 <?php
 
 use Livewire\Component;
+use Livewire\Attributes\Layout;
+use Livewire\Attributes\Title;
 use App\Models\SiteSetting;
 use App\Models\Tenant;
 
-new class extends Component {
+new
+#[Layout('layouts.app')]
+#[Title('About')]
+class extends Component
+{
     public function getSetting(string $key, string $default = ''): string
     {
         return SiteSetting::getValue($key, $default);
@@ -17,7 +24,7 @@ new class extends Component {
 
     public function defaultHeroImage(): string
     {
-        return 'https://images.unsplash.com/photo-1448375240586-882707db888b?q=80&w=2070';
+        return 'https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1920&q=80';
     }
 
     public function defaultStoryImage(int $n): string
@@ -27,6 +34,7 @@ new class extends Component {
             2 => 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?q=80&w=600',
             3 => 'https://images.unsplash.com/photo-1502082553048-f009c37129b9?q=80&w=600',
         ];
+
         return $images[$n] ?? $images[1];
     }
 
@@ -37,37 +45,37 @@ new class extends Component {
             2 => 'https://images.unsplash.com/photo-1518005020951-eccb494ad742?q=80&w=800',
             3 => 'https://images.unsplash.com/photo-1592388792816-621e508de543?q=80&w=800',
         ];
+
         return $images[$n] ?? $images[1];
     }
 
     public function getHighlightData(int $n): array
     {
-        $tenantId = SiteSetting::getValue("about_highlight{$n}_tenant_id");
+        $tenantId      = SiteSetting::getValue("about_highlight{$n}_tenant_id");
         $overrideTitle = SiteSetting::getValue("about_highlight{$n}_title");
         $overrideText  = SiteSetting::getValue("about_highlight{$n}_text");
         $overrideImage = SiteSetting::getValue("about_highlight{$n}_image");
 
-        $defaultTitle = $n === 1 ? 'Gawahon Eco-Park' : ($n === 2 ? 'The Angry Christ Mural' : 'The VMC Kingdom');
-        $defaultText = '';
+        $defaultTitle = match ($n) {
+            1 => 'Gawahon Eco-Park',
+            2 => 'The Angry Christ Mural',
+            default => 'The VMC Kingdom',
+        };
+
+        $title = $overrideTitle ?: $defaultTitle;
+        $text  = $overrideText ?: '';
+        $image = $overrideImage;
+        $slug  = null;
 
         if ($tenantId) {
-            $tenant = Tenant::with('settings')->find($tenantId);
+            $tenant = Tenant::find($tenantId);
+
             if ($tenant) {
-                $title = $overrideTitle ?: ($tenant->settings->where('key', 'spot_name')->first()?->value ?? $tenant->name);
-                $text  = $overrideText ?: ($tenant->settings->where('key', 'spot_description')->first()?->value ?? '');
-                $image = $overrideImage ?: ($tenant->settings->where('key', 'spot_cover')->first()?->value ?? null);
+                $title = $overrideTitle ?: $tenant->name;
+                $text  = $overrideText ?: ($tenant->settings?->where('key', 'spot_description')->first()?->value ?? '');
+                $image = $overrideImage ?: ($tenant->settings?->where('key', 'spot_cover')->first()?->value ?? null);
                 $slug  = $tenant->slug;
-            } else {
-                $title = $overrideTitle ?: $defaultTitle;
-                $text  = $overrideText ?: $defaultText;
-                $image = $overrideImage;
-                $slug  = null;
             }
-        } else {
-            $title = $overrideTitle ?: $defaultTitle;
-            $text  = $overrideText ?: $defaultText;
-            $image = $overrideImage;
-            $slug  = null;
         }
 
         $imageUrl = $image
@@ -85,106 +93,230 @@ new class extends Component {
 ?>
 
 <div class="relative z-10">
-    {{-- Hero --}}
-    <section class="relative w-full h-[70vh] flex items-center justify-center overflow-hidden">
-        <div class="absolute inset-0 z-0">
-            <img src="{{ $this->getImageUrl(SiteSetting::getValue('about_hero_image'), $this->defaultHeroImage()) }}"
-                 class="w-full h-full object-cover opacity-40 dark:opacity-30 scale-110" alt="Victorias Forest">
-            <div class="absolute inset-0 bg-gradient-to-t from-[#071412] via-transparent to-[#071412]/60"></div>
-        </div>
+    {{-- 1. Hero Section --}}
+    <section class="relative flex items-center justify-center w-full h-[420px] md:h-[520px] overflow-hidden">
+        <img src="{{ $this->getImageUrl(SiteSetting::getValue('about_hero_image'), $this->defaultHeroImage()) }}"
+             alt="Victorias City"
+             class="absolute inset-0 object-cover w-full h-full">
 
-        <div class="relative z-10 p-8 md:p-12 glass-card !rounded-3xl max-w-3xl mx-4 text-center">
-            <span class="text-brand-400 font-bold tracking-[0.2em] uppercase text-sm mb-4 block">{{ $this->getSetting('about_hero_subheading', 'Region VI | Negros Occidental') }}</span>
-            <h1 class="font-display text-5xl md:text-8xl font-black text-white mb-6 drop-shadow-xl">{{ $this->getSetting('about_hero_heading', 'VICTORIAS') }}</h1>
-            <p class="text-white/90 text-lg md:text-xl font-light leading-relaxed">{{ $this->getSetting('about_hero_description') }}</p>
+        <div class="absolute inset-0 bg-gradient-to-b from-black/60 via-black/40 to-black/70"></div>
+
+        <div class="relative z-10 flex flex-col items-center text-center px-4">
+            <h1 class="text-xl md:text-3xl font-bold tracking-widest text-white uppercase">
+                {{ $this->getSetting('about_hero_subheading', 'Welcome to Victorias City') }}
+            </h1>
+
+            <h2 class="mt-3 text-4xl md:text-6xl font-display font-bold tracking-wide text-amber-300">
+                {{ $this->getSetting('about_hero_heading', 'KADALAG-AN') }}
+            </h2>
+
+            @if($this->getSetting('about_hero_description'))
+                <p class="mt-5 max-w-2xl text-sm md:text-base text-white/90 leading-relaxed">
+                    {{ $this->getSetting('about_hero_description') }}
+                </p>
+            @endif
+
+            <a href="{{ route('explore.map') }}" wire:navigate
+               class="mt-8 px-8 py-3.5 text-sm md:text-base font-semibold text-white transition-all bg-primary-600 rounded-full hover:bg-primary-700 shadow-lg shadow-primary-600/20 focus-visible:ring-2 focus-visible:ring-primary-600/50">
+                Plan your Visit Now
+            </a>
         </div>
     </section>
 
-    {{-- Story Section --}}
-    <div class="max-w-6xl mx-auto px-6 py-24 grid md:grid-cols-2 gap-16 items-start">
-        <div class="space-y-8">
-            <div class="inline-flex items-center gap-2 text-brand-600 dark:text-brand-400 font-bold text-sm">
-                <div class="w-8 h-[2px] bg-brand-600 dark:bg-brand-400"></div>
-                THE STORY OF THE CITY
+    {{-- 2. The Story of the City --}}
+    <section class="max-w-7xl mx-auto px-4 sm:px-6 md:px-12 py-12 md:py-20">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-10 lg:gap-16 items-center">
+            <div>
+                <div class="flex items-center gap-3 mb-5">
+                    <span class="w-5 h-5 bg-amber-400 rounded-full shadow-sm"></span>
+                    <h3 class="text-xl md:text-2xl font-bold tracking-wider text-gray-900 dark:text-white uppercase">
+                        {{ $this->getSetting('about_story_heading', 'The Story of the City') }}
+                    </h3>
+                </div>
+
+                <div class="space-y-4 text-gray-600 dark:text-gray-300 leading-relaxed text-sm md:text-base">
+                    @if($this->getSetting('about_story_text1'))
+                        <p>{{ $this->getSetting('about_story_text1') }}</p>
+                    @endif
+
+                    @if($this->getSetting('about_story_text2'))
+                        <p>{{ $this->getSetting('about_story_text2') }}</p>
+                    @endif
+                </div>
             </div>
-            <h2 class="font-display text-4xl font-bold leading-tight text-gray-900 dark:text-white">
-                {{ $this->getSetting('about_story_heading', 'Where Industry Meets the Wilderness') }}
+
+            <div class="w-full aspect-[4/3] rounded-3xl overflow-hidden shadow-lg bg-gray-200 dark:bg-gray-800 group">
+                <img src="{{ $this->getImageUrl(SiteSetting::getValue('about_story_image1'), $this->defaultStoryImage(1)) }}"
+                     alt="Story of Victorias"
+                     class="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105">
+            </div>
+        </div>
+    </section>
+
+    {{-- 3. Gallery / Carousel Section --}}
+    @php
+        $galleryImages = [
+            $this->getImageUrl(SiteSetting::getValue('about_story_image1'), $this->defaultStoryImage(1)),
+            $this->getImageUrl(SiteSetting::getValue('about_story_image2'), $this->defaultStoryImage(2)),
+            $this->getImageUrl(SiteSetting::getValue('about_story_image3'), $this->defaultStoryImage(3)),
+            $this->getImageUrl(SiteSetting::getValue('about_highlight1_image'), $this->defaultHighlightImage(1)),
+            'https://images.unsplash.com/photo-1501785888041-af3ef285b470?auto=format&fit=crop&w=800&q=80',
+        ];
+    @endphp
+
+    <section class="w-full py-12 md:py-16 overflow-hidden bg-white dark:bg-gray-900"
+             x-data="{
+                 items: {{ json_encode($galleryImages) }},
+                 active: 0,
+                 interval: null,
+                 touchStartX: 0,
+                 touchEndX: 0,
+                 init() {
+                     this.startAutoPlay();
+                 },
+                 startAutoPlay() {
+                     if (this.interval) clearInterval(this.interval);
+                     this.interval = setInterval(() => this.goTo(this.active + 1), 4000);
+                 },
+                 stopAutoPlay() {
+                     if (this.interval) clearInterval(this.interval);
+                 },
+                 goTo(i) {
+                     this.active = (i + this.items.length) % this.items.length;
+                 },
+                 handleTouchStart(e) {
+                     this.touchStartX = e.changedTouches[0].screenX;
+                     this.stopAutoPlay();
+                 },
+                 handleTouchEnd(e) {
+                     this.touchEndX = e.changedTouches[0].screenX;
+                     const diff = this.touchStartX - this.touchEndX;
+                     if (Math.abs(diff) > 50) {
+                         if (diff > 0) this.goTo(this.active + 1);
+                         else this.goTo(this.active - 1);
+                     }
+                     this.startAutoPlay();
+                 },
+                 getPositionStyle(index) {
+                     const length = this.items.length;
+                     const rel = (index - this.active + length) % length;
+                     const styles = {
+                         0: { left: '50%', width: '55%', height: '100%', transform: 'translate(-50%, -50%)', zIndex: 30, opacity: 1 },
+                         1: { right: '12%', width: '32%', height: '80%', transform: 'translateY(-50%)', zIndex: 20, opacity: 0.85 },
+                         2: { right: '0%', width: '22%', height: '60%', transform: 'translate(20%, -50%)', zIndex: 10, opacity: 0.5 },
+                         3: { left: '12%', width: '32%', height: '80%', transform: 'translateY(-50%)', zIndex: 20, opacity: 0.85 },
+                         4: { left: '0%', width: '22%', height: '60%', transform: 'translate(-20%, -50%)', zIndex: 10, opacity: 0.5 },
+                     };
+                     const style = styles[rel] || { left: '50%', width: '0%', height: '0%', transform: 'translate(-50%, -50%)', zIndex: 0, opacity: 0 };
+                     return {
+                         position: 'absolute',
+                         top: '50%',
+                         transition: 'all 0.5s ease',
+                         overflow: 'hidden',
+                         ...style,
+                     };
+                 }
+             }"
+             @mouseenter="stopAutoPlay()"
+             @mouseleave="startAutoPlay()"
+             @touchstart="handleTouchStart($event)"
+             @touchend="handleTouchEnd($event)">
+
+        <div class="relative flex items-center justify-center max-w-6xl mx-auto h-[280px] sm:h-[350px] md:h-[450px] px-4 sm:px-6 lg:px-8">
+            <template x-for="(item, index) in items" :key="index">
+                <div class="absolute rounded-3xl overflow-hidden shadow-xl transition-all duration-500"
+                     :style="getPositionStyle(index)">
+                    <img :src="item" alt="Gallery" class="object-cover w-full h-full">
+                </div>
+            </template>
+        </div>
+
+        <div class="flex justify-center items-center gap-3 mt-8">
+            <button type="button" @click="goTo(active - 1)"
+                    class="w-10 h-10 flex items-center justify-center rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 hover:text-primary-600 dark:hover:text-blue-400 transition-colors focus-visible:ring-2 focus-visible:ring-primary-600/50"
+                    aria-label="Previous">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+            </button>
+
+            <div class="flex items-center gap-2">
+                <template x-for="(item, index) in items" :key="`dot-${index}`">
+                    <button type="button" @click="goTo(index)"
+                            :class="index === active ? 'w-3 h-3 bg-primary-600' : 'w-2 h-2 bg-gray-300 dark:bg-gray-600 hover:bg-gray-400'"
+                            class="rounded-full transition-all duration-300 focus-visible:ring-2 focus-visible:ring-primary-600/50"></button>
+                </template>
+            </div>
+
+            <button type="button" @click="goTo(active + 1)"
+                    class="w-10 h-10 flex items-center justify-center rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 hover:text-primary-600 dark:hover:text-blue-400 transition-colors focus-visible:ring-2 focus-visible:ring-primary-600/50"
+                    aria-label="Next">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+            </button>
+        </div>
+    </section>
+
+    {{-- 4. Alternating Features / Highlights --}}
+    <section class="max-w-7xl mx-auto px-4 sm:px-6 md:px-12 py-12 md:py-20 space-y-16 md:space-y-24">
+        @foreach([1, 2, 3] as $n)
+            @php
+                $data    = $this->getHighlightData($n);
+                $reverse = $n % 2 === 0;
+            @endphp
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-10 lg:gap-16 items-center">
+                <div class="order-1 {{ $reverse ? 'md:order-2' : 'md:order-1' }} w-full aspect-[4/3] rounded-3xl overflow-hidden shadow-lg bg-gray-200 dark:bg-gray-800 group">
+                    <img src="{{ $data['imageUrl'] }}"
+                         alt="{{ $data['title'] }}"
+                         class="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105">
+                </div>
+
+                <div class="order-2 {{ $reverse ? 'md:order-1 md:text-left' : 'md:order-2' }}">
+                    <h3 class="text-2xl md:text-3xl font-bold text-primary-600 dark:text-blue-400 mb-4">
+                        {{ $data['title'] }}
+                    </h3>
+
+                    @if($data['text'])
+                        <p class="text-gray-600 dark:text-gray-300 leading-relaxed text-sm md:text-base">
+                            {{ $data['text'] }}
+                        </p>
+                    @endif
+
+                    @if($data['slug'])
+                        <a href="{{ route('tenant.show', $data['slug']) }}" wire:navigate
+                           class="inline-flex items-center gap-2 mt-6 text-primary-600 dark:text-blue-400 font-semibold hover:underline focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">
+                            Visit this place →
+                        </a>
+                    @endif
+                </div>
+            </div>
+        @endforeach
+    </section>
+
+    {{-- 5. Plan Your Visit CTA --}}
+    <section class="relative flex items-center justify-center w-full py-16 md:py-24 overflow-hidden">
+        <img src="{{ $this->getImageUrl(SiteSetting::getValue('about_cta_background_image'), 'https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1920&q=80') }}"
+             alt="Plan Your Visit"
+             class="absolute inset-0 object-cover w-full h-full">
+        <div class="absolute inset-0 bg-gradient-to-t from-black/70 to-black/50"></div>
+
+        <div class="relative z-10 flex flex-col items-center text-center px-4 max-w-2xl mx-auto">
+            <h2 class="text-3xl md:text-5xl font-bold text-white mb-4">
+                {{ $this->getSetting('about_cta_heading', 'Plan Your Visit') }}
             </h2>
-            <div class="space-y-4 text-gray-600 dark:text-white/60 leading-relaxed text-lg">
-                <p>{{ $this->getSetting('about_story_text1') }}</p>
-                <p>{{ $this->getSetting('about_story_text2') }}</p>
-            </div>
-            <ul class="grid grid-cols-1 gap-4 pt-6">
-                <li class="flex items-start gap-3"><div class="p-1 bg-brand-100 dark:bg-brand-500/20 rounded-full text-brand-700 dark:text-brand-400">✓</div><p class="text-gray-700 dark:text-white/70"><strong class="text-gray-900 dark:text-white">Eco-Tourism Hub:</strong> Gateway to the 7 Falls of Gawahon.</p></li>
-                <li class="flex items-start gap-3"><div class="p-1 bg-brand-100 dark:bg-brand-500/20 rounded-full text-brand-700 dark:text-brand-400">✓</div><p class="text-gray-700 dark:text-white/70"><strong class="text-gray-900 dark:text-white">Artistic Landmark:</strong> Home to the iconic "Angry Christ" mural.</p></li>
-                <li class="flex items-start gap-3"><div class="p-1 bg-brand-100 dark:bg-brand-500/20 rounded-full text-brand-700 dark:text-brand-400">✓</div><p class="text-gray-700 dark:text-white/70"><strong class="text-gray-900 dark:text-white">Sustainable Farming:</strong> Leader in organic and integrated agriculture.</p></li>
-            </ul>
-        </div>
 
-        <div class="relative grid grid-cols-2 gap-4">
-            <div class="space-y-4 pt-12">
-                <img src="{{ $this->getImageUrl(SiteSetting::getValue('about_story_image1'), $this->defaultStoryImage(1)) }}" class="rounded-2xl shadow-lg border-4 border-white dark:border-white/10" alt="Forest Detail">
-                <img src="{{ $this->getImageUrl(SiteSetting::getValue('about_story_image2'), $this->defaultStoryImage(2)) }}" class="rounded-2xl shadow-lg border-4 border-white dark:border-white/10" alt="Mountain View">
-            </div>
-            <div class="space-y-4">
-                <img src="{{ $this->getImageUrl(SiteSetting::getValue('about_story_image3'), $this->defaultStoryImage(3)) }}" class="rounded-2xl shadow-lg border-4 border-white dark:border-white/10" alt="Greenery">
-                <div class="bg-brand-700 dark:bg-brand-600 h-64 rounded-2xl flex items-center justify-center p-6 text-white text-center">
-                    <p class="font-medium italic">"Nature is the heart of Victorias, sugar is its lifeblood."</p>
-                </div>
-            </div>
-        </div>
-    </div>
+            @if($this->getSetting('about_cta_text'))
+                <p class="text-gray-200 text-sm md:text-base mb-8">
+                    {{ $this->getSetting('about_cta_text') }}
+                </p>
+            @else
+                <p class="text-gray-200 text-sm md:text-base mb-8">
+                    Start your journey and discover the best places, experiences, and attractions Victorias City has to offer.
+                </p>
+            @endif
 
-    {{-- Highlights (dynamic from linked tenants) --}}
-    <div class="bg-gray-50 dark:bg-white/5 py-24 text-gray-900 dark:text-white font-sans">
-        <div class="max-w-7xl mx-auto px-6">
-            @foreach([1,2,3] as $n)
-                @php
-                    $data = $this->getHighlightData($n);
-                    $title    = $data['title'];
-                    $text     = $data['text'];
-                    $imageUrl = $data['imageUrl'];
-                    $slug     = $data['slug'];
-                    $reverse  = $n === 2;
-                @endphp
-
-                <div class="flex flex-col {{ $reverse ? 'md:flex-row-reverse' : 'md:flex-row' }} gap-16 items-center mb-32">
-                    <div class="w-full md:w-3/5 relative">
-                        <div class="absolute -top-4 -left-4 w-24 h-24 bg-brand-200/50 dark:bg-brand-500/10 -z-10 rounded-full blur-2xl"></div>
-                        <img src="{{ $imageUrl }}" class="w-full h-[500px] object-cover rounded-2xl shadow-2xl grayscale hover:grayscale-0 transition-all duration-700" alt="{{ $title }}">
-                    </div>
-                    <div class="w-full md:w-2/5 {{ $reverse ? 'text-right md:text-left' : '' }}">
-                        <span class="text-brand-600 dark:text-brand-400 font-bold text-sm tracking-widest uppercase italic">0{{ $n }}. Natural Wonder</span>
-                        <h3 class="font-display text-4xl font-black mt-4 mb-6 uppercase tracking-tight">{{ $title }}</h3>
-                        @if($text)
-                            <p class="text-gray-600 dark:text-white/60 leading-relaxed text-lg mb-8">{{ $text }}</p>
-                        @endif
-                        @if($slug)
-                            <a href="{{ route('tenant.show', $slug) }}" wire:navigate class="inline-flex items-center gap-2 text-brand-600 dark:text-brand-400 font-semibold hover:underline">
-                                Visit this place →
-                            </a>
-                        @endif
-                        <div class="h-px w-12 bg-brand-500 {{ $reverse ? 'ml-auto md:ml-0' : '' }} mt-4"></div>
-                    </div>
-                </div>
-            @endforeach
+            <a href="{{ route('explore.map') }}" wire:navigate
+               class="px-10 py-4 text-sm md:text-base font-semibold text-white transition-all bg-primary-600 rounded-full hover:bg-primary-700 w-full sm:w-auto text-center shadow-lg shadow-primary-600/20 focus-visible:ring-2 focus-visible:ring-primary-600/50">
+                Plan your Visit Now
+            </a>
         </div>
-    </div>
-
-    {{-- CTA --}}
-    <div class="py-24 px-6">
-        <div class="max-w-4xl mx-auto rounded-[3rem] bg-gradient-to-br from-brand-900 to-[#062c1e] p-12 text-center shadow-2xl relative overflow-hidden group">
-            <div class="absolute -top-24 -right-24 w-64 h-64 bg-brand-500/10 rounded-full blur-3xl"></div>
-            <div class="relative z-10">
-                <h2 class="font-display text-3xl md:text-5xl font-bold text-white mb-6 tracking-tight">
-                    {{ $this->getSetting('about_cta_heading', 'Come and enjoy the wonderful city of Victorias') }}
-                </h2>
-                <p class="text-white/70 mb-10 text-lg max-w-xl mx-auto">{{ $this->getSetting('about_cta_text') }}</p>
-                <div class="flex flex-col sm:flex-row justify-center gap-4">
-                    <a href="{{ route('explore.map') }}" wire:navigate class="px-8 py-4 bg-brand-600 hover:bg-brand-500 text-white font-bold rounded-2xl transition-all shadow-lg shadow-brand-500/20 hover:scale-105">Explore Map</a>
-                    <a href="{{ route('about') }}" wire:navigate class="px-8 py-4 glass text-white font-bold rounded-2xl hover:bg-white/10 transition-all">Learn More</a>
-                </div>
-            </div>
-        </div>
-    </div>
+    </section>
 </div>

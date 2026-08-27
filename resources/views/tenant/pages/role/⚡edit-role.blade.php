@@ -1,3 +1,4 @@
+{{-- resources/views/tenant/pages/role/⚡edit-role.blade.php --}}
 <?php
 
 use Livewire\Component;
@@ -125,59 +126,61 @@ class extends Component {
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-10 max-w-3xl mx-auto space-y-6">
+<div class="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto space-y-6">
 
-    {{-- Flash Message (shown after redirect) --}}
+    {{-- Flash Message --}}
     @if (session()->has('message'))
-        <div class="glass-card border-l-4 border-l-brand-400 p-4 text-sm text-white/80 flex items-center gap-3">
-            <svg class="w-4 h-4 text-brand-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+        <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium flex items-center gap-3">
+            <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
             {{ session('message') }}
         </div>
     @endif
 
-    <div class="flex items-center justify-between">
-        <h1 class="text-2xl sm:text-3xl font-bold text-white">Edit Custom Role</h1>
-        <a href="{{ route('tenant.roles.index') }}" wire:navigate class="text-white/50 hover:text-white font-medium transition-colors">
+    <div class="flex items-center justify-between pb-6 border-b border-gray-200 dark:border-gray-700">
+        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Edit Custom Role</h1>
+        <a href="{{ route('tenant.roles.index') }}" wire:navigate
+           class="text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-[#376df1] dark:hover:text-blue-400 transition-colors">
             &larr; Back to Roles
         </a>
     </div>
 
-    <form wire:submit="update" class="space-y-6 glass-card !rounded-xl p-5 sm:p-6">
+    <form wire:submit="update" class="space-y-6 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm">
+
         {{-- Role Name --}}
         <div>
-            <label class="block text-sm font-medium text-white/70 mb-1">Role Name *</label>
+            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Role Name *</label>
             <input type="text" wire:model="name"
-                   class="w-full bg-white/5 border border-white/10 rounded-xl py-3 px-4 text-sm text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition">
-            @error('name') <span class="text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-            <p class="text-xs text-white/40 mt-1">Cannot use "admin" or "super-admin".</p>
+                   class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 focus:border-[#376df1] transition">
+            @error('name') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Cannot use "admin" or "super-admin".</p>
         </div>
 
         {{-- Permissions --}}
         <div>
             <div class="flex justify-between items-center mb-2">
-                <label class="block text-sm font-medium text-white/70">Assign Permissions *</label>
-                <span class="text-xs text-white/40">{{ count($selectedPermissions) }} selected</span>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Assign Permissions *</label>
+                <span class="text-xs text-gray-500 dark:text-gray-400">{{ count($selectedPermissions) }} selected</span>
             </div>
             
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-80 overflow-y-auto border border-white/10 rounded-xl p-3 bg-white/5">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-80 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-xl p-3 bg-gray-50 dark:bg-gray-700/50">
                 @forelse($this->availablePermissions as $permission)
-                    <label class="flex items-center gap-2 text-sm hover:bg-white/10 p-1.5 rounded cursor-pointer transition-colors">
+                    <label class="flex items-center gap-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-700 p-2 rounded-lg cursor-pointer transition-colors">
                         <input type="checkbox" wire:model="selectedPermissions" value="{{ $permission->name }}"
-                               class="rounded border-white/20 bg-white/5 text-brand-600 focus:ring-brand-500">
-                        <span class="text-white/80">{{ ucwords(str_replace(['-', '_'], ' ', $permission->name)) }}</span>
+                               class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-[#376df1] focus:ring-[#376df1]">
+                        <span class="text-gray-700 dark:text-gray-300">{{ ucwords(str_replace(['-', '_'], ' ', $permission->name)) }}</span>
                     </label>
                 @empty
-                    <p class="text-white/40 col-span-2 text-center py-4">No assignable permissions available.</p>
+                    <p class="text-gray-400 dark:text-gray-500 col-span-2 text-center py-4">No assignable permissions available.</p>
                 @endforelse
             </div>
-            @error('selectedPermissions') <span class="text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+            @error('selectedPermissions') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
         </div>
 
         {{-- Actions --}}
-        <div class="flex items-center gap-3 pt-4 border-t border-white/10">
+        <div class="flex items-center gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
             <button type="submit"
                     wire:loading.attr="disabled"
-                    class="bg-brand-600 hover:bg-brand-500 text-white font-medium py-2.5 px-6 rounded-xl shadow-lg shadow-brand-500/20 transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                    class="bg-[#376df1] hover:bg-blue-700 text-white font-medium py-2.5 px-6 rounded-full shadow-lg shadow-blue-500/20 transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
                 <span wire:loading.remove>Update Role</span>
                 <span wire:loading class="flex items-center gap-2">
                     <svg class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -187,7 +190,8 @@ class extends Component {
                     Saving...
                 </span>
             </button>
-            <a href="{{ route('tenant.roles.index') }}" wire:navigate class="glass px-6 py-3 rounded-xl text-white/80 hover:bg-white/10 font-medium transition">
+            <a href="{{ route('tenant.roles.index') }}" wire:navigate
+               class="px-6 py-3 rounded-full bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 font-medium transition">
                 Cancel
             </a>
         </div>
