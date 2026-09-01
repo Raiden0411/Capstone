@@ -11,10 +11,12 @@ use App\Models\Tenant;
 use App\Models\TenantSetting;
 use App\Models\TypeOfTenant;
 use App\Models\User;
+use App\Models\SiteSetting;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\DB;
 
 new
 #[Layout('superadmin.layouts.app')]
@@ -43,9 +45,6 @@ class extends Component {
 
     // Extra business info
     public $description = '';
-    public $website = '';
-    public $facebook = '';
-    public $instagram = '';
     public $opening_time = '08:00';
     public $closing_time = '17:00';
     public $logo;
@@ -71,42 +70,21 @@ class extends Component {
     ];
     public ?int $selectedMarkerIndex = null;
 
-    // Marker categories
-    public array $markerTypes = [
-        'restaurant' => 'Restaurant',
-        'cafe'       => 'Café',
-        'inn'        => 'Inn / Hotel',
-        'shop'       => 'Shop',
-        'viewpoint'  => 'Viewpoint',
-        'parking'    => 'Parking',
-        'entrance'   => 'Entrance',
-        'other'      => 'Other',
-    ];
+    // Dynamic marker categories (loaded from site_settings)
+    public array $markerCategories = [];
 
-    public array $markerColors = [
-        'restaurant' => '#f97316',
-        'cafe'       => '#a855f7',
-        'inn'        => '#3b82f6',
-        'shop'       => '#14b8a6',
-        'viewpoint'  => '#eab308',
-        'parking'    => '#6b7280',
-        'entrance'   => '#22c55e',
-        'other'      => '#94a3b8',
-    ];
-
-    public array $markerEmojis = [
-        'restaurant' => '🍽️',
-        'cafe'       => '☕',
-        'inn'        => '🏨',
-        'shop'       => '🛍️',
-        'viewpoint'  => '🌄',
-        'parking'    => '🅿️',
-        'entrance'   => '🚪',
-        'other'      => '📍',
-    ];
+    // Add category modal
+    public bool $showAddCategoryModal = false;
+    public string $newCategoryKey = '';
+    public string $newCategoryLabel = '';
+    public string $newCategoryColor = '#3b82f6';
+    public $newCategoryIcon;
 
     #[Computed]
-    public function tenantTypes() { return TypeOfTenant::all(); }
+    public function tenantTypes()
+    {
+        return TypeOfTenant::query()->select('id', 'type')->get();
+    }
 
     public function mount(Tenant $tenant)
     {
@@ -144,9 +122,6 @@ class extends Component {
         if ($businessInfo && is_array($businessInfo->value)) {
             $info = $businessInfo->value;
             $this->description = $info['description'] ?? '';
-            $this->website = $info['website'] ?? '';
-            $this->facebook = $info['social_links']['facebook'] ?? '';
-            $this->instagram = $info['social_links']['instagram'] ?? '';
             $this->opening_time = $info['opening_hours']['opening'] ?? '08:00';
             $this->closing_time = $info['opening_hours']['closing'] ?? '17:00';
             $this->barangay = $info['barangay'] ?? '';
@@ -156,12 +131,16 @@ class extends Component {
 
         $this->adminUserRecord = User::where('tenant_id', $tenant->id)
                                      ->whereHas('roles', fn($q) => $q->where('name', 'admin'))
+                                     ->select('id', 'name', 'email', 'tenant_id')
                                      ->first();
 
         if ($this->adminUserRecord) {
             $this->admin_name = $this->adminUserRecord->name;
             $this->admin_email = $this->adminUserRecord->email;
         }
+
+        // Load marker categories from site settings
+        $this->markerCategories = SiteSetting::getValue('marker_categories', []);
     }
 
     public function updatedName($value)
@@ -171,40 +150,49 @@ class extends Component {
 
     public function updated($property)
     {
-        $trimFields = ['name','address','barangay','city','province','description','website','facebook','instagram','admin_name','public_email','admin_email'];
+        $trimFields = ['name','address','barangay','city','province','description','admin_name','public_email','admin_email','contact_number'];
         if (in_array($property, $trimFields)) {
             $this->$property = trim($this->$property);
         }
+
+        if ($property === 'contact_number') {
+            $this->contact_number = preg_replace('/[^0-9]/', '', $this->contact_number);
+            $this->contact_number = substr($this->contact_number, 0, 11);
+        }
+
+        if (preg_match('/^markers\.\d+\.type$/', $property)) {
+            $this->mapVersion++;
+        }
+    }
+
+    public function updatedLatitude($value)
+    {
+        $this->latitude = round((float) $value, 6);
+        $this->mapView = ['lat' => $this->latitude, 'lng' => $this->longitude, 'zoom' => 16];
+        $this->mapVersion++;
+        $this->dispatch('map:fly-to', center: [(float)$this->longitude, (float)$this->latitude], zoom: 16);
+    }
+
+    public function updatedLongitude($value)
+    {
+        $this->longitude = round((float) $value, 6);
+        $this->mapView = ['lat' => $this->latitude, 'lng' => $this->longitude, 'zoom' => 16];
+        $this->mapVersion++;
+        $this->dispatch('map:fly-to', center: [(float)$this->longitude, (float)$this->latitude], zoom: 16);
     }
 
     public function setLocationMode($mode)
     {
         if (in_array($mode, ['main', 'nearby'])) {
             $this->locationMode = $mode;
-            if ($mode === 'main') {
-                $this->selectedMarkerIndex = null;
-            }
+            $this->selectedMarkerIndex = null;
             $this->mapVersion++;
         }
     }
 
     public function addMarker()
     {
-        if (count($this->markers) >= 20) {
-            $this->dispatch('toast', message: 'You can add up to 20 nearby places.', type: 'error');
-            return;
-        }
-
-        $this->markers[] = [
-            'uid'  => (string) Str::uuid(),
-            'name' => 'Nearby place ' . (count($this->markers) + 1),
-            'lat'  => $this->latitude,
-            'lng'  => $this->longitude,
-            'type' => 'other',
-        ];
-        $this->selectedMarkerIndex = count($this->markers) - 1;
-        $this->mapVersion++;
-        $this->dispatch('toast', message: 'Nearby place added. You can now edit its details below.', type: 'info');
+        $this->addMarkerAt($this->mapView['lat'], $this->mapView['lng']);
     }
 
     public function removeMarker($index)
@@ -216,11 +204,6 @@ class extends Component {
         }
         $this->mapVersion++;
         $this->dispatch('toast', message: 'Nearby place removed.', type: 'info');
-    }
-
-    public function refreshMapAfterTypeChange()
-    {
-        $this->mapVersion++;
     }
 
     #[On('map:click')]
@@ -239,23 +222,19 @@ class extends Component {
     #[On('map:marker-drag-end')]
     public function onMarkerDragEnd($id, $lat, $lng)
     {
-        if ($id === 'main-marker') {
-            if ($this->locationMode === 'main') {
-                $this->latitude = round((float) $lat, 6);
-                $this->longitude = round((float) $lng, 6);
-                $this->mapView = ['lat' => $this->latitude, 'lng' => $this->longitude, 'zoom' => $this->mapView['zoom']];
-                $this->mapVersion++;
-            }
+        if ($id === 'main-marker' && $this->locationMode === 'main') {
+            $this->latitude = round((float) $lat, 6);
+            $this->longitude = round((float) $lng, 6);
+            $this->mapView = ['lat' => $this->latitude, 'lng' => $this->longitude, 'zoom' => $this->mapView['zoom']];
+            $this->mapVersion++;
         }
 
-        if (str_starts_with($id, 'sub-marker-')) {
-            if ($this->locationMode === 'nearby') {
-                $index = (int) substr($id, strlen('sub-marker-'));
-                if (isset($this->markers[$index])) {
-                    $this->markers[$index]['lat'] = round((float) $lat, 6);
-                    $this->markers[$index]['lng'] = round((float) $lng, 6);
-                    $this->mapVersion++;
-                }
+        if (str_starts_with($id, 'sub-marker-') && $this->locationMode === 'nearby') {
+            $index = (int) substr($id, strlen('sub-marker-'));
+            if (isset($this->markers[$index])) {
+                $this->markers[$index]['lat'] = round((float) $lat, 6);
+                $this->markers[$index]['lng'] = round((float) $lng, 6);
+                $this->mapVersion++;
             }
         }
     }
@@ -280,6 +259,10 @@ class extends Component {
     {
         $this->mapView['lat'] = round((float) $lat, 6);
         $this->mapView['lng'] = round((float) $lng, 6);
+        if ($this->locationMode === 'main') {
+            $this->latitude = $this->mapView['lat'];
+            $this->longitude = $this->mapView['lng'];
+        }
     }
 
     #[On('map:zoom-changed')]
@@ -324,12 +307,12 @@ class extends Component {
             'name' => 'Nearby place ' . (count($this->markers) + 1),
             'lat'  => round((float) $lat, 6),
             'lng'  => round((float) $lng, 6),
-            'type' => 'other',
+            'type' => '',
         ];
         $this->selectedMarkerIndex = count($this->markers) - 1;
         $this->mapVersion++;
         $this->mapView = ['lat' => round((float) $lat, 6), 'lng' => round((float) $lng, 6), 'zoom' => 15];
-        $this->dispatch('toast', message: 'Nearby place added. You can now edit its details below.', type: 'info');
+        $this->dispatch('toast', message: 'Nearby place added. Please set its category.', type: 'info');
     }
 
     public function update()
@@ -343,21 +326,18 @@ class extends Component {
             'city' => 'nullable|string|max:255',
             'province' => 'nullable|string|max:255',
             'public_email' => ['required','email','max:255', Rule::unique('tenants','email')->ignore($this->tenantRecord->id)],
-            'contact_number' => ['nullable', 'string', 'max:20', 'regex:/^(09|\+639)\d{9}$/'],
+            'contact_number' => ['nullable', 'string', 'max:11', 'regex:/^[0-9]{10,11}$/'],
             'latitude' => 'required|numeric|min:-90|max:90',
             'longitude' => 'required|numeric|min:-180|max:180',
             'markers' => 'array',
             'markers.*.name' => 'required|string|max:100',
             'markers.*.lat' => 'required|numeric|min:-90|max:90',
             'markers.*.lng' => 'required|numeric|min:-180|max:180',
-            'markers.*.type' => ['required', Rule::in(array_keys($this->markerTypes))],
+            'markers.*.type' => 'required|string|max:255',
             'description' => 'nullable|string|max:500',
-            'website' => 'nullable|url|max:255',
-            'facebook' => 'nullable|string|max:255',
-            'instagram' => 'nullable|string|max:255',
             'opening_time' => 'nullable|date_format:H:i',
             'closing_time' => 'nullable|date_format:H:i',
-            'logo' => 'nullable|image|max:2048',
+            'logo' => ['nullable','image','mimes:jpeg,png,jpg,gif,webp','max:10240'], // ★ 10MB
             'is_active' => 'boolean',
             'is_recommended' => 'boolean',
             'admin_name' => 'required|string|min:3|max:255',
@@ -367,78 +347,147 @@ class extends Component {
             'admin_password' => 'nullable|min:8|confirmed',
         ], [
             'slug.regex' => 'Slug may only contain lowercase letters, numbers, and hyphens.',
-            'contact_number.regex' => 'Invalid Philippine phone number. Use 09xxxxxxxxx or +639xxxxxxxxx.',
+            'contact_number.regex' => 'Contact number must be 10-11 digits only.',
+            'contact_number.max' => 'Contact number cannot exceed 11 digits.',
+            'logo.max' => 'Logo must not exceed 10MB.', // ★ added
         ]);
 
-        if ($this->logo) {
-            $logoPath = $this->logo->store('tenant-logos', 'public');
-            if ($this->tenantRecord->logo && Storage::disk('public')->exists($this->tenantRecord->logo)) {
-                Storage::disk('public')->delete($this->tenantRecord->logo);
+        DB::transaction(function () {
+            if ($this->logo) {
+                $logoPath = $this->logo->store('tenant-logos', 'public');
+                if ($this->tenantRecord->logo && Storage::disk('public')->exists($this->tenantRecord->logo)) {
+                    Storage::disk('public')->delete($this->tenantRecord->logo);
+                }
+            } else {
+                $logoPath = $this->tenantRecord->logo;
             }
-        } else {
-            $logoPath = $this->tenantRecord->logo;
-        }
 
-        $coordinates = [[
-            'lat'  => $this->latitude,
-            'lng'  => $this->longitude,
-            'name' => 'Main Location',
-            'type' => 'parent',
-        ]];
-        foreach ($this->markers as $marker) {
-            unset($marker['uid']);
-            $coordinates[] = $marker;
-        }
-
-        $businessInfo = [
-            'description'   => $this->description,
-            'website'       => $this->website,
-            'social_links'  => ['facebook' => $this->facebook, 'instagram' => $this->instagram],
-            'opening_hours' => ['opening' => $this->opening_time, 'closing' => $this->closing_time],
-            'barangay'      => $this->barangay,
-            'city'          => $this->city,
-            'province'      => $this->province,
-        ];
-
-        $this->tenantRecord->update([
-            'name'              => $this->name,
-            'slug'              => $this->slug,
-            'type_of_tenant_id' => $this->type_of_tenant_id,
-            'address'           => $this->address,
-            'email'             => $this->public_email,
-            'contact_number'    => $this->contact_number,
-            'logo'              => $logoPath,
-            'coordinates'       => $coordinates,
-            'is_active'         => $this->is_active,
-            'is_recommended'    => $this->is_recommended,
-        ]);
-
-        TenantSetting::updateOrCreate(
-            ['tenant_id' => $this->tenantRecord->id, 'key' => 'business_info'],
-            ['value' => $businessInfo]
-        );
-
-        if ($this->adminUserRecord) {
-            $this->adminUserRecord->update([
-                'name'  => $this->admin_name,
-                'email' => $this->admin_email,
-            ]);
-            if ($this->admin_password) {
-                $this->adminUserRecord->update(['password' => Hash::make($this->admin_password)]);
+            $coordinates = [[
+                'lat'  => $this->latitude,
+                'lng'  => $this->longitude,
+                'name' => 'Main Location',
+                'type' => 'parent',
+            ]];
+            foreach ($this->markers as $marker) {
+                unset($marker['uid']);
+                $coordinates[] = $marker;
             }
-        } else {
-            $user = User::create([
-                'name'      => $this->admin_name,
-                'email'     => $this->admin_email,
-                'password'  => Hash::make($this->admin_password ?: Str::password(16)),
-                'tenant_id' => $this->tenantRecord->id,
-                'is_active' => true,
+
+            $businessInfo = [
+                'description'   => $this->description,
+                'opening_hours' => ['opening' => $this->opening_time, 'closing' => $this->closing_time],
+                'barangay'      => $this->barangay,
+                'city'          => $this->city,
+                'province'      => $this->province,
+            ];
+
+            $this->tenantRecord->update([
+                'name'              => $this->name,
+                'slug'              => $this->slug,
+                'type_of_tenant_id' => $this->type_of_tenant_id,
+                'address'           => $this->address,
+                'email'             => $this->public_email,
+                'contact_number'    => $this->contact_number,
+                'logo'              => $logoPath,
+                'coordinates'       => $coordinates,
+                'is_active'         => $this->is_active,
+                'is_recommended'    => $this->is_recommended,
             ]);
-            $user->assignRole('admin');
-        }
+
+            TenantSetting::updateOrCreate(
+                ['tenant_id' => $this->tenantRecord->id, 'key' => 'business_info'],
+                ['value' => $businessInfo]
+            );
+
+            if ($this->adminUserRecord) {
+                $this->adminUserRecord->update([
+                    'name'  => $this->admin_name,
+                    'email' => $this->admin_email,
+                ]);
+                if ($this->admin_password) {
+                    $this->adminUserRecord->update(['password' => Hash::make($this->admin_password)]);
+                }
+            } else {
+                $user = User::create([
+                    'name'      => $this->admin_name,
+                    'email'     => $this->admin_email,
+                    'password'  => Hash::make($this->admin_password ?: Str::password(16)),
+                    'tenant_id' => $this->tenantRecord->id,
+                    'is_active' => true,
+                ]);
+                $user->assignRole('admin');
+            }
+        });
 
         session()->flash('message', 'Business details successfully updated!');
         return $this->redirectRoute('superadmin.tenants.index', navigate: true);
+    }
+
+    // ─── Marker Category CRUD (inline) ──────────────────
+
+    public function openAddCategoryModal(): void
+    {
+        $this->reset(['newCategoryKey', 'newCategoryLabel', 'newCategoryColor', 'newCategoryIcon']);
+        $this->newCategoryColor = '#3b82f6';
+        $this->showAddCategoryModal = true;
+    }
+
+    public function closeAddCategoryModal(): void
+    {
+        $this->showAddCategoryModal = false;
+        $this->reset(['newCategoryKey', 'newCategoryLabel', 'newCategoryColor', 'newCategoryIcon']);
+    }
+
+    public function saveNewCategory(): void
+    {
+        $this->validate([
+            'newCategoryKey'   => 'required|alpha_dash|max:50',
+            'newCategoryLabel' => 'required|string|max:100',
+            'newCategoryColor' => 'required|regex:/^#[0-9a-fA-F]{6}$/',
+            'newCategoryIcon'  => 'nullable|file|mimes:svg|max:1024',
+        ]);
+
+        if (collect($this->markerCategories)->contains('key', $this->newCategoryKey)) {
+            $this->addError('newCategoryKey', 'This key already exists.');
+            return;
+        }
+
+        $iconPath = null;
+        $iconSvg = null;
+        if ($this->newCategoryIcon) {
+            $iconPath = $this->newCategoryIcon->store('marker-icons', 'public');
+            $iconSvg = file_get_contents($this->newCategoryIcon->getRealPath());
+        }
+
+        $this->markerCategories[] = [
+            'key'       => $this->newCategoryKey,
+            'label'     => $this->newCategoryLabel,
+            'color'     => $this->newCategoryColor,
+            'icon_path' => $iconPath,
+            'icon_svg'  => $iconSvg,
+        ];
+
+        SiteSetting::setValue('marker_categories', $this->markerCategories);
+
+        $this->closeAddCategoryModal();
+        $this->dispatch('toast', message: 'Category added successfully.', type: 'success');
+    }
+
+    /**
+     * Generate a temporary preview URL for the uploaded logo.
+     * Used in the Blade template to show a preview before saving.
+     */
+    public function logoPreviewUrl(): ?string
+    {
+        if (!$this->logo) {
+            return null;
+        }
+
+        try {
+            return $this->logo->temporaryUrl();
+        } catch (\Exception $e) {
+            return null;
+        }
     }
 };
 ?>
@@ -486,8 +535,10 @@ class extends Component {
             <h1 class="font-display text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Edit Tenant</h1>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Update business information, location, and admin account.</p>
         </div>
-        <a href="{{ route('superadmin.tenants.index') }}" wire:navigate class="text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
-            &larr; Back to tenants
+        <a href="{{ route('superadmin.tenants.index') }}" wire:navigate
+           class="inline-flex items-center gap-1.5 text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded active:scale-95">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+            Back to tenants
         </a>
     </div>
 
@@ -531,7 +582,11 @@ class extends Component {
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Contact number</label>
-                    <input type="text" wire:model="contact_number" class="input" placeholder="09xxxxxxxxx">
+                    <input type="tel" id="field-contact"
+                           inputmode="numeric" pattern="[0-9]*" maxlength="11"
+                           wire:model.live.debounce.400ms="contact_number"
+                           x-on:input="event.target.value = event.target.value.replace(/[^0-9]/g, '').slice(0, 11)"
+                           class="input" placeholder="09xxxxxxxxx">
                     @error('contact_number') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             </div>
@@ -561,21 +616,6 @@ class extends Component {
                 <textarea wire:model="description" rows="3" class="textarea"></textarea>
             </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Website URL</label>
-                    <input type="url" wire:model="website" class="input">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Facebook</label>
-                    <input type="text" wire:model="facebook" class="input">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Instagram</label>
-                    <input type="text" wire:model="instagram" class="input">
-                </div>
-            </div>
-
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Opening time</label>
@@ -587,27 +627,47 @@ class extends Component {
                 </div>
             </div>
 
-            {{-- Business logo with instant Alpine preview --}}
+            {{-- Business logo with drag & drop and 10MB limit --}}
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Business logo</label>
-                <div x-data="{ previewUrl: null }">
-                    <input type="file"
-                           wire:model="logo"
-                           x-ref="logoInput"
-                           accept="image/*"
-                           @change="previewUrl = URL.createObjectURL($refs.logoInput.files[0])"
-                           class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition">
-                    @error('logo') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-
-                    <div class="mt-3">
-                        <template x-if="previewUrl">
-                            <img :src="previewUrl" class="h-24 w-24 object-cover rounded-lg border border-gray-200 dark:border-gray-700" alt="New logo preview">
-                        </template>
-                        <template x-if="!previewUrl && @js($tenantRecord->logo)">
-                            <img src="{{ asset('storage/' . $tenantRecord->logo) }}" class="h-24 w-24 object-cover rounded-lg border border-gray-200 dark:border-gray-700" alt="Current logo">
-                        </template>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="field-logo">Business logo</label>
+                <div
+                    x-data="{ dragging: false, previewUrl: null }"
+                    x-on:dragover.prevent="dragging = true"
+                    x-on:dragleave.prevent="dragging = false"
+                    x-on:drop.prevent="dragging = false; $refs.logoInput.files = $event.dataTransfer.files; $refs.logoInput.dispatchEvent(new Event('change'))"
+                    :class="dragging ? 'border-primary-600 bg-blue-50 dark:bg-blue-500/10' : 'border-gray-300 dark:border-gray-600'"
+                    class="relative flex items-center gap-4 rounded-xl border-2 border-dashed p-4 transition-colors"
+                >
+                    @php $logoPreview = $this->logoPreviewUrl(); @endphp
+                    <template x-if="previewUrl">
+                        <img :src="previewUrl" class="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-700 shrink-0">
+                    </template>
+                    <template x-if="!previewUrl && @js($tenantRecord->logo)">
+                        <img src="{{ asset('storage/' . $tenantRecord->logo) }}" class="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-700 shrink-0">
+                    </template>
+                    <template x-if="!previewUrl && !@js($tenantRecord->logo)">
+                        <div class="h-16 w-16 rounded-lg bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-gray-400 shrink-0">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M4 8h.01M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z"/></svg>
+                        </div>
+                    </template>
+                    <div class="flex-1 min-w-0">
+                        <span class="inline-flex items-center gap-1.5 text-sm font-semibold text-primary-600">
+                            {{ $logo ? 'Change logo' : 'Upload a logo' }}
+                        </span>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Drag & drop, or click to browse. PNG/JPG up to 10MB.</p>
+                        <div wire:loading wire:target="logo" class="text-xs text-blue-500 mt-1 flex items-center gap-1">
+                            <svg class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                            Uploading…
+                        </div>
                     </div>
+                    @if ($logo)
+                        <button type="button" wire:click="$set('logo', null)" @click="previewUrl = null" class="relative z-10 shrink-0 text-xs font-semibold text-red-500 hover:text-red-700 active:scale-95 transition-transform">Remove</button>
+                    @endif
+                    <input x-ref="logoInput" id="field-logo" type="file" wire:model="logo" accept="image/*"
+                           @change="previewUrl = URL.createObjectURL($refs.logoInput.files[0])"
+                           class="absolute inset-0 opacity-0 cursor-pointer">
                 </div>
+                @error('logo') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
 
             <div class="flex items-center justify-between">
@@ -619,8 +679,9 @@ class extends Component {
             </div>
 
             <div class="flex items-center justify-between">
-                <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
-                    ⭐ Recognized Tourist Attraction / Recommended Destination
+                <span class="text-sm font-medium text-gray-700 dark:text-gray-300 inline-flex items-center gap-1.5">
+                    <svg class="w-4 h-4 text-amber-500" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
+                    Recognized Tourist Attraction / Recommended Destination
                 </span>
                 <label class="relative inline-flex items-center cursor-pointer">
                     <input type="checkbox" wire:model="is_recommended" class="sr-only peer">
@@ -637,15 +698,17 @@ class extends Component {
             <div class="flex flex-wrap gap-2 mb-4">
                 <button type="button"
                         wire:click="setLocationMode('main')"
-                        class="px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider transition focus-visible:ring-2 focus-visible:ring-primary-500/50
+                        class="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50
                                {{ $locationMode === 'main' ? 'bg-primary-600 text-white shadow-md' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600' }}">
-                    📍 Edit Main Location
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                    Edit Main Location
                 </button>
                 <button type="button"
                         wire:click="setLocationMode('nearby')"
-                        class="px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider transition focus-visible:ring-2 focus-visible:ring-primary-500/50
+                        class="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50
                                {{ $locationMode === 'nearby' ? 'bg-primary-600 text-white shadow-md' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600' }}">
-                    🗺️ Add / Edit Nearby Places
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
+                    Add / Edit Nearby Places
                 </button>
                 <span class="text-xs text-gray-400 dark:text-gray-500 self-center">
                     @if($locationMode === 'main')
@@ -654,29 +717,38 @@ class extends Component {
                         Click on map to add a new nearby place.
                     @endif
                 </span>
+                <button type="button" wire:click="openAddCategoryModal"
+                        class="ml-auto inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-primary-50 dark:bg-blue-500/10 text-primary-600 dark:text-blue-400 text-xs font-semibold border border-primary-200 dark:border-blue-500/30 hover:bg-primary-100 dark:hover:bg-blue-500/20 transition active:scale-95">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                    Add Category
+                </button>
             </div>
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Latitude <span class="text-red-500">*</span></label>
-                    <input type="text" wire:model.live.debounce.500ms="latitude" onfocus="this.select()" class="input font-mono"
+                    <input type="number" step="any" min="-90" max="90"
+                           wire:model.live.debounce.500ms="latitude" onfocus="this.select()" class="input font-mono"
                            @if($locationMode !== 'main') readonly @endif>
                     @error('latitude') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Longitude <span class="text-red-500">*</span></label>
-                    <input type="text" wire:model.live.debounce.500ms="longitude" onfocus="this.select()" class="input font-mono"
+                    <input type="number" step="any" min="-180" max="180"
+                           wire:model.live.debounce.500ms="longitude" onfocus="this.select()" class="input font-mono"
                            @if($locationMode !== 'main') readonly @endif>
                     @error('longitude') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             </div>
 
             <div class="flex flex-wrap gap-2 mb-4">
-                <button type="button" wire:click="useMyLocation" class="btn-secondary text-xs focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                    📍 Use my location
+                <button type="button" wire:click="useMyLocation" class="btn-secondary text-xs active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                    Use my location
                 </button>
-                <button type="button" wire:click="toggleSatellite" class="btn-secondary text-xs focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                    🛰️ {{ $satellite ? 'Street View' : 'Satellite' }}
+                <button type="button" wire:click="toggleSatellite" class="btn-secondary text-xs active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/></svg>
+                    {{ $satellite ? 'Street View' : 'Satellite' }}
                 </button>
             </div>
 
@@ -722,12 +794,13 @@ class extends Component {
 
                         @foreach($markers as $index => $marker)
                             @php
-                                $type = $marker['type'] ?? 'other';
-                                $color = $this->markerColors[$type] ?? '#94a3b8';
-                                $emoji = $this->markerEmojis[$type] ?? '📍';
+                                $type = $marker['type'] ?? '';
+                                $category = collect($this->markerCategories)->firstWhere('key', $type);
+                                $color = $category['color'] ?? '#94a3b8';
+                                $iconSvg = $category['icon_svg'] ?? null;
                             @endphp
                             <x-map-marker
-                                wire:key="sub-marker-{{ $marker['uid'] }}"
+                                wire:key="sub-marker-{{ $marker['uid'] }}-{{ $marker['type'] }}"
                                 :lat="$marker['lat']"
                                 :lng="$marker['lng']"
                                 :color="$color"
@@ -735,15 +808,31 @@ class extends Component {
                                 :draggable="$locationMode === 'nearby'"
                             >
                                 <x-marker-content>
-                                    <div class="flex h-10 w-10 items-center justify-center rounded-full border-2 bg-white shadow-lg text-xl"
-                                         style="border-color: {{ $color }};">
-                                        <span class="leading-none">{{ $emoji }}</span>
+                                    <div class="relative flex h-10 w-10 items-center justify-center
+                                                transform-gpu will-change-transform transition-transform duration-200
+                                                group-hover:scale-110 active:scale-95"
+                                         style="cursor: pointer;">
+                                        <svg class="absolute inset-0 size-10 drop-shadow-md
+                                                    fill-white dark:fill-gray-900
+                                                    stroke-slate-400 dark:stroke-slate-600 stroke-1"
+                                             viewBox="0 0 24 24" aria-hidden="true">
+                                            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                                        </svg>
+                                        @if($iconSvg)
+                                            <div class="absolute mb-1 size-[18px] text-gray-800 dark:text-white">
+                                                {!! str_replace('<svg ', '<svg class="size-full stroke-current fill-none" ', $iconSvg) !!}
+                                            </div>
+                                        @else
+                                            <span class="absolute mb-1 text-[10px] font-bold text-gray-800 dark:text-white">
+                                                {{ strtoupper(substr($type, 0, 1)) }}
+                                            </span>
+                                        @endif
                                     </div>
                                 </x-marker-content>
                                 <x-marker-popup>
                                     <div class="p-2">
                                         <strong class="text-gray-900 dark:text-white">{{ $marker['name'] }}</strong>
-                                        <p class="text-xs text-gray-500 dark:text-gray-400">{{ $this->markerTypes[$type] ?? 'Other' }}</p>
+                                        <p class="text-xs text-gray-500 dark:text-gray-400">{{ $category['label'] ?? 'Uncategorized' }}</p>
                                     </div>
                                 </x-marker-popup>
                             </x-map-marker>
@@ -758,7 +847,7 @@ class extends Component {
                             :draggable="$locationMode === 'main'"
                         >
                             <x-marker-content>
-                                <div class="relative flex items-center justify-center">
+                                <div class="relative flex items-center justify-center transform-gpu will-change-transform transition-transform duration-200 group-hover:scale-110 active:scale-95">
                                     <svg class="h-10 w-10 drop-shadow-lg" viewBox="0 0 24 24" fill="#ef4444" stroke="white" stroke-width="1.5">
                                         <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
                                         <circle cx="12" cy="9" r="2.5" fill="white"/>
@@ -782,34 +871,41 @@ class extends Component {
                         <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
                             Nearby places <span class="text-gray-400 font-normal">({{ count($markers) }}/20)</span>
                         </span>
-                        <button type="button" wire:click="addMarker" class="text-xs font-semibold text-primary-600 hover:underline focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                        <button type="button" wire:click="addMarker" class="text-xs font-semibold text-primary-600 hover:underline focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded active:scale-95 transition-transform">
                             + Add nearby place
                         </button>
                     </div>
 
                     @if(count($markers) > 0)
                         <div class="flex flex-wrap items-center gap-3 mb-3 text-[11px] text-gray-500 dark:text-gray-400">
-                            @foreach($this->markerTypes as $typeKey => $typeLabel)
+                            @foreach($this->markerCategories as $cat)
                                 <span class="inline-flex items-center gap-1">
-                                    <span class="w-2.5 h-2.5 rounded-full" style="background:{{ $this->markerColors[$typeKey] }}"></span>
-                                    {{ $this->markerEmojis[$typeKey] }} {{ $typeLabel }}
+                                    <span class="w-2.5 h-2.5 rounded-full" style="background:{{ $cat['color'] }}"></span>
+                                    {{ $cat['label'] }}
                                 </span>
                             @endforeach
                         </div>
                         <div class="space-y-2">
                             @foreach($markers as $index => $marker)
+                                @php
+                                    $type = $marker['type'] ?? '';
+                                    $category = collect($this->markerCategories)->firstWhere('key', $type);
+                                @endphp
                                 <div wire:key="marker-row-{{ $marker['uid'] }}"
                                      class="flex flex-wrap items-center gap-3 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-200 dark:border-gray-700
                                             {{ $selectedMarkerIndex === $index ? 'ring-2 ring-primary-600/40 border-primary-600/30' : '' }}">
                                     <input type="text" wire:model.debounce.500ms="markers.{{ $index }}.name" placeholder="Place name" class="input !py-2 flex-1 min-w-[140px]">
-                                    <input type="number" step="0.0001" wire:model.debounce.500ms="markers.{{ $index }}.lat" placeholder="Lat" class="input !py-2 !w-28 font-mono">
-                                    <input type="number" step="0.0001" wire:model.debounce.500ms="markers.{{ $index }}.lng" placeholder="Lng" class="input !py-2 !w-28 font-mono">
-                                    <select wire:model="markers.{{ $index }}.type" wire:change="refreshMapAfterTypeChange" class="select !py-2 !w-40">
-                                        @foreach($this->markerTypes as $typeKey => $typeLabel)
-                                            <option value="{{ $typeKey }}">{{ $this->markerEmojis[$typeKey] }} {{ $typeLabel }}</option>
+                                    <input type="number" step="any" min="-90" max="90" wire:model.debounce.500ms="markers.{{ $index }}.lat" placeholder="Lat" class="input !py-2 !w-28 font-mono">
+                                    <input type="number" step="any" min="-180" max="180" wire:model.debounce.500ms="markers.{{ $index }}.lng" placeholder="Lng" class="input !py-2 !w-28 font-mono">
+                                    <select wire:model.live="markers.{{ $index }}.type" class="select !py-2 !w-40 {{ empty($marker['type']) ? 'border-red-300 dark:border-red-500' : '' }}">
+                                        <option value="">Select category *</option>
+                                        @foreach($this->markerCategories as $cat)
+                                            <option value="{{ $cat['key'] }}">{{ $cat['label'] }}</option>
                                         @endforeach
                                     </select>
-                                    <button type="button" wire:click="removeMarker({{ $index }})" class="text-red-500 hover:text-red-700">✕</button>
+                                    <button type="button" wire:click="removeMarker({{ $index }})" class="text-red-500 hover:text-red-700 active:scale-95 transition-transform" aria-label="Remove nearby place">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                    </button>
                                 </div>
                             @endforeach
                         </div>
@@ -850,12 +946,59 @@ class extends Component {
         </div>
 
         <div class="flex justify-end">
-            <button type="submit" wire:loading.attr="disabled" class="btn-primary focus-visible:ring-2 focus-visible:ring-primary-500/50">
+            <button type="submit" wire:loading.attr="disabled" class="btn-primary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50">
                 <span wire:loading.remove>Save Changes</span>
                 <span wire:loading>Saving…</span>
             </button>
         </div>
     </form>
+
+    {{-- Add Category Modal --}}
+    @if($showAddCategoryModal)
+        <div class="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-4"
+             x-on:keydown.escape.window="$wire.closeAddCategoryModal()"
+             @click.self="$wire.closeAddCategoryModal()">
+            <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md p-6"
+                 x-transition:enter="transition ease-out duration-200"
+                 x-transition:enter-start="opacity-0 scale-95"
+                 x-transition:enter-end="opacity-100 scale-100">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg font-bold text-gray-900 dark:text-white">Add Marker Category</h3>
+                    <button type="button" wire:click="closeAddCategoryModal" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
+                </div>
+
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Key (slug)</label>
+                        <input type="text" wire:model="newCategoryKey" class="input" placeholder="e.g. restaurant">
+                        @error('newCategoryKey') <span class="text-red-500 text-xs">{{ $message }}</span> @enderror
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Label</label>
+                        <input type="text" wire:model="newCategoryLabel" class="input" placeholder="Restaurant">
+                        @error('newCategoryLabel') <span class="text-red-500 text-xs">{{ $message }}</span> @enderror
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Color</label>
+                        <input type="color" wire:model="newCategoryColor" class="h-10 w-full rounded-lg border border-gray-300 dark:border-gray-600 cursor-pointer">
+                        @error('newCategoryColor') <span class="text-red-500 text-xs">{{ $message }}</span> @enderror
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Icon (SVG)</label>
+                        <input type="file" wire:model="newCategoryIcon" accept=".svg" class="input">
+                        @error('newCategoryIcon') <span class="text-red-500 text-xs">{{ $message }}</span> @enderror
+                    </div>
+                </div>
+
+                <div class="flex justify-end gap-3 mt-6">
+                    <button type="button" wire:click="closeAddCategoryModal" class="btn-secondary">Cancel</button>
+                    <button type="button" wire:click="saveNewCategory" class="btn-primary">Add Category</button>
+                </div>
+            </div>
+        </div>
+    @endif
 
     @script
     <script>

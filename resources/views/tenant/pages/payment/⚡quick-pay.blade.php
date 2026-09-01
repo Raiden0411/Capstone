@@ -65,9 +65,19 @@ new class extends Component {
     @if($remainingBalance > 0 && !in_array($booking->status, ['cancelled', 'completed']))
         <button wire:click="confirmAndPay"
                 wire:confirm="Receive cash payment of ₱{{ number_format($remainingBalance, 2) }} and confirm booking?"
-                class="inline-flex items-center gap-2 bg-[#376df1] hover:bg-blue-700 text-white font-semibold py-2.5 px-5 rounded-full shadow-lg shadow-blue-500/20 transition hover:scale-105">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-            Confirm & Pay (Cash)
+                wire:loading.attr="disabled"
+                class="btn-primary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
+            <span wire:loading.remove>
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                Confirm & Pay (Cash)
+            </span>
+            <span wire:loading class="inline-flex items-center gap-2">
+                <svg class="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                </svg>
+                Processing…
+            </span>
         </button>
     @endif
 </div>

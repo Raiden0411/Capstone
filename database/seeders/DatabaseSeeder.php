@@ -11,12 +11,14 @@ use App\Models\Payment;
 use App\Models\Property;
 use App\Models\PropertyType;
 use App\Models\Service;
+use App\Models\SiteSetting;
 use App\Models\Tenant;
 use App\Models\TenantSetting;
 use App\Models\TypeOfTenant;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Carbon\Carbon;
 
@@ -29,16 +31,19 @@ class DatabaseSeeder extends Seeder
             RoleSeeder::class,
         ]);
 
+        $this->seedMarkerCategories(); // ★ seed dynamic marker categories with SVG icons
+
         $typeInn      = TypeOfTenant::firstOrCreate(['type' => 'Inn'],      ['description' => 'Small lodging']);
         $typeResort   = TypeOfTenant::firstOrCreate(['type' => 'Resort'],   ['description' => 'Leisure resort']);
         $typeEcoPark  = TypeOfTenant::firstOrCreate(['type' => 'Eco Park'], ['description' => 'Nature park']);
         $typeMangrove = TypeOfTenant::firstOrCreate(['type' => 'Mangrove'], ['description' => 'Mangrove area']);
         $typeRestaurant = TypeOfTenant::firstOrCreate(['type' => 'Restaurant'], ['description' => 'Food establishment']);
 
-        $propTypeStandard = PropertyType::firstOrCreate(['name' => 'Standard Room'], ['tenant_id' => null]);
-        $propTypeDeluxe   = PropertyType::firstOrCreate(['name' => 'Deluxe Room'],   ['tenant_id' => null]);
-        $propTypeSuite    = PropertyType::firstOrCreate(['name' => 'Family Suite'],  ['tenant_id' => null]);
-        $propTypeCottage  = PropertyType::firstOrCreate(['name' => 'Cottage'],       ['tenant_id' => null]);
+        // Global property types
+        $propTypeStandard = PropertyType::firstOrCreate(['name' => 'Standard Room', 'tenant_id' => null]);
+        $propTypeDeluxe   = PropertyType::firstOrCreate(['name' => 'Deluxe Room',   'tenant_id' => null]);
+        $propTypeSuite    = PropertyType::firstOrCreate(['name' => 'Family Suite',  'tenant_id' => null]);
+        $propTypeCottage  = PropertyType::firstOrCreate(['name' => 'Cottage',       'tenant_id' => null]);
 
         // Super admin
         $superAdmin = User::firstOrCreate(
@@ -75,8 +80,8 @@ class DatabaseSeeder extends Seeder
                 'email'            => 'eco@gmail.com',
                 'coordinates'      => [
                     ['lat' => 10.9089, 'lng' => 123.0762, 'name' => 'Gawahon Falls',       'type' => 'parent'],
-                    ['lat' => 10.9095, 'lng' => 123.0770, 'name' => 'Main Office',          'type' => 'child'],
-                    ['lat' => 10.9080, 'lng' => 123.0750, 'name' => 'Parking Lot',          'type' => 'child'],
+                    ['lat' => 10.9095, 'lng' => 123.0770, 'name' => 'Main Office',          'type' => 'entrance'],
+                    ['lat' => 10.9080, 'lng' => 123.0750, 'name' => 'Parking Lot',          'type' => 'parking'],
                 ],
                 'is_active'        => true,
             ],
@@ -90,7 +95,7 @@ class DatabaseSeeder extends Seeder
                 'email'            => 'resort@gmail.com',
                 'coordinates'      => [
                     ['lat' => 10.8956, 'lng' => 123.0710, 'name' => 'Resort Main',          'type' => 'parent'],
-                    ['lat' => 10.8960, 'lng' => 123.0720, 'name' => 'Swimming Pool',        'type' => 'child'],
+                    ['lat' => 10.8960, 'lng' => 123.0720, 'name' => 'Swimming Pool',        'type' => 'viewpoint'],
                 ],
                 'is_active'        => true,
             ],
@@ -137,10 +142,109 @@ class DatabaseSeeder extends Seeder
             );
             $admin->assignRole('admin');
 
-            $this->seedTenantDemoData($tenant);
+            $this->seedTenantDemoData($tenant, $touristUser);
         }
 
         $this->seedEvents();
+    }
+
+    /**
+     * Seed marker categories with professional inline SVG icons.
+     */
+    protected function seedMarkerCategories(): void
+    {
+        // Standardized SVG wrapper to ensure consistent rendering across all icons
+        $svgStart = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">';
+        $svgEnd = '</svg>';
+
+        $categories = [
+            [
+                'key'   => 'restaurant',
+                'label' => 'Restaurant',
+                'color' => '#f97316',
+                'svg'   => $svgStart . '<path d="M3 2v7c0 2.2 1.8 4 4 4h0a4 4 0 0 0 4-4V2M7 2v20M21 15V2v0a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/>' . $svgEnd,
+            ],
+            [
+                'key'   => 'cafe',
+                'label' => 'Café',
+                'color' => '#a855f7',
+                'svg'   => $svgStart . '<path d="M17 8h1a4 4 0 1 1 0 8h-1M3 8h14v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4Z M6 2v2M10 2v2M14 2v2"/>' . $svgEnd,
+            ],
+            [
+                'key'   => 'inn',
+                'label' => 'Inn / Hotel',
+                'color' => '#3b82f6',
+                'svg'   => $svgStart . '<path d="M2 4v16M2 8h18a2 2 0 0 1 2 2v10M2 17h20M6 8v9"/>' . $svgEnd,
+            ],
+            [
+                'key'   => 'shop',
+                'label' => 'Shopping & Retail',
+                'color' => '#14b8a6',
+                'svg'   => $svgStart . '<path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4ZM3 6h18M16 10a4 4 0 0 1-8 0"/>' . $svgEnd,
+            ],
+            [
+                'key'   => 'viewpoint',
+                'label' => 'Nature & Parks',
+                'color' => '#eab308',
+                'svg'   => $svgStart . '<path d="m17 14 3 3.3a1 1 0 0 1-.7 1.7H4.7a1 1 0 0 1-.7-1.7L7 14h-.3a1 1 0 0 1-.7-1.7L9 9h-.2A1 1 0 0 1 8 7.3L12 3l4 4.3a1 1 0 0 1-.8 1.7H15l3 3.3a1 1 0 0 1-.8 1.7H17ZM12 19v3"/>' . $svgEnd,
+            ],
+            [
+                'key'   => 'parking',
+                'label' => 'Parking',
+                'color' => '#64748b',
+                'svg'   => $svgStart . '<circle cx="12" cy="12" r="10"/><path d="M9 17V7h4a3 3 0 0 1 0 6H9"/>' . $svgEnd,
+            ],
+            [
+                'key'   => 'entrance',
+                'label' => 'Entrance / Exit',
+                'color' => '#10b981',
+                'svg'   => $svgStart . '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3"/>' . $svgEnd,
+            ],
+            [
+                'key'   => 'hospital',
+                'label' => 'Hospital & Medical',
+                'color' => '#ef4444',
+                'svg'   => $svgStart . '<path d="M12 6v4M10 8h4M21 21v-4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v4M2 21h20M3 21V9a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12"/>' . $svgEnd,
+            ],
+            [
+                'key'   => 'transit',
+                'label' => 'Transit & Bus',
+                'color' => '#f59e0b',
+                'svg'   => $svgStart . '<path d="M8 6v6M15 6v6M2 12h19.6M18 18h3s.5-1.7.8-2.8c.1-.4.2-.8.2-1.2 0-.4-.1-.8-.2-1.2l-1.4-5C20.1 6.8 19.1 6 18 6H4a2 2 0 0 0-2 2v10h3M4 19a2 2 0 1 0 4 0 2 2 0 0 0-4 0ZM14 19a2 2 0 1 0 4 0 2 2 0 0 0-4 0Z"/>' . $svgEnd,
+            ],
+            [
+                'key'   => 'culture',
+                'label' => 'Monuments & Culture',
+                'color' => '#8b5cf6',
+                'svg'   => $svgStart . '<path d="M3 21h18M3 10h18M5 10v8M9 10v8M15 10v8M19 10v8M12 2l9 5H3z"/>' . $svgEnd,
+            ],
+            [
+                'key'   => 'other',
+                'label' => 'Other',
+                'color' => '#94a3b8',
+                'svg'   => $svgStart . '<path d="M12 2a10 10 0 1 0 0 20 10 10 0 1 0 0-20zM12 8v4M12 16h.01"/>' . $svgEnd,
+            ],
+        ];
+
+        $storedCategories = [];
+
+        foreach ($categories as $cat) {
+            // Write the SVG file to public storage (overwrites if exists)
+            $fileName = 'marker-icons/' . $cat['key'] . '.svg';
+            Storage::disk('public')->put($fileName, $cat['svg']);
+
+            // Store category metadata including the inline SVG content
+            $storedCategories[] = [
+                'key'       => $cat['key'],
+                'label'     => $cat['label'],
+                'color'     => $cat['color'],
+                'icon_path' => $fileName,
+                'icon_svg'  => $cat['svg'], // ★ critical for inline rendering
+            ];
+        }
+
+        // Save to site_settings
+        SiteSetting::setValue('marker_categories', $storedCategories);
     }
 
     private function seedEvents(): void
@@ -229,16 +333,16 @@ class DatabaseSeeder extends Seeder
     }
 
     /** @disregard PHP6613 */
-    private function seedTenantDemoData(Tenant $tenant): void
+    private function seedTenantDemoData(Tenant $tenant, User $touristUser): void
     {
         if (Property::query()->where('tenant_id', $tenant->id)->count() > 0) {
             return;
         }
 
-        $standard = PropertyType::query()->where('name', 'Standard Room')->firstOrFail();
-        $deluxe   = PropertyType::query()->where('name', 'Deluxe Room')->firstOrFail();
-        $suite    = PropertyType::query()->where('name', 'Family Suite')->firstOrFail();
-        $cottage  = PropertyType::query()->where('name', 'Cottage')->firstOrFail();
+        $standard = PropertyType::query()->where('name', 'Standard Room')->whereNull('tenant_id')->firstOrFail();
+        $deluxe   = PropertyType::query()->where('name', 'Deluxe Room')->whereNull('tenant_id')->firstOrFail();
+        $suite    = PropertyType::query()->where('name', 'Family Suite')->whereNull('tenant_id')->firstOrFail();
+        $cottage  = PropertyType::query()->where('name', 'Cottage')->whereNull('tenant_id')->firstOrFail();
 
         $props = [
             ['name' => 'Standard Room', 'type' => $standard, 'price' => 1200, 'capacity' => 2, 'desc' => 'Cozy room for two'],
@@ -287,28 +391,37 @@ class DatabaseSeeder extends Seeder
             );
         }
 
+        // Create employee users and employees with firstOrCreate to avoid duplicates on re-run
         $emp1User = User::firstOrCreate(
             ['email' => 'rico@gmail.com'],
             ['name' => 'Rico Reception', 'password' => Hash::make('password'), 'tenant_id' => $tenant->id, 'is_active' => 1]
         );
         $emp1User->syncPermissions(['view bookings', 'create bookings', 'view customers', 'create customers']);
-        Employee::create(['tenant_id' => $tenant->id, 'user_id' => $emp1User->id, 'name' => 'Rico Reception', 'role' => 'Receptionist', 'phone' => '0917-111-1111', 'is_active' => 1]);
+        Employee::firstOrCreate(
+            ['tenant_id' => $tenant->id, 'user_id' => $emp1User->id],
+            ['name' => 'Rico Reception', 'role' => 'Receptionist', 'phone' => '0917-111-1111', 'is_active' => 1]
+        );
 
         $emp2User = User::firstOrCreate(
             ['email' => 'hannah@gmail.com'],
             ['name' => 'Hannah Housekeeping', 'password' => Hash::make('password'), 'tenant_id' => $tenant->id, 'is_active' => 1]
         );
-        Employee::create(['tenant_id' => $tenant->id, 'user_id' => $emp2User->id, 'name' => 'Hannah Housekeeping', 'role' => 'Housekeeping', 'phone' => '0917-222-2222', 'is_active' => 1]);
+        Employee::firstOrCreate(
+            ['tenant_id' => $tenant->id, 'user_id' => $emp2User->id],
+            ['name' => 'Hannah Housekeeping', 'role' => 'Housekeeping', 'phone' => '0917-222-2222', 'is_active' => 1]
+        );
 
         $mgrUser = User::firstOrCreate(
             ['email' => 'megan@gmail.com'],
             ['name' => 'Megan Manager', 'password' => Hash::make('password'), 'tenant_id' => $tenant->id, 'is_active' => 1]
         );
         $mgrUser->syncPermissions(['view bookings', 'create bookings', 'view customers', 'view properties', 'view services', 'view payments', 'view employees', 'view analytics']);
-        Employee::create(['tenant_id' => $tenant->id, 'user_id' => $mgrUser->id, 'name' => 'Megan Manager', 'role' => 'Manager', 'phone' => '0917-333-3333', 'is_active' => 1]);
+        Employee::firstOrCreate(
+            ['tenant_id' => $tenant->id, 'user_id' => $mgrUser->id],
+            ['name' => 'Megan Manager', 'role' => 'Manager', 'phone' => '0917-333-3333', 'is_active' => 1]
+        );
 
         // Bookings (using the tourist user)
-        $touristUser = User::query()->where('email', 'tourist@gmail.com')->first();
         $propertyIds     = Property::query()->where('tenant_id', $tenant->id)->pluck('id')->toArray();
         $propertyPrices  = Property::query()->where('tenant_id', $tenant->id)->pluck('price', 'id')->toArray();
         $serviceIds      = Service::query()->where('tenant_id', $tenant->id)->pluck('id')->toArray();

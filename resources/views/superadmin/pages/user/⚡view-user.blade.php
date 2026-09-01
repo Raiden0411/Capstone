@@ -8,6 +8,7 @@ use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
 use App\Models\User;
 use Spatie\Permission\Models\Role;
+use Illuminate\Support\Facades\DB;
 
 new 
 #[Layout('superadmin.layouts.app')] 
@@ -22,6 +23,32 @@ class extends Component {
     public int $perPage = 10;
     public array $selectedUsers = [];
     public bool $selectAll = false;
+
+    // Stats
+    public int $totalUsers = 0;
+    public int $activeUsers = 0;
+    public int $platformUsers = 0;
+    public int $businessUsers = 0;
+
+    public function mount()
+    {
+        $this->refreshStats();
+    }
+
+    public function refreshStats()
+    {
+        $stats = User::select(
+            DB::raw('COUNT(*) as total'),
+            DB::raw('COALESCE(SUM(is_active), 0) as active_count'),
+            DB::raw('COALESCE(SUM(tenant_id IS NULL), 0) as platform_count'),
+            DB::raw('COALESCE(SUM(tenant_id IS NOT NULL), 0) as business_count')
+        )->first();
+
+        $this->totalUsers = (int) ($stats->total ?? 0);
+        $this->activeUsers = (int) ($stats->active_count ?? 0);
+        $this->platformUsers = (int) ($stats->platform_count ?? 0);
+        $this->businessUsers = (int) ($stats->business_count ?? 0);
+    }
 
     public function updatingSearch() { $this->resetPage(); }
     public function updatingRoleFilter() { $this->resetPage(); }
@@ -46,6 +73,7 @@ class extends Component {
             return;
         }
         $user->update(['is_active' => !$user->is_active]);
+        $this->refreshStats();
         session()->flash('message', "User '{$user->name}' " . ($user->is_active ? 'activated' : 'deactivated') . " successfully.");
     }
 
@@ -57,6 +85,7 @@ class extends Component {
             return;
         }
         $user->delete();
+        $this->refreshStats();
         session()->flash('message', "User '{$user->name}' deleted successfully.");
     }
 
@@ -70,6 +99,7 @@ class extends Component {
         $count = User::whereIn('id', $this->selectedUsers)->delete();
         $this->selectedUsers = [];
         $this->selectAll = false;
+        $this->refreshStats();
         session()->flash('message', "{$count} user(s) deleted successfully.");
     }
 
@@ -77,6 +107,7 @@ class extends Component {
     {
         if (empty($this->selectedUsers)) { session()->flash('error', 'No users selected.'); return; }
         User::whereIn('id', $this->selectedUsers)->update(['is_active' => true]);
+        $this->refreshStats();
         session()->flash('message', count($this->selectedUsers) . ' user(s) activated.');
     }
 
@@ -88,6 +119,7 @@ class extends Component {
             return;
         }
         User::whereIn('id', $this->selectedUsers)->update(['is_active' => false]);
+        $this->refreshStats();
         session()->flash('message', count($this->selectedUsers) . ' user(s) deactivated.');
     }
 
@@ -98,7 +130,7 @@ class extends Component {
 
     public function exportCsv()
     {
-        $users = User::with(['tenant', 'roles'])
+        $users = User::with(['tenant:id,name', 'roles:id,name'])
             ->when($this->search, fn($q) => $q->where(function($sub) {
                 $sub->where('name', 'like', '%' . $this->search . '%')
                     ->orWhere('email', 'like', '%' . $this->search . '%');
@@ -106,7 +138,7 @@ class extends Component {
             ->when($this->roleFilter, fn($q) => $q->whereHas('roles', fn($r) => $r->where('name', $this->roleFilter)))
             ->when($this->statusFilter !== '', fn($q) => $q->where('is_active', $this->statusFilter === 'active'))
             ->orderBy('name')
-            ->get();
+            ->cursor();
 
         $filename = 'users-' . now()->format('Y-m-d-His') . '.csv';
 
@@ -130,13 +162,14 @@ class extends Component {
     #[Computed]
     public function availableRoles()
     {
-        return Role::orderBy('name')->get();
+        return Role::query()->select('name')->orderBy('name')->get();
     }
 
     #[Computed]
     public function users()
     {
-        return User::with(['tenant', 'roles'])
+        return User::with(['tenant:id,name', 'roles:id,name'])
+            ->select('id', 'name', 'email', 'is_active', 'created_at', 'tenant_id')
             ->when($this->search, function ($query) {
                 $query->where(function ($q) {
                     $q->where('name', 'like', '%' . $this->search . '%')
@@ -169,7 +202,7 @@ class extends Component {
             <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Users</h1>
         </div>
         <a href="{{ route('superadmin.users.create') }}" wire:navigate
-           class="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-lg shadow-primary-500/20 transition hover:scale-105 focus-visible:ring-2 focus-visible:ring-primary-500/50">
+           class="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-lg shadow-primary-500/20 transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
             Add User
         </a>
@@ -188,33 +221,27 @@ class extends Component {
     @endif
 
     {{-- Quick Stats --}}
-    @php
-        $totalUsers = User::count();
-        $activeUsers = User::where('is_active', true)->count();
-        $platformUsers = User::whereNull('tenant_id')->count();
-        $businessUsers = User::whereNotNull('tenant_id')->count();
-    @endphp
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+        <div class="card p-4">
             <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total Users</p>
             <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $totalUsers }}</p>
         </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+        <div class="card p-4">
             <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Active</p>
             <p class="text-2xl font-bold text-green-600 dark:text-green-400 mt-2">{{ $activeUsers }}</p>
         </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+        <div class="card p-4">
             <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Platform Users</p>
             <p class="text-2xl font-bold text-primary-600 dark:text-primary-400 mt-2">{{ $platformUsers }}</p>
         </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+        <div class="card p-4">
             <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Business Users</p>
             <p class="text-2xl font-bold text-purple-600 dark:text-purple-400 mt-2">{{ $businessUsers }}</p>
         </div>
     </div>
 
     {{-- Filters Panel --}}
-    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-4 shadow-sm space-y-4">
+    <div class="card p-4 space-y-4">
         <div class="flex flex-wrap gap-3 items-center">
             <div class="relative flex-1 min-w-[200px]">
                 <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
@@ -223,20 +250,20 @@ class extends Component {
                        class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 pl-10 pr-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
             </div>
             <select wire:model.live="roleFilter"
-                    class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
+                    class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition w-full sm:w-auto">
                 <option value="">All Roles</option>
                 @foreach($this->availableRoles as $role)
                     <option value="{{ $role->name }}">{{ ucwords(str_replace(['-', '_'], ' ', $role->name)) }}</option>
                 @endforeach
             </select>
             <select wire:model.live="statusFilter"
-                    class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
+                    class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition w-full sm:w-auto">
                 <option value="">All Status</option>
                 <option value="active">Active</option>
                 <option value="inactive">Inactive</option>
             </select>
             <select wire:model.live="sortOption"
-                    class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
+                    class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition w-full sm:w-auto">
                 <option value="latest">Newest first</option>
                 <option value="oldest">Oldest first</option>
                 <option value="name_asc">Name A–Z</option>
@@ -244,15 +271,16 @@ class extends Component {
                 <option value="email_asc">Email A–Z</option>
             </select>
             <select wire:model.live="perPage"
-                    class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
+                    class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition w-full sm:w-auto">
                 <option value="10">10</option>
                 <option value="25">25</option>
                 <option value="50">50</option>
             </select>
             @if($search || $roleFilter || $statusFilter !== '')
                 <button wire:click="clearFilters"
-                        class="px-4 py-2 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 text-xs font-semibold transition focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                    ✕ Clear
+                        class="inline-flex items-center gap-1 px-4 py-2 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 text-xs font-semibold transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                    Clear
                 </button>
             @endif
         </div>
@@ -262,27 +290,31 @@ class extends Component {
             <div class="text-sm text-gray-600 dark:text-gray-300">
                 <span class="font-semibold text-gray-900 dark:text-white">{{ $this->users->total() }}</span> users
             </div>
-            <div class="flex gap-2">
-                <button wire:click="exportCsv"
-                        class="px-4 py-2 rounded-xl bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
+            <div class="flex flex-wrap gap-2">
+                <button wire:click="exportCsv" wire:loading.attr="disabled"
+                        class="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                    Export CSV
+                    <span wire:loading.remove wire:target="exportCsv">Export CSV</span>
+                    <span wire:loading wire:target="exportCsv" class="inline-flex items-center gap-1">
+                        <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                        Exporting…
+                    </span>
                 </button>
                 @if(count($selectedUsers) > 0)
-                    <button wire:click="bulkActivate"
-                            class="px-4 py-2 rounded-xl bg-green-100 dark:bg-green-500/15 border border-green-200 dark:border-green-500/30 text-green-700 dark:text-green-300 text-sm font-semibold hover:bg-green-200 dark:hover:bg-green-500/25 transition focus-visible:ring-2 focus-visible:ring-green-500/50">
+                    <button wire:click="bulkActivate" wire:loading.attr="disabled"
+                            class="inline-flex items-center justify-center px-4 py-2 rounded-xl bg-green-100 dark:bg-green-500/15 border border-green-200 dark:border-green-500/30 text-green-700 dark:text-green-300 text-sm font-semibold hover:bg-green-200 dark:hover:bg-green-500/25 transition active:scale-95 focus-visible:ring-2 focus-visible:ring-green-500/50 w-full sm:w-auto">
                         Activate ({{ count($selectedUsers) }})
                     </button>
-                    <button wire:click="bulkDeactivate"
-                            class="px-4 py-2 rounded-xl bg-amber-100 dark:bg-amber-500/15 border border-amber-200 dark:border-amber-500/30 text-amber-700 dark:text-amber-300 text-sm font-semibold hover:bg-amber-200 dark:hover:bg-amber-500/25 transition focus-visible:ring-2 focus-visible:ring-amber-500/50">
+                    <button wire:click="bulkDeactivate" wire:loading.attr="disabled"
+                            class="inline-flex items-center justify-center px-4 py-2 rounded-xl bg-amber-100 dark:bg-amber-500/15 border border-amber-200 dark:border-amber-500/30 text-amber-700 dark:text-amber-300 text-sm font-semibold hover:bg-amber-200 dark:hover:bg-amber-500/25 transition active:scale-95 focus-visible:ring-2 focus-visible:ring-amber-500/50 w-full sm:w-auto">
                         Deactivate
                     </button>
-                    <button wire:click="bulkDelete" wire:confirm="Delete selected users? This cannot be undone."
-                            class="px-4 py-2 rounded-xl bg-red-100 dark:bg-red-500/15 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-300 text-sm font-semibold hover:bg-red-200 dark:hover:bg-red-500/25 transition focus-visible:ring-2 focus-visible:ring-red-500/50">
+                    <button wire:click="bulkDelete" wire:confirm="Delete selected users? This cannot be undone." wire:loading.attr="disabled"
+                            class="inline-flex items-center justify-center px-4 py-2 rounded-xl bg-red-100 dark:bg-red-500/15 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-300 text-sm font-semibold hover:bg-red-200 dark:hover:bg-red-500/25 transition active:scale-95 focus-visible:ring-2 focus-visible:ring-red-500/50 w-full sm:w-auto">
                         Delete
                     </button>
                     <button wire:click="$set('selectedUsers', [])"
-                            class="px-4 py-2 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 text-sm font-semibold transition focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                            class="inline-flex items-center justify-center px-4 py-2 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 text-sm font-semibold transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50 w-full sm:w-auto">
                         Cancel
                     </button>
                 @endif
@@ -291,7 +323,7 @@ class extends Component {
     </div>
 
     {{-- Users Table --}}
-    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-sm overflow-hidden">
+    <div class="card overflow-hidden">
         <div class="overflow-x-auto">
             <table class="w-full text-left">
                 <thead class="border-b border-gray-200 dark:border-gray-700 text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400">
@@ -357,7 +389,7 @@ class extends Component {
                             <td class="px-4 sm:px-6 py-4">
                                 <button wire:click="toggleStatus({{ $user->id }})"
                                         wire:confirm="{{ $user->is_active ? 'Deactivate' : 'Activate' }} this user?"
-                                        class="cursor-pointer focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                                        class="cursor-pointer focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded active:scale-95 transition-transform">
                                     @if($user->is_active)
                                         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 dark:bg-green-500/15 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-500/30 hover:bg-green-200 dark:hover:bg-green-500/25 transition">
                                             <span class="w-1.5 h-1.5 rounded-full bg-green-500 mr-1.5"></span> Active
@@ -372,13 +404,13 @@ class extends Component {
                             <td class="px-4 sm:px-6 py-4 text-right">
                                 <div class="flex items-center justify-end gap-2">
                                     <a href="{{ route('superadmin.users.edit', $user->id) }}" wire:navigate
-                                       class="p-1.5 text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-500/10 rounded-lg transition focus-visible:ring-2 focus-visible:ring-primary-500/50" title="Edit">
+                                       class="p-1.5 text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-500/10 rounded-lg transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50" title="Edit">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
                                     </a>
                                     @if($user->id !== auth()->id())
                                         <button wire:click="deleteUser({{ $user->id }})"
                                                 wire:confirm="Are you sure you want to delete this user?"
-                                                class="p-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-lg transition focus-visible:ring-2 focus-visible:ring-red-500/50" title="Delete">
+                                                class="p-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-lg transition active:scale-95 focus-visible:ring-2 focus-visible:ring-red-500/50" title="Delete">
                                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                                         </button>
                                     @endif

@@ -11,10 +11,11 @@
         {{-- Top Section: Brand & Badge --}}
         <div class="flex flex-col items-start justify-between gap-6 mb-10 md:flex-row md:items-end">
             <div>
-                <a href="{{ route('home') }}" wire:navigate class="flex items-center gap-4 mb-3">
+                <a href="{{ route('home') }}" wire:navigate
+                   class="flex items-center gap-4 mb-3 group active:scale-[0.98] transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded-lg">
                     @if($logoUrl)
                         <img src="{{ $logoUrl }}" alt="{{ $siteName }} logo"
-                             class="w-12 h-12 object-contain rounded-lg shrink-0">
+                             class="w-12 h-12 object-contain rounded-lg shrink-0 group-hover:opacity-80 transition-opacity">
                     @endif
                     <h2 class="font-display text-3xl md:text-5xl text-gray-900 dark:text-white tracking-tight">
                         {{ $siteName }}
@@ -40,11 +41,36 @@
             <div>
                 <h3 class="mb-5 text-lg font-semibold text-primary-600 dark:text-blue-400">Explore</h3>
                 <ul class="space-y-3 text-sm text-gray-600 dark:text-gray-300">
-                    <li><a href="{{ route('explore.map') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Tourist Spots & Landmarks</a></li>
-                    <li><a href="{{ route('explore.map') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Dining & Local Cuisine</a></li>
-                    <li><a href="{{ route('about') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Heritage & Architecture</a></li>
-                    <li><a href="{{ route('explore.map') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Local Markets & Shops</a></li>
-                    <li><a href="{{ route('explore.map') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Nature & Escapes</a></li>
+                    <li>
+                        <a href="{{ route('tourist-spots.index') }}" wire:navigate
+                           class="inline-block transition-all duration-200 hover:text-primary-600 dark:hover:text-blue-400 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">
+                            Tourist Spots & Landmarks
+                        </a>
+                    </li>
+                    <li>
+                        <a href="{{ route('explore.map') }}" wire:navigate
+                           class="inline-block transition-all duration-200 hover:text-primary-600 dark:hover:text-blue-400 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">
+                            Dining & Local Cuisine
+                        </a>
+                    </li>
+                    <li>
+                        <a href="{{ route('about') }}" wire:navigate
+                           class="inline-block transition-all duration-200 hover:text-primary-600 dark:hover:text-blue-400 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">
+                            Heritage & Architecture
+                        </a>
+                    </li>
+                    <li>
+                        <a href="{{ route('explore.map') }}" wire:navigate
+                           class="inline-block transition-all duration-200 hover:text-primary-600 dark:hover:text-blue-400 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">
+                            Local Markets & Shops
+                        </a>
+                    </li>
+                    <li>
+                        <a href="{{ route('explore.map') }}" wire:navigate
+                           class="inline-block transition-all duration-200 hover:text-primary-600 dark:hover:text-blue-400 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">
+                            Nature & Escapes
+                        </a>
+                    </li>
                 </ul>
             </div>
 
@@ -52,11 +78,36 @@
             <div>
                 <h3 class="mb-5 text-lg font-semibold text-primary-600 dark:text-blue-400">Community</h3>
                 <ul class="space-y-3 text-sm text-gray-600 dark:text-gray-300">
-                    <li><a href="#" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Local Artisans & Makers</a></li>
-                    <li><a href="#" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Local Stories & Narratives</a></li>
-                    <li><a href="#" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Travel Guides & Bulletins</a></li>
-                    <li><a href="{{ route('events') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Festivals & Events Calendar</a></li>
-                    <li><a href="{{ route('register_business') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Submit a Place</a></li>
+                    <li>
+                        <a href="{{ route('about') }}" wire:navigate
+                           class="inline-block transition-all duration-200 hover:text-primary-600 dark:hover:text-blue-400 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">
+                            Local Artisans & Makers
+                        </a>
+                    </li>
+                    <li>
+                        <a href="{{ route('about') }}" wire:navigate
+                           class="inline-block transition-all duration-200 hover:text-primary-600 dark:hover:text-blue-400 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">
+                            Local Stories & Narratives
+                        </a>
+                    </li>
+                    <li>
+                        <a href="{{ route('events') }}" wire:navigate
+                           class="inline-block transition-all duration-200 hover:text-primary-600 dark:hover:text-blue-400 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">
+                            Travel Guides & Bulletins
+                        </a>
+                    </li>
+                    <li>
+                        <a href="{{ route('events') }}" wire:navigate
+                           class="inline-block transition-all duration-200 hover:text-primary-600 dark:hover:text-blue-400 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">
+                            Festivals & Events Calendar
+                        </a>
+                    </li>
+                    <li>
+                        <a href="{{ route('register_business') }}" wire:navigate
+                           class="inline-block transition-all duration-200 hover:text-primary-600 dark:hover:text-blue-400 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">
+                            Submit a Place
+                        </a>
+                    </li>
                 </ul>
             </div>
 
@@ -64,35 +115,62 @@
             <div>
                 <h3 class="mb-5 text-lg font-semibold text-primary-600 dark:text-blue-400">About</h3>
                 <ul class="space-y-3 text-sm text-gray-600 dark:text-gray-300">
-                    <li><a href="{{ route('about') }}" wire:navigate class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">The Victorias Story</a></li>
-                    <li><a href="#" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Tourism Office</a></li>
-                    <li><a href="#" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Press & Media Kit</a></li>
-                    <li><a href="#" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Careers & Opportunities</a></li>
-                    <li><a href="#" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Partnerships & Linkages</a></li>
+                    <li>
+                        <a href="{{ route('about') }}" wire:navigate
+                           class="inline-block transition-all duration-200 hover:text-primary-600 dark:hover:text-blue-400 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">
+                            The Victorias Story
+                        </a>
+                    </li>
+                    <li>
+                        <span class="inline-block cursor-not-allowed opacity-60" title="Coming soon">Tourism Office</span>
+                    </li>
+                    <li>
+                        <span class="inline-block cursor-not-allowed opacity-60" title="Coming soon">Press & Media Kit</span>
+                    </li>
+                    <li>
+                        <span class="inline-block cursor-not-allowed opacity-60" title="Coming soon">Careers & Opportunities</span>
+                    </li>
+                    <li>
+                        <a href="{{ route('register_business') }}" wire:navigate
+                           class="inline-block transition-all duration-200 hover:text-primary-600 dark:hover:text-blue-400 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">
+                            Partnerships & Linkages
+                        </a>
+                    </li>
                 </ul>
             </div>
 
             {{-- Column 4: Visitor Dispatch --}}
-            <div>
+            <div x-data="{ subscribed: false }">
                 <h3 class="mb-5 text-lg font-semibold text-primary-600 dark:text-blue-400">Visitor Dispatch</h3>
                 <p class="text-sm leading-relaxed text-gray-600 dark:text-gray-300 mb-5 pr-4">
                     Sign up for our weekly tourism digest mapping city attractions, cultural events, and travel tips.
                 </p>
 
                 {{-- Email Newsletter Form --}}
-                <form class="flex items-center p-1.5 mb-7 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-full focus-within:border-primary-600 dark:focus-within:border-blue-400 transition-colors">
-                    <input type="email" placeholder="Enter your email address"
+                <form @submit.prevent="subscribed = true" class="flex items-center p-1.5 mb-3 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-full focus-within:border-primary-600 dark:focus-within:border-blue-400 transition-colors">
+                    <input type="email" required placeholder="Enter your email address"
                            class="w-full px-4 text-sm text-gray-900 dark:text-white bg-transparent outline-none placeholder:text-gray-400 dark:placeholder:text-gray-500">
-                    <button type="submit" class="flex items-center justify-center w-10 h-10 transition-colors bg-primary-600 text-white rounded-full hover:bg-primary-700 focus-visible:ring-2 focus-visible:ring-primary-600/50">
+                    <button type="submit"
+                            class="flex items-center justify-center w-10 h-10 transition-all duration-200 bg-primary-600 text-white rounded-full hover:bg-primary-700 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50"
+                            aria-label="Subscribe">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
                     </button>
                 </form>
+                <div x-show="subscribed" x-cloak class="text-xs text-green-600 dark:text-green-400 mb-5">
+                    Thank you for subscribing!
+                </div>
+                <div x-show="!subscribed" class="h-5"></div>
 
                 {{-- Contact Info --}}
                 <div class="text-gray-600 dark:text-gray-300 text-sm leading-relaxed">
                     <h4 class="mb-1 text-sm font-semibold tracking-wide text-gray-900 dark:text-white uppercase">VICTORIAS CITY TOURISM OFFICE</h4>
                     <p>City Hall Complex, Victorias City, Negros Occidental, Philippines</p>
-                    <p><a href="mailto:tourism@victoriascity.gov.ph" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">tourism@victoriascity.gov.ph</a></p>
+                    <p>
+                        <a href="mailto:tourism@victoriascity.gov.ph"
+                           class="inline-block transition-all duration-200 hover:text-primary-600 dark:hover:text-blue-400 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">
+                            tourism@victoriascity.gov.ph
+                        </a>
+                    </p>
                 </div>
             </div>
         </div>
@@ -106,8 +184,8 @@
             <div class="flex flex-col items-center gap-4 md:flex-row lg:gap-8">
                 <span>© {{ date('Y') }} {{ $siteName }}. All rights reserved.</span>
                 <div class="flex gap-6">
-                    <a href="#" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Privacy Policy</a>
-                    <a href="#" class="transition-colors hover:text-primary-600 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Terms of Service</a>
+                    <a href="#" class="inline-block transition-all duration-200 hover:text-primary-600 dark:hover:text-blue-400 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Privacy Policy</a>
+                    <a href="#" class="inline-block transition-all duration-200 hover:text-primary-600 dark:hover:text-blue-400 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 rounded">Terms of Service</a>
                 </div>
             </div>
 
@@ -119,8 +197,8 @@
                     'facebook' => '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 2C6.477 2 2 6.477 2 12c0 4.991 3.657 9.128 8.438 9.879V14.89h-2.54V12h2.54V9.797c0-2.506 1.492-3.89 3.777-3.89 1.094 0 2.238.195 2.238.195v2.46h-1.26c-1.243 0-1.63.771-1.63 1.562V12h2.773l-.443 2.89h-2.33v6.989C18.343 21.129 22 16.99 22 12c0-5.523-4.477-10-10-10z"></path></svg>',
                     'twitter' => '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M23 3a10.9 10.9 0 01-3.14 1.53 4.48 4.48 0 00-7.86 3v1A10.66 10.66 0 013 4s-4 9 5 13a11.64 11.64 0 01-7 2c9 5 20 0 20-11.5a4.5 4.5 0 00-.08-.83A7.72 7.72 0 0023 3z"></path></svg>'
                 ] as $name => $icon)
-                    <a href="#" aria-label="{{ ucfirst($name) }}"
-                       class="flex items-center justify-center w-10 h-10 transition-colors border border-gray-300 dark:border-gray-600 rounded-full text-gray-500 dark:text-gray-400 hover:border-primary-600 hover:text-primary-600 dark:hover:border-blue-400 dark:hover:text-blue-400 focus-visible:ring-2 focus-visible:ring-primary-600/50">
+                    <a href="#" aria-label="{{ ucfirst($name) }}" title="Follow us on {{ ucfirst($name) }}"
+                       class="flex items-center justify-center w-10 h-10 transition-all duration-200 border border-gray-300 dark:border-gray-600 rounded-full text-gray-500 dark:text-gray-400 hover:border-primary-600 hover:text-primary-600 dark:hover:border-blue-400 dark:hover:text-blue-400 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50">
                         {!! $icon !!}
                     </a>
                 @endforeach

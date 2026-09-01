@@ -65,8 +65,9 @@ class extends Component {
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Create a new category for businesses on the platform.</p>
         </div>
         <a href="{{ route('superadmin.tenant-types.index') }}" wire:navigate
-           class="btn-secondary focus-visible:ring-2 focus-visible:ring-primary-500/50">
-            ← Back to Business Types
+           class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+            Back to Business Types
         </a>
     </div>
 
@@ -91,21 +92,21 @@ class extends Component {
         </div>
 
         {{-- Form Actions --}}
-        <div class="flex flex-wrap items-center gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
+        <div class="flex flex-col sm:flex-row gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
             <button type="submit"
                     wire:loading.attr="disabled"
-                    class="btn-primary focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                    class="btn-primary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
                 <span wire:loading.remove>Save Business Type</span>
                 <span wire:loading class="inline-flex items-center gap-2">
-                    <svg class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                     </svg>
                     Saving…
                 </span>
             </button>
             <a href="{{ route('superadmin.tenant-types.index') }}" wire:navigate
-               class="btn-secondary focus-visible:ring-2 focus-visible:ring-primary-500/50">
+               class="btn-secondary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
                 Cancel
             </a>
         </div>

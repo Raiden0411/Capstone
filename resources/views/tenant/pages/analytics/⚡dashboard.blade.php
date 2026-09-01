@@ -1,4 +1,4 @@
-{{-- resources/views/tenant/pages/analytics/⚡dashboard.blade.php --}}
+{{-- resources/views/tenant/pages/analytics/dashboard.blade.php --}}
 <?php
 
 use Livewire\Component;
@@ -256,13 +256,15 @@ class extends Component
                 ->where('tenant_id', Auth::user()->tenant_id)
                 ->where('check_in', $today)
                 ->where('status', '!=', 'cancelled')
-                ->with('user')
+                ->with('user:id,name')
+                ->select('id', 'user_id', 'booking_reference', 'check_in')
                 ->get(),
             'departures' => Booking::withoutGlobalScope(TenantScope::class)
                 ->where('tenant_id', Auth::user()->tenant_id)
                 ->where('check_out', $today)
                 ->where('status', '!=', 'cancelled')
-                ->with('user')
+                ->with('user:id,name')
+                ->select('id', 'user_id', 'booking_reference', 'check_out')
                 ->get(),
         ];
     }
@@ -302,7 +304,8 @@ class extends Component
         $bookings = Booking::withoutGlobalScope(TenantScope::class)
             ->where('tenant_id', Auth::user()->tenant_id)
             ->whereBetween('created_at', [$start, $end])
-            ->with('user')
+            ->with('user:id,name,email')
+            ->select('id', 'user_id', 'booking_reference', 'check_in', 'check_out', 'total_amount', 'status')
             ->get();
 
         $filename = 'analytics_bookings_' . now()->format('Y-m-d_H-i-s') . '.csv';
@@ -333,7 +336,7 @@ class extends Component
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-8 max-w-[1440px] mx-auto space-y-6"
+<div class="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-8"
      x-data="{}"
      x-init="
         if (typeof Chart !== 'undefined') {
@@ -344,28 +347,34 @@ class extends Component
      "
      wire:poll.60s="refreshAnalytics">
 
-    {{-- Header --}}
+    {{-- Header & Export Actions --}}
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-            <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Analytics</h1>
+            <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white">Performance Overview</h1>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">Track your property metrics and revenue.</p>
         </div>
-        <div class="flex gap-2">
+        <div class="flex flex-col sm:flex-row gap-3">
             <button wire:click="exportCsv"
-                    class="px-4 py-2 rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                    wire:loading.attr="disabled"
+                    class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                Export CSV
+                <span wire:loading.remove wire:target="exportCsv">Export CSV</span>
+                <span wire:loading wire:target="exportCsv" class="inline-flex items-center gap-1">
+                    <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                    Exporting…
+                </span>
             </button>
-            <button onclick="window.print()"
-                    class="px-4 py-2 rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
+            <button type="button" onclick="window.print()"
+                    class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2m-6-4h.01M6 18v4h12v-4"/></svg>
                 Print
             </button>
         </div>
     </div>
 
-    {{-- Date Range Selector --}}
-    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
-        <div class="flex flex-wrap items-center gap-2">
+    {{-- Modern Segmented Date Range Selector --}}
+    <div class="card p-2 flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+        <div class="inline-flex flex-wrap items-center p-1 bg-gray-100 dark:bg-gray-900/50 rounded-lg w-full xl:w-auto">
             @foreach([
                 'today' => 'Today',
                 'yesterday' => 'Yesterday',
@@ -373,156 +382,233 @@ class extends Component
                 'last-30' => '30 Days',
                 'this-month' => 'This Month',
                 'last-month' => 'Last Month',
+                'custom' => 'Custom',
             ] as $val => $label)
                 <button wire:click="$set('dateRange', '{{ $val }}')"
-                        class="px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider transition focus-visible:ring-2 focus-visible:ring-primary-500/50
-                               {{ $dateRange === $val ? 'bg-primary-600 text-white shadow-md shadow-primary-600/20' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600' }}">
+                        class="px-3 py-1.5 text-sm font-medium rounded-md transition-all duration-200 active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50
+                               {{ $dateRange === $val ? 'bg-white text-gray-900 shadow dark:bg-gray-700 dark:text-white' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white' }}">
                     {{ $label }}
                 </button>
             @endforeach
-            <button wire:click="$set('dateRange', 'custom')"
-                    class="px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider transition focus-visible:ring-2 focus-visible:ring-primary-500/50
-                           {{ $dateRange === 'custom' ? 'bg-primary-600 text-white shadow-md shadow-primary-600/20' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600' }}">
-                Custom
-            </button>
-            @if($dateRange === 'custom')
-                <div class="flex gap-2 items-center">
-                    <input type="date" wire:model.live="customStart"
-                           class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50">
-                    <span class="text-gray-500 dark:text-gray-400">to</span>
-                    <input type="date" wire:model.live="customEnd"
-                           class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50">
-                </div>
-            @endif
         </div>
+        
+        @if($dateRange === 'custom')
+            <div class="flex flex-col sm:flex-row items-start sm:items-center gap-2 px-2 pb-2 xl:pb-0">
+                <input type="date" wire:model.live="customStart" class="input !py-2 !w-full sm:!w-auto">
+                <span class="text-gray-400 text-sm">to</span>
+                <input type="date" wire:model.live="customEnd" class="input !py-2 !w-full sm:!w-auto">
+            </div>
+        @endif
     </div>
 
-    {{-- KPI Cards --}}
+    {{-- KPI Cards Grid --}}
     @php $s = $this->stats; @endphp
-    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Revenue</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">₱{{ number_format($s['revenue'], 2) }}</p>
-        </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Bookings</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $s['total_bookings'] }}</p>
-        </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Guests</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $s['total_guests'] }}</p>
-        </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Occupancy</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $s['occupancy_rate'] }}%</p>
-        </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Avg Booking</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">₱{{ number_format($s['avg_booking_value'], 2) }}</p>
-        </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
-            <p class="text-xs text-amber-600 dark:text-amber-400 uppercase tracking-wider">Outstanding</p>
-            <p class="text-2xl font-bold text-amber-600 dark:text-amber-400 mt-2">₱{{ number_format($s['outstanding_balance'], 2) }}</p>
-        </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Repeat Guests</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $s['repeat_guest_rate'] }}%</p>
-        </div>
-    </div>
-
-    {{-- Revenue Chart --}}
-    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm">
-        <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Revenue Trend</h2>
-        <div class="w-full h-80">
-            <canvas id="revenueChart"></canvas>
-        </div>
-    </div>
-
-    {{-- Booking Trend & Payment Method --}}
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm">
-            <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Booking Trend</h2>
-            <div class="w-full h-80">
-                <canvas id="bookingChart"></canvas>
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 xl:gap-6">
+        
+        {{-- Revenue --}}
+        <div class="card p-6 flex items-center justify-between">
+            <div>
+                <p class="text-sm font-medium text-gray-500 dark:text-gray-400">Total Revenue</p>
+                <p class="text-3xl font-bold tracking-tight text-gray-900 dark:text-white mt-1">₱{{ number_format($s['revenue'], 2) }}</p>
+            </div>
+            <div class="p-3 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 rounded-xl">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
             </div>
         </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm">
-            <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Payment Methods</h2>
-            <div class="w-full h-80 flex items-center justify-center">
+
+        {{-- Bookings --}}
+        <div class="card p-6 flex items-center justify-between">
+            <div>
+                <p class="text-sm font-medium text-gray-500 dark:text-gray-400">Total Bookings</p>
+                <p class="text-3xl font-bold tracking-tight text-gray-900 dark:text-white mt-1">{{ $s['total_bookings'] }}</p>
+            </div>
+            <div class="p-3 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-xl">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+            </div>
+        </div>
+
+        {{-- Guests --}}
+        <div class="card p-6 flex items-center justify-between">
+            <div>
+                <p class="text-sm font-medium text-gray-500 dark:text-gray-400">Unique Guests</p>
+                <p class="text-3xl font-bold tracking-tight text-gray-900 dark:text-white mt-1">{{ $s['total_guests'] }}</p>
+            </div>
+            <div class="p-3 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 rounded-xl">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+            </div>
+        </div>
+
+        {{-- Occupancy --}}
+        <div class="card p-6 flex items-center justify-between">
+            <div>
+                <p class="text-sm font-medium text-gray-500 dark:text-gray-400">Occupancy Rate</p>
+                <p class="text-3xl font-bold tracking-tight text-gray-900 dark:text-white mt-1">{{ $s['occupancy_rate'] }}%</p>
+            </div>
+            <div class="p-3 bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 rounded-xl">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg>
+            </div>
+        </div>
+    </div>
+
+    {{-- Secondary Metrics Grid --}}
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 xl:gap-6">
+        <div class="card p-5 flex items-center justify-between">
+            <p class="text-sm font-medium text-gray-500 dark:text-gray-400">Average Booking Value</p>
+            <p class="text-lg font-bold text-gray-900 dark:text-white">₱{{ number_format($s['avg_booking_value'], 2) }}</p>
+        </div>
+        <div class="card p-5 flex items-center justify-between border-rose-200 dark:border-rose-900/30">
+            <p class="text-sm font-medium text-rose-600 dark:text-rose-400">Outstanding Balance</p>
+            <p class="text-lg font-bold text-rose-600 dark:text-rose-400">₱{{ number_format($s['outstanding_balance'], 2) }}</p>
+        </div>
+        <div class="card p-5 flex items-center justify-between">
+            <p class="text-sm font-medium text-gray-500 dark:text-gray-400">Repeat Guest Rate</p>
+            <p class="text-lg font-bold text-gray-900 dark:text-white">{{ $s['repeat_guest_rate'] }}%</p>
+        </div>
+    </div>
+
+    {{-- Main Charts Section --}}
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {{-- Revenue Chart --}}
+        <div class="lg:col-span-2 card p-6">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Revenue Trend</h2>
+            </div>
+            <div class="w-full h-[300px]">
+                <canvas id="revenueChart"></canvas>
+            </div>
+        </div>
+
+        {{-- Payment Methods --}}
+        <div class="card p-6 flex flex-col">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Payment Methods</h2>
+            <div class="w-full h-[300px] flex-1 relative flex items-center justify-center">
                 <canvas id="paymentChart"></canvas>
             </div>
         </div>
     </div>
 
-    {{-- Occupancy Trend & Service Breakdown --}}
+    {{-- Secondary Charts Section --}}
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm">
-            <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Occupancy Trend</h2>
-            <div class="w-full h-80">
+        <div class="card p-6">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Booking Activity</h2>
+            <div class="w-full h-[280px]">
+                <canvas id="bookingChart"></canvas>
+            </div>
+        </div>
+        
+        <div class="card p-6">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Occupancy History</h2>
+            <div class="w-full h-[280px]">
                 <canvas id="occupancyChart"></canvas>
             </div>
         </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm">
-            <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Service Breakdown</h2>
+    </div>
+
+    {{-- Breakdown & Activity Section --}}
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        
+        {{-- Service Breakdown --}}
+        <div class="lg:col-span-1 card p-6">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-6">Top Services Breakdown</h2>
             @php $breakdowns = $this->revenueBreakdown; @endphp
             @if(!empty($breakdowns))
-                <div class="space-y-4">
+                <div class="space-y-5">
                     @foreach($breakdowns as $b)
                         <div>
-                            <div class="flex justify-between text-sm">
-                                <span class="text-gray-700 dark:text-gray-300">{{ $b['name'] }}</span>
-                                <span class="text-gray-900 dark:text-white font-semibold">₱{{ number_format($b['total'], 2) }} ({{ $b['share'] }}%)</span>
+                            <div class="flex justify-between text-sm mb-1.5">
+                                <span class="font-medium text-gray-700 dark:text-gray-300">{{ $b['name'] }}</span>
+                                <span class="text-gray-900 dark:text-white font-semibold">₱{{ number_format($b['total'], 2) }}</span>
                             </div>
-                            <div class="w-full h-2 bg-gray-100 dark:bg-gray-700 rounded-full mt-1">
-                                <div class="h-full bg-primary-600 rounded-full" style="width: {{ $b['share'] }}%"></div>
+                            <div class="w-full h-2.5 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
+                                <div class="h-full bg-primary-500 rounded-full" style="width: {{ $b['share'] }}%"></div>
                             </div>
+                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 text-right">{{ $b['share'] }}% of total</p>
                         </div>
                     @endforeach
                 </div>
             @else
-                <p class="text-sm text-gray-500 dark:text-gray-400 py-8">No service data for this period.</p>
+                <div class="flex flex-col items-center justify-center h-40 text-center">
+                    <svg class="w-8 h-8 text-gray-300 dark:text-gray-600 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">No service data for this period.</p>
+                </div>
             @endif
         </div>
-    </div>
 
-    {{-- Today's Activity --}}
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm">
-            <h2 class="text-lg font-semibold mb-4 text-gray-900 dark:text-white flex items-center gap-2">
-                <span class="w-2 h-2 rounded-full bg-primary-600"></span>
-                Today's Arrivals ({{ now()->format('M d') }})
-            </h2>
-            <div class="divide-y divide-gray-100 dark:divide-gray-700">
-                @forelse($this->upcomingActivity['arrivals'] as $b)
-                    <div class="py-3 flex justify-between items-center">
-                        <div>
-                            <p class="text-sm font-medium text-gray-900 dark:text-white">{{ $b->user->name ?? 'Guest' }}</p>
-                            <p class="text-xs text-gray-500 dark:text-gray-400">{{ $b->check_in->format('M d, Y') }}</p>
-                        </div>
-                        <span class="text-xs text-primary-600 dark:text-primary-400 font-medium">Arriving</span>
+        {{-- Today's Operations --}}
+        <div class="lg:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-6">
+            {{-- Arrivals --}}
+            <div class="card p-6 flex flex-col">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                        <span class="relative flex h-3 w-3">
+                            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                            <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                        </span>
+                        Arrivals Today
+                    </h2>
+                    <span class="text-xs font-medium bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400 px-2 py-1 rounded-full">{{ count($this->upcomingActivity['arrivals']) }}</span>
+                </div>
+                <div class="flex-1 overflow-y-auto pr-2">
+                    <div class="divide-y divide-gray-100 dark:divide-gray-700/50">
+                        @forelse($this->upcomingActivity['arrivals'] as $b)
+                            <div class="py-3 flex justify-between items-center group">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-gray-500 dark:text-gray-400 font-medium text-xs">
+                                        {{ substr($b->user->name ?? 'G', 0, 1) }}
+                                    </div>
+                                    <div>
+                                        <p class="text-sm font-medium text-gray-900 dark:text-white">{{ $b->user->name ?? 'Guest' }}</p>
+                                        <p class="text-xs text-gray-500 dark:text-gray-400">Ref: #{{ $b->booking_reference }}</p>
+                                    </div>
+                                </div>
+                                <span class="text-xs text-emerald-600 dark:text-emerald-400 font-medium bg-emerald-50 dark:bg-emerald-900/20 px-2 py-1 rounded-md flex items-center gap-1">
+                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                                    Check-in
+                                </span>
+                            </div>
+                        @empty
+                            <div class="flex flex-col items-center justify-center h-32 text-center">
+                                <p class="text-sm text-gray-500 dark:text-gray-400">No arrivals scheduled today.</p>
+                            </div>
+                        @endforelse
                     </div>
-                @empty
-                    <p class="py-6 text-center text-gray-500 dark:text-gray-400 text-sm">No arrivals today.</p>
-                @endforelse
+                </div>
             </div>
-        </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm">
-            <h2 class="text-lg font-semibold mb-4 text-gray-900 dark:text-white flex items-center gap-2">
-                <span class="w-2 h-2 rounded-full bg-rose-400"></span>
-                Today's Departures ({{ now()->format('M d') }})
-            </h2>
-            <div class="divide-y divide-gray-100 dark:divide-gray-700">
-                @forelse($this->upcomingActivity['departures'] as $b)
-                    <div class="py-3 flex justify-between items-center">
-                        <div>
-                            <p class="text-sm font-medium text-gray-900 dark:text-white">{{ $b->user->name ?? 'Guest' }}</p>
-                            <p class="text-xs text-gray-500 dark:text-gray-400">{{ $b->check_out->format('M d, Y') }}</p>
-                        </div>
-                        <span class="text-xs text-rose-500 dark:text-rose-400 font-medium">Departing</span>
+
+            {{-- Departures --}}
+            <div class="card p-6 flex flex-col">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                        <span class="w-3 h-3 rounded-full bg-rose-500"></span>
+                        Departures Today
+                    </h2>
+                    <span class="text-xs font-medium bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-400 px-2 py-1 rounded-full">{{ count($this->upcomingActivity['departures']) }}</span>
+                </div>
+                <div class="flex-1 overflow-y-auto pr-2">
+                    <div class="divide-y divide-gray-100 dark:divide-gray-700/50">
+                        @forelse($this->upcomingActivity['departures'] as $b)
+                            <div class="py-3 flex justify-between items-center">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-gray-500 dark:text-gray-400 font-medium text-xs">
+                                        {{ substr($b->user->name ?? 'G', 0, 1) }}
+                                    </div>
+                                    <div>
+                                        <p class="text-sm font-medium text-gray-900 dark:text-white">{{ $b->user->name ?? 'Guest' }}</p>
+                                        <p class="text-xs text-gray-500 dark:text-gray-400">Ref: #{{ $b->booking_reference }}</p>
+                                    </div>
+                                </div>
+                                <span class="text-xs text-rose-500 dark:text-rose-400 font-medium bg-rose-50 dark:bg-rose-900/20 px-2 py-1 rounded-md flex items-center gap-1">
+                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                    Check-out
+                                </span>
+                            </div>
+                        @empty
+                            <div class="flex flex-col items-center justify-center h-32 text-center">
+                                <p class="text-sm text-gray-500 dark:text-gray-400">No departures scheduled today.</p>
+                            </div>
+                        @endforelse
                     </div>
-                @empty
-                    <p class="py-6 text-center text-gray-500 dark:text-gray-400 text-sm">No departures today.</p>
-                @endforelse
+                </div>
             </div>
         </div>
     </div>
@@ -548,16 +634,18 @@ class extends Component
         function getChartTheme() {
             return isDarkMode() ? {
                 textColor: '#9ca3af',
-                gridColor: 'rgba(255,255,255,0.06)',
-                barColor: '#22c55e',
-                lineBooking: '#06b6d4',
-                lineOccupancy: '#facc15',
-            } : {
-                textColor: '#4b5563',
-                gridColor: 'rgba(0,0,0,0.08)',
+                gridColor: 'rgba(255,255,255,0.05)',
                 barColor: '#10b981',
-                lineBooking: '#0891b2',
+                lineBooking: '#3b82f6',
+                lineOccupancy: '#f59e0b',
+                fillOpacity: '0.15'
+            } : {
+                textColor: '#6b7280',
+                gridColor: 'rgba(0,0,0,0.05)',
+                barColor: '#059669',
+                lineBooking: '#2563eb',
                 lineOccupancy: '#d97706',
+                fillOpacity: '0.1'
             };
         }
 
@@ -568,6 +656,13 @@ class extends Component
             if (occupancyChart) { occupancyChart.destroy(); occupancyChart = null; }
         }
 
+        function createGradient(ctx, colorBase, opacity) {
+            const gradient = ctx.createLinearGradient(0, 0, 0, 300);
+            gradient.addColorStop(0, colorBase);
+            gradient.addColorStop(1, 'rgba(255,255,255,0)');
+            return gradient;
+        }
+
         function renderBarChart(canvasId, chartInstance, labels, values, label, color) {
             const canvas = document.getElementById(canvasId);
             if (!canvas) return null;
@@ -576,6 +671,7 @@ class extends Component
 
             const theme = getChartTheme();
             const ctx = canvas.getContext('2d');
+            
             return new Chart(ctx, {
                 type: 'bar',
                 data: {
@@ -584,16 +680,41 @@ class extends Component
                         label: label,
                         data: values,
                         backgroundColor: color || theme.barColor,
-                        borderRadius: 4,
+                        borderRadius: 6,
+                        borderSkipped: false,
+                        barPercentage: 0.6
                     }]
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
+                    plugins: { 
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: isDarkMode() ? '#374151' : '#fff',
+                            titleColor: isDarkMode() ? '#fff' : '#111827',
+                            bodyColor: isDarkMode() ? '#d1d5db' : '#4b5563',
+                            borderColor: isDarkMode() ? '#4b5563' : '#e5e7eb',
+                            borderWidth: 1,
+                            padding: 12,
+                            displayColors: false,
+                            callbacks: {
+                                label: function(context) { return '₱' + context.parsed.y.toLocaleString(); }
+                            }
+                        }
+                    },
                     scales: {
-                        y: { beginAtZero: true, ticks: { color: theme.textColor }, grid: { color: theme.gridColor } },
-                        x: { ticks: { color: theme.textColor }, grid: { display: false } }
+                        y: { 
+                            beginAtZero: true, 
+                            ticks: { color: theme.textColor, font: {family: "'Inter', sans-serif"} }, 
+                            grid: { color: theme.gridColor, drawBorder: false },
+                            border: { display: false }
+                        },
+                        x: { 
+                            ticks: { color: theme.textColor, font: {family: "'Inter', sans-serif"} }, 
+                            grid: { display: false },
+                            border: { display: false }
+                        }
                     }
                 }
             });
@@ -607,6 +728,10 @@ class extends Component
 
             const theme = getChartTheme();
             const ctx = canvas.getContext('2d');
+            
+            const rgbColor = color === theme.lineBooking ? (isDarkMode() ? '59, 130, 246' : '37, 99, 235') : (isDarkMode() ? '245, 158, 11' : '217, 119, 6');
+            const gradient = createGradient(ctx, `rgba(${rgbColor}, ${theme.fillOpacity})`);
+
             return new Chart(ctx, {
                 type: 'line',
                 data: {
@@ -614,22 +739,49 @@ class extends Component
                     datasets: [{
                         label: label,
                         data: values,
-                        borderColor: color || '#06b6d4',
-                        backgroundColor: 'transparent',
+                        borderColor: color,
+                        backgroundColor: gradient,
                         tension: 0.4,
-                        fill: false,
+                        fill: true,
                         borderWidth: 2,
-                        pointRadius: 3,
-                        pointBackgroundColor: color || '#06b6d4',
+                        pointRadius: 0,
+                        pointHoverRadius: 6,
+                        pointBackgroundColor: '#fff',
+                        pointBorderColor: color,
+                        pointBorderWidth: 2
                     }]
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
+                    interaction: {
+                        intersect: false,
+                        mode: 'index',
+                    },
+                    plugins: { 
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: isDarkMode() ? '#374151' : '#fff',
+                            titleColor: isDarkMode() ? '#fff' : '#111827',
+                            bodyColor: isDarkMode() ? '#d1d5db' : '#4b5563',
+                            borderColor: isDarkMode() ? '#4b5563' : '#e5e7eb',
+                            borderWidth: 1,
+                            padding: 10,
+                            displayColors: false
+                        }
+                    },
                     scales: {
-                        y: { beginAtZero: true, ticks: { color: theme.textColor }, grid: { color: theme.gridColor } },
-                        x: { ticks: { color: theme.textColor }, grid: { display: false } }
+                        y: { 
+                            beginAtZero: true, 
+                            ticks: { color: theme.textColor, maxTicksLimit: 6 }, 
+                            grid: { color: theme.gridColor, drawBorder: false, borderDash: [5, 5] },
+                            border: { display: false }
+                        },
+                        x: { 
+                            ticks: { color: theme.textColor, maxTicksLimit: 8 }, 
+                            grid: { display: false },
+                            border: { display: false }
+                        }
                     }
                 }
             });
@@ -649,13 +801,32 @@ class extends Component
                     labels: labels,
                     datasets: [{
                         data: values,
-                        backgroundColor: ['#10b981', '#0891b2', '#d97706', '#7c3aed', '#ef4444'],
+                        backgroundColor: ['#059669', '#3b82f6', '#f59e0b', '#8b5cf6', '#ef4444'],
+                        borderWidth: isDarkMode() ? 2 : 0,
+                        borderColor: isDarkMode() ? '#1f2937' : '#ffffff',
+                        hoverOffset: 4
                     }]
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    plugins: { legend: { position: 'bottom', labels: { color: theme.textColor } } }
+                    cutout: '75%',
+                    plugins: { 
+                        legend: { 
+                            position: 'right', 
+                            labels: { 
+                                color: theme.textColor,
+                                padding: 20,
+                                usePointStyle: true,
+                                pointStyle: 'circle'
+                            } 
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) { return ' ₱' + context.parsed.toLocaleString(); }
+                            }
+                        }
+                    }
                 }
             });
         }
@@ -686,7 +857,7 @@ class extends Component
             paymentChart = renderDoughnutChart(
                 'paymentChart',
                 paymentChart,
-                latestData.payment.map(p => p.method),
+                latestData.payment.map(p => p.method.charAt(0).toUpperCase() + p.method.slice(1)),
                 latestData.payment.map(p => p.total)
             );
 

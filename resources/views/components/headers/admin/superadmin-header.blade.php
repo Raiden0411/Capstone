@@ -1,6 +1,7 @@
 {{-- resources/views/components/headers/admin/superadmin-header.blade.php --}}
 @php
     $pendingTenants = \App\Models\Tenant::where('is_active', false)
+                        ->select('id', 'name', 'created_at')
                         ->latest()
                         ->take(5)
                         ->get();
@@ -31,7 +32,7 @@
     {{-- Left: Mobile sidebar toggle only --}}
     <div class="flex items-center gap-2 lg:hidden">
       <button type="button"
-              class="flex size-8 items-center justify-center gap-x-2 rounded-full border border-gray-300 bg-white text-gray-700 transition-colors hover:bg-gray-100 focus-visible:ring-2 focus-visible:ring-primary-500/50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+              class="flex size-8 items-center justify-center gap-x-2 rounded-full border border-gray-300 bg-white text-gray-700 transition-colors hover:bg-gray-100 focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
               @click="$dispatch('toggle-superadmin-sidebar')"
               aria-label="Toggle navigation">
         <svg class="size-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
@@ -43,7 +44,7 @@
 
       {{-- View Site --}}
       <a href="{{ route('home') }}" target="_blank" rel="noopener"
-         class="hidden items-center gap-2 rounded-full px-3 py-2 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:inline-flex dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-white focus-visible:ring-2 focus-visible:ring-primary-500/50">
+         class="hidden items-center gap-2 rounded-full px-3 py-2 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:inline-flex dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-white focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95">
         <svg class="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9"/></svg>
         View Site
       </a>
@@ -57,7 +58,7 @@
                 @click="open = !open"
                 :aria-expanded="open.toString()"
                 aria-haspopup="true"
-                class="relative flex items-center gap-2 rounded-full border border-gray-300 bg-white px-2.5 py-1.5 text-gray-700 transition-colors hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                class="relative flex items-center gap-2 rounded-full border border-gray-300 bg-white px-2.5 py-1.5 text-gray-700 transition-colors hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
                 aria-label="Notifications">
           <svg class="size-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
@@ -97,7 +98,7 @@
               @foreach($pendingTenants as $tenant)
                 <a href="{{ route('superadmin.tenants.preview', $tenant->id) }}" wire:navigate
                    @click="open = false"
-                   class="flex items-start gap-3 border-b border-gray-100 px-4 py-3 transition-colors last:border-0 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-700/50">
+                   class="flex items-start gap-3 border-b border-gray-100 px-4 py-3 transition-colors last:border-0 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-700/50 active:scale-[0.99]">
                   <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-100 text-xs font-bold text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
                     {{ strtoupper(substr($tenant->name, 0, 1)) }}
                   </div>
@@ -114,7 +115,7 @@
             <div class="border-t border-gray-200 p-2 dark:border-gray-700">
               <a href="{{ route('superadmin.tenants.index') }}" wire:navigate
                  @click="open = false"
-                 class="flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-primary-600 transition-colors hover:bg-primary-50 dark:hover:bg-primary-500/10">
+                 class="flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-primary-600 transition-colors hover:bg-primary-50 dark:hover:bg-primary-500/10 active:scale-[0.98]">
                 View all pending applications
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
               </a>
@@ -126,7 +127,7 @@
       {{-- Dark mode toggle --}}
       <button type="button"
               @click="toggleDark()"
-              class="flex size-9 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white"
+              class="flex size-9 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white"
               aria-label="Toggle dark mode">
         <svg x-show="dark" class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
         <svg x-show="!dark" class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
@@ -142,7 +143,7 @@
                   @click="open = !open"
                   :aria-expanded="open.toString()"
                   aria-haspopup="true"
-                  class="flex items-center gap-2 rounded-full px-2 py-1.5 text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-white">
+                  class="flex items-center gap-2 rounded-full px-2 py-1.5 text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95 dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-white">
             <div class="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary-600 text-xs font-bold text-white">
                 @if($userAvatarUrl)
                     <img src="{{ $userAvatarUrl }}" alt="{{ $user->name }}" class="h-full w-full object-cover">
@@ -188,7 +189,7 @@
 
             <div class="space-y-0.5 p-1.5">
               <a href="{{ route('superadmin.profile') }}" wire:navigate
-                 class="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-gray-700 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-200 dark:hover:bg-gray-700 dark:hover:text-white"
+                 class="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-gray-700 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-200 dark:hover:bg-gray-700 dark:hover:text-white active:scale-[0.98]"
                  @click="open = false">
                 <svg class="h-4 w-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
                 My Profile
@@ -197,7 +198,7 @@
               <form method="POST" action="{{ route('logout') }}" class="block">
                 @csrf
                 <button type="submit"
-                        class="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/10">
+                        class="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/10 active:scale-[0.98]">
                   <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
                   Sign Out
                 </button>
@@ -206,7 +207,7 @@
           </div>
         </div>
       @else
-        <a href="{{ route('login') }}" class="inline-flex items-center gap-x-2 rounded-full bg-primary-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-700">Sign in</a>
+        <a href="{{ route('login') }}" class="inline-flex items-center gap-x-2 rounded-full bg-primary-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-700 active:scale-95">Sign in</a>
       @endauth
     </div>
   </nav>

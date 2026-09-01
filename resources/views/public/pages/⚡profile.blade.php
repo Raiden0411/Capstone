@@ -124,8 +124,9 @@ class extends Component {
         <div class="flex items-center justify-between">
             <h1 class="font-display text-3xl font-bold text-gray-900 dark:text-white">My Profile</h1>
             <a href="{{ route('home') }}" wire:navigate
-               class="text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors flex items-center gap-1">
-                &larr; Home
+               class="text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors flex items-center gap-1 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                Home
             </a>
         </div>
 
@@ -147,7 +148,7 @@ class extends Component {
                             {{ strtoupper(substr(Auth::user()->name ?? 'U', 0, 1)) }}
                         </div>
 
-                        <label class="absolute bottom-0 right-0 bg-primary-600 hover:bg-primary-500 text-white rounded-full p-2 cursor-pointer shadow-lg transition-colors focus-within:ring-2 focus-within:ring-primary-600/50"
+                        <label class="absolute bottom-0 right-0 bg-primary-600 hover:bg-primary-500 text-white rounded-full p-2 cursor-pointer shadow-lg transition-colors focus-within:ring-2 focus-within:ring-primary-600/50 active:scale-95"
                                wire:loading.class="opacity-50 pointer-events-none"
                                wire:target="avatar"
                                aria-label="Upload profile photo">
@@ -174,7 +175,7 @@ class extends Component {
                         @if($currentAvatarUrl || $avatar)
                             <button type="button"
                                     @click="previewUrl = null; $wire.removeAvatar()"
-                                    class="mt-2 text-xs font-semibold text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors focus-visible:ring-2 focus-visible:ring-red-500/50 rounded">
+                                    class="mt-2 text-xs font-semibold text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors active:scale-95 focus-visible:ring-2 focus-visible:ring-red-500/50 rounded">
                                 Remove photo
                             </button>
                         @endif
@@ -189,13 +190,13 @@ class extends Component {
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Full Name</label>
                         <input type="text" wire:model="name" autocomplete="name"
-                               class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition-colors duration-200">
+                               class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition-all duration-200">
                         @error('name') <span class="text-red-600 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email Address</label>
                         <input type="email" wire:model="email" autocomplete="email"
-                               class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition-colors duration-200">
+                               class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition-all duration-200">
                         @error('email') <span class="text-red-600 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
                 </div>
@@ -208,20 +209,20 @@ class extends Component {
                         <div>
                             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Current Password</label>
                             <input type="password" wire:model="current_password" autocomplete="current-password"
-                                   class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition-colors duration-200">
+                                   class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition-all duration-200">
                             @error('current_password') <span class="text-red-600 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                         </div>
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">New Password</label>
                                 <input type="password" wire:model="new_password" autocomplete="new-password" minlength="8"
-                                       class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition-colors duration-200">
+                                       class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition-all duration-200">
                                 @error('new_password') <span class="text-red-600 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                             </div>
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Confirm New Password</label>
                                 <input type="password" wire:model="new_password_confirmation" autocomplete="new-password" minlength="8"
-                                       class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition-colors duration-200">
+                                       class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition-all duration-200">
                             </div>
                         </div>
                     </div>
@@ -231,7 +232,7 @@ class extends Component {
             {{-- Action Buttons --}}
             <div class="flex items-center gap-4">
                 <button type="submit" wire:loading.attr="disabled"
-                        class="bg-primary-600 hover:bg-primary-500 text-white font-medium py-3 px-8 rounded-xl shadow-lg shadow-primary-500/20 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-600/50">
+                        class="bg-primary-600 hover:bg-primary-500 text-white font-medium py-3 px-8 rounded-xl shadow-lg shadow-primary-500/20 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-600/50">
                     <span wire:loading.remove>Save Changes</span>
                     <span wire:loading class="flex items-center gap-2">
                         <svg class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -242,7 +243,7 @@ class extends Component {
                     </span>
                 </button>
                 <a href="{{ route('home') }}" wire:navigate
-                   class="px-6 py-3 rounded-xl border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 font-medium transition">
+                   class="px-6 py-3 rounded-xl border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 font-medium transition-all duration-200 active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50">
                     Cancel
                 </a>
             </div>

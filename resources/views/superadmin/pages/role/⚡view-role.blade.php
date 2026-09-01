@@ -8,6 +8,7 @@ use Livewire\Attributes\Computed;
 use Livewire\WithPagination;
 use Spatie\Permission\Models\Role;
 use Spatie\Permission\Models\Permission;
+use Illuminate\Support\Facades\DB;
 
 new 
 #[Layout('superadmin.layouts.app')] 
@@ -25,12 +26,26 @@ class extends Component {
     #[Computed]
     public function roles()
     {
-        return Role::with('permissions')
+        return Role::query()
+            ->select('id', 'name')
+            ->with(['permissions:id,name'])
             ->when($this->search, function ($query) {
                 $query->where('name', 'like', '%' . $this->search . '%');
             })
             ->orderBy('id', 'desc')
             ->paginate(10);
+    }
+
+    #[Computed]
+    public function stats()
+    {
+        return Role::query()
+            ->selectRaw('
+                COUNT(*) as total_roles,
+                COALESCE(SUM(name = ?), 0) as protected_roles,
+                COALESCE(SUM(name != ?), 0) as admin_roles
+            ', ['super-admin', 'super-admin'])
+            ->first();
     }
 
     public function delete($id)
@@ -48,10 +63,12 @@ class extends Component {
 
     public function exportCsv()
     {
-        $roles = Role::with('permissions')
+        $roles = Role::query()
+            ->select('id', 'name')
+            ->withCount('permissions')
             ->when($this->search, fn($q) => $q->where('name', 'like', '%' . $this->search . '%'))
             ->orderBy('name')
-            ->get();
+            ->cursor();
 
         $filename = 'roles-' . now()->format('Y-m-d-His') . '.csv';
 
@@ -61,7 +78,7 @@ class extends Component {
             foreach ($roles as $role) {
                 fputcsv($out, [
                     $role->name,
-                    $role->permissions->count(),
+                    $role->permissions_count,
                     $role->name === 'super-admin' ? 'Yes' : 'No',
                 ]);
             }
@@ -79,7 +96,7 @@ class extends Component {
             <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Roles</h1>
         </div>
         <a href="{{ route('superadmin.roles.create') }}" wire:navigate
-           class="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-lg shadow-primary-500/20 transition hover:scale-105 focus-visible:ring-2 focus-visible:ring-primary-500/50">
+           class="btn-primary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
             Add Role
         </a>
@@ -98,28 +115,22 @@ class extends Component {
     @endif
 
     {{-- Quick Stats --}}
-    @php
-        $totalRoles = Role::count();
-        $protectedRoles = Role::where('name', 'super-admin')->count();
-        $totalPermissions = Permission::count();
-        $adminRoles = Role::where('name', '!=', 'super-admin')->count();
-    @endphp
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+        <div class="card p-4">
             <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total Roles</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $totalRoles }}</p>
+            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $this->stats->total_roles ?? 0 }}</p>
         </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+        <div class="card p-4">
             <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Protected</p>
-            <p class="text-2xl font-bold text-purple-600 dark:text-purple-400 mt-2">{{ $protectedRoles }}</p>
+            <p class="text-2xl font-bold text-purple-600 dark:text-purple-400 mt-2">{{ $this->stats->protected_roles ?? 0 }}</p>
         </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+        <div class="card p-4">
             <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Admin Roles</p>
-            <p class="text-2xl font-bold text-primary-600 dark:text-primary-400 mt-2">{{ $adminRoles }}</p>
+            <p class="text-2xl font-bold text-primary-600 dark:text-primary-400 mt-2">{{ $this->stats->admin_roles ?? 0 }}</p>
         </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+        <div class="card p-4">
             <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Permissions</p>
-            <p class="text-2xl font-bold text-green-600 dark:text-green-400 mt-2">{{ $totalPermissions }}</p>
+            <p class="text-2xl font-bold text-green-600 dark:text-green-400 mt-2">{{ Permission::count() }}</p>
         </div>
     </div>
 
@@ -133,15 +144,19 @@ class extends Component {
                    placeholder="Search roles..."
                    class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 pl-10 pr-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
         </div>
-        <button wire:click="exportCsv"
-                class="px-4 py-2 rounded-xl bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
+        <button wire:click="exportCsv" wire:loading.attr="disabled"
+                class="btn-secondary w-full sm:w-auto active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-            Export CSV
+            <span wire:loading.remove wire:target="exportCsv">Export CSV</span>
+            <span wire:loading wire:target="exportCsv" class="inline-flex items-center gap-1">
+                <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                Exporting…
+            </span>
         </button>
     </div>
 
     {{-- Roles Table --}}
-    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-sm overflow-hidden">
+    <div class="card overflow-hidden">
         <div class="overflow-x-auto">
             <table class="min-w-full text-left">
                 <thead class="border-b border-gray-200 dark:border-gray-700 text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400">
@@ -163,7 +178,10 @@ class extends Component {
                                         {{ ucwords(str_replace(['-', '_'], ' ', $role->name)) }}
                                     </span>
                                     @if($role->name === 'super-admin')
-                                        <span class="text-xs text-purple-600 dark:text-purple-400 font-medium">🔒 Protected</span>
+                                        <span class="inline-flex items-center gap-1 text-xs text-purple-600 dark:text-purple-400 font-medium">
+                                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+                                            Protected
+                                        </span>
                                     @endif
                                 </div>
                             </td>
@@ -174,7 +192,7 @@ class extends Component {
                                     </span>
                                     @if($role->permissions->isNotEmpty())
                                         <div class="relative group">
-                                            <button type="button" class="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                                            <button type="button" class="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded active:scale-95 transition-transform">
                                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                                             </button>
                                             <div class="absolute z-10 left-0 mt-2 w-64 p-3 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-lg shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all">
@@ -195,15 +213,13 @@ class extends Component {
                             <td class="px-4 sm:px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                                 @if($role->name !== 'super-admin')
                                     <a href="{{ route('superadmin.roles.edit', $role->id) }}" wire:navigate
-                                       class="text-primary-600 hover:text-primary-700 mr-3 transition-colors inline-flex items-center gap-1 focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                                       class="inline-flex items-center gap-1 p-1.5 text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-500/10 rounded-lg transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50" title="Edit">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
-                                        Edit
                                     </a>
                                     <button wire:click="delete({{ $role->id }})"
                                             wire:confirm="Are you sure you want to delete this role? Any users assigned to this role will lose their permissions."
-                                            class="text-red-600 dark:text-red-400 hover:text-red-700 transition-colors inline-flex items-center gap-1 focus-visible:ring-2 focus-visible:ring-red-500/50 rounded">
+                                            class="inline-flex items-center gap-1 p-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-lg transition active:scale-95 focus-visible:ring-2 focus-visible:ring-red-500/50" title="Delete">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                                        Delete
                                     </button>
                                 @else
                                     <span class="text-gray-400 dark:text-gray-500 text-sm italic">Protected</span>

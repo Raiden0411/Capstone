@@ -48,8 +48,12 @@ Route::get('/map/satellite-style', function () {
     ], 200, [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 })->name('map.satellite.style');
 
+// Public business profile page (tenant.show)
 Route::livewire('/business/{slug}', 'public::pages.tenant-show')->name('tenant.show');
 Route::livewire('/business/{slug}/offerings', 'public::pages.business-offerings')->name('business.offerings');
+
+// NEW: Tourist Spots listing page
+Route::livewire('/tourist-spots', 'public::pages.tourist-spots')->name('tourist-spots.index');
 
 Route::livewire('/events', 'public::pages.events')->name('events');
 Route::get('/events/{event}', function ($event) {
@@ -92,34 +96,45 @@ Route::middleware(['auth'])->group(function () {
             'tenant' => $booking->items->first()->property->tenant ?? null,
         ]);
     })->name('booking.receipt');
+
+    // Processing page – renamed route parameter
+    Route::livewire('/booking/payment/processing/{bookingId}', 'public::pages.payment-processing')->name('booking.payment.processing');
+
+    // Success route: redirect to processing page
+    Route::get('/booking/payment/success/{booking}', function ($bookingId) {
+        $booking = Booking::withoutGlobalScope(TenantScope::class)->findOrFail($bookingId);
+
+        if (Auth::id() !== $booking->user_id) {
+            abort(403);
+        }
+
+        return redirect()->route('booking.payment.processing', ['bookingId' => $booking->id]);
+    })->name('booking.payment.success');
+
+    Route::get('/booking/payment/cancel/{booking}', function ($bookingId) {
+        $booking = Booking::withoutGlobalScope(TenantScope::class)->findOrFail($bookingId);
+
+        if (Auth::id() !== $booking->user_id) {
+            abort(403);
+        }
+
+        if ($booking->status === Booking::STATUS_PENDING) {
+            $booking->update(['status' => Booking::STATUS_CANCELLED]);
+        }
+
+        $propertyId = $booking->items()
+            ->withoutGlobalScope(TenantScope::class)
+            ->first()
+            ->property_id ?? null;
+
+        if ($propertyId) {
+            return redirect()->route('booking.create', ['publicproperty' => $propertyId])
+                ->with('error', 'Payment was cancelled. The temporary booking has been cancelled.');
+        }
+
+        return redirect()->route('my-bookings')->with('error', 'Payment cancelled.');
+    })->name('booking.payment.cancel');
 });
-
-Route::get('/booking/payment/success/{booking}', function ($bookingId) {
-    $booking = Booking::withoutGlobalScope(TenantScope::class)->findOrFail($bookingId);
-    if (Auth::id() !== $booking->user_id) {
-        abort(403);
-    }
-    return redirect()->route('my-bookings')->with('message', 'Payment successful! Your booking is updated.');
-})->name('booking.payment.success');
-
-Route::get('/booking/payment/cancel/{booking}', function ($bookingId) {
-    $booking = Booking::withoutGlobalScope(TenantScope::class)->findOrFail($bookingId);
-    if (Auth::id() !== $booking->user_id) {
-        abort(403);
-    }
-    if ($booking->status === Booking::STATUS_PENDING) {
-        $booking->update(['status' => Booking::STATUS_CANCELLED]);
-    }
-    $propertyId = $booking->items()
-        ->withoutGlobalScope(TenantScope::class)
-        ->first()
-        ->property_id ?? null;
-    if ($propertyId) {
-        return redirect()->route('booking.create', ['publicproperty' => $propertyId])
-            ->with('error', 'Payment was cancelled. The temporary booking has been cancelled.');
-    }
-    return redirect()->route('my-bookings')->with('error', 'Payment cancelled.');
-})->name('booking.payment.cancel');
 
 /*
 |--------------------------------------------------------------------------
@@ -137,6 +152,7 @@ Route::prefix('platform')->name('superadmin.')->middleware([Authenticate::class,
 
     Route::livewire('/tenants', 'superadmin::pages.tenant.view-tenant')->name('tenants.index');
     Route::livewire('/tenants/create', 'superadmin::pages.tenant.create-tenant')->name('tenants.create');
+    Route::livewire('/tenants/{tenant}/preview', 'superadmin::pages.tenant.preview-tenant')->name('tenants.preview'); // ★ ADDED
     Route::livewire('/tenants/{tenant}/edit', 'superadmin::pages.tenant.edit-tenant')->name('tenants.edit');
 
     Route::livewire('/roles', 'superadmin::pages.role.view-role')->name('roles.index');
@@ -147,9 +163,9 @@ Route::prefix('platform')->name('superadmin.')->middleware([Authenticate::class,
     Route::livewire('/tenant-types/create', 'superadmin::pages.tenant-type.create-type')->name('tenant-types.create');
     Route::livewire('/tenant-types/{type}/edit', 'superadmin::pages.tenant-type.edit-type')->name('tenant-types.edit');
 
-    // Categories routes removed
-
     Route::livewire('/map-markers', 'superadmin::pages.map-marker.manage-map-markers')->name('map-markers.index');
+    Route::livewire('/marker-categories', 'superadmin::pages.map-marker.manage-marker-categories')->name('marker-categories.index');
+
     Route::livewire('/homepage-editor', 'superadmin::pages.homepage.homepage-editor')->name('homepage.editor');
     Route::livewire('/about-editor', 'superadmin::pages.homepage.about-editor')->name('about.editor');
 
@@ -169,7 +185,6 @@ Route::prefix('admin')->name('tenant.')->middleware([
 ])->group(function () {
     Route::livewire('/dashboard', 'tenant::pages.dashboard.dashboard-page')->name('dashboard');
     Route::livewire('/settings', 'tenant::pages.settings.business-profile')->name('settings.index');
-    Route::livewire('/tourist-spot', 'tenant::pages.settings.tourist-spot-overview')->name('settings.overview');
 
     Route::livewire('/bookings', 'tenant::pages.booking.view-booking')->name('bookings.index');
     Route::livewire('/bookings/create', 'tenant::pages.booking.create-booking')->name('bookings.create');
@@ -202,7 +217,6 @@ Route::prefix('admin')->name('tenant.')->middleware([
 
     Route::livewire('/payments', 'tenant::pages.payment.view-payment')->name('payments.index');
     Route::livewire('/payments/create/{booking}', 'tenant::pages.payment.create-payment')->name('payments.create');
-    Route::livewire('/payments/{payment}/edit', 'tenant::pages.payment.edit-payment')->name('payments.edit');
 
     Route::get('/payments/success/{booking}', function (Booking $booking) {
         return redirect()->route('tenant.payments.index')

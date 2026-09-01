@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use App\Traits\BelongsToTenant;
+use App\Scopes\TenantScope;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 
@@ -40,12 +41,35 @@ class Booking extends Model
     public const STATUS_CHECKED_IN = 'checked_in';
 
     // Relationships
-    public function tenant() { return $this->belongsTo(Tenant::class); }
-    public function user() { return $this->belongsTo(User::class); }
-    public function items() { return $this->hasMany(BookingItem::class); }
-    public function services() { return $this->hasMany(BookingService::class); }
-    public function payments() { return $this->hasMany(Payment::class); }
-    public function transactions() { return $this->hasMany(Transaction::class); }
+    public function tenant()
+    {
+        return $this->belongsTo(Tenant::class);
+    }
+
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    public function items()
+    {
+        return $this->hasMany(BookingItem::class);
+    }
+
+    public function services()
+    {
+        return $this->hasMany(BookingService::class);
+    }
+
+    public function payments()
+    {
+        return $this->hasMany(Payment::class);
+    }
+
+    public function transactions()
+    {
+        return $this->hasMany(Transaction::class);
+    }
 
     // Accessors
     public function getCheckInAttribute(mixed $value): ?Carbon
@@ -72,11 +96,20 @@ class Booking extends Model
         if ($this->status !== self::STATUS_PENDING) {
             return false;
         }
-        $paid = $this->payments()->where('payment_status', 'paid')->sum('amount');
+
+        // Remove tenant scope because this may be called from a queue job
+        $paid = $this->payments()
+            ->withoutGlobalScope(TenantScope::class)
+            ->where('payment_status', 'paid')
+            ->sum('amount');
+
         if ($paid >= $this->total_amount) {
             return false;
         }
-        return $this->created_at->addMinutes(self::PAYMENT_DEADLINE_MINUTES)->isPast();
+
+        return $this->created_at
+            ->addMinutes(self::PAYMENT_DEADLINE_MINUTES)
+            ->isPast();
     }
 
     public function cancelIfOverdue(): void
@@ -90,17 +123,31 @@ class Booking extends Model
     protected static function booted()
     {
         static::updated(function (Booking $booking) {
-            if (in_array($booking->status, [self::STATUS_COMPLETED, self::STATUS_CANCELLED])) {
-                $propertyIds = $booking->items()
-                    ->pluck('property_id')
-                    ->unique()
-                    ->values()
-                    ->toArray();
+            // Get property IDs from booking items (remove tenant scope for safety)
+            $propertyIds = $booking->items()
+                ->withoutGlobalScope(TenantScope::class)
+                ->pluck('property_id')
+                ->unique()
+                ->values()
+                ->toArray();
 
-                // Use DB facade to avoid any method signature conflicts
+            if (empty($propertyIds)) {
+                return;
+            }
+
+            // Determine new property status based on booking status
+            $newStatus = match ($booking->status) {
+                self::STATUS_CONFIRMED => 'occupied',
+                self::STATUS_RESERVED  => 'reserved',
+                self::STATUS_COMPLETED,
+                self::STATUS_CANCELLED => 'available',
+                default                => null, // no change for pending, checked_in, etc.
+            };
+
+            if ($newStatus) {
                 DB::table('properties')
                     ->whereIn('id', $propertyIds)
-                    ->update(['status' => 'available']);
+                    ->update(['status' => $newStatus]);
             }
         });
     }

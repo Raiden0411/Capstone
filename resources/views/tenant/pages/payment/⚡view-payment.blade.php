@@ -67,7 +67,7 @@ class extends Component {
     #[Computed]
     public function payments()
     {
-        return Payment::with('booking.user')
+        return Payment::with(['booking.user:id,name,email,phone'])
             ->where('tenant_id', Auth::user()->tenant_id)
             ->when($this->search, function ($q) {
                 $q->where(function ($sq) {
@@ -131,66 +131,69 @@ class extends Component {
         <div class="flex flex-wrap gap-2">
             <button wire:click="refreshSync"
                     wire:loading.attr="disabled"
-                    class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition disabled:opacity-50">
+                    class="btn-secondary text-xs sm:text-sm active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-2">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h5M4 9a9 9 0 0014.5 4.5M20 20v-5h-5M20 15a9 9 0 00-14.5-4.5"/></svg>
-                <span wire:loading.remove>Sync PayMongo</span>
-                <span wire:loading>Syncing…</span>
+                <span wire:loading.remove wire:target="refreshSync">Sync PayMongo</span>
+                <span wire:loading wire:target="refreshSync" class="inline-flex items-center gap-1">
+                    <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                    Syncing…
+                </span>
             </button>
         </div>
     </div>
 
     {{-- Flash Messages --}}
     @if (session()->has('message'))
-        <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium">
-            ✔ {{ session('message') }}
+        <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium flex items-center gap-2">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+            {{ session('message') }}
         </div>
     @endif
     @if (session()->has('error'))
-        <div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 border-l-4 border-l-red-500 p-4 rounded-md text-sm text-red-700 dark:text-red-300 font-medium">
-            ✖ {{ session('error') }}
+        <div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 border-l-4 border-l-red-500 p-4 rounded-md text-sm text-red-700 dark:text-red-300 font-medium flex items-center gap-2">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            {{ session('error') }}
         </div>
     @endif
 
     {{-- Stats --}}
     @php $s = $this->stats; @endphp
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+        <div class="card p-4">
             <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Total Received</p>
             <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">₱{{ number_format($s['total_received'], 2) }}</p>
         </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+        <div class="card p-4">
             <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Total Pending</p>
             <p class="text-2xl font-bold text-amber-600 dark:text-amber-400 mt-2">₱{{ number_format($s['total_pending'], 2) }}</p>
         </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+        <div class="card p-4">
             <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Paid Transactions</p>
             <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $s['paid_count'] }}</p>
         </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+        <div class="card p-4">
             <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Reservation Fees</p>
             <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">₱{{ number_format($s['reservation_fees'], 2) }}</p>
         </div>
     </div>
 
     {{-- Filters --}}
-    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-4 shadow-sm space-y-3">
+    <div class="card p-4 space-y-3">
         <div class="flex flex-wrap gap-3 items-center">
             <div class="relative flex-1 min-w-[200px]">
                 <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                 <input type="text" wire:model.live.debounce.300ms="search"
                        placeholder="Search by reference, guest, or PayMongo ID…"
-                       class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 pl-10 pr-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-[#376df1]/50 focus:border-[#376df1] transition">
+                       class="input pl-10">
             </div>
 
-            <select wire:model.live="statusFilter"
-                    class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-[#376df1]/50 transition">
+            <select wire:model.live="statusFilter" class="select w-full sm:w-auto">
                 <option value="">All Status</option>
                 <option value="paid">Paid</option>
                 <option value="unpaid">Unpaid</option>
             </select>
 
-            <select wire:model.live="methodFilter"
-                    class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-[#376df1]/50 transition">
+            <select wire:model.live="methodFilter" class="select w-full sm:w-auto">
                 <option value="">All Methods</option>
                 <option value="cash">Cash</option>
                 <option value="gcash">GCash</option>
@@ -202,15 +205,12 @@ class extends Component {
         <div class="flex flex-wrap gap-3 items-center">
             <div class="flex items-center gap-2">
                 <span class="text-xs text-gray-500 dark:text-gray-400">From:</span>
-                <input type="date" wire:model.live="fromDate"
-                       class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2 px-3 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-[#376df1]/50 transition">
+                <input type="date" wire:model.live="fromDate" class="input !py-2 !w-auto">
                 <span class="text-xs text-gray-500 dark:text-gray-400">To:</span>
-                <input type="date" wire:model.live="toDate"
-                       class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2 px-3 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-[#376df1]/50 transition">
+                <input type="date" wire:model.live="toDate" class="input !py-2 !w-auto">
             </div>
 
-            <select wire:model.live="sortBy"
-                    class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-[#376df1]/50 transition">
+            <select wire:model.live="sortBy" class="select w-full sm:w-auto">
                 <option value="newest">Newest First</option>
                 <option value="oldest">Oldest First</option>
                 <option value="amount_high">Amount (High to Low)</option>
@@ -219,15 +219,16 @@ class extends Component {
 
             @if($search || $statusFilter || $methodFilter || $fromDate || $toDate)
                 <button wire:click="clearFilters"
-                        class="px-4 py-2 rounded-full border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 text-xs font-semibold uppercase tracking-wider transition">
-                    ✕ Clear
+                        class="btn-secondary text-xs active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-1">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                    Clear
                 </button>
             @endif
         </div>
     </div>
 
     {{-- Payments Table --}}
-    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-sm overflow-hidden">
+    <div class="card overflow-hidden">
         <div class="overflow-x-auto">
             <table class="w-full text-left">
                 <thead class="border-b border-gray-200 dark:border-gray-700">
@@ -252,7 +253,8 @@ class extends Component {
                         <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
                             <td class="px-4 sm:px-6 py-4 font-mono text-sm">
                                 @if($booking)
-                                    <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate class="text-[#376df1] dark:text-blue-400 hover:text-blue-700 hover:underline">
+                                    <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate
+                                       class="text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 hover:underline focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded active:scale-95 transition-transform">
                                         {{ $booking->booking_reference }}
                                     </a>
                                 @else
@@ -279,7 +281,10 @@ class extends Component {
                                 @if($booking && $balance > 0)
                                     <span class="text-amber-600 dark:text-amber-400">₱{{ number_format($balance, 2) }}</span>
                                 @elseif($booking)
-                                    <span class="text-green-600 dark:text-green-400">Settled ✓</span>
+                                    <span class="text-green-600 dark:text-green-400 flex items-center gap-1">
+                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                                        Settled
+                                    </span>
                                 @else
                                     <span class="text-gray-400 dark:text-gray-500">—</span>
                                 @endif

@@ -29,6 +29,15 @@
 
     {{ $slot }}
 
-    @livewireScripts
+    {{-- Livewire Scripts --}}
+    <script src="https://cdn.jsdelivr.net/npm/livewire@4.0.0/dist/livewire.js"></script>
+
+    {{-- Alpine Collapse plugin (required for x-collapse) --}}
+    <script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3.x.x/dist/cdn.min.js"></script>
+    <script>
+        document.addEventListener('alpine:init', () => {
+            Alpine.plugin(window.AlpineCollapse);
+        });
+    </script>
 </body>
 </html>

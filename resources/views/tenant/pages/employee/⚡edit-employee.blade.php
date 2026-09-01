@@ -69,12 +69,10 @@ class extends Component {
         $this->code = $employee->code ?? '';
         $this->avatar = null;
 
-        // Initialize selected roles from linked user
         if ($employee->user_id) {
             $user = $employee->user;
             $this->selectedRoles = $user->getRoleNames()->toArray();
 
-            // Also select custom roles where user has all required permissions
             $setting = TenantSetting::where('tenant_id', '=', Auth::user()->tenant_id, 'and')
                 ->where('key', '=', 'custom_roles', 'and')
                 ->first();
@@ -141,7 +139,7 @@ class extends Component {
 
     public function getAllPermissionsProperty()
     {
-        return Permission::orderBy('name')->get();
+        return Permission::orderBy('name')->get(['name']);
     }
 
     public function toggleNewRoleForm()
@@ -201,7 +199,6 @@ class extends Component {
         $this->validate();
 
         DB::transaction(function () {
-            // Avatar upload
             $avatarPath = $this->employee->avatar;
             if ($this->avatar) {
                 $avatarPath = $this->avatar->store('employee-avatars', 'public');
@@ -216,7 +213,6 @@ class extends Component {
                 'is_active' => $this->is_active,
             ]);
 
-            // Update linked user details and roles/permissions
             if ($this->employee->user_id) {
                 $user = User::find($this->employee->user_id);
                 if ($user) {
@@ -254,26 +250,27 @@ class extends Component {
 <div class="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto space-y-6">
 
     @if (session()->has('message'))
-        <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium">
-            ✔ {{ session('message') }}
+        <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium flex items-center gap-2">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+            {{ session('message') }}
         </div>
     @endif
 
     <div class="flex items-center justify-between pb-6 border-b border-gray-200 dark:border-gray-700">
         <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Edit Employee</h1>
         <a href="{{ route('tenant.employees.index') }}" wire:navigate
-           class="text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-[#376df1] dark:hover:text-blue-400 transition-colors">
-            &larr; Back to Employees
+           class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+            Back to Employees
         </a>
     </div>
 
-    <form wire:submit="update" class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm space-y-5">
+    <form wire:submit="update" class="card p-5 sm:p-6 space-y-5">
 
         {{-- Employee Code --}}
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Employee Code</label>
-            <input type="text" wire:model="code"
-                   class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 focus:border-[#376df1] transition">
+            <input type="text" wire:model="code" class="input">
             @error('code') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
         </div>
 
@@ -284,7 +281,7 @@ class extends Component {
                 <img src="{{ asset('storage/'. $employee->avatar) }}" class="h-20 w-20 object-cover rounded-lg border border-gray-200 dark:border-gray-700 mb-2">
             @endif
             <input type="file" wire:model="avatar" accept="image/*"
-                   class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-blue-50 dark:file:bg-blue-500/20 file:text-blue-700 dark:file:text-blue-300 hover:file:bg-blue-100 dark:hover:file:bg-blue-500/30 transition">
+                   class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
             @error('avatar') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             @if($avatar)
                 <img src="{{ $avatar->temporaryUrl() }}" class="mt-2 h-20 w-20 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
@@ -295,14 +292,12 @@ class extends Component {
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Full Name *</label>
-                <input type="text" wire:model="name"
-                       class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 focus:border-[#376df1] transition">
+                <input type="text" wire:model="name" class="input">
                 @error('name') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Job Title / Role *</label>
-                <input type="text" wire:model="employeeRole" placeholder="e.g. Receptionist, Guide"
-                       class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 focus:border-[#376df1] transition">
+                <input type="text" wire:model="employeeRole" placeholder="e.g. Receptionist, Guide" class="input">
                 @error('employeeRole') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
         </div>
@@ -311,13 +306,12 @@ class extends Component {
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Phone *</label>
-                <input type="text" wire:model="phone" placeholder="09123456789"
-                       class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 focus:border-[#376df1] transition">
+                <input type="text" wire:model="phone" placeholder="09123456789" class="input">
                 @error('phone') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
-            <div class="flex items-center pt-6">
+            <div class="flex items-center sm:pt-6">
                 <input type="checkbox" wire:model="is_active"
-                       class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-[#376df1] focus:ring-[#376df1]">
+                       class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary-600 focus:ring-primary-500">
                 <label class="ml-2 text-sm text-gray-700 dark:text-gray-300">Active</label>
             </div>
         </div>
@@ -334,19 +328,19 @@ class extends Component {
                     <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">You cannot change the linked user from this page.</p>
                 </div>
 
-                {{-- Quick role create --}}
                 <div class="flex items-center justify-between mb-2">
                     <label class="text-sm font-medium text-gray-700 dark:text-gray-300">Assign System Roles *</label>
                     <button type="button" wire:click="toggleNewRoleForm"
-                            class="text-xs text-[#376df1] dark:text-blue-400 hover:underline">+ New Role</button>
+                            class="text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                        + New Role
+                    </button>
                 </div>
 
                 @if($showNewRoleForm)
                     <div class="mb-4 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-200 dark:border-gray-700 space-y-3">
                         <div>
                             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Role Name</label>
-                            <input type="text" wire:model="newRoleName"
-                                   class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg py-2 px-3 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 transition">
+                            <input type="text" wire:model="newRoleName" class="input">
                             @error('newRoleName') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                         </div>
                         <div>
@@ -355,44 +349,40 @@ class extends Component {
                                 @foreach($this->allPermissions as $perm)
                                     <label class="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
                                         <input type="checkbox" wire:model.live="newRolePermissions" value="{{ $perm->name }}"
-                                               class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-[#376df1] focus:ring-[#376df1]">
+                                               class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary-600 focus:ring-primary-500">
                                         {{ $perm->name }}
                                     </label>
                                 @endforeach
                             </div>
                         </div>
-                        <div class="flex gap-2">
+                        <div class="flex flex-col sm:flex-row gap-2">
                             <button type="button" wire:click="createQuickRole"
-                                    class="px-4 py-2 rounded-full bg-[#376df1] hover:bg-blue-700 text-white text-sm font-semibold transition">
+                                    class="btn-primary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
                                 Create Role
                             </button>
                             <button type="button" wire:click="toggleNewRoleForm"
-                                    class="px-4 py-2 rounded-full border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition text-sm">
+                                    class="btn-secondary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
                                 Cancel
                             </button>
                         </div>
                     </div>
                 @endif
 
-                {{-- Search / filter --}}
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
-                    <input type="text" wire:model.live="roleSearch" placeholder="Search roles…"
-                           class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg py-2 px-3 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 transition">
-                    <select wire:model.live="roleTypeFilter"
-                            class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg py-2 px-3 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 transition appearance-none">
+                    <input type="text" wire:model.live="roleSearch" placeholder="Search roles…" class="input">
+                    <select wire:model.live="roleTypeFilter" class="select">
                         <option value="all">All Roles</option>
                         <option value="global">Global Only</option>
                         <option value="custom">Custom Only</option>
                     </select>
                 </div>
 
-                {{-- Role cards --}}
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto">
                     @foreach($this->availableRoles as $role)
                         <label class="cursor-pointer">
                             <input type="checkbox" wire:model.live="selectedRoles" value="{{ $role['value'] }}" class="sr-only peer">
-                            <div class="border-2 border-gray-200 dark:border-gray-700 rounded-xl p-3 transition cursor-pointer
-                                        {{ in_array($role['value'], $selectedRoles) ? 'border-[#376df1] bg-blue-50 dark:bg-blue-500/10' : 'hover:border-gray-300 dark:hover:border-gray-600' }}">
+                            <div class="border-2 border-gray-200 dark:border-gray-700 rounded-xl p-3 transition-all duration-200 active:scale-[0.98]
+                                        {{ in_array($role['value'], $selectedRoles) ? 'border-primary-600 bg-primary-50 dark:bg-primary-500/10' : 'hover:border-gray-300 dark:hover:border-gray-600' }}">
                                 <p class="font-semibold text-gray-900 dark:text-white">{{ $role['label'] }}</p>
                                 <div class="flex flex-wrap gap-1 mt-2">
                                     @foreach($role['permissions'] as $perm)
@@ -414,18 +404,18 @@ class extends Component {
         </div>
 
         {{-- Actions --}}
-        <div class="flex flex-wrap items-center gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
+        <div class="flex flex-col sm:flex-row gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
             <button type="submit"
                     wire:loading.attr="disabled"
-                    class="bg-[#376df1] hover:bg-blue-700 text-white font-medium py-2.5 px-6 rounded-full shadow-lg shadow-blue-500/20 transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                    class="btn-primary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
                 <span wire:loading.remove>Update Employee</span>
-                <span wire:loading class="flex items-center gap-2">
-                    <svg class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                <span wire:loading class="inline-flex items-center gap-2">
+                    <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                     Saving...
                 </span>
             </button>
             <a href="{{ route('tenant.employees.index') }}" wire:navigate
-               class="px-6 py-3 rounded-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 font-medium transition">
+               class="btn-secondary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
                 Cancel
             </a>
         </div>

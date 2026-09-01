@@ -1,4 +1,3 @@
-{{-- resources/views/public/pages/⚡create-booking.blade.php --}}
 <?php
 
 use Livewire\Component;
@@ -36,7 +35,7 @@ class extends Component
 
     #[Validate('required|date|after_or_equal:today')]
     public $check_in;
-    #[Validate('required|date|after:check_in')]
+    #[Validate('required|date|after_or_equal:check_in')]
     public $check_out;
 
     public $selectedServices = [];
@@ -63,27 +62,25 @@ class extends Component
         $this->customerPhone = Auth::user()->phone ?? '';
 
         $this->check_in = now()->format('Y-m-d');
-        $this->check_out = now()->addDay()->format('Y-m-d');
+        $this->check_out = now()->format('Y-m-d');
         $this->calculateTotal();
     }
 
     public function updatedCheckIn()
     {
-        $max = now()->addDays(30)->format('Y-m-d');
-        if ($this->check_in > $max) $this->check_in = $max;
-        if ($this->check_out && Carbon::parse($this->check_in)->gte(Carbon::parse($this->check_out))) {
-            $this->check_out = Carbon::parse($this->check_in)->addDay()->format('Y-m-d');
+        if (empty($this->check_out) || Carbon::parse($this->check_in)->gt(Carbon::parse($this->check_out))) {
+            $this->check_out = $this->check_in;
         }
+        $this->validateDateRange();
         $this->calculateTotal();
     }
 
     public function updatedCheckOut()
     {
-        $max = now()->addDays(30)->format('Y-m-d');
-        if ($this->check_out > $max) $this->check_out = $max;
-        if (Carbon::parse($this->check_out)->lte(Carbon::parse($this->check_in))) {
-            $this->check_out = Carbon::parse($this->check_in)->addDay()->format('Y-m-d');
+        if (empty($this->check_in) || Carbon::parse($this->check_out)->lt(Carbon::parse($this->check_in))) {
+            $this->check_out = $this->check_in;
         }
+        $this->validateDateRange();
         $this->calculateTotal();
     }
 
@@ -106,10 +103,15 @@ class extends Component
 
     public function calculateTotal()
     {
-        $in  = Carbon::parse($this->check_in);
-        $out = Carbon::parse($this->check_out);
-        $this->totalDays = max(1, $in->diffInDays($out));
-        $this->totalAmount = $this->property->price * $this->totalDays;
+        if (empty($this->check_in) || empty($this->check_out)) {
+            $this->totalDays = 1;
+            $this->totalAmount = $this->property->price;
+        } else {
+            $in  = Carbon::parse($this->check_in);
+            $out = Carbon::parse($this->check_out);
+            $this->totalDays = max(1, $in->diffInDays($out));
+            $this->totalAmount = $this->property->price * $this->totalDays;
+        }
 
         foreach ($this->selectedServices as $serviceId => $qty) {
             $svc = Service::withoutGlobalScope(TenantScope::class)->find($serviceId);
@@ -122,6 +124,24 @@ class extends Component
         $this->balanceOnArrival = round($this->totalAmount - $this->reservationFee, 2);
     }
 
+    protected function validateDateRange(): void
+    {
+        if (empty($this->check_in) || empty($this->check_out)) return;
+
+        $start = Carbon::parse($this->check_in);
+        $end   = Carbon::parse($this->check_out);
+
+        $bookedDates = $this->bookedDatesArray;
+        for ($d = $start; $d->lte($end); $d->addDay()) {
+            if (in_array($d->format('Y-m-d'), $bookedDates)) {
+                session()->flash('error', 'Selected date range includes unavailable dates. Please choose different dates.');
+                return;
+            }
+        }
+
+        session()->forget('error');
+    }
+
     #[Computed]
     public function availableServices()
     {
@@ -132,9 +152,50 @@ class extends Component
             ->get();
     }
 
+    #[Computed]
+    public function bookedDateRanges()
+    {
+        return BookingItem::withoutGlobalScope(TenantScope::class)
+            ->where('property_id', $this->property->id)
+            ->whereHas('booking', function ($q) {
+                $q->withoutGlobalScope(TenantScope::class)
+                  ->whereNotIn('status', [Booking::STATUS_CANCELLED, Booking::STATUS_COMPLETED]);
+            })
+            ->with(['booking' => fn($q) => $q->withoutGlobalScope(TenantScope::class)])
+            ->get()
+            ->map(function ($item) {
+                if (!$item->booking) {
+                    return null;
+                }
+                return [
+                    'start' => $item->booking->check_in->format('Y-m-d'),
+                    'end'   => $item->booking->check_out->format('Y-m-d'),
+                ];
+            })
+            ->filter()
+            ->values()
+            ->toArray();
+    }
+
+    #[Computed]
+    public function bookedDatesArray()
+    {
+        $dates = [];
+        foreach ($this->bookedDateRanges as $range) {
+            $start = Carbon::parse($range['start']);
+            $end   = Carbon::parse($range['end']);
+            while ($start->lte($end)) {
+                $dates[] = $start->format('Y-m-d');
+                $start->addDay();
+            }
+        }
+        return $dates;
+    }
+
     public function submit()
     {
         $this->validate();
+        $this->validateDateRange();
 
         $tenantId = $this->property->tenant_id;
         if (!$tenantId) {
@@ -142,15 +203,23 @@ class extends Component
             return;
         }
 
-        $conflict = BookingItem::where('property_id', $this->property->id)
-            ->whereHas('booking', fn($q) =>
-                $q->whereNotIn('status', [Booking::STATUS_CANCELLED, Booking::STATUS_COMPLETED])
+        if (!$this->property->is_active) {
+            session()->flash('error', 'This activity is currently unavailable. Please choose another.');
+            return;
+        }
+
+        $conflict = BookingItem::withoutGlobalScope(TenantScope::class)
+            ->where('property_id', $this->property->id)
+            ->whereHas('booking', function ($q) {
+                $q->withoutGlobalScope(TenantScope::class)
+                  ->whereNotIn('status', [Booking::STATUS_CANCELLED, Booking::STATUS_COMPLETED])
                   ->where('check_in', '<', $this->check_out)
-                  ->where('check_out', '>', $this->check_in)
-            )->exists();
+                  ->where('check_out', '>', $this->check_in);
+            })
+            ->exists();
 
         if ($conflict) {
-            session()->flash('error', 'These dates are not available. Please choose different dates.');
+            session()->flash('error', 'Selected dates are not available. Please choose different dates.');
             return;
         }
 
@@ -205,7 +274,7 @@ class extends Component
                 'item_name'            => $this->bookingMode === Booking::TYPE_RESERVATION
                                             ? 'Reservation Fee'
                                             : 'Activity Booking',
-                'success_url'          => route('booking.payment.success', ['booking' => $booking->id]),
+                'success_url'          => route('booking.payment.processing', ['bookingId' => $booking->id]),
                 'cancel_url'           => route('booking.payment.cancel', ['booking' => $booking->id]),
                 'metadata'             => ['booking_id' => $booking->id, 'tenant_id' => $tenantId],
                 'payment_method_types' => ['gcash', 'paymaya', 'card'],
@@ -243,7 +312,29 @@ class extends Component
      x-data="{
          step: 1,
          maxStep: {{ $this->availableServices->isNotEmpty() ? 4 : 3 }},
+         errors: {},
          next() {
+             if (this.step === 1) {
+                 if (!this.$wire.customerName.trim()) {
+                     this.errors.name = 'Full name is required.';
+                 } else {
+                     delete this.errors.name;
+                 }
+                 if (!this.$wire.customerEmail.trim()) {
+                     this.errors.email = 'Email is required.';
+                 } else {
+                     delete this.errors.email;
+                 }
+                 if (Object.keys(this.errors).length > 0) return;
+             }
+             if (this.step === 2) {
+                 if (!this.$wire.check_in || !this.$wire.check_out) {
+                     this.errors.dates = 'Please select both check-in and check-out dates.';
+                     return;
+                 } else {
+                     delete this.errors.dates;
+                 }
+             }
              if (this.step < this.maxStep) {
                  this.step++;
                  this.$nextTick(() => this.$refs['stepHeading' + this.step]?.focus());
@@ -270,7 +361,7 @@ class extends Component
         {{-- Back link --}}
         <div class="mb-6">
             <a href="{{ route('tenant.show', $property->tenant->slug) }}" wire:navigate
-               class="inline-flex items-center gap-1.5 text-xs uppercase tracking-wider text-gray-600 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors group">
+               class="inline-flex items-center gap-1.5 text-xs uppercase tracking-wider text-gray-600 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors group active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
                 <svg class="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 12H5m7-7l-7 7 7 7"/></svg>
                 Back to {{ $property->tenant->name }}
             </a>
@@ -304,7 +395,7 @@ class extends Component
                 <button type="button"
                         @click="goTo({{ $num }})"
                         :disabled="{{ $num }} > maxStep"
-                        class="flex flex-col items-center min-w-0 flex-1 focus:outline-none group"
+                        class="flex flex-col items-center min-w-0 flex-1 focus:outline-none group active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-lg transition-all duration-200"
                         :class="{{ $num }} <= maxStep ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'">
                     <span class="step-dot"
                           :class="{
@@ -361,7 +452,7 @@ class extends Component
                                 </div>
                                 <button type="button"
                                         onclick="document.getElementById('extra-guest-fields').classList.toggle('hidden')"
-                                        class="text-[10px] font-bold uppercase tracking-wider text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 transition">
+                                        class="text-[10px] font-bold uppercase tracking-wider text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-md px-2 py-1">
                                     Edit
                                 </button>
                             </div>
@@ -375,12 +466,14 @@ class extends Component
                                 <input type="text" wire:model="customerName" placeholder="Your full name"
                                        class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-600/50 focus:border-primary-600 transition-colors duration-200 @error('customerName') border-red-400/50 @enderror">
                                 @error('customerName') <p class="text-xs text-red-600 dark:text-red-300 mt-1">{{ $message }}</p> @enderror
+                                <p x-show="errors.name" x-text="errors.name" class="text-xs text-red-600 dark:text-red-300 mt-1"></p>
                             </div>
                             <div>
                                 <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">Email *</label>
                                 <input type="email" wire:model="customerEmail" placeholder="you@example.com" required
                                        class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-600/50 focus:border-primary-600 transition-colors duration-200 @error('customerEmail') border-red-400/50 @enderror">
                                 @error('customerEmail') <p class="text-xs text-red-600 dark:text-red-300 mt-1">{{ $message }}</p> @enderror
+                                <p x-show="errors.email" x-text="errors.email" class="text-xs text-red-600 dark:text-red-300 mt-1"></p>
                             </div>
                             <div>
                                 <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">Phone</label>
@@ -391,7 +484,7 @@ class extends Component
                     </div>
 
                     <div class="flex justify-end">
-                        <button type="button" @click="next()" class="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-full text-sm font-bold uppercase tracking-widest transition">Continue →</button>
+                        <button type="button" @click="next()" class="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-full text-sm font-bold uppercase tracking-widest transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">Continue →</button>
                     </div>
                 </div>
 
@@ -400,45 +493,102 @@ class extends Component
                     <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm">
                         <h2 class="font-display text-lg font-semibold text-gray-900 dark:text-white mb-4" x-ref="stepHeading2" tabindex="-1">Visit Dates</h2>
 
-                        <div class="grid grid-cols-[1fr_auto_1fr] items-end gap-3">
-                            <div>
-                                <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">Check-in *</label>
-                                <input type="date" wire:model.live="check_in"
-                                       min="{{ now()->format('Y-m-d') }}"
-                                       max="{{ now()->addDays(30)->format('Y-m-d') }}"
-                                       class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-600/50 focus:border-primary-600 transition-colors duration-200 @error('check_in') border-red-400/50 @enderror">
-                                @error('check_in') <p class="text-xs text-red-600 dark:text-red-300 mt-1">{{ $message }}</p> @enderror
-                            </div>
-
-                            <div class="flex flex-col items-center pb-2">
-                                <div class="w-10 h-10 rounded-full bg-primary-500/15 border border-primary-500/25 flex flex-col items-center justify-center">
-                                    <span class="font-display text-sm font-bold text-primary-600 dark:text-primary-400 leading-none">{{ $totalDays }}</span>
-                                    <span class="text-[8px] text-primary-600/60 dark:text-primary-300/70 uppercase tracking-wide">days</span>
+                        {{-- Custom Calendar --}}
+                        <div x-data="dateSelector()" x-init="init()" class="space-y-4">
+                            {{-- Selected Dates Display --}}
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <div class="flex items-center gap-3 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3">
+                                    <div class="w-9 h-9 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center text-primary-600 dark:text-primary-400 shrink-0">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                    </div>
+                                    <div>
+                                        <p class="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-0.5">Check-in</p>
+                                        <p class="text-sm font-semibold text-gray-900 dark:text-white" x-text="checkIn ? formatDate(checkIn) : 'Select date'"></p>
+                                    </div>
+                                </div>
+                                <div class="flex items-center gap-3 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3">
+                                    <div class="w-9 h-9 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center text-primary-600 dark:text-primary-400 shrink-0">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                    </div>
+                                    <div>
+                                        <p class="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-0.5">Check-out</p>
+                                        <p class="text-sm font-semibold text-gray-900 dark:text-white" x-text="checkOut ? formatDate(checkOut) : 'Select date'"></p>
+                                    </div>
                                 </div>
                             </div>
 
-                            <div>
-                                <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">Check-out *</label>
-                                <input type="date" wire:model.live="check_out"
-                                       min="{{ now()->addDay()->format('Y-m-d') }}"
-                                       max="{{ now()->addDays(30)->format('Y-m-d') }}"
-                                       class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-3 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-600/50 focus:border-primary-600 transition-colors duration-200 @error('check_out') border-red-400/50 @enderror">
-                                @error('check_out') <p class="text-xs text-red-600 dark:text-red-300 mt-1">{{ $message }}</p> @enderror
+                            {{-- Calendar Navigation --}}
+                            <div class="flex items-center justify-between mb-2">
+                                <button type="button" @click="prevMonth()"
+                                        class="flex items-center justify-center w-8 h-8 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                                </button>
+                                <span class="text-sm font-semibold text-gray-900 dark:text-white" x-text="currentMonthName + ' ' + currentYear"></span>
+                                <button type="button" @click="nextMonth()"
+                                        class="flex items-center justify-center w-8 h-8 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                                </button>
                             </div>
-                        </div>
 
-                        <div class="mt-4 flex items-center gap-2 text-gray-500 dark:text-gray-400 text-sm">
-                            <svg class="w-4 h-4 text-primary-600/60 dark:text-primary-400/70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                            <span class="text-xs">{{ $totalDays }} day{{ $totalDays > 1 ? 's' : '' }} ·
-                                {{ \Carbon\Carbon::parse($check_in)->format('M d') }} →
-                                {{ \Carbon\Carbon::parse($check_out)->format('M d, Y') }}
-                            </span>
+                            {{-- Calendar Grid --}}
+                            <div class="grid grid-cols-7 gap-1 text-center">
+                                <template x-for="day in ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']" :key="day">
+                                    <span class="text-[10px] font-bold uppercase text-gray-400 dark:text-gray-500 py-1" x-text="day"></span>
+                                </template>
+                                <template x-for="blank in firstDayOffset" :key="'blank-'+blank">
+                                    <span></span>
+                                </template>
+                                <template x-for="day in daysInMonth" :key="day.date">
+                                    <button type="button"
+                                            @click="selectDate(day.date)"
+                                            :disabled="day.isDisabled"
+                                            :class="{
+                                                'bg-primary-600 text-white shadow-md': day.date === checkIn || day.date === checkOut,
+                                                'bg-primary-100 dark:bg-primary-900/30 text-primary-800 dark:text-primary-200': isInRange(day.date) && day.date !== checkIn && day.date !== checkOut,
+                                                'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-300 cursor-not-allowed': day.isBooked,
+                                                'hover:bg-gray-100 dark:hover:bg-gray-700': !day.isDisabled && day.date !== checkIn && day.date !== checkOut,
+                                                'text-gray-300 dark:text-gray-600 cursor-not-allowed': day.isDisabled,
+                                                'text-gray-900 dark:text-white': !day.isDisabled && day.date !== checkIn && day.date !== checkOut
+                                            }"
+                                            class="h-9 rounded-xl text-sm font-medium transition-all duration-200 active:scale-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                                            :title="day.isBooked ? 'Unavailable' : ''">
+                                        <span x-text="day.dayNumber"></span>
+                                    </button>
+                                </template>
+                            </div>
+
+                            {{-- Error Message --}}
+                            <p x-show="error" x-text="error" class="text-xs text-red-500 mt-2"></p>
+
+                            {{-- Booked Dates List --}}
+                            @if(!empty($this->bookedDateRanges))
+                                <div class="mt-5 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-400/30 rounded-xl p-4">
+                                    <h4 class="text-[10px] font-bold uppercase tracking-wider text-red-700 dark:text-red-300 mb-2 flex items-center gap-1.5">
+                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                        Already Booked Dates
+                                    </h4>
+                                    <div class="flex flex-wrap gap-2">
+                                        @foreach($this->bookedDateRanges as $range)
+                                            <span class="inline-flex items-center px-3 py-1 rounded-full bg-white dark:bg-gray-800 border border-red-200 dark:border-red-400/30 text-red-700 dark:text-red-300 text-xs font-medium">
+                                                {{ \Carbon\Carbon::parse($range['start'])->format('M d') }} – {{ \Carbon\Carbon::parse($range['end'])->format('M d') }}
+                                            </span>
+                                        @endforeach
+                                    </div>
+                                </div>
+                            @else
+                                <div class="mt-5 text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1.5">
+                                    <svg class="w-3.5 h-3.5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                    All dates are currently open for booking.
+                                </div>
+                            @endif
                         </div>
                     </div>
 
+                    <p x-show="errors.dates" x-text="errors.dates" class="text-xs text-red-600 dark:text-red-300"></p>
+
                     <div class="flex justify-between">
-                        <button type="button" @click="prev()" class="px-6 py-3 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-full text-sm font-bold uppercase tracking-widest transition">← Back</button>
-                        <button type="button" @click="next()" class="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-full text-sm font-bold uppercase tracking-widest transition">Continue →</button>
+                        <button type="button" @click="prev()" class="px-6 py-3 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-full text-sm font-bold uppercase tracking-widest transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-500/50">← Back</button>
+                        <button type="button" @click="next()" class="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-full text-sm font-bold uppercase tracking-widest transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">Continue →</button>
                     </div>
                 </div>
 
@@ -453,7 +603,7 @@ class extends Component
                                 @php $isAdded = isset($selectedServices[$service->id]); @endphp
                                 <button type="button"
                                         wire:click="{{ $isAdded ? 'removeService' : 'addService' }}({{ $service->id }})"
-                                        class="flex items-center justify-between gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-200 {{ $isAdded ? 'border-primary-600 bg-primary-50 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300' : '' }}">
+                                        class="flex items-center justify-between gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 {{ $isAdded ? 'border-primary-600 bg-primary-50 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300' : '' }}">
                                     <span>{{ $service->name }}</span>
                                     <span class="font-bold text-xs">{{ $isAdded ? '✓ Added' : '+₱'.number_format($service->price, 0) }}</span>
                                 </button>
@@ -481,8 +631,8 @@ class extends Component
                                                     <td class="py-2.5 px-4 text-right text-gray-900 dark:text-white font-medium">₱{{ number_format($svc->price * $qty, 2) }}</td>
                                                     <td class="py-2.5 px-3">
                                                         <button type="button" wire:click="removeService({{ $serviceId }})"
-                                                                class="w-5 h-5 rounded-full border border-red-300 dark:border-red-500/40 text-red-500 dark:text-red-300 hover:bg-red-500 hover:text-white hover:border-transparent inline-flex items-center justify-center transition-all text-[11px]">
-                                                            ✕
+                                                                class="w-5 h-5 rounded-full border border-red-300 dark:border-red-500/40 text-red-500 dark:text-red-300 hover:bg-red-500 hover:text-white hover:border-transparent inline-flex items-center justify-center transition-all text-[11px] active:scale-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50">
+                                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
                                                         </button>
                                                     </td>
                                                 </tr>
@@ -495,8 +645,8 @@ class extends Component
                     </div>
 
                     <div class="flex justify-between">
-                        <button type="button" @click="prev()" class="px-6 py-3 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-full text-sm font-bold uppercase tracking-widest transition">← Back</button>
-                        <button type="button" @click="next()" class="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-full text-sm font-bold uppercase tracking-widest transition">Continue →</button>
+                        <button type="button" @click="prev()" class="px-6 py-3 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-full text-sm font-bold uppercase tracking-widest transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-500/50">← Back</button>
+                        <button type="button" @click="next()" class="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-full text-sm font-bold uppercase tracking-widest transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">Continue →</button>
                     </div>
                 </div>
                 @endif
@@ -510,18 +660,18 @@ class extends Component
                         <div class="mb-4">
                             <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">Booking Type</label>
                             <div class="grid grid-cols-2 gap-3">
-                                <label class="cursor-pointer">
+                                <label class="cursor-pointer group">
                                     <input type="radio" wire:model.live="bookingMode" value="full" class="sr-only peer">
-                                    <div class="flex flex-col items-center justify-center gap-2 p-4 rounded-2xl border-2 border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-center transition-all duration-200 cursor-pointer peer-checked:border-primary-600 peer-checked:bg-primary-50 dark:peer-checked:bg-primary-900/30 peer-checked:shadow-lg">
-                                        <span class="text-2xl">📅</span>
+                                    <div class="flex flex-col items-center justify-center gap-2 p-4 rounded-2xl border-2 border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-center transition-all duration-200 cursor-pointer peer-checked:border-primary-600 peer-checked:bg-primary-50 dark:peer-checked:bg-primary-900/30 peer-checked:shadow-lg active:scale-[0.98]">
+                                        <svg class="w-8 h-8 text-gray-700 dark:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
                                         <p class="text-gray-900 dark:text-white font-semibold text-sm">Book Now</p>
                                         <p class="text-gray-500 dark:text-gray-400 text-[11px]">Pay 100% online</p>
                                     </div>
                                 </label>
-                                <label class="cursor-pointer">
+                                <label class="cursor-pointer group">
                                     <input type="radio" wire:model.live="bookingMode" value="reservation" class="sr-only peer">
-                                    <div class="flex flex-col items-center justify-center gap-2 p-4 rounded-2xl border-2 border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-center transition-all duration-200 cursor-pointer peer-checked:border-primary-600 peer-checked:bg-primary-50 dark:peer-checked:bg-primary-900/30 peer-checked:shadow-lg">
-                                        <span class="text-2xl">🪙</span>
+                                    <div class="flex flex-col items-center justify-center gap-2 p-4 rounded-2xl border-2 border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-center transition-all duration-200 cursor-pointer peer-checked:border-primary-600 peer-checked:bg-primary-50 dark:peer-checked:bg-primary-900/30 peer-checked:shadow-lg active:scale-[0.98]">
+                                        <svg class="w-8 h-8 text-gray-700 dark:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v10a2 2 0 002 2h14a2 2 0 002-2V7a2 2 0 00-2-2H5z"/></svg>
                                         <p class="text-gray-900 dark:text-white font-semibold text-sm">Reserve</p>
                                         <p class="text-gray-500 dark:text-gray-400 text-[11px]">Pay 20% reservation fee</p>
                                     </div>
@@ -530,43 +680,59 @@ class extends Component
                         </div>
 
                         {{-- Payment Methods --}}
-                        <div class="grid grid-cols-3 gap-3">
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
                             @foreach([
                                 ['gcash', 'GCash'],
                                 ['paymaya', 'Maya'],
-                                ['card', 'Card'],
+                                ['card', 'Credit / Debit'],
                             ] as [$val, $label])
-                                <label class="cursor-pointer">
+                                <label class="relative cursor-pointer group">
                                     <input type="radio" wire:model.live="paymentMethod" value="{{ $val }}" class="sr-only peer">
-                                    <div class="flex flex-col items-center justify-center gap-1 p-3 rounded-2xl border-2 border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-center transition-all duration-200 cursor-pointer peer-checked:border-primary-600 peer-checked:bg-primary-50 dark:peer-checked:bg-primary-900/30 peer-checked:shadow-lg">
+                                    <div class="flex flex-col items-center justify-center gap-2 p-4 rounded-2xl border-2 border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-center transition-all duration-200 peer-hover:border-gray-300 dark:peer-hover:border-gray-600 peer-focus-visible:ring-2 peer-focus-visible:ring-primary-500 peer-focus-visible:ring-offset-2 peer-checked:border-primary-600 peer-checked:bg-primary-50 dark:peer-checked:bg-primary-900/20 peer-checked:shadow-md active:scale-[0.98]">
+                                        <div class="absolute top-3 right-3 opacity-0 peer-checked:opacity-100 text-primary-600 dark:text-primary-400 transition-opacity duration-200">
+                                            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+                                        </div>
+
                                         @if($val === 'gcash')
-                                            <svg class="w-10 h-10" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="16" fill="#007DFE"/><text x="16" y="21" text-anchor="middle" fill="white" font-size="12" font-weight="bold">G</text></svg>
+                                            <svg class="w-10 h-10" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="16" fill="#007DFE"/><text x="16" y="21" text-anchor="middle" fill="white" font-size="13" font-weight="900" font-family="sans-serif">G</text></svg>
                                         @elseif($val === 'paymaya')
-                                            <svg class="w-10 h-10" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="16" fill="#00C6D7"/><text x="16" y="21" text-anchor="middle" fill="white" font-size="12" font-weight="bold">M</text></svg>
+                                            <svg class="w-10 h-10" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="16" fill="#111827"/><text x="16" y="21" text-anchor="middle" fill="#00C6D7" font-size="13" font-weight="900" font-family="sans-serif">M</text></svg>
                                         @else
-                                            <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2" stroke="currentColor" stroke-width="2"/><line x1="2" y1="10" x2="22" y2="10" stroke="currentColor" stroke-width="2"/></svg>
+                                            <div class="w-10 h-10 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-gray-600 dark:text-gray-300">
+                                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2" stroke="currentColor" stroke-width="2"/><line x1="2" y1="10" x2="22" y2="10" stroke="currentColor" stroke-width="2"/></svg>
+                                            </div>
                                         @endif
-                                        <p class="text-gray-900 dark:text-white font-semibold text-xs mt-1">{{ $label }}</p>
+                                        <p class="text-gray-900 dark:text-white font-semibold text-sm">{{ $label }}</p>
                                     </div>
                                 </label>
                             @endforeach
                         </div>
 
-                        <div class="mt-4 flex items-start gap-2.5 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-400/30 rounded-xl px-4 py-3">
-                            <svg class="w-4 h-4 text-amber-500 dark:text-amber-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                            <p class="text-amber-700 dark:text-amber-200 text-xs leading-relaxed">
-                                You'll be redirected to <strong class="text-amber-800 dark:text-amber-100">PayMongo</strong> to complete your payment securely.
-                            </p>
+                        {{-- Secure Payment Notice --}}
+                        <div class="mt-5 flex items-start gap-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-4">
+                            <svg class="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+                            <div>
+                                <p class="text-blue-800 dark:text-blue-200 text-sm font-medium">Secure Checkout via PayMongo</p>
+                                <p class="text-blue-600 dark:text-blue-300/80 text-xs mt-0.5 leading-relaxed">
+                                    You will be redirected to complete your payment securely.
+                                </p>
+                            </div>
                         </div>
-                    </div>
 
-                    <div class="flex justify-between">
-                        <button type="button" @click="prev()" class="px-6 py-3 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 rounded-full text-sm font-bold uppercase tracking-widest transition">← Back</button>
-                        <button wire:click="submit" wire:loading.attr="disabled"
-                                class="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-full text-sm font-bold uppercase tracking-widest transition disabled:opacity-60 disabled:cursor-not-allowed">
-                            <span wire:loading.remove>Proceed to Pay</span>
-                            <span wire:loading>Processing…</span>
-                        </button>
+                        {{-- Action Buttons --}}
+                        <div class="flex flex-col-reverse sm:flex-row justify-between gap-4 mt-8">
+                            <button type="button" @click="prev()" class="w-full sm:w-auto px-6 py-3 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-full text-sm font-bold uppercase tracking-widest transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-500/50 active:scale-95">
+                                ← Back
+                            </button>
+                            <button wire:click="submit" wire:loading.attr="disabled"
+                                    class="relative w-full sm:w-auto px-8 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-full text-sm font-bold uppercase tracking-widest transition-all disabled:opacity-70 disabled:cursor-not-allowed shadow-lg shadow-primary-500/30 hover:shadow-primary-500/50 hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98] flex items-center justify-center min-w-[200px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                <span wire:loading.remove>Proceed to Pay</span>
+                                <span wire:loading class="flex items-center gap-2">
+                                    <svg class="animate-spin w-4 h-4 text-white" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                    Processing…
+                                </span>
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -641,7 +807,7 @@ class extends Component
                 </p>
             </div>
             <button type="button" @click="goTo({{ $this->availableServices->isNotEmpty() ? 4 : 3 }})"
-                    class="shrink-0 px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-full text-sm font-bold uppercase tracking-widest transition shadow-lg shadow-primary-500/30">
+                    class="shrink-0 px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-full text-sm font-bold uppercase tracking-widest transition shadow-lg shadow-primary-500/30 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                 Review
             </button>
         </div>
@@ -660,4 +826,122 @@ class extends Component
         .step-dot.pending { background: #e5e7eb; color: #6b7280; border: 1px solid #d1d5db; }
         .dark .step-dot.pending { background: #374151; color: #e5e7eb; border-color: #6b7280; }
     </style>
+
+    <script>
+        function dateSelector() {
+            return {
+                checkIn: @json($check_in),
+                checkOut: @json($check_out),
+                bookedDates: @json($this->bookedDatesArray),
+                today: @json(now()->format('Y-m-d')),
+                maxDate: @json(now()->addDays(30)->format('Y-m-d')),
+                currentMonth: new Date().getMonth(),
+                currentYear: new Date().getFullYear(),
+                error: '',
+
+                init() {
+                    this.$watch('checkIn', value => this.syncToLivewire('check_in', value));
+                    this.$watch('checkOut', value => this.syncToLivewire('check_out', value));
+                },
+
+                formatDate(dateStr) {
+                    if (!dateStr) return '';
+                    const d = new Date(dateStr + 'T00:00:00');
+                    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                },
+
+                syncToLivewire(key, value) {
+                    if (value) {
+                        this.$wire.set(key, value, false);
+                    }
+                },
+
+                isBooked(dateStr) {
+                    return this.bookedDates.includes(dateStr);
+                },
+
+                isPast(dateStr) {
+                    return dateStr < this.today;
+                },
+
+                isBeyondMax(dateStr) {
+                    return dateStr > this.maxDate;
+                },
+
+                isInRange(dateStr) {
+                    if (!this.checkIn || !this.checkOut) return false;
+                    return dateStr > this.checkIn && dateStr < this.checkOut;
+                },
+
+                get daysInMonth() {
+                    const year = this.currentYear;
+                    const month = this.currentMonth;
+                    const days = [];
+                    const totalDays = new Date(year, month + 1, 0).getDate();
+                    for (let day = 1; day <= totalDays; day++) {
+                        const dateObj = new Date(year, month, day);
+                        const dateStr = dateObj.toISOString().slice(0, 10);
+                        days.push({
+                            date: dateStr,
+                            dayNumber: day,
+                            isBooked: this.isBooked(dateStr),
+                            isDisabled: this.isPast(dateStr) || this.isBeyondMax(dateStr),
+                        });
+                    }
+                    return days;
+                },
+
+                get firstDayOffset() {
+                    return new Date(this.currentYear, this.currentMonth, 1).getDay();
+                },
+
+                get currentMonthName() {
+                    return new Date(this.currentYear, this.currentMonth).toLocaleDateString('en-US', { month: 'long' });
+                },
+
+                prevMonth() {
+                    this.currentMonth--;
+                    if (this.currentMonth < 0) {
+                        this.currentMonth = 11;
+                        this.currentYear--;
+                    }
+                },
+
+                nextMonth() {
+                    this.currentMonth++;
+                    if (this.currentMonth > 11) {
+                        this.currentMonth = 0;
+                        this.currentYear++;
+                    }
+                },
+
+                selectDate(dateStr) {
+                    if (this.isBooked(dateStr) || this.isPast(dateStr) || this.isBeyondMax(dateStr)) return;
+
+                    if (!this.checkIn || (this.checkIn && this.checkOut)) {
+                        this.checkIn = dateStr;
+                        this.checkOut = '';
+                        this.error = '';
+                    } else {
+                        if (dateStr > this.checkIn) {
+                            let start = new Date(this.checkIn + 'T00:00:00');
+                            let end = new Date(dateStr + 'T00:00:00');
+                            for (let d = start; d <= end; d.setDate(d.getDate() + 1)) {
+                                if (this.isBooked(d.toISOString().slice(0, 10))) {
+                                    this.error = 'Selected range includes booked dates. Please choose different dates.';
+                                    return;
+                                }
+                            }
+                            this.checkOut = dateStr;
+                            this.error = '';
+                        } else {
+                            this.checkIn = dateStr;
+                            this.checkOut = '';
+                            this.error = '';
+                        }
+                    }
+                },
+            };
+        }
+    </script>
 </div>

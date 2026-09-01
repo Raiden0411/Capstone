@@ -77,7 +77,11 @@ class extends Component
     private function query()
     {
         return Booking::withoutGlobalScope(TenantScope::class)
-            ->with(['user', 'items.property', 'services.service'])
+            ->with([
+                'user:id,name,email,phone',
+                'items.property:id,name',
+                'services.service:id,name',
+            ])
             ->where('tenant_id', Auth::user()->tenant_id)
             ->whereIn('status', [Booking::STATUS_COMPLETED, Booking::STATUS_CANCELLED])
             ->when($this->statusFilter, fn($q) => $q->where('status', $this->statusFilter))
@@ -149,19 +153,24 @@ class extends Component
             <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Booking History</h1>
         </div>
         <div class="flex flex-wrap gap-2">
-            <button wire:click="exportCsv"
-                    class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition">
+            <button wire:click="exportCsv" wire:loading.attr="disabled"
+                    class="btn-secondary text-xs sm:text-sm active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-2">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                Export CSV
+                <span wire:loading.remove wire:target="exportCsv">Export CSV</span>
+                <span wire:loading wire:target="exportCsv" class="inline-flex items-center gap-1">
+                    <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                    Exporting…
+                </span>
             </button>
-            <button onclick="window.print()"
-                    class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition">
+            <button type="button" onclick="window.print()"
+                    class="btn-secondary text-xs sm:text-sm active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-2">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2m-6-4h.01M6 18v4h12v-4"/></svg>
                 Print
             </button>
             <a href="{{ route('tenant.bookings.index') }}" wire:navigate
-               class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#376df1] hover:bg-blue-700 text-white text-sm font-semibold transition">
-                ← Active Bookings
+               class="btn-primary text-xs sm:text-sm active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+                Active Bookings
             </a>
         </div>
     </div>
@@ -169,39 +178,38 @@ class extends Component
     {{-- Stats --}}
     @php $s = $this->stats; @endphp
     <div class="grid grid-cols-2 lg:grid-cols-5 gap-4">
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+        <div class="card p-4">
             <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Total Bookings</p>
             <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $s['total_bookings'] }}</p>
         </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+        <div class="card p-4">
             <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Completed</p>
             <p class="text-2xl font-bold text-green-600 dark:text-green-400 mt-2">{{ $s['total_completed'] }}</p>
         </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+        <div class="card p-4">
             <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Cancelled</p>
             <p class="text-2xl font-bold text-red-600 dark:text-red-400 mt-2">{{ $s['total_cancelled'] }}</p>
         </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+        <div class="card p-4">
             <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Revenue (Completed)</p>
             <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">₱{{ number_format($s['revenue_completed'], 2) }}</p>
         </div>
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+        <div class="card p-4">
             <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Avg Booking Value</p>
             <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">₱{{ number_format($s['avg_booking_value'], 2) }}</p>
         </div>
     </div>
 
     {{-- Filters --}}
-    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-4 shadow-sm space-y-3">
+    <div class="card p-4 space-y-3">
         <div class="flex flex-wrap gap-3 items-center">
             <div class="relative flex-1 min-w-[200px]">
                 <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                 <input type="text" wire:model.live.debounce.300ms="search"
                        placeholder="Search by reference or guest…"
-                       class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 pl-10 pr-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-[#376df1]/50 focus:border-[#376df1] transition">
+                       class="input pl-10">
             </div>
-            <select wire:model.live="statusFilter"
-                    class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-[#376df1]/50 transition">
+            <select wire:model.live="statusFilter" class="select w-full sm:w-auto">
                 <option value="">All Status</option>
                 <option value="completed">Completed</option>
                 <option value="cancelled">Cancelled</option>
@@ -210,14 +218,11 @@ class extends Component
         <div class="flex flex-wrap gap-3 items-center">
             <div class="flex items-center gap-2">
                 <span class="text-xs text-gray-500 dark:text-gray-400">From:</span>
-                <input type="date" wire:model.live="fromDate"
-                       class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2 px-3 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-[#376df1]/50 transition">
+                <input type="date" wire:model.live="fromDate" class="input !py-2 !w-auto">
                 <span class="text-xs text-gray-500 dark:text-gray-400">To:</span>
-                <input type="date" wire:model.live="toDate"
-                       class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2 px-3 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-[#376df1]/50 transition">
+                <input type="date" wire:model.live="toDate" class="input !py-2 !w-auto">
             </div>
-            <select wire:model.live="sortBy"
-                    class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-[#376df1]/50 transition">
+            <select wire:model.live="sortBy" class="select w-full sm:w-auto">
                 <option value="newest">Newest First</option>
                 <option value="oldest">Oldest First</option>
                 <option value="check_in_asc">Check-in (Earliest)</option>
@@ -227,15 +232,16 @@ class extends Component
             </select>
             @if($search || $statusFilter || $fromDate || $toDate)
                 <button wire:click="clearFilters"
-                        class="px-4 py-2 rounded-full border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 text-xs font-semibold uppercase tracking-wider transition">
-                    ✕ Clear
+                        class="btn-secondary text-xs active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-1">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                    Clear
                 </button>
             @endif
         </div>
     </div>
 
     {{-- Bookings Table --}}
-    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-sm overflow-hidden">
+    <div class="card overflow-hidden">
         <div class="overflow-x-auto">
             <table class="w-full text-left">
                 <thead class="border-b border-gray-200 dark:border-gray-700">
@@ -272,7 +278,7 @@ class extends Component
                             </td>
                             <td class="px-4 sm:px-6 py-4 text-right" wire:click.stop>
                                 <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate
-                                   class="p-1.5 text-gray-400 dark:text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition" title="View Details">
+                                   class="p-1.5 text-gray-400 dark:text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50" title="View Details">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                                 </a>
                             </td>
@@ -283,7 +289,7 @@ class extends Component
                                 <td colspan="6" class="p-0 bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-700">
                                     <div class="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
                                         <div>
-                                            <h4 class="text-xs font-semibold uppercase tracking-wider text-[#376df1] dark:text-blue-400 mb-3">Guest Details</h4>
+                                            <h4 class="text-xs font-semibold uppercase tracking-wider text-primary-600 dark:text-primary-400 mb-3">Guest Details</h4>
                                             <div class="space-y-1 text-sm">
                                                 <p><span class="text-gray-500 dark:text-gray-400">Name:</span> {{ $booking->user->name ?? 'N/A' }}</p>
                                                 <p><span class="text-gray-500 dark:text-gray-400">Phone:</span> {{ $booking->user->phone ?? '—' }}</p>
@@ -291,7 +297,7 @@ class extends Component
                                             </div>
                                         </div>
                                         <div>
-                                            <h4 class="text-xs font-semibold uppercase tracking-wider text-[#376df1] dark:text-blue-400 mb-3">Activities & Services</h4>
+                                            <h4 class="text-xs font-semibold uppercase tracking-wider text-primary-600 dark:text-primary-400 mb-3">Activities & Services</h4>
                                             @foreach($booking->items as $item)
                                                 <div class="flex justify-between text-sm py-1">
                                                     <span class="text-gray-700 dark:text-gray-300">{{ $item->property->name ?? 'Activity' }}</span>

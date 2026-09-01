@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Models\Payment;
 use App\Models\Transaction;
 use App\Models\Booking;
+use App\Scopes\TenantScope;
 use Luigel\Paymongo\Facades\Paymongo;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -17,44 +18,55 @@ class ProcessPayMongoPayment implements ShouldQueue
 
     public function __construct(public string $sessionId) {}
 
-    public function handle(): void
+    public function handle(): bool
     {
         try {
             $checkout = Paymongo::checkout()->find($this->sessionId);
         } catch (\Exception $e) {
             Log::error('PayMongo session not found: ' . $e->getMessage());
-            return;
+            return false;
         }
 
-        if ($checkout->status !== 'paid') {
-            return;
+        if (!in_array($checkout->status, ['paid', 'succeeded'])) {
+            Log::info('PayMongo session not paid yet', [
+                'session_id' => $this->sessionId,
+                'status'     => $checkout->status,
+            ]);
+            return false;
         }
 
         DB::transaction(function () use ($checkout) {
-            $payment = Payment::query()
+            $payment = Payment::withoutGlobalScope(TenantScope::class)
                 ->where('paymongo_session_id', $this->sessionId)
                 ->first();
 
-            if (!$payment || $payment->payment_status === 'paid') {
+            if (!$payment) {
                 return;
             }
 
-            $payment->update([
-                'payment_status'   => 'paid',
-                'paid_at'          => now(),
-                'reference_number' => $checkout->id,
-            ]);
+            // Update payment only if not already paid
+            if ($payment->payment_status !== 'paid') {
+                $payment->update([
+                    'payment_status'   => 'paid',
+                    'paid_at'          => now(),
+                    'reference_number' => $checkout->id,
+                ]);
 
-            Transaction::create([
-                'tenant_id'   => $payment->tenant_id,
-                'booking_id'  => $payment->booking_id,
-                'type'        => 'income',
-                'amount'      => $payment->amount,
-                'description' => 'PayMongo payment: ' . $checkout->id,
-            ]);
+                Transaction::create([
+                    'tenant_id'   => $payment->tenant_id,
+                    'booking_id'  => $payment->booking_id,
+                    'type'        => 'income',
+                    'amount'      => $payment->amount,
+                    'description' => 'PayMongo payment: ' . $checkout->id,
+                ]);
+            }
 
+            // Always update booking status based on total paid
             $booking = $payment->booking;
-            $totalPaid = $booking->payments()->where('payment_status', 'paid')->sum('amount');
+            $totalPaid = $booking->payments()
+                ->withoutGlobalScope(TenantScope::class)
+                ->where('payment_status', 'paid')
+                ->sum('amount');
 
             if ($payment->payment_type === Payment::TYPE_RESERVATION) {
                 $booking->update(['status' => Booking::STATUS_RESERVED]);
@@ -70,5 +82,7 @@ class ProcessPayMongoPayment implements ShouldQueue
                 'booking_status'=> $booking->fresh()->status,
             ]);
         });
+
+        return true;
     }
 }

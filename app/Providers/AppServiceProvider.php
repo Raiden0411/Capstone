@@ -57,13 +57,19 @@ class AppServiceProvider extends ServiceProvider
         // Manually register the public booking component
         Livewire::addComponent(
             name: 'public::pages.create-booking',
-            viewPath: resource_path('views/public/pages/create-booking.blade.php')
+            viewPath: resource_path('views/public/pages/⚡create-booking.blade.php')
         );
 
         // Manually register the explore-map component (with ⚡ prefix)
         Livewire::addComponent(
             name: 'public::pages.explore-map',
             viewPath: resource_path('views/public/pages/⚡explore-map.blade.php')
+        );
+
+        // NEW: Manually register the payment processing component
+        Livewire::addComponent(
+            name: 'public::pages.payment-processing',
+            viewPath: resource_path('views/public/pages/⚡payment-processing.blade.php')
         );
 
         /*

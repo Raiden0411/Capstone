@@ -31,7 +31,6 @@ class extends Component {
 
     public function mount($booking)
     {
-        // Ensure booking instance and tenant scope
         if (!$booking instanceof Booking) {
             $booking = Booking::withoutGlobalScope(TenantScope::class)->findOrFail($booking);
         }
@@ -48,8 +47,6 @@ class extends Component {
             ->sum('amount');
 
         $this->amount = max(0, $booking->total_amount - $paid);
-
-        // Default payment type from booking type
         $this->payment_type = $booking->booking_type ?? 'full';
 
         if (in_array($booking->status, ['cancelled', 'completed'])) {
@@ -64,7 +61,6 @@ class extends Component {
             $this->reference_number = trim($this->reference_number);
         }
         if ($field === 'payment_type') {
-            // Automatically adjust amount if switching to reservation fee?
             if ($this->payment_type === 'reservation') {
                 $this->amount = round($this->booking->total_amount * 0.20, 2);
             } else {
@@ -153,7 +149,6 @@ class extends Component {
             $this->booking->update(['status' => 'confirmed']);
         }
 
-        // If reservation and balance now fully paid, optionally confirm
         if ($this->booking->status === 'reserved' && $totalPaid >= $this->booking->total_amount) {
             $this->booking->update(['status' => 'confirmed']);
         }
@@ -169,19 +164,20 @@ class extends Component {
             <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Record Payment</h1>
         </div>
         <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate
-           class="text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-[#376df1] dark:hover:text-blue-400 transition-colors">
-            &larr; Back to Booking
+           class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+            Back to Booking
         </a>
     </div>
 
-    {{-- Error --}}
     @if (session()->has('error'))
-        <div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 border-l-4 border-l-red-500 p-4 rounded-md text-sm text-red-700 dark:text-red-300 font-medium">
+        <div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 border-l-4 border-l-red-500 p-4 rounded-md text-sm text-red-700 dark:text-red-300 font-medium flex items-center gap-2">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
             {{ session('error') }}
         </div>
     @endif
 
-    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm">
+    <div class="card p-5 sm:p-6">
 
         {{-- Booking Summary --}}
         <div class="mb-5 p-4 rounded-xl bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-700">
@@ -189,7 +185,7 @@ class extends Component {
             <p class="text-sm text-gray-600 dark:text-gray-300">Total Amount: <span class="font-medium text-gray-900 dark:text-white">₱{{ number_format($booking->total_amount, 2) }}</span></p>
             <p class="text-sm text-gray-600 dark:text-gray-300">Remaining Balance: <span class="font-bold text-red-600 dark:text-red-400">₱{{ number_format($amount, 2) }}</span></p>
             @if($amount >= $booking->total_amount)
-                <p class="mt-2 text-xs text-[#376df1] dark:text-blue-400 flex items-center gap-1">
+                <p class="mt-2 text-xs text-primary-600 dark:text-primary-400 flex items-center gap-1">
                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
                     Full payment will confirm the booking automatically.
                 </p>
@@ -202,8 +198,7 @@ class extends Component {
             {{-- Payment Type --}}
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Payment Type *</label>
-                <select wire:model.live="payment_type"
-                        class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 transition">
+                <select wire:model.live="payment_type" class="select">
                     <option value="full">Full Payment</option>
                     <option value="reservation">Reservation Fee (20%)</option>
                 </select>
@@ -212,8 +207,7 @@ class extends Component {
             {{-- Amount --}}
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Amount to Pay *</label>
-                <input type="number" step="0.01" wire:model="amount"
-                       class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 transition">
+                <input type="number" step="0.01" wire:model="amount" class="input">
                 @error('amount') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
 
@@ -222,15 +216,15 @@ class extends Component {
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Payment Method *</label>
                 <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
                     @foreach([
-                        ['cash', 'Cash', '💵'],
-                        ['gcash', 'GCash', '📱'],
-                        ['paymaya', 'Maya', '💳'],
-                        ['card', 'Card', '🏦'],
+                        ['cash', 'Cash', '<svg class="w-8 h-8 mx-auto text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>'],
+                        ['gcash', 'GCash', '<svg class="w-8 h-8 mx-auto text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>'],
+                        ['paymaya', 'Maya', '<svg class="w-8 h-8 mx-auto text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>'],
+                        ['card', 'Card', '<svg class="w-8 h-8 mx-auto text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>'],
                     ] as [$val, $label, $icon])
                         <label class="cursor-pointer">
                             <input type="radio" wire:model.live="payment_method" value="{{ $val }}" class="sr-only peer">
-                            <div class="border-2 border-gray-200 dark:border-gray-700 rounded-xl p-3 text-center transition peer-checked:border-[#376df1] peer-checked:bg-blue-50 dark:peer-checked:bg-blue-500/10 hover:border-gray-300 dark:hover:border-gray-600">
-                                <span class="text-xl">{{ $icon }}</span>
+                            <div class="border-2 border-gray-200 dark:border-gray-700 rounded-xl p-3 text-center transition-all duration-200 peer-checked:border-primary-600 peer-checked:bg-primary-50 dark:peer-checked:bg-primary-500/10 hover:border-gray-300 dark:hover:border-gray-600 active:scale-[0.98]">
+                                {!! $icon !!}
                                 <p class="text-gray-900 dark:text-white font-semibold text-xs mt-1">{{ $label }}</p>
                             </div>
                         </label>
@@ -242,32 +236,31 @@ class extends Component {
             @if($payment_method === 'cash')
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Reference Number (Optional)</label>
-                    <input type="text" wire:model="reference_number"
-                           class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#376df1]/50 transition">
+                    <input type="text" wire:model="reference_number" class="input">
                 </div>
             @endif
 
             {{-- Actions --}}
-            <div class="flex items-center gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
+            <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
                 <button type="submit"
                         wire:loading.attr="disabled"
-                        class="bg-[#376df1] hover:bg-blue-700 text-white font-medium py-2.5 px-6 rounded-full shadow-lg shadow-blue-500/20 transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                        class="btn-primary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
                     <span wire:loading.remove>
                         {{ $payment_method === 'cash' ? 'Record Payment' : 'Proceed to Pay' }}
                     </span>
-                    <span wire:loading class="flex items-center gap-2">
-                        <svg class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <span wire:loading class="inline-flex items-center gap-2">
+                        <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                         </svg>
                         Processing…
                     </span>
                 </button>
                 <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate
-                   class="bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 px-6 py-3 rounded-full font-medium transition">
+                   class="btn-secondary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
                     Cancel
                 </a>
-                <span x-show="saved" x-transition class="ml-3 inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-blue-50 dark:bg-blue-500/15 text-[#376df1] dark:text-blue-400">
+                <span x-show="saved" x-transition class="sm:ml-3 inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-primary-50 dark:bg-primary-500/15 text-primary-600 dark:text-primary-400">
                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
                     Done!
                 </span>

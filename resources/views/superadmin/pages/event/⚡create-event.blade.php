@@ -6,9 +6,11 @@ use Livewire\WithFileUploads;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\On;
+use Livewire\Attributes\Computed;
 use App\Models\Event;
 use App\Models\Tenant;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\DB;
 
 new
 #[Layout('superadmin.layouts.app')]
@@ -28,7 +30,7 @@ class extends Component
     public bool $featured = false;
     public $image;
 
-    // Location
+    // Location (only used when no tenant is selected)
     public ?float $latitude = null;
     public ?float $longitude = null;
     public bool $satellite = false;
@@ -51,15 +53,78 @@ class extends Component
             'tenant_id'   => 'nullable|exists:tenants,id',
             'is_active'   => 'boolean',
             'featured'    => 'boolean',
-            'image'       => 'nullable|image|max:2048',
+            'image'       => 'nullable|image|mimes:jpeg,png,jpg,gif,webp|max:10240', // ★ 10MB
             'latitude'    => 'nullable|numeric|min:-90|max:90',
             'longitude'   => 'nullable|numeric|min:-180|max:180',
         ];
     }
 
-    public function getBarangaysProperty()
+    protected function messages()
     {
-        return collect(config('barangays', []))->sort()->values();
+        return [
+            'image.max' => 'The event photo must not exceed 10MB.',
+            'image.mimes' => 'The event photo must be a valid image (JPEG, PNG, JPG, GIF, or WebP).',
+        ];
+    }
+
+    #[Computed]
+    public function allTenants()
+    {
+        return Tenant::query()
+            ->select('id', 'name', 'barangay', 'coordinates')
+            ->orderBy('name')
+            ->get();
+    }
+
+    #[Computed]
+    public function barangays()
+    {
+        return Tenant::query()
+            ->select('barangay')
+            ->distinct()
+            ->orderBy('barangay')
+            ->pluck('barangay')
+            ->filter()
+            ->values();
+    }
+
+    #[Computed]
+    public function selectedTenant()
+    {
+        if (!$this->tenant_id) {
+            return null;
+        }
+        return $this->allTenants->firstWhere('id', $this->tenant_id);
+    }
+
+    public function updatedTenantId($value)
+    {
+        if ($value) {
+            $tenant = Tenant::query()->select('id', 'barangay', 'coordinates')->find($value);
+            if ($tenant) {
+                // Inherit barangay and primary coordinates from the tenant
+                $this->barangay = $tenant->barangay ?? '';
+                $primary = $tenant->getPrimaryCoordinates();
+                if ($primary) {
+                    $this->latitude = $primary['lat'] ?? null;
+                    $this->longitude = $primary['lng'] ?? null;
+                } else {
+                    $this->latitude = null;
+                    $this->longitude = null;
+                }
+                $this->mapView = [
+                    'lat' => $this->latitude ?? $this->mapView['lat'],
+                    'lng' => $this->longitude ?? $this->mapView['lng'],
+                    'zoom' => 13,
+                ];
+            }
+        } else {
+            // Reset manual fields
+            $this->barangay = '';
+            $this->latitude = null;
+            $this->longitude = null;
+        }
+        $this->mapVersion++;
     }
 
     public function updatedName($value)
@@ -72,9 +137,46 @@ class extends Component
         $this->description = trim($value);
     }
 
+    // ★ Fly map when coordinates are typed manually
+    public function updatedLatitude($value)
+    {
+        if ($value === null || $value === '') {
+            $this->latitude = null;
+            return;
+        }
+
+        $this->latitude = round((float) $value, 6);
+        $this->mapView = [
+            'lat' => $this->latitude,
+            'lng' => $this->longitude ?? $this->mapView['lng'],
+            'zoom' => 16,
+        ];
+        $this->mapVersion++;
+        $this->dispatch('map:fly-to', center: [(float)$this->mapView['lng'], (float)$this->latitude], zoom: 16);
+    }
+
+    public function updatedLongitude($value)
+    {
+        if ($value === null || $value === '') {
+            $this->longitude = null;
+            return;
+        }
+
+        $this->longitude = round((float) $value, 6);
+        $this->mapView = [
+            'lat' => $this->latitude ?? $this->mapView['lat'],
+            'lng' => $this->longitude,
+            'zoom' => 16,
+        ];
+        $this->mapVersion++;
+        $this->dispatch('map:fly-to', center: [(float)$this->longitude, (float)$this->mapView['lat']], zoom: 16);
+    }
+
     #[On('map:click')]
     public function onMapClick($lat, $lng): void
     {
+        if ($this->tenant_id) return; // location inherited, ignore map clicks
+
         $this->latitude = round((float) $lat, 6);
         $this->longitude = round((float) $lng, 6);
         $this->mapView = [
@@ -88,7 +190,7 @@ class extends Component
     #[On('map:marker-drag-end')]
     public function onMarkerDragEnd($id, $lat, $lng): void
     {
-        if ($id === 'event-location-marker') {
+        if ($id === 'event-location-marker' && !$this->tenant_id) {
             $this->latitude = round((float) $lat, 6);
             $this->longitude = round((float) $lng, 6);
             $this->mapView = [
@@ -121,12 +223,15 @@ class extends Component
 
     public function useMyLocation(): void
     {
+        if ($this->tenant_id) return;
         $this->dispatch('request-geolocation');
     }
 
     #[On('geolocation-result')]
     public function onGeolocationResult($lat, $lng): void
     {
+        if ($this->tenant_id) return;
+
         $this->latitude = round((float) $lat, 6);
         $this->longitude = round((float) $lng, 6);
         $this->mapView = [
@@ -222,8 +327,9 @@ class extends Component
             <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Add Event</h1>
         </div>
         <a href="{{ route('superadmin.events.index') }}" wire:navigate
-           class="btn-secondary focus-visible:ring-2 focus-visible:ring-primary-500/50">
-            ← Back to Events
+           class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+            Back to Events
         </a>
     </div>
 
@@ -241,22 +347,22 @@ class extends Component
                 @error('name') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
 
-            {{-- Barangay and Type --}}
+            {{-- Type and Tenant Assignment --}}
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Barangay *</label>
-                    <input type="text" wire:model="barangay" list="barangays-list" class="input" placeholder="Type or select barangay">
-                    <datalist id="barangays-list">
-                        @foreach($this->barangays as $b)
-                            <option value="{{ $b }}">
-                        @endforeach
-                    </datalist>
-                    @error('barangay') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-                </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Type *</label>
                     <input type="text" wire:model="type" class="input" placeholder="e.g. Fiesta, Sports, Environment">
                     @error('type') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Assign to Tenant (Tourist Spot)</label>
+                    <select wire:model.live="tenant_id" class="select">
+                        <option value="">None (Platform‑wide)</option>
+                        @foreach($this->allTenants as $t)
+                            <option value="{{ $t->id }}">{{ $t->name }}</option>
+                        @endforeach
+                    </select>
+                    @error('tenant_id') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             </div>
 
@@ -285,30 +391,19 @@ class extends Component
                 </div>
             </div>
 
-            {{-- Event Photo with Instant Preview --}}
+            {{-- Event Photo --}}
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Event Photo</label>
                 <input type="file" wire:model="image" accept="image/*"
                        @change="previewUrl = URL.createObjectURL($event.target.files[0])"
                        class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Max 10MB. Supported: JPEG, PNG, JPG, GIF, WebP.</p>
                 @error('image') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
 
                 <div x-show="previewUrl" x-cloak class="mt-3">
                     <img :src="previewUrl" class="h-32 w-32 object-cover rounded-lg border border-gray-200 dark:border-gray-700" alt="Event Preview">
-                    <button type="button" @click="previewUrl = null; $wire.set('image', null)" class="mt-2 text-xs text-red-500 dark:text-red-400 hover:text-red-700">Remove photo</button>
+                    <button type="button" @click="previewUrl = null; $wire.set('image', null)" class="mt-2 text-xs text-red-500 dark:text-red-400 hover:text-red-700 active:scale-95 transition-transform">Remove photo</button>
                 </div>
-            </div>
-
-            {{-- Tenant Assignment --}}
-            <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Assign to Tenant (optional)</label>
-                <select wire:model="tenant_id" class="select">
-                    <option value="">None (Platform‑wide)</option>
-                    @foreach(Tenant::orderBy('name')->get() as $t)
-                        <option value="{{ $t->id }}">{{ $t->name }}</option>
-                    @endforeach
-                </select>
-                @error('tenant_id') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
 
             {{-- Active / Featured toggles --}}
@@ -324,118 +419,208 @@ class extends Component
             </div>
         </div>
 
-        {{-- Location Picker --}}
-        <div class="card p-6 space-y-6">
-            <h2 class="font-display text-xl font-semibold text-gray-900 dark:text-white mb-2">Event Location</h2>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">Click on the map to set the event location, or use the coordinates below.</p>
-
-            <div class="flex flex-wrap gap-2 mb-4">
-                <button type="button"
-                        wire:click="useMyLocation"
-                        class="btn-secondary text-xs focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                    📍 Use my location
-                </button>
-                <button type="button"
-                        wire:click="toggleSatellite"
-                        class="btn-secondary text-xs focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                    🛰️ {{ $satellite ? 'Street View' : 'Satellite' }}
-                </button>
-                @if($latitude !== null && $longitude !== null)
-                    <button type="button"
-                            wire:click="clearLocation"
-                            class="btn-secondary text-xs text-red-600 focus-visible:ring-2 focus-visible:ring-red-500/50">
-                        ✕ Clear Location
-                    </button>
-                @endif
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Latitude</label>
-                    <input type="text" wire:model.live.debounce.500ms="latitude" class="input font-mono" placeholder="10.900977">
-                    @error('latitude') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+        {{-- Location / Barangay Section --}}
+        @if($tenant_id)
+            {{-- Inherited from Tenant --}}
+            <div class="card p-6 space-y-4">
+                <h2 class="font-display text-xl font-semibold text-gray-900 dark:text-white mb-2">Location & Barangay</h2>
+                @php
+                    $selectedTenant = $this->selectedTenant;
+                @endphp
+                <div class="bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 rounded-xl p-4 text-sm text-blue-800 dark:text-blue-300">
+                    <p class="font-semibold mb-1 inline-flex items-center gap-1.5">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                        Inherited from {{ $selectedTenant?->name ?? 'selected tenant' }}
+                    </p>
+                    <p><strong>Barangay:</strong> {{ $barangay ?: 'Not set for tenant' }}</p>
+                    <p class="mt-1"><strong>Coordinates:</strong> {{ $latitude !== null ? $latitude . ', ' . $longitude : 'Not set' }}</p>
                 </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Longitude</label>
-                    <input type="text" wire:model.live.debounce.500ms="longitude" class="input font-mono" placeholder="123.070557">
-                    @error('longitude') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-                </div>
-            </div>
 
-            <div class="card overflow-hidden relative" style="height: 400px;"
-                 x-data="{ showOverlay: true }"
-                 x-init="setTimeout(() => showOverlay = false, 800)">
-                <div x-show="showOverlay"
-                     x-transition:leave="transition-opacity duration-500"
-                     x-transition:leave-start="opacity-100"
-                     x-transition:leave-end="opacity-0"
-                     class="absolute inset-0 z-10 flex items-center justify-center bg-gray-50 dark:bg-gray-800">
-                    <div class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
-                        <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
-                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-                        </svg>
-                        Updating map…
+                {{-- Static map showing inherited location (not draggable) --}}
+                <div class="card overflow-hidden relative" style="height: 400px;">
+                    <div wire:key="event-inherited-map-{{ $mapVersion }}">
+                        <x-map
+                            id="event-inherited-map"
+                            :center="[(float)$mapView['lng'], (float)$mapView['lat']]"
+                            :zoom="$mapView['zoom']"
+                            height="400px"
+                            :provider="$satellite ? 'custom' : 'carto-voyager'"
+                            :style="$satellite ? route('map.satellite.style') : null"
+                            :light-style="$satellite ? route('map.satellite.style') : null"
+                            :dark-style="$satellite ? route('map.satellite.style') : null"
+                            theme="auto"
+                            class="h-full w-full"
+                            :events="[]"
+                        >
+                            <x-map-controls
+                                :zoom="true"
+                                :compass="true"
+                                :locate="false"
+                                :fullscreen="true"
+                                :scale="true"
+                                position="top-right"
+                            />
+
+                            @if($latitude !== null && $longitude !== null)
+                                <x-map-marker
+                                    wire:key="event-inherited-marker-{{ $latitude }}-{{ $longitude }}"
+                                    :lat="$latitude"
+                                    :lng="$longitude"
+                                    color="#ef4444"
+                                    id="event-inherited-marker"
+                                    :draggable="false"
+                                >
+                                    <x-marker-content>
+                                        <div class="relative flex items-center justify-center">
+                                            <svg class="h-10 w-10 drop-shadow-lg" viewBox="0 0 24 24" fill="#ef4444" stroke="white" stroke-width="1.5">
+                                                <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
+                                                <circle cx="12" cy="9" r="2.5" fill="white"/>
+                                            </svg>
+                                        </div>
+                                    </x-marker-content>
+                                    <x-marker-popup>
+                                        <div class="p-2">
+                                            <strong class="text-gray-900 dark:text-white">Event Location (Inherited)</strong>
+                                            <p class="text-xs text-gray-500 dark:text-gray-400">{{ $latitude }}, {{ $longitude }}</p>
+                                        </div>
+                                    </x-marker-popup>
+                                </x-map-marker>
+                            @endif
+                        </x-map>
                     </div>
                 </div>
+            </div>
+        @else
+            {{-- Manual Barangay & Location Picker --}}
+            <div class="card p-6 space-y-6">
+                <h2 class="font-display text-xl font-semibold text-gray-900 dark:text-white mb-2">Location & Barangay</h2>
 
-                <div wire:key="event-create-map-{{ $mapVersion }}">
-                    <x-map
-                        id="event-create-map"
-                        :center="[(float)$mapView['lng'], (float)$mapView['lat']]"
-                        :zoom="$mapView['zoom']"
-                        height="400px"
-                        :provider="$satellite ? 'custom' : 'carto-voyager'"
-                        :style="$satellite ? route('map.satellite.style') : null"
-                        :light-style="$satellite ? route('map.satellite.style') : null"
-                        :dark-style="$satellite ? route('map.satellite.style') : null"
-                        theme="auto"
-                        class="h-full w-full"
-                        :events="['click', 'marker-drag-end']"
-                    >
-                        <x-map-controls
-                            :zoom="true"
-                            :compass="true"
-                            :locate="true"
-                            :fullscreen="true"
-                            :scale="true"
-                            position="top-right"
-                        />
+                {{-- Barangay --}}
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Barangay *</label>
+                    <input type="text" wire:model="barangay" list="barangays-list" class="input" placeholder="Type or select barangay">
+                    <datalist id="barangays-list">
+                        @foreach($this->barangays as $b)
+                            <option value="{{ $b }}">
+                        @endforeach
+                    </datalist>
+                    @error('barangay') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                </div>
 
+                {{-- Location Picker --}}
+                <div>
+                    <div class="flex flex-wrap gap-2 mb-4">
+                        <button type="button"
+                                wire:click="useMyLocation"
+                                class="btn-secondary text-xs active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-1.5">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                            Use my location
+                        </button>
+                        <button type="button"
+                                wire:click="toggleSatellite"
+                                class="btn-secondary text-xs active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-1.5">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/></svg>
+                            {{ $satellite ? 'Street View' : 'Satellite' }}
+                        </button>
                         @if($latitude !== null && $longitude !== null)
-                            <x-map-marker
-                                wire:key="event-location-marker-{{ $latitude }}-{{ $longitude }}"
-                                :lat="$latitude"
-                                :lng="$longitude"
-                                color="#ef4444"
-                                id="event-location-marker"
-                                draggable
-                            >
-                                <x-marker-content>
-                                    <div class="relative flex items-center justify-center">
-                                        <svg class="h-10 w-10 drop-shadow-lg" viewBox="0 0 24 24" fill="#ef4444" stroke="white" stroke-width="1.5">
-                                            <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
-                                            <circle cx="12" cy="9" r="2.5" fill="white"/>
-                                        </svg>
-                                    </div>
-                                </x-marker-content>
-                                <x-marker-popup>
-                                    <div class="p-2">
-                                        <strong class="text-gray-900 dark:text-white">Event Location</strong>
-                                        <p class="text-xs text-gray-500 dark:text-gray-400">{{ $latitude }}, {{ $longitude }}</p>
-                                    </div>
-                                </x-marker-popup>
-                            </x-map-marker>
+                            <button type="button"
+                                    wire:click="clearLocation"
+                                    class="btn-secondary text-xs text-red-600 active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-red-500/50 inline-flex items-center gap-1.5">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                Clear Location
+                            </button>
                         @endif
-                    </x-map>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Latitude</label>
+                            <input type="number" step="any" min="-90" max="90" wire:model.live.debounce.500ms="latitude" class="input font-mono" placeholder="10.900977">
+                            @error('latitude') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Longitude</label>
+                            <input type="number" step="any" min="-180" max="180" wire:model.live.debounce.500ms="longitude" class="input font-mono" placeholder="123.070557">
+                            @error('longitude') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        </div>
+                    </div>
+
+                    <div class="card overflow-hidden relative" style="height: 400px;"
+                         x-data="{ showOverlay: true }"
+                         x-init="setTimeout(() => showOverlay = false, 800)">
+                        <div x-show="showOverlay"
+                             x-transition:leave="transition-opacity duration-500"
+                             x-transition:leave-start="opacity-100"
+                             x-transition:leave-end="opacity-0"
+                             class="absolute inset-0 z-10 flex items-center justify-center bg-gray-50 dark:bg-gray-800">
+                            <div class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+                                <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                </svg>
+                                Updating map…
+                            </div>
+                        </div>
+
+                        <div wire:key="event-create-map-{{ $mapVersion }}">
+                            <x-map
+                                id="event-create-map"
+                                :center="[(float)$mapView['lng'], (float)$mapView['lat']]"
+                                :zoom="$mapView['zoom']"
+                                height="400px"
+                                :provider="$satellite ? 'custom' : 'carto-voyager'"
+                                :style="$satellite ? route('map.satellite.style') : null"
+                                :light-style="$satellite ? route('map.satellite.style') : null"
+                                :dark-style="$satellite ? route('map.satellite.style') : null"
+                                theme="auto"
+                                class="h-full w-full"
+                                :events="['click', 'marker-drag-end']"
+                            >
+                                <x-map-controls
+                                    :zoom="true"
+                                    :compass="true"
+                                    :locate="true"
+                                    :fullscreen="true"
+                                    :scale="true"
+                                    position="top-right"
+                                />
+
+                                @if($latitude !== null && $longitude !== null)
+                                    <x-map-marker
+                                        wire:key="event-location-marker-{{ $latitude }}-{{ $longitude }}"
+                                        :lat="$latitude"
+                                        :lng="$longitude"
+                                        color="#ef4444"
+                                        id="event-location-marker"
+                                        draggable
+                                    >
+                                        <x-marker-content>
+                                            <div class="relative flex items-center justify-center">
+                                                <svg class="h-10 w-10 drop-shadow-lg" viewBox="0 0 24 24" fill="#ef4444" stroke="white" stroke-width="1.5">
+                                                    <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
+                                                    <circle cx="12" cy="9" r="2.5" fill="white"/>
+                                                </svg>
+                                            </div>
+                                        </x-marker-content>
+                                        <x-marker-popup>
+                                            <div class="p-2">
+                                                <strong class="text-gray-900 dark:text-white">Event Location</strong>
+                                                <p class="text-xs text-gray-500 dark:text-gray-400">{{ $latitude }}, {{ $longitude }}</p>
+                                            </div>
+                                        </x-marker-popup>
+                                    </x-map-marker>
+                                @endif
+                            </x-map>
+                        </div>
+                    </div>
                 </div>
             </div>
-        </div>
+        @endif
 
         {{-- Actions --}}
-        <div class="pt-4 border-t border-gray-200 dark:border-gray-700 flex flex-wrap gap-3">
+        <div class="pt-4 border-t border-gray-200 dark:border-gray-700 flex flex-col sm:flex-row gap-3">
             <button type="submit" wire:loading.attr="disabled"
-                    class="btn-primary focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                    class="btn-primary w-full sm:w-auto active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
                 <span wire:loading.remove>Save Event</span>
                 <span wire:loading class="inline-flex items-center gap-2">
                     <svg class="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
@@ -443,7 +628,7 @@ class extends Component
                 </span>
             </button>
             <a href="{{ route('superadmin.events.index') }}" wire:navigate
-               class="btn-secondary focus-visible:ring-2 focus-visible:ring-primary-500/50">
+               class="btn-secondary w-full sm:w-auto active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
                 Cancel
             </a>
         </div>

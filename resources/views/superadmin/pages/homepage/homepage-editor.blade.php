@@ -122,138 +122,116 @@ class extends Component
             <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Homepage Editor</h1>
         </div>
         <a href="{{ route('superadmin.dashboard') }}" wire:navigate
-           class="text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
-            &larr; Back to Dashboard
+           class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+            Back to Dashboard
         </a>
     </div>
 
     <form wire:submit="save" class="space-y-6">
 
         {{-- Hero Images --}}
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm space-y-6">
+        <div class="card p-6 space-y-6">
             <h2 class="text-xl font-semibold text-gray-900 dark:text-white">Hero Section Images</h2>
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {{-- Background image --}}
-                <div x-data="{ previewUrl: null }">
+                <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Hero Background</label>
-                    <div class="mb-3">
+                    <div
+                        x-data="{ previewUrl: null, dragging: false }"
+                        x-on:dragover.prevent="dragging = true"
+                        x-on:dragleave.prevent="dragging = false"
+                        x-on:drop.prevent="dragging = false; $refs.fileInput.files = $event.dataTransfer.files; $refs.fileInput.dispatchEvent(new Event('change'))"
+                        :class="dragging ? 'border-primary-600 bg-blue-50 dark:bg-blue-500/10' : 'border-gray-300 dark:border-gray-600'"
+                        class="relative flex items-center justify-center rounded-xl border-2 border-dashed p-4 transition-colors"
+                    >
                         <template x-if="previewUrl">
-                            <img :src="previewUrl" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
+                            <img :src="previewUrl" class="max-h-40 w-full object-cover rounded-lg border border-gray-200 dark:border-gray-700">
                         </template>
                         <template x-if="!previewUrl && @js($existingHeroBg)">
-                            <img src="{{ asset('storage/' . $existingHeroBg) }}" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
+                            <img src="{{ asset('storage/' . $existingHeroBg) }}" class="max-h-40 w-full object-cover rounded-lg border border-gray-200 dark:border-gray-700">
                         </template>
+                        <template x-if="!previewUrl && !@js($existingHeroBg)">
+                            <div class="flex flex-col items-center text-gray-400 dark:text-gray-500">
+                                <svg class="w-8 h-8 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M4 8h.01M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z"/></svg>
+                                <span class="text-xs">Drag & drop or click</span>
+                            </div>
+                        </template>
+                        <input x-ref="fileInput" type="file" wire:model="heroBackgroundImage" accept="image/*"
+                               @change="previewUrl = URL.createObjectURL($event.target.files[0])"
+                               class="absolute inset-0 opacity-0 cursor-pointer">
                     </div>
-                    <input type="file" wire:model="heroBackgroundImage" accept="image/*"
-                           @change="previewUrl = URL.createObjectURL($event.target.files[0])"
-                           class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                     @error('heroBackgroundImage') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
 
-                {{-- Side image 1 --}}
-                <div x-data="{ previewUrl: null }">
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Side Image 1 (Nature)</label>
-                    <div class="mb-3">
-                        <template x-if="previewUrl">
-                            <img :src="previewUrl" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
-                        </template>
-                        <template x-if="!previewUrl && @js($existingSide1)">
-                            <img src="{{ asset('storage/' . $existingSide1) }}" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
-                        </template>
+                {{-- Side images 1-4 --}}
+                @foreach([
+                    ['property' => 'heroSideImage1', 'existing' => $existingSide1, 'label' => 'Side Image 1 (Nature)'],
+                    ['property' => 'heroSideImage2', 'existing' => $existingSide2, 'label' => 'Side Image 2 (The Sanctuary)'],
+                    ['property' => 'heroSideImage3', 'existing' => $existingSide3, 'label' => 'Side Image 3 (Culture)'],
+                    ['property' => 'heroSideImage4', 'existing' => $existingSide4, 'label' => 'Side Image 4 (Discover)'],
+                ] as $sideImage)
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">{{ $sideImage['label'] }}</label>
+                        <div
+                            x-data="{ previewUrl: null, dragging: false }"
+                            x-on:dragover.prevent="dragging = true"
+                            x-on:dragleave.prevent="dragging = false"
+                            x-on:drop.prevent="dragging = false; $refs.fileInput.files = $event.dataTransfer.files; $refs.fileInput.dispatchEvent(new Event('change'))"
+                            :class="dragging ? 'border-primary-600 bg-blue-50 dark:bg-blue-500/10' : 'border-gray-300 dark:border-gray-600'"
+                            class="relative flex items-center justify-center rounded-xl border-2 border-dashed p-4 transition-colors"
+                        >
+                            <template x-if="previewUrl">
+                                <img :src="previewUrl" class="max-h-40 w-full object-cover rounded-lg border border-gray-200 dark:border-gray-700">
+                            </template>
+                            <template x-if="!previewUrl && @js($sideImage['existing'])">
+                                <img src="{{ asset('storage/' . $sideImage['existing']) }}" class="max-h-40 w-full object-cover rounded-lg border border-gray-200 dark:border-gray-700">
+                            </template>
+                            <template x-if="!previewUrl && !@js($sideImage['existing'])">
+                                <div class="flex flex-col items-center text-gray-400 dark:text-gray-500">
+                                    <svg class="w-8 h-8 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M4 8h.01M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z"/></svg>
+                                    <span class="text-xs">Drag & drop or click</span>
+                                </div>
+                            </template>
+                            <input x-ref="fileInput" type="file" wire:model="{{ $sideImage['property'] }}" accept="image/*"
+                                   @change="previewUrl = URL.createObjectURL($event.target.files[0])"
+                                   class="absolute inset-0 opacity-0 cursor-pointer">
+                        </div>
+                        @error($sideImage['property']) <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
-                    <input type="file" wire:model="heroSideImage1" accept="image/*"
-                           @change="previewUrl = URL.createObjectURL($event.target.files[0])"
-                           class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                    @error('heroSideImage1') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-                </div>
-
-                {{-- Side image 2 --}}
-                <div x-data="{ previewUrl: null }">
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Side Image 2 (The Sanctuary)</label>
-                    <div class="mb-3">
-                        <template x-if="previewUrl">
-                            <img :src="previewUrl" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
-                        </template>
-                        <template x-if="!previewUrl && @js($existingSide2)">
-                            <img src="{{ asset('storage/' . $existingSide2) }}" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
-                        </template>
-                    </div>
-                    <input type="file" wire:model="heroSideImage2" accept="image/*"
-                           @change="previewUrl = URL.createObjectURL($event.target.files[0])"
-                           class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                    @error('heroSideImage2') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-                </div>
-
-                {{-- Side image 3 --}}
-                <div x-data="{ previewUrl: null }">
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Side Image 3 (Culture)</label>
-                    <div class="mb-3">
-                        <template x-if="previewUrl">
-                            <img :src="previewUrl" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
-                        </template>
-                        <template x-if="!previewUrl && @js($existingSide3)">
-                            <img src="{{ asset('storage/' . $existingSide3) }}" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
-                        </template>
-                    </div>
-                    <input type="file" wire:model="heroSideImage3" accept="image/*"
-                           @change="previewUrl = URL.createObjectURL($event.target.files[0])"
-                           class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                    @error('heroSideImage3') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-                </div>
-
-                {{-- Side image 4 --}}
-                <div x-data="{ previewUrl: null }">
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Side Image 4 (Discover)</label>
-                    <div class="mb-3">
-                        <template x-if="previewUrl">
-                            <img :src="previewUrl" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
-                        </template>
-                        <template x-if="!previewUrl && @js($existingSide4)">
-                            <img src="{{ asset('storage/' . $existingSide4) }}" class="w-full h-40 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
-                        </template>
-                    </div>
-                    <input type="file" wire:model="heroSideImage4" accept="image/*"
-                           @change="previewUrl = URL.createObjectURL($event.target.files[0])"
-                           class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                    @error('heroSideImage4') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-                </div>
+                @endforeach
             </div>
         </div>
 
         {{-- Text Content --}}
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm space-y-6">
+        <div class="card p-6 space-y-6">
             <h2 class="text-xl font-semibold text-gray-900 dark:text-white">Text Content</h2>
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Hero Title</label>
-                    <input type="text" wire:model="heroTitle"
-                           class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
+                    <input type="text" wire:model="heroTitle" class="input">
                     @error('heroTitle') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Hero Subtitle</label>
-                    <input type="text" wire:model="heroSubtitle"
-                           class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
+                    <input type="text" wire:model="heroSubtitle" class="input">
                     @error('heroSubtitle') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div class="md:col-span-2">
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Hero Description</label>
-                    <textarea wire:model="heroDescription" rows="3"
-                              class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"></textarea>
+                    <textarea wire:model="heroDescription" rows="3" class="textarea"></textarea>
                     @error('heroDescription') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Discover Title</label>
-                    <input type="text" wire:model="discoverTitle"
-                           class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
+                    <input type="text" wire:model="discoverTitle" class="input">
                     @error('discoverTitle') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div class="md:col-span-2">
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Discover Description</label>
-                    <textarea wire:model="discoverDescription" rows="4"
-                              class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"></textarea>
+                    <textarea wire:model="discoverDescription" rows="4" class="textarea"></textarea>
                     @error('discoverDescription') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             </div>
@@ -262,10 +240,10 @@ class extends Component
         <div class="flex justify-end">
             <button type="submit"
                     wire:loading.attr="disabled"
-                    class="inline-flex items-center gap-2 bg-primary-600 hover:bg-primary-700 text-white font-medium py-2.5 px-6 rounded-full shadow-lg shadow-primary-500/20 transition hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                    class="btn-primary active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
                 <span wire:loading.remove>Save Changes</span>
                 <span wire:loading class="inline-flex items-center gap-2">
-                    <svg class="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+                    <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
                     Saving…
                 </span>
             </button>

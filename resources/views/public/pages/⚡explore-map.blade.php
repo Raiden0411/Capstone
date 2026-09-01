@@ -9,7 +9,9 @@ use Livewire\Attributes\Computed;
 use Livewire\Attributes\On;
 use App\Models\Tenant;
 use App\Models\TypeOfTenant;
-use App\Models\Event; // NEW: import Event model
+use App\Models\Event;
+use App\Models\SiteSetting;
+use App\Scopes\TenantScope;
 
 new
 #[Layout('layouts.app')]
@@ -38,7 +40,7 @@ class extends Component
     public bool $recommendedOnly = false;
 
     #[Url(as: 'events', history: true)]
-    public bool $showEvents = false; // NEW: toggle for events
+    public bool $showEvents = false;
 
     public bool $itineraryEnabled = false;
 
@@ -64,7 +66,9 @@ class extends Component
     public ?float $currentLng = null;
     public ?int   $currentZoom = null;
 
-    public int $locationVersion = 0;
+    public int $userLocationVersion = 0;
+    public int $mapRefreshVersion   = 0;
+
     public string $filtersHash = '';
     public int $routeVersion = 0;
     public ?array $pendingFitBounds = null;
@@ -72,40 +76,9 @@ class extends Component
     public ?int $pendingDirectionsTenantId = null;
     public ?int $pendingDirectionsCoordIndex = 0;
 
-    public array $markerTypes = [
-        'restaurant' => 'Restaurant',
-        'cafe'       => 'Café',
-        'inn'        => 'Inn / Hotel',
-        'shop'       => 'Shop',
-        'viewpoint'  => 'Viewpoint',
-        'parking'    => 'Parking',
-        'entrance'   => 'Entrance',
-        'other'      => 'Other',
-    ];
+    public int $themeVersion = 0;
 
-    public array $markerColors = [
-        'restaurant' => '#f97316',
-        'cafe'       => '#a855f7',
-        'inn'        => '#3b82f6',
-        'shop'       => '#14b8a6',
-        'viewpoint'  => '#eab308',
-        'parking'    => '#6b7280',
-        'entrance'   => '#22c55e',
-        'other'      => '#94a3b8',
-    ];
-
-    public array $markerEmojis = [
-        'restaurant' => '🍽️',
-        'cafe'       => '☕',
-        'inn'        => '🏨',
-        'shop'       => '🛍️',
-        'viewpoint'  => '🌄',
-        'parking'    => '🅿️',
-        'entrance'   => '🚪',
-        'other'      => '📍',
-    ];
-
-    private const CITY_CENTER = [123.07055771888716, 10.900977766937142];
+    private const CITY_CENTER = [123.07391289720677, 10.900736693923502];
 
     public function mount(): void
     {
@@ -125,7 +98,7 @@ class extends Component
             $this->hasOfferings,
             $this->favoritesOnly,
             $this->recommendedOnly,
-            $this->showEvents, // NEW
+            $this->showEvents,
         ]));
     }
 
@@ -136,7 +109,8 @@ class extends Component
             $this->userLng = (float) request('lng');
             $this->currentLat = $this->userLat;
             $this->currentLng = $this->userLng;
-            $this->locationVersion++;
+            $this->userLocationVersion++;
+            $this->mapRefreshVersion++;
         }
 
         if (request()->filled('marker')) {
@@ -161,8 +135,8 @@ class extends Component
             ->where('is_active', true)
             ->whereNotNull('coordinates')
             ->with([
-                'typeOfTenant',
-                'settings' => fn ($q) => $q->where('key', 'business_info'),
+                'typeOfTenant:id,type',
+                'settings' => fn ($q) => $q->where('key', 'business_info')->select('tenant_id', 'value'),
             ])
             ->withCount(['properties', 'services'])
             ->withMin('properties', 'price')
@@ -180,7 +154,11 @@ class extends Component
             ))
             ->when($this->favoritesOnly, fn ($q) => $q->whereIn('id', $this->favorites ?: [0]))
             ->when($this->recommendedOnly, fn ($q) => $q->where('is_recommended', true))
-            ->get();
+            ->get([
+                'id', 'name', 'slug', 'logo', 'address', 'contact_number',
+                'email', 'coordinates', 'is_recommended', 'type_of_tenant_id',
+                'created_at',
+            ]);
 
         if ($this->hasOfferings) {
             $tenants = $tenants->filter(fn ($t) => $t->properties_count > 0 || $t->services_count > 0);
@@ -210,11 +188,12 @@ class extends Component
             return collect();
         }
 
-        return Event::query()
+        return Event::withoutGlobalScope(TenantScope::class)
             ->whereNotNull('coordinates')
             ->where('is_active', true)
-            ->where('start_date', '>=', now()->subDay()) // show events from yesterday onwards
-            ->get()
+            ->where('start_date', '>=', now()->subDay())
+            ->with('tenant:id,name,slug')
+            ->get(['id', 'name', 'barangay', 'type', 'start_date', 'end_date', 'coordinates', 'featured', 'tenant_id'])
             ->map(function ($event) {
                 $coords = is_array($event->coordinates)
                     ? $event->coordinates
@@ -240,7 +219,7 @@ class extends Component
     public function geoJsonData()
     {
         $tenantData = $this->tenants->flatMap(function ($tenant) {
-            $status = $this->statusEmoji($this->tenantOpenStatus($tenant));
+            $status = $this->statusLabel($this->tenantOpenStatus($tenant));
 
             return collect($tenant->coordinates)->map(function ($coord) use ($tenant, $status) {
                 return [
@@ -266,7 +245,6 @@ class extends Component
             });
         })->values()->toArray();
 
-        // Add event markers to GeoJSON (if enabled)
         if ($this->showEvents) {
             $eventFeatures = $this->eventMarkers->map(function ($event) {
                 return [
@@ -398,11 +376,11 @@ class extends Component
         return $hours ? $this->isOpenNow($tenant) : null;
     }
 
-    protected function statusEmoji(?bool $isOpen): string
+    protected function statusLabel(?bool $isOpen): string
     {
         return match ($isOpen) {
-            true    => '🟢 Open now',
-            false   => '⚪ Closed now',
+            true    => 'Open now',
+            false   => 'Closed now',
             default => '',
         };
     }
@@ -447,7 +425,7 @@ class extends Component
         return new \Illuminate\Support\HtmlString($highlighted ?? $escaped);
     }
 
-    protected function favoritesStorageKey(): string
+    public function favoritesStorageKey(): string
     {
         return auth()->check()
             ? 'explore_map_favorites_user_' . auth()->id()
@@ -478,7 +456,7 @@ class extends Component
     public function updatedHasOfferings(): void { $this->filtersHash = $this->computeFiltersHash(); }
     public function updatedFavoritesOnly(): void { $this->filtersHash = $this->computeFiltersHash(); }
     public function updatedRecommendedOnly(): void { $this->filtersHash = $this->computeFiltersHash(); }
-    public function updatedShowEvents(): void { $this->filtersHash = $this->computeFiltersHash(); } // NEW
+    public function updatedShowEvents(): void { $this->filtersHash = $this->computeFiltersHash(); }
 
     public function updatedSortBy(string $value): void
     {
@@ -489,12 +467,25 @@ class extends Component
 
     public function setUserLocation($lat, $lng): void
     {
+        $oldLat = $this->userLat;
+        $oldLng = $this->userLng;
+
         $this->userLat = round((float) $lat, 6);
         $this->userLng = round((float) $lng, 6);
         $this->currentLat = $this->userLat;
         $this->currentLng = $this->userLng;
         $this->currentZoom = 15;
-        $this->locationVersion++;
+
+        $this->userLocationVersion++;
+
+        $firstLocation = ($oldLat === null || $oldLng === null);
+        $distanceMoved = ($oldLat !== null && $oldLng !== null)
+            ? $this->calculateDistance($oldLat, $oldLng)
+            : 0;
+
+        if ($firstLocation || $distanceMoved > 0.1) {
+            $this->mapRefreshVersion++;
+        }
 
         if ($this->pendingDirectionsTenantId) {
             $tenantId = $this->pendingDirectionsTenantId;
@@ -606,9 +597,7 @@ class extends Component
                 $this->dispatch('map:fly-to', center: [(float) $coord['lng'], (float) $coord['lat']], zoom: 16);
             }
         } elseif (str_starts_with($id, 'event-')) {
-            // Event marker clicked – optional handling
             $eventId = (int) substr($id, 6);
-            // Could fly to event, but popup already opened
         }
     }
 
@@ -732,17 +721,7 @@ class extends Component
 
     public function fitAllLocations(): void
     {
-        $bounds = collect($this->geoJsonData)
-            ->map(fn ($feature) => $feature['geometry']['coordinates'])
-            ->values()
-            ->toArray();
-
-        if (count($bounds) < 2) {
-            $this->notify('Add more destinations to your filters to fit them all.', 'info');
-            return;
-        }
-
-        $this->dispatch('map:fit-bounds', bounds: $bounds, padding: 60);
+        $this->dispatch('map:fly-to', center: self::CITY_CENTER, zoom: 12);
     }
 
     public function resetView(): void
@@ -827,8 +806,13 @@ class extends Component
             ?? Tenant::query()
                 ->where('is_active', true)
                 ->with([
-                    'typeOfTenant',
-                    'settings' => fn ($q) => $q->where('key', 'business_info'),
+                    'typeOfTenant:id,type',
+                    'settings' => fn ($q) => $q->where('key', 'business_info')->select('tenant_id', 'value'),
+                ])
+                ->select([
+                    'id', 'name', 'slug', 'logo', 'address', 'contact_number',
+                    'email', 'coordinates', 'is_recommended', 'type_of_tenant_id',
+                    'created_at',
                 ])
                 ->find($id);
     }
@@ -847,6 +831,25 @@ class extends Component
             $this->currentZoom = $zoom;
         }
     }
+
+    public function refreshRoute(): void
+    {
+        $this->routeVersion++;
+    }
+
+    public function handleThemeChange(): void
+    {
+        $this->themeVersion++;
+        $this->mapRefreshVersion++;
+        $this->routeVersion++;
+        $this->dispatch('map:resize');
+    }
+
+    #[Computed]
+    public function markerCategories(): array
+    {
+        return SiteSetting::getValue('marker_categories', []);
+    }
 };
 ?>
 
@@ -860,6 +863,7 @@ class extends Component
         helpOpen: false,
         helpTrigger: null,
         viewport: { lat: null, lng: null, zoom: null },
+        viewportTimer: null,
         toasts: [],
         pendingDirectionRequest: false,
         userHeading: null,
@@ -893,11 +897,10 @@ class extends Component
             this.toasts = this.toasts.filter(t => t.id !== id);
         },
 
+        addRecent(detail) { console.log('Tenant viewed:', detail); },
+
         locate() {
-            if (!navigator.geolocation) {
-                $wire.locationFailed('unavailable');
-                return;
-            }
+            if (!navigator.geolocation) { $wire.locationFailed('unavailable'); return; }
             this.locating = true;
             navigator.geolocation.getCurrentPosition(
                 (pos) => {
@@ -922,10 +925,7 @@ class extends Component
 
         startFollowMode() {
             if (this.followMode) return;
-            if (!navigator.geolocation) {
-                $wire.locationFailed('unavailable');
-                return;
-            }
+            if (!navigator.geolocation) { $wire.locationFailed('unavailable'); return; }
             this.followMode = true;
             $wire.toggleFollowMode(true);
             let lastUpdate = 0;
@@ -940,6 +940,7 @@ class extends Component
                         zoom: 16,
                         essential: true
                     });
+                    $wire.setUserLocation(pos.coords.latitude, pos.coords.longitude);
                 },
                 (err) => {
                     this.followMode = false;
@@ -994,14 +995,17 @@ class extends Component
      x-on:locate-me-for-directions.window="pendingDirectionRequest = true; locate()"
      x-on:tenant-viewed.window="addRecent($event.detail)"
      x-on:print-map.window="window.print()"
+     x-on:theme-changed.window="$wire.handleThemeChange()"
      x-on:map:center-changed.window="
         viewport.lat = $event.detail.lat;
         viewport.lng = $event.detail.lng;
-        $wire.updateViewport(viewport.lat, viewport.lng, viewport.zoom);
+        clearTimeout(viewportTimer);
+        viewportTimer = setTimeout(() => $wire.updateViewport(viewport.lat, viewport.lng, viewport.zoom), 500);
      "
      x-on:map:zoom-changed.window="
         viewport.zoom = $event.detail.zoom;
-        $wire.updateViewport(viewport.lat, viewport.lng, viewport.zoom);
+        clearTimeout(viewportTimer);
+        viewportTimer = setTimeout(() => $wire.updateViewport(viewport.lat, viewport.lng, viewport.zoom), 500);
      "
      x-on:keydown.window="
         const typing = ['INPUT','TEXTAREA'].includes(document.activeElement?.tagName);
@@ -1036,7 +1040,7 @@ class extends Component
     <div
         class="fixed inset-0 z-[1090] bg-black/50 transition-opacity duration-300 motion-reduce:transition-none lg:hidden print:hidden"
         :class="mobileOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'"
-        @click="mobileOpen = false"
+        @click="mobileOpen = false; sidebarOpen = false"
         aria-hidden="true"
     ></div>
 
@@ -1044,7 +1048,7 @@ class extends Component
     <aside
         class="fixed inset-y-0 left-0 z-[1100] w-[85%] max-w-[360px] -translate-x-full border-r border-gray-200 bg-white shadow-2xl transition-transform duration-300 ease-out motion-reduce:transition-none dark:border-gray-700 dark:bg-gray-900 lg:static lg:z-auto lg:max-w-none lg:translate-x-0 lg:overflow-hidden lg:transition-[width] lg:duration-300 print:hidden"
         :class="[
-            mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',
+            sidebarOpen ? 'translate-x-0' : '-translate-x-full',
             sidebarOpen ? 'lg:w-[360px]' : 'lg:w-0',
         ]"
         role="dialog"
@@ -1054,29 +1058,18 @@ class extends Component
         <div class="relative h-full w-[85vw] max-w-[360px] lg:w-[360px]">
             <button
                 type="button"
-                @click="mobileOpen = false"
-                class="absolute right-3 top-3 z-10 flex h-8 w-8 items-center justify-center rounded-lg text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-500 dark:hover:bg-gray-800 dark:hover:text-gray-200 lg:hidden"
+                @click="sidebarOpen = false; mobileOpen = false"
+                class="absolute right-3 top-3 z-10 inline-flex items-center justify-center p-2 text-gray-500 hover:text-gray-900 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-white dark:hover:bg-gray-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 active:scale-95 disabled:opacity-50 disabled:pointer-events-none rounded-lg lg:hidden"
                 aria-label="Close destinations list"
             >
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
+                <svg class="size-2.5 shrink-0 stroke-current stroke-[2.5] fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
             </button>
 
             @include('livewire.partials.explore-sidebar')
         </div>
     </aside>
-
-    {{-- Desktop sidebar collapse toggle --}}
-    <button
-        type="button"
-        @click="sidebarOpen = !sidebarOpen"
-        class="absolute left-0 top-1/2 z-[1000] hidden h-16 w-6 -translate-y-1/2 items-center justify-center rounded-r-xl border border-l-0 border-gray-200 bg-white text-gray-500 shadow-lg transition-[left] duration-300 hover:text-primary-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:text-blue-400 lg:flex print:hidden"
-        :style="`left: ${sidebarOpen ? 360 : 0}px`"
-        :aria-expanded="sidebarOpen.toString()"
-        aria-label="Toggle sidebar"
-    >
-        <svg x-show="sidebarOpen" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
-        <svg x-show="!sidebarOpen" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-    </button>
 
     {{-- Map Area --}}
     <div class="relative h-full min-w-0 flex-1 bg-gray-100 dark:bg-gray-800 print:bg-white">
@@ -1089,57 +1082,14 @@ class extends Component
             class="absolute inset-x-0 top-0 z-[1200] flex items-center justify-center gap-2 bg-amber-500 px-4 py-2 text-center text-[12px] font-semibold text-white print:hidden"
             role="status"
         >
-            ⚠️ You're offline — map tiles and directions may not load until your connection returns.
+            <svg class="size-4 stroke-current stroke-2 fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+            </svg>
+            You're offline — map tiles and directions may not load until your connection returns.
         </div>
 
         <div class="pointer-events-none absolute left-4 top-4 z-[50] hidden rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-900 print:block">
-            Victorias City · Explore Map — {{ now()->format('F j, Y') }} · {{ $this->tenants->count() }} {{ Str::plural('destination', $this->tenants->count()) }} shown
-        </div>
-
-        {{-- Floating Filter Bar --}}
-        <div class="absolute left-1/2 top-4 z-[1000] -translate-x-1/2 flex flex-wrap items-center justify-center gap-1.5 rounded-full border border-gray-200 bg-white/95 p-1 shadow-lg backdrop-blur dark:border-gray-700 dark:bg-gray-800/95 print:hidden"
-             role="group" aria-label="Quick filters">
-            <button type="button"
-                    wire:click="resetFilters"
-                    class="px-3 py-1.5 rounded-full text-xs font-semibold uppercase tracking-wide transition
-                           {{ !$this->hasActiveFilters ? 'bg-primary-600 text-white' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700' }}">
-                All
-            </button>
-            <button type="button"
-                    wire:click="$set('recommendedOnly', {{ $recommendedOnly ? 'false' : 'true' }})"
-                    aria-pressed="{{ $recommendedOnly ? 'true' : 'false' }}"
-                    class="px-3 py-1.5 rounded-full text-xs font-semibold uppercase tracking-wide transition
-                           {{ $recommendedOnly ? 'bg-primary-600 text-white' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700' }}">
-                ⭐ Recommended
-            </button>
-            <button type="button"
-                    wire:click="$set('openNow', {{ $openNow ? 'false' : 'true' }})"
-                    aria-pressed="{{ $openNow ? 'true' : 'false' }}"
-                    class="px-3 py-1.5 rounded-full text-xs font-semibold uppercase tracking-wide transition
-                           {{ $openNow ? 'bg-primary-600 text-white' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700' }}">
-                Open Now
-            </button>
-            <button type="button"
-                    wire:click="$set('hasOfferings', {{ $hasOfferings ? 'false' : 'true' }})"
-                    aria-pressed="{{ $hasOfferings ? 'true' : 'false' }}"
-                    class="px-3 py-1.5 rounded-full text-xs font-semibold uppercase tracking-wide transition
-                           {{ $hasOfferings ? 'bg-primary-600 text-white' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700' }}">
-                Has Offerings
-            </button>
-            <button type="button"
-                    wire:click="$set('showEvents', {{ $showEvents ? 'false' : 'true' }})"
-                    aria-pressed="{{ $showEvents ? 'true' : 'false' }}"
-                    class="px-3 py-1.5 rounded-full text-xs font-semibold uppercase tracking-wide transition
-                           {{ $showEvents ? 'bg-primary-600 text-white' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700' }}">
-                🎉 Events
-            </button>
-            <button type="button"
-                    wire:click="$set('itineraryEnabled', {{ $itineraryEnabled ? 'false' : 'true' }})"
-                    aria-pressed="{{ $itineraryEnabled ? 'true' : 'false' }}"
-                    class="px-3 py-1.5 rounded-full text-xs font-semibold uppercase tracking-wide transition
-                           {{ $itineraryEnabled ? 'bg-primary-600 text-white' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700' }}">
-                🗺️ Itinerary
-            </button>
+            Explore Map — {{ now()->format('F j, Y') }} · {{ $this->tenants->count() }} {{ Str::plural('destination', $this->tenants->count()) }} shown
         </div>
 
         <div
@@ -1162,7 +1112,7 @@ class extends Component
         </div>
 
         <div
-            wire:key="tourist-map-{{ $satellite ? 'satellite' : 'normal' }}-{{ $locationVersion }}-{{ $filtersHash }}-{{ $routeVersion }}-{{ $itineraryEnabled ? 'itinerary' : 'no-itinerary' }}-{{ $showEvents ? 'events' : 'no-events' }}"
+            wire:key="tourist-map-{{ $satellite ? 'satellite' : 'normal' }}-{{ $filtersHash }}-{{ $routeVersion }}-{{ $itineraryEnabled ? 'itinerary' : 'no-itinerary' }}-{{ $showEvents ? 'events' : 'no-events' }}-{{ $mapRefreshVersion }}-{{ $themeVersion }}"
             class="absolute inset-0"
         >
             <x-map
@@ -1178,6 +1128,7 @@ class extends Component
                 :max-zoom="$satellite ? 19 : 22"
                 class="h-full w-full"
                 :events="['click', 'marker-clicked']"
+                @map:load="$event.detail.map?.setRenderWorldCopies(false); $event.detail.map?.setMaxBounds([[122.0, 9.5], [124.0, 11.8]]); $event.detail.map?.setMinZoom(10);"
             >
                 <x-map-controls
                     :zoom="true"
@@ -1188,136 +1139,204 @@ class extends Component
                     position="top-right"
                 />
 
+                {{-- USER LOCATION MARKER --}}
                 @if($userLat && $userLng)
                     <x-map-marker
-                        :key="'user-location'"
-                        wire:key="marker-user-location"
+                        :key="'user-location-'.$userLocationVersion"
+                        wire:key="marker-user-location-{{ $userLocationVersion }}"
                         :lat="$userLat"
                         :lng="$userLng"
-                        color="#22c55e"
+                        color="#3b82f6"
                         id="user-location"
+                        anchor="center"
                     >
                         <x-marker-content>
-                            <div class="relative flex h-10 w-10 items-center justify-center">
-                                @if(!empty($routeCoords))
-                                    <span class="absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75 animate-ping"></span>
+                            <div class="relative flex h-16 w-16 items-center justify-center pointer-events-none group transform-gpu will-change-transform">
+                                <div
+                                    class="absolute inset-0 transition-transform duration-300 ease-out origin-center"
+                                    :style="'transform: rotate(' + (userHeading || 0) + 'deg)'"
+                                >
+                                    <svg viewBox="0 0 64 64" class="h-full w-full drop-shadow-sm">
+                                        <defs>
+                                            <linearGradient id="heading-gradient-{{ $userLocationVersion }}" x1="0%" y1="100%" x2="0%" y2="0%">
+                                                <stop offset="0%" stop-color="#3b82f6" stop-opacity="0" />
+                                                <stop offset="100%" stop-color="#3b82f6" stop-opacity="0.5" />
+                                            </linearGradient>
+                                        </defs>
+                                        <path d="M 32 32 L 10 0 A 32 32 0 0 1 54 0 Z" fill="url(#heading-gradient-{{ $userLocationVersion }})" />
+                                    </svg>
+                                </div>
+
+                                @if($followMode)
+                                    <div class="absolute h-10 w-10 rounded-full bg-blue-500/25 animate-ping"></div>
                                 @endif
-                                <div class="relative flex h-8 w-8 items-center justify-center rounded-full border-2 shadow-lg transition-colors"
-                                     :class="{ 'bg-blue-500 border-white': @js(!empty($routeCoords)), 'bg-green-500 border-white': @js(empty($routeCoords)) }">
-                                    <svg x-show="userHeading !== null && userHeading !== undefined"
-                                         :style="'transform: rotate(' + (userHeading || 0) + 'deg)'"
-                                         class="h-4 w-4 text-white"
-                                         fill="currentColor"
-                                         viewBox="0 0 24 24">
-                                        <path d="M12 2 L19 21 L12 17 L5 21 Z" />
-                                    </svg>
-                                    <svg x-show="!userHeading"
-                                         class="h-3 w-3 text-white"
-                                         fill="currentColor"
-                                         viewBox="0 0 24 24">
-                                        <circle cx="12" cy="12" r="4" />
-                                    </svg>
+                                <div class="absolute h-12 w-12 rounded-full bg-blue-500/15 border border-blue-400/30"></div>
+
+                                <div class="relative flex h-6 w-6 items-center justify-center rounded-full bg-blue-600 border-2 border-white dark:border-gray-900 shadow-lg ring-4 ring-blue-500/30">
+                                    <div class="h-2 w-2 rounded-full bg-white"></div>
                                 </div>
                             </div>
                         </x-marker-content>
                         <x-marker-popup>
-                            <div class="p-2">
-                                <strong class="text-gray-900 dark:text-white">
-                                    {{ !empty($routeCoords) ? 'Route Start' : 'You are here' }}
+                            <div class="p-3 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md rounded-2xl border border-gray-100 dark:border-gray-800 shadow-xl min-w-[180px]">
+                                <strong class="text-xs font-black tracking-wide uppercase text-gray-900 dark:text-white">
+                                    {{ !empty($routeCoords) ? 'Route Origin' : 'Current Location' }}
                                 </strong>
-                                <button type="button" @click="$wire.shareLocation()" class="mt-1 block text-[11px] font-semibold text-primary-600 hover:text-blue-700 dark:text-blue-400">🔗 Share this location</button>
+                                <button type="button" @click="$wire.shareLocation()"
+                                        class="mt-2 inline-flex w-full items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl bg-primary-50 dark:bg-blue-950/50 text-[11px] font-bold text-primary-600 dark:text-blue-400 hover:bg-primary-100 transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 disabled:opacity-50 disabled:pointer-events-none">
+                                    <svg class="size-3 stroke-current stroke-2 fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
+                                    </svg>
+                                    Share Location
+                                </button>
                             </div>
                         </x-marker-popup>
                     </x-map-marker>
                 @endif
 
-                @foreach($this->tenants as $tenant)
-                    @php
-                        $hue = ($loop->index * 137) % 360;
-                        $tenantColor = 'hsl(' . $hue . ', 65%, 55%)';
-                        $isRouteDestination = $routeTenantId === $tenant->id && !empty($routeCoords);
-                        $isHighlighted = $highlightedId === $tenant->id;
-                        $minPrice = $tenant->properties_min_price;
-                    @endphp
-
-                    @foreach($tenant->coordinates as $coordIndex => $coord)
+                {{-- TENANT MARKERS --}}
+                @if(!$showEvents)
+                    @foreach($this->tenants as $tenant)
                         @php
-                            $isParent = $coordIndex === 0 || ($coord['type'] ?? '') === 'parent';
-                            $logoUrl = $tenant->logo ? asset('storage/' . $tenant->logo) : null;
-
-                            $coordType = $coord['type'] ?? null;
-                            $isCategoryType = !$isParent && $coordType && isset($this->markerTypes[$coordType]);
+                            $tenantColors = ['#f97316','#a855f7','#3b82f6','#14b8a6','#eab308','#64748b','#10b981','#8b5cf6'];
+                            $tenantColor = $tenantColors[$loop->index % count($tenantColors)];
+                            $isRouteDestination = $routeTenantId === $tenant->id && !empty($routeCoords);
+                            $isHighlighted = $highlightedId === $tenant->id;
+                            $minPrice = $tenant->properties_min_price;
                         @endphp
 
-                        <x-map-marker
-                            :key="'tenant-'.$tenant->id.'-'.$coordIndex"
-                            wire:key="marker-{{ $tenant->id }}-{{ $coordIndex }}"
-                            :lat="$coord['lat']"
-                            :lng="$coord['lng']"
-                            :color="$isParent ? $tenantColor : ($isCategoryType ? $this->markerColors[$coordType] : $tenantColor)"
-                            id="tenant-{{ $tenant->id }}-{{ $coordIndex }}"
-                        >
-                            <x-marker-content>
-                                @if($isParent)
-                                    <div class="flex h-11 w-11 items-center justify-center rounded-full border-2 bg-white shadow-lg transition-all duration-200
-                                                {{ $isRouteDestination || $isHighlighted ? 'ring-4 ring-blue-300/50 scale-110' : '' }}"
-                                         style="border-color: {{ $tenantColor }};">
-                                        @if($logoUrl)
-                                            <img src="{{ $logoUrl }}" alt="{{ $tenant->name }}"
-                                                 class="h-full w-full rounded-full object-cover"
-                                                 loading="lazy">
-                                        @else
-                                            <span class="text-sm font-black text-gray-800">
-                                                {{ strtoupper(substr($tenant->name, 0, 2)) }}
-                                            </span>
-                                        @endif
-                                    </div>
-                                @elseif($isCategoryType)
-                                    <div class="flex h-10 w-10 items-center justify-center rounded-full border-2 bg-white shadow-lg text-xl transition-all duration-200
-                                                {{ $isRouteDestination || $isHighlighted ? 'ring-4 ring-blue-300/50 scale-110' : '' }}"
-                                         style="border-color: {{ $this->markerColors[$coordType] }};">
-                                        <span class="leading-none">{{ $this->markerEmojis[$coordType] }}</span>
-                                    </div>
-                                @else
-                                    <div class="flex h-5 w-5 items-center justify-center rounded-full border-2 bg-white shadow transition-all duration-200
-                                                {{ $isRouteDestination || $isHighlighted ? 'ring-4 ring-blue-300/50 scale-110' : '' }}"
-                                         style="border-color: {{ $tenantColor }};">
-                                        <span class="block h-2.5 w-2.5 rounded-full" style="background: {{ $tenantColor }};"></span>
-                                    </div>
-                                @endif
-                            </x-marker-content>
+                        @foreach($tenant->coordinates as $coordIndex => $coord)
+                            @php
+                                $isParent = $coordIndex === 0 || ($coord['type'] ?? '') === 'parent';
+                                $logoUrl = $tenant->logo ? asset('storage/' . $tenant->logo) : null;
+                                $coordType = $coord['type'] ?? null;
+                                $isCategoryType = !$isParent && $coordType && collect($this->markerCategories)->contains('key', $coordType);
+                                $activeColor = $isParent ? $tenantColor : ($isCategoryType ? collect($this->markerCategories)->firstWhere('key', $coordType)['color'] ?? $tenantColor : $tenantColor);
+                            @endphp
 
-                            <x-marker-popup>
-                                <div class="min-w-[260px] p-3">
-                                    @if($logoUrl)
-                                        <img src="{{ $logoUrl }}" alt="{{ $tenant->name }}" class="w-full h-24 object-cover rounded-lg mb-2">
-                                    @endif
-                                    <h3 class="font-bold text-gray-900 dark:text-white">{{ $coord['name'] ?? $tenant->name }}</h3>
-                                    <p class="text-xs text-gray-500 dark:text-gray-400">
-                                        {{ $isParent ? ($tenant->typeOfTenant?->type ?? 'Business') : ($isCategoryType ? $this->markerTypes[$coordType] : 'Sub-location') }}
-                                    </p>
-                                    @if($isParent && $minPrice !== null)
-                                        <p class="mt-1 text-xs font-semibold text-gray-900 dark:text-white">
-                                            From ₱{{ number_format($minPrice, 2) }}
-                                        </p>
-                                    @endif
-                                    @if($userLat && $userLng)
-                                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                                            📍 {{ $this->formatDistance($this->calculateDistance($coord['lat'], $coord['lng'])) }} away
-                                        </p>
-                                    @endif
-                                    @if($tenant->address)
-                                        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ $tenant->address }}</p>
-                                    @endif
-                                    <div class="mt-3 flex gap-2">
-                                        <a href="{{ route('business.offerings', $tenant->slug) }}" class="flex-1 rounded-lg bg-primary-600 px-3 py-2 text-center text-xs font-semibold text-white transition hover:bg-blue-700">View</a>
-                                        <button type="button" wire:click="{{ $isParent ? 'getDirectionsTo('.$tenant->id.')' : 'getDirectionsToCoord('.$tenant->id.','.$coordIndex.')' }}" class="flex-1 rounded-lg border border-primary-600 px-3 py-2 text-xs font-semibold text-primary-600 transition hover:bg-blue-50 dark:hover:bg-blue-500/10">Directions</button>
+                            <x-map-marker
+                                :key="'tenant-'.$tenant->id.'-'.$coordIndex"
+                                wire:key="marker-{{ $tenant->id }}-{{ $coordIndex }}"
+                                :lat="$coord['lat']"
+                                :lng="$coord['lng']"
+                                :color="$activeColor"
+                                id="tenant-{{ $tenant->id }}-{{ $coordIndex }}"
+                                anchor="bottom"
+                            >
+                                <x-marker-content>
+                                    <div class="flex flex-col items-center group cursor-pointer transform-gpu will-change-transform">
+                                        @if($isParent)
+                                            <div class="flex h-12 w-12 items-center justify-center rounded-full border-2 bg-white dark:bg-gray-900 shadow-lg transition-all duration-300 group-hover:scale-110 active:scale-95
+                                                        {{ $isRouteDestination || $isHighlighted ? 'ring-2 ring-primary-500 scale-110' : '' }}"
+                                                 style="border-color: {{ $tenantColor }};">
+                                                @if($logoUrl)
+                                                    <img src="{{ $logoUrl }}" alt="{{ $tenant->name }}" class="h-full w-full rounded-full object-cover" loading="lazy">
+                                                @else
+                                                    <span class="text-xs font-black text-gray-800 dark:text-white tracking-tighter">{{ strtoupper(substr($tenant->name, 0, 2)) }}</span>
+                                                @endif
+                                            </div>
+                                        @elseif($isCategoryType)
+                                            @php
+                                                $category = collect($this->markerCategories)->firstWhere('key', $coordType);
+                                                $iconSvg = $category['icon_svg'] ?? null;
+                                                $color = $category['color'] ?? '#94a3b8';
+                                            @endphp
+                                            <div class="relative flex h-10 w-10 items-center justify-center
+                                                        transform-gpu will-change-transform transition-transform duration-200
+                                                        group-hover:scale-110 active:scale-95
+                                                        {{ $isRouteDestination || $isHighlighted ? 'ring-2 ring-primary-500 rounded-full scale-110' : '' }}">
+                                                <svg class="absolute inset-0 size-10 drop-shadow-md
+                                                            fill-white dark:fill-gray-900
+                                                            stroke-slate-400 dark:stroke-slate-600 stroke-1"
+                                                     viewBox="0 0 24 24" aria-hidden="true">
+                                                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                                                </svg>
+                                                @if($iconSvg)
+                                                    <div class="absolute mb-1 size-[18px] text-gray-800 dark:text-white">
+                                                        {!! str_replace('<svg ', '<svg class="size-full stroke-current fill-none" ', $iconSvg) !!}
+                                                    </div>
+                                                @else
+                                                    <span class="absolute mb-1 text-[10px] font-bold text-gray-800 dark:text-white">
+                                                        {{ strtoupper(substr($coordType, 0, 1)) }}
+                                                    </span>
+                                                @endif
+                                            </div>
+                                        @else
+                                            <div class="flex h-5 w-5 items-center justify-center rounded-full border-2 bg-white dark:bg-gray-900 shadow-sm transition-all duration-300 group-hover:scale-110 active:scale-95
+                                                        {{ $isRouteDestination || $isHighlighted ? 'ring-2 ring-primary-500 scale-110' : '' }}"
+                                                 style="--marker-color: {{ $tenantColor }}; border-color: var(--marker-color);">
+                                                <span class="block h-2 w-2 rounded-full" style="background: var(--marker-color);"></span>
+                                            </div>
+                                        @endif
+
+                                        <svg class="w-2 h-1.5 text-current -mt-0.5" style="color: {{ $activeColor }};" viewBox="0 0 12 8" fill="currentColor"><path d="M0 0 L12 0 L6 8 Z"/></svg>
                                     </div>
-                                </div>
-                            </x-marker-popup>
-                        </x-map-marker>
+                                </x-marker-content>
+
+                                <x-marker-popup>
+                                    <div class="min-w-[260px] max-w-[280px] p-4 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md rounded-2xl shadow-2xl border border-gray-100 dark:border-gray-800">
+                                        @if($logoUrl && $isParent)
+                                            <div class="relative h-28 w-full mb-3 overflow-hidden rounded-xl bg-gray-100 dark:bg-gray-800">
+                                                <img src="{{ $logoUrl }}" alt="{{ $tenant->name }}" class="w-full h-full object-cover">
+                                                <div class="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent"></div>
+                                                <span class="absolute bottom-2 left-2 text-[10px] font-bold uppercase tracking-wider text-white bg-black/40 px-2 py-0.5 rounded-md backdrop-blur-sm">
+                                                    {{ $tenant->typeOfTenant?->type ?? 'Business' }}
+                                                </span>
+                                            </div>
+                                        @endif
+
+                                        <h3 class="font-extrabold text-gray-900 dark:text-white text-base leading-tight">{{ $coord['name'] ?? $tenant->name }}</h3>
+
+                                        <p class="text-xs font-semibold text-primary-600 dark:text-primary-400 mt-0.5">
+                                            {{ $isParent ? ($tenant->typeOfTenant?->type ?? 'Business') : ($isCategoryType ? ($category['label'] ?? 'Sub-location') : 'Sub-location') }}
+                                        </p>
+
+                                        <div class="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-300">
+                                            @if($isParent && $minPrice !== null)
+                                                <p class="font-bold text-gray-900 dark:text-white text-sm">Starting at ₱{{ number_format($minPrice, 2) }}</p>
+                                            @endif
+                                            @if($userLat && $userLng)
+                                                <p class="flex items-center gap-1 text-gray-500 dark:text-gray-400">
+                                                    <svg class="size-2.5 stroke-current stroke-2 fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
+                                                        <circle cx="12" cy="10" r="2" stroke="currentColor" fill="none"/>
+                                                    </svg>
+                                                    {{ $this->formatDistance($this->calculateDistance($coord['lat'], $coord['lng'])) }} away
+                                                </p>
+                                            @endif
+                                        </div>
+
+                                        <div class="mt-4 flex gap-2">
+                                            <a href="{{ route('business.offerings', $tenant->slug) }}" wire:navigate
+                                               wire:loading.attr="disabled"
+                                               class="flex-1 inline-flex items-center justify-center rounded-xl bg-primary-600 px-3 py-2 text-center text-xs font-bold text-white shadow-sm hover:bg-primary-700 transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 disabled:opacity-50 disabled:pointer-events-none">
+                                                <span wire:loading.remove>View</span>
+                                                <span wire:loading>
+                                                    <svg class="animate-spin size-3 inline-block" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                                    </svg>
+                                                </span>
+                                            </a>
+                                            <button type="button"
+                                                    wire:click="{{ $isParent ? 'getDirectionsTo('.$tenant->id.')' : 'getDirectionsToCoord('.$tenant->id.','.$coordIndex.')' }}"
+                                                    wire:loading.attr="disabled"
+                                                    class="flex-1 inline-flex items-center justify-center rounded-xl border border-gray-200 dark:border-gray-700 px-3 py-2 text-center text-xs font-bold text-gray-700 dark:text-gray-300 hover:border-primary-500 hover:text-primary-600 transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 disabled:opacity-50 disabled:pointer-events-none">
+                                                <span wire:loading.remove>Directions</span>
+                                                <span wire:loading>
+                                                    <svg class="animate-spin size-3 inline-block" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                                    </svg>
+                                                </span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </x-marker-popup>
+                            </x-map-marker>
+                        @endforeach
                     @endforeach
-                @endforeach
+                @endif
 
                 {{-- Event Markers --}}
                 @if($showEvents)
@@ -1327,32 +1346,43 @@ class extends Component
                             wire:key="event-marker-{{ $event['id'] }}"
                             :lat="$event['lat']"
                             :lng="$event['lng']"
-                            color="#8b5cf6"  {{-- Indigo/purple for events --}}
+                            color="#8b5cf6"
                             id="event-{{ $event['id'] }}"
+                            anchor="bottom"
                         >
                             <x-marker-content>
-                                <div class="flex h-10 w-10 items-center justify-center rounded-full border-2 bg-white shadow-lg text-xl transition-all duration-200"
-                                     style="border-color: #8b5cf6;">
-                                    <span class="leading-none">🎉</span>
+                                <div class="flex flex-col items-center group cursor-pointer transform-gpu will-change-transform">
+                                    <div class="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-tr from-purple-600 to-pink-500 border-2 border-white dark:border-gray-900 shadow-lg transition-all duration-300 group-hover:scale-110 active:scale-95">
+                                        <svg class="size-4 text-white stroke-current stroke-2 fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                                            <rect x="3" y="4" width="18" height="18" rx="2"/>
+                                            <line x1="16" y1="2" x2="16" y2="6"/>
+                                            <line x1="8" y1="2" x2="8" y2="6"/>
+                                            <line x1="3" y1="10" x2="21" y2="10"/>
+                                        </svg>
+                                    </div>
+                                    <svg class="w-2 h-1.5 text-current -mt-0.5" style="color: #8b5cf6;" viewBox="0 0 12 8" fill="currentColor"><path d="M0 0 L12 0 L6 8 Z"/></svg>
                                 </div>
                             </x-marker-content>
                             <x-marker-popup>
-                                <div class="min-w-[240px] p-3">
-                                    <h3 class="font-bold text-gray-900 dark:text-white">{{ $event['name'] }}</h3>
-                                    <p class="text-xs text-gray-500 dark:text-gray-400">
-                                        📅 {{ $event['start_date']->format('M d, Y') }}
-                                        @if($event['end_date'] && $event['end_date'] != $event['start_date'])
-                                            - {{ $event['end_date']->format('M d, Y') }}
-                                        @endif
+                                <div class="min-w-[220px] p-4 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md rounded-2xl border border-gray-100 dark:border-gray-800 shadow-xl">
+                                    <span class="inline-block px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-950/50 rounded-md mb-2">Event</span>
+                                    <h3 class="font-extrabold text-gray-900 dark:text-white text-sm leading-snug">{{ $event['name'] }}</h3>
+                                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 font-medium flex items-center gap-1">
+                                        <svg class="size-3 stroke-current stroke-2 fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                                        </svg>
+                                        {{ $event['start_date']->format('M d, Y') }}
                                     </p>
-                                    <p class="mt-1 text-xs font-medium text-gray-700 dark:text-gray-300">
-                                        📍 {{ $event['barangay'] }}
-                                    </p>
-                                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 capitalize">{{ $event['type'] }}</p>
-                                    <a href="{{ route('events', ['event' => $event['id']]) }}"
-                                       wire:navigate
-                                       class="mt-2 inline-block text-xs font-semibold text-primary-600 hover:underline dark:text-blue-400">
-                                        View Event Details →
+                                    <a href="{{ route('events', ['event' => $event['id']]) }}" wire:navigate
+                                       wire:loading.attr="disabled"
+                                       class="mt-3 inline-flex w-full items-center justify-center rounded-xl bg-primary-600 hover:bg-primary-700 py-2 text-xs font-bold text-white transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 disabled:opacity-50 disabled:pointer-events-none">
+                                        <span wire:loading.remove>View Event</span>
+                                        <span wire:loading>
+                                            <svg class="animate-spin size-3 inline-block" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                            </svg>
+                                        </span>
                                     </a>
                                 </div>
                             </x-marker-popup>
@@ -1369,7 +1399,7 @@ class extends Component
                     <x-map-route
                         wire:key="itinerary-route-{{ md5(json_encode($itinLine)) }}"
                         :coordinates="$itinLine"
-                        color="#8b5cf6"
+                        color="#6366f1"
                         :width="4"
                         :opacity="0.9"
                         :dash-array="[12, 8]"
@@ -1381,28 +1411,32 @@ class extends Component
                             wire:key="itinerary-marker-{{ $idx }}"
                             :lat="$stop['lat']"
                             :lng="$stop['lng']"
-                            color="#8b5cf6"
+                            color="#6366f1"
                             id="itinerary-stop-{{ $idx }}"
+                            anchor="bottom"
                         >
                             <x-marker-content>
-                                <div class="flex h-8 w-8 items-center justify-center rounded-full bg-white border-2 shadow-lg font-bold text-sm text-purple-700"
-                                     style="border-color: #8b5cf6;">
-                                    {{ $idx + 1 }}
+                                <div class="flex flex-col items-center group cursor-pointer transform-gpu will-change-transform">
+                                    <div class="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-600 border-2 border-white dark:border-gray-900 shadow-lg font-black text-xs text-white transition-all duration-300 group-hover:scale-110 active:scale-95">
+                                        {{ $idx + 1 }}
+                                    </div>
+                                    <svg class="w-2 h-1.5 text-current -mt-0.5" style="color: #6366f1;" viewBox="0 0 12 8" fill="currentColor"><path d="M0 0 L12 0 L6 8 Z"/></svg>
                                 </div>
                             </x-marker-content>
                             <x-marker-popup>
-                                <div class="p-2">
-                                    <strong class="text-gray-900 dark:text-white">{{ $stop['name'] }}</strong>
-                                    <p class="text-xs text-gray-500 dark:text-gray-400">Itinerary stop {{ $idx + 1 }}</p>
+                                <div class="p-3 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md rounded-2xl border border-gray-100 dark:border-gray-800 shadow-xl min-w-[160px]">
+                                    <span class="text-[10px] font-black uppercase text-indigo-600 dark:text-indigo-400">Stop {{ $idx + 1 }}</span>
+                                    <strong class="text-xs font-extrabold text-gray-900 dark:text-white block mt-0.5">{{ $stop['name'] }}</strong>
                                 </div>
                             </x-marker-popup>
                         </x-map-marker>
                     @endforeach
                 @endif
 
+                {{-- Active Route --}}
                 @if(!empty($routeCoords))
                     <x-map-route
-                        wire:key="route-primary-{{ md5(serialize($routeCoords)) }}-{{ $directionsProfile }}"
+                        wire:key="route-primary-{{ md5(serialize($routeCoords)) }}-{{ $directionsProfile }}-{{ $routeVersion }}"
                         id="{{ $routeId }}"
                         :coordinates="[$routeCoords['start'], $routeCoords['end']]"
                         :fetch-directions="true"
@@ -1415,7 +1449,7 @@ class extends Component
                     />
 
                     <x-map-route
-                        wire:key="route-reference-{{ md5(serialize($routeCoords)) }}"
+                        wire:key="route-reference-{{ md5(serialize($routeCoords)) }}-{{ $routeVersion }}"
                         :coordinates="[$routeCoords['start'], $routeCoords['end']]"
                         color="#f59e0b"
                         :width="3"
@@ -1435,51 +1469,118 @@ class extends Component
             </x-map>
         </div>
 
-        {{-- Map tools toolbar (unchanged) --}}
+        {{-- Map tools toolbar --}}
         <div class="absolute left-3 top-3 z-[1000] flex flex-col gap-1.5 sm:left-4 sm:top-4 sm:gap-2 print:hidden" role="toolbar" aria-label="Map tools">
-            <button type="button" @click="mobileOpen = true" class="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-600 shadow-lg transition hover:text-primary-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:text-blue-400 lg:hidden" aria-label="Open destinations list" title="Destinations">
-                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 6h16M4 12h16M4 18h16"/></svg>
-            </button>
-
-            <button type="button" @click="locate()" :disabled="locating" class="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-600 shadow-lg transition hover:text-primary-600 disabled:cursor-wait disabled:opacity-60 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:text-blue-400" aria-label="Use my location" title="Use my location (L)">
-                <svg x-show="!locating" class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 21c-4.5-4.5-7.5-8.24-7.5-11.5A7.5 7.5 0 0112 2a7.5 7.5 0 017.5 7.5c0 3.26-3 7-7.5 11.5z"/><circle cx="12" cy="9.5" r="2.5" stroke="currentColor" stroke-width="2" fill="none"/></svg>
-                <svg x-show="locating" class="h-4 w-4 animate-spin motion-reduce:animate-none" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-            </button>
-
-            <button type="button" @click="followMode ? stopFollowMode() : startFollowMode()" aria-pressed="{{ $followMode ? 'true' : 'false' }}" class="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-xl border shadow-lg transition {{ $followMode ? 'border-primary-600 bg-primary-600 text-white' : 'border-gray-200 bg-white text-gray-600 hover:text-primary-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:text-blue-400' }}" aria-label="Toggle follow mode" title="Follow my location (F)">
-                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
-                    <path d="M12 2 L21 21 L12 17 L3 21 Z" fill="currentColor" stroke="none"/>
+            <button type="button" @click="sidebarOpen = !sidebarOpen"
+                    class="inline-flex items-center justify-center p-2 text-gray-500 hover:text-gray-900 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-white dark:hover:bg-gray-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 active:scale-95 disabled:opacity-50 disabled:pointer-events-none rounded-lg"
+                    :aria-expanded="sidebarOpen.toString()"
+                    aria-label="Toggle destinations sidebar"
+                    title="Toggle destinations"
+            >
+                <svg class="size-5 stroke-current stroke-2 fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/>
                 </svg>
             </button>
 
-            <button type="button" wire:click="fitAllLocations" @disabled(count($this->geoJsonData) < 2) class="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-600 shadow-lg transition hover:text-primary-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:disabled:hover:text-gray-300" aria-label="Show all destinations" title="Fit all destinations">
-                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4h4M4 4l5 5M16 4h4v4M20 4l-5 5M4 16v4h4M4 20l5-5M16 20h4v-4M20 20l-5-5"/></svg>
+            <button type="button" @click="locate()" :disabled="locating"
+                    class="inline-flex items-center justify-center p-2 text-gray-500 hover:text-gray-900 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-white dark:hover:bg-gray-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 active:scale-95 disabled:opacity-50 disabled:pointer-events-none rounded-lg"
+                    aria-label="Use my location" title="Use my location (L)">
+                <svg x-show="!locating" class="size-5 stroke-current stroke-2 fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 21c-4.5-4.5-7.5-8.24-7.5-11.5A7.5 7.5 0 0112 2a7.5 7.5 0 017.5 7.5c0 3.26-3 7-7.5 11.5z"/>
+                    <circle cx="12" cy="9.5" r="2.5" stroke-width="2" fill="none"/>
+                </svg>
+                <svg x-show="locating" class="size-5 animate-spin motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                </svg>
             </button>
 
-            <button type="button" wire:click="toggleSatellite" aria-pressed="{{ $satellite ? 'true' : 'false' }}" class="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-xl border text-lg shadow-lg transition {{ $satellite ? 'border-primary-600 bg-primary-600 text-white' : 'border-gray-200 bg-white text-gray-600 hover:text-primary-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:text-blue-400' }}" aria-label="Toggle satellite view" title="Satellite view (S)">🛰️</button>
+            <button type="button" @click="followMode ? stopFollowMode() : startFollowMode()" aria-pressed="{{ $followMode ? 'true' : 'false' }}"
+                    class="inline-flex items-center justify-center p-2 text-gray-500 hover:text-gray-900 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-white dark:hover:bg-gray-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 active:scale-95 disabled:opacity-50 disabled:pointer-events-none rounded-lg
+                           {{ $followMode ? 'bg-primary-600 text-white hover:bg-primary-700' : '' }}"
+                    aria-label="Toggle follow mode" title="Follow my location (F)">
+                <svg class="size-5 stroke-current stroke-2 fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 2 L21 21 L12 17 L3 21 Z"/>
+                </svg>
+            </button>
+
+            <button type="button" wire:click="fitAllLocations" wire:loading.attr="disabled"
+                    class="inline-flex items-center justify-center p-2 text-gray-500 hover:text-gray-900 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-white dark:hover:bg-gray-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 active:scale-95 disabled:opacity-50 disabled:pointer-events-none rounded-lg"
+                    aria-label="Go to city center" title="Fit all destinations (city center)">
+                <svg class="size-5 stroke-current stroke-2 fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="12" r="8" stroke-width="2" />
+                    <line x1="12" y1="2" x2="12" y2="4" stroke-width="2" />
+                    <line x1="12" y1="20" x2="12" y2="22" stroke-width="2" />
+                    <line x1="2" y1="12" x2="4" y2="12" stroke-width="2" />
+                    <line x1="20" y1="12" x2="22" y2="12" stroke-width="2" />
+                </svg>
+            </button>
+
+            <button type="button" wire:click="toggleSatellite" wire:loading.attr="disabled" aria-pressed="{{ $satellite ? 'true' : 'false' }}"
+                    class="inline-flex items-center justify-center p-2 text-gray-500 hover:text-gray-900 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-white dark:hover:bg-gray-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 active:scale-95 disabled:opacity-50 disabled:pointer-events-none rounded-lg
+                           {{ $satellite ? 'bg-primary-600 text-white hover:bg-primary-700' : '' }}"
+                    aria-label="Toggle satellite view" title="Satellite view (S)">
+                <svg class="size-5 stroke-current stroke-2 fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M20 11a8 8 0 00-14 0M4 13a8 8 0 0014 0M12 12v3m0 0a9 9 0 01-9 9m9-9a9 9 0 019 9"/>
+                </svg>
+            </button>
 
             @if(!empty($routeCoords))
-                <button type="button" wire:click="clearRoute" class="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-xl border border-red-200 bg-white text-red-500 shadow-lg transition hover:bg-red-50 dark:border-red-500/30 dark:bg-gray-800 dark:text-red-400 dark:hover:bg-red-500/10" aria-label="Cancel route" title="Cancel route">
-                    <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                <button type="button" wire:click="clearRoute" wire:loading.attr="disabled"
+                        class="inline-flex items-center justify-center p-2 text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-500/10 dark:text-red-400 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 active:scale-95 disabled:opacity-50 disabled:pointer-events-none rounded-lg"
+                        aria-label="Cancel route" title="Cancel route">
+                    <svg class="size-2.5 stroke-current stroke-[2.5] fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
                 </button>
             @endif
 
             <div class="relative" x-data="{ open: false }" @click.outside="open = false" @keydown.escape.window="open = false">
-                <button type="button" @click="open = !open" :aria-expanded="open.toString()" aria-haspopup="true" class="flex h-9 w-9 sm:h-11 sm:w-11 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-600 shadow-lg transition hover:text-primary-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:text-blue-400" aria-label="More map options" title="More options">
-                    <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg>
+                <button type="button" @click="open = !open" :aria-expanded="open.toString()" aria-haspopup="true"
+                        class="inline-flex items-center justify-center p-2 text-gray-500 hover:text-gray-900 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-white dark:hover:bg-gray-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 active:scale-95 disabled:opacity-50 disabled:pointer-events-none rounded-lg"
+                        aria-label="More map options" title="More options">
+                    <svg class="size-5 stroke-current stroke-2 fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"/>
+                        <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/>
+                        <circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none"/>
+                    </svg>
                 </button>
                 <div x-show="open" x-transition:enter="transition ease-out duration-120" x-transition:enter-start="opacity-0 -translate-x-1" x-transition:enter-end="opacity-100 translate-x-0" x-transition:leave="transition ease-in duration-100" x-transition:leave-start="opacity-100 translate-x-0" x-transition:leave-end="opacity-0 -translate-x-1" style="display: none;" class="absolute left-full top-0 ml-2 w-52 overflow-hidden rounded-xl border border-gray-200 bg-white py-1.5 shadow-xl dark:border-gray-700 dark:bg-gray-800" role="menu">
-                    <button type="button" role="menuitem" @click="open = false; $wire.printMap()" class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] font-medium text-gray-700 transition hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/60">🖨️ Print map</button>
-                    <button type="button" role="menuitem" @click="open = false; $wire.shareLocation()" class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] font-medium text-gray-700 transition hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/60">🔗 Share my location</button>
-                    <button type="button" role="menuitem" @click="open = false; $wire.resetView()" class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] font-medium text-gray-700 transition hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/60">🎯 Recenter map</button>
+                    <button type="button" role="menuitem" @click="open = false; $wire.printMap()"
+                            class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] font-medium text-gray-700 transition hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 active:scale-95 dark:text-gray-200 dark:hover:bg-gray-700/60">
+                        <svg class="size-2.5 stroke-current stroke-[2.5] fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                        Print map
+                    </button>
+                    <button type="button" role="menuitem" @click="open = false; $wire.shareLocation()"
+                            class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] font-medium text-gray-700 transition hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 active:scale-95 dark:text-gray-200 dark:hover:bg-gray-700/60">
+                        <svg class="size-4 stroke-current stroke-2 fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
+                        </svg>
+                        Share my location
+                    </button>
+                    <button type="button" role="menuitem" @click="open = false; $wire.resetView()"
+                            class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] font-medium text-gray-700 transition hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 active:scale-95 dark:text-gray-200 dark:hover:bg-gray-700/60">
+                        <svg class="size-4 stroke-current stroke-2 fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M20 11a8 8 0 00-14 0M4 13a8 8 0 0014 0"/>
+                        </svg>
+                        Recenter map
+                    </button>
                     <div class="my-1 border-t border-gray-100 dark:border-gray-700"></div>
-                    <button type="button" role="menuitem" @click="open = false; helpTrigger = $el; helpOpen = true" class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] font-medium text-gray-700 transition hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/60">❓ Help &amp; shortcuts</button>
+                    <button type="button" role="menuitem" @click="open = false; helpTrigger = $el; helpOpen = true"
+                            class="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] font-medium text-gray-700 transition hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 active:scale-95 dark:text-gray-200 dark:hover:bg-gray-700/60">
+                        <svg class="size-4 stroke-current stroke-2 fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M8.228 9.75A5 5 0 0012 15a5 5 0 004.772-3.25M9.75 9.75h4.5m-4.5 4.5h4.5M12 21a9 9 0 110-18 9 9 0 010 18z"/>
+                        </svg>
+                        Help &amp; shortcuts
+                    </button>
                 </div>
             </div>
         </div>
     </div>
 
-    {{-- Toast stack (unchanged) --}}
+    {{-- Toast stack --}}
     <div
         class="pointer-events-none fixed z-[1300] flex flex-col gap-2 print:hidden
                inset-x-4 top-20 items-center
@@ -1511,12 +1612,34 @@ class extends Component
                         'text-amber-800 dark:text-amber-300': toast.type === 'warning'
                      }"
                 >
-                    <span x-show="toast.type === 'success'">✅</span>
-                    <span x-show="toast.type === 'error'">⚠️</span>
-                    <span x-show="toast.type === 'info'">ℹ️</span>
-                    <span x-show="toast.type === 'warning'">🔶</span>
+                    <span x-show="toast.type === 'success'">
+                        <svg class="size-4 text-emerald-500 stroke-current stroke-2 fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>
+                        </svg>
+                    </span>
+                    <span x-show="toast.type === 'error'">
+                        <svg class="size-4 text-red-500 stroke-current stroke-2 fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </span>
+                    <span x-show="toast.type === 'info'">
+                        <svg class="size-4 text-blue-500 stroke-current stroke-2 fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                    </span>
+                    <span x-show="toast.type === 'warning'">
+                        <svg class="size-4 text-amber-500 stroke-current stroke-2 fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                        </svg>
+                    </span>
                     <span class="flex-1" x-text="toast.message"></span>
-                    <button type="button" @click="removeToast(toast.id)" class="text-gray-400 transition hover:text-gray-700 dark:hover:text-gray-200" aria-label="Dismiss notification">✕</button>
+                    <button type="button" @click="removeToast(toast.id)"
+                            class="inline-flex items-center justify-center p-1 text-gray-400 hover:text-gray-700 hover:bg-gray-100 dark:hover:text-gray-200 dark:hover:bg-gray-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 active:scale-95 disabled:opacity-50 disabled:pointer-events-none rounded-lg"
+                            aria-label="Dismiss notification">
+                        <svg class="size-2.5 stroke-current stroke-[2.5] fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
                 </div>
                 <div class="h-0.5 w-full bg-black/5 dark:bg-white/5">
                     <div class="h-full transition-[width] duration-100 ease-linear motion-reduce:transition-none"
@@ -1533,12 +1656,18 @@ class extends Component
         </template>
     </div>
 
-    {{-- Help modal (unchanged) --}}
+    {{-- Help modal --}}
     <div x-show="helpOpen" x-transition.opacity style="display: none;" class="fixed inset-0 z-[1500] flex items-center justify-center bg-black/50 p-4 print:hidden" role="dialog" aria-modal="true" aria-labelledby="help-modal-title" @click.self="helpOpen = false; helpTrigger?.focus(); helpTrigger = null" x-init="$watch('helpOpen', (open) => { if (open) $nextTick(() => $refs.helpCloseBtn && $refs.helpCloseBtn.focus()) })">
         <div x-show="helpOpen" x-transition:enter="transition ease-out duration-150" x-transition:enter-start="opacity-0 scale-95" x-transition:enter-end="opacity-100 scale-100" class="w-full max-w-sm overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-gray-800">
             <div class="flex items-center justify-between border-b border-gray-100 px-5 py-4 dark:border-gray-700">
                 <h2 id="help-modal-title" class="text-[15px] font-extrabold text-gray-900 dark:text-white">Legend &amp; shortcuts</h2>
-                <button type="button" x-ref="helpCloseBtn" @click="helpOpen = false; helpTrigger?.focus(); helpTrigger = null" class="flex h-7 w-7 items-center justify-center rounded-lg text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200" aria-label="Close help">✕</button>
+                <button type="button" x-ref="helpCloseBtn" @click="helpOpen = false; helpTrigger?.focus(); helpTrigger = null"
+                        class="inline-flex items-center justify-center p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 dark:hover:text-gray-200 dark:hover:bg-gray-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 active:scale-95 disabled:opacity-50 disabled:pointer-events-none rounded-lg"
+                        aria-label="Close help">
+                    <svg class="size-2.5 stroke-current stroke-[2.5] fill-none" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
             </div>
             <div class="max-h-[70vh] overflow-y-auto px-5 py-4">
                 <section>

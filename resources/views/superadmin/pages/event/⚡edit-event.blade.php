@@ -6,9 +6,11 @@ use Livewire\WithFileUploads;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\On;
+use Livewire\Attributes\Computed;
 use App\Models\Event;
 use App\Models\Tenant;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\DB;
 
 new
 #[Layout('superadmin.layouts.app')]
@@ -53,9 +55,17 @@ class extends Component
             'tenant_id'   => 'nullable|exists:tenants,id',
             'is_active'   => 'boolean',
             'featured'    => 'boolean',
-            'image'       => 'nullable|image|max:2048',
+            'image'       => 'nullable|image|mimes:jpeg,png,jpg,gif,webp|max:10240', // ★ 10MB
             'latitude'    => 'nullable|numeric|min:-90|max:90',
             'longitude'   => 'nullable|numeric|min:-180|max:180',
+        ];
+    }
+
+    protected function messages()
+    {
+        return [
+            'image.max' => 'The event photo must not exceed 10MB.',
+            'image.mimes' => 'The event photo must be a valid image (JPEG, PNG, JPG, GIF, or WebP).',
         ];
     }
 
@@ -85,9 +95,25 @@ class extends Component
         }
     }
 
-    public function getBarangaysProperty()
+    #[Computed]
+    public function tenants()
     {
-        return collect(config('barangays', []))->sort()->values();
+        return Tenant::query()
+            ->select('id', 'name')
+            ->orderBy('name')
+            ->get();
+    }
+
+    #[Computed]
+    public function barangays()
+    {
+        return Tenant::query()
+            ->select('barangay')
+            ->distinct()
+            ->orderBy('barangay')
+            ->pluck('barangay')
+            ->filter()
+            ->values();
     }
 
     public function updatedName($value)
@@ -98,6 +124,41 @@ class extends Component
     public function updatedDescription($value)
     {
         $this->description = trim($value);
+    }
+
+    // ★ Fly map when coordinates are typed manually
+    public function updatedLatitude($value)
+    {
+        if ($value === null || $value === '') {
+            $this->latitude = null;
+            return;
+        }
+
+        $this->latitude = round((float) $value, 6);
+        $this->mapView = [
+            'lat' => $this->latitude,
+            'lng' => $this->longitude ?? $this->mapView['lng'],
+            'zoom' => 16,
+        ];
+        $this->mapVersion++;
+        $this->dispatch('map:fly-to', center: [(float)$this->mapView['lng'], (float)$this->latitude], zoom: 16);
+    }
+
+    public function updatedLongitude($value)
+    {
+        if ($value === null || $value === '') {
+            $this->longitude = null;
+            return;
+        }
+
+        $this->longitude = round((float) $value, 6);
+        $this->mapView = [
+            'lat' => $this->latitude ?? $this->mapView['lat'],
+            'lng' => $this->longitude,
+            'zoom' => 16,
+        ];
+        $this->mapVersion++;
+        $this->dispatch('map:fly-to', center: [(float)$this->longitude, (float)$this->mapView['lat']], zoom: 16);
     }
 
     #[On('map:click')]
@@ -178,32 +239,34 @@ class extends Component
     {
         $this->validate();
 
-        $imagePath = $this->event->image_path;
-        if ($this->remove_existing_image) {
-            $imagePath = null;
-        }
-        if ($this->image) {
-            $imagePath = $this->image->store('event-images', 'public');
-        }
+        DB::transaction(function () {
+            $imagePath = $this->event->image_path;
+            if ($this->remove_existing_image) {
+                $imagePath = null;
+            }
+            if ($this->image) {
+                $imagePath = $this->image->store('event-images', 'public');
+            }
 
-        $coordinates = null;
-        if ($this->latitude !== null && $this->longitude !== null) {
-            $coordinates = ['lat' => $this->latitude, 'lng' => $this->longitude];
-        }
+            $coordinates = null;
+            if ($this->latitude !== null && $this->longitude !== null) {
+                $coordinates = ['lat' => $this->latitude, 'lng' => $this->longitude];
+            }
 
-        $this->event->update([
-            'name'        => $this->name,
-            'barangay'    => $this->barangay,
-            'description' => $this->description,
-            'type'        => $this->type,
-            'start_date'  => $this->start_date,
-            'end_date'    => $this->end_date ?: null,
-            'tenant_id'   => $this->tenant_id,
-            'is_active'   => $this->is_active,
-            'featured'    => $this->featured,
-            'image_path'  => $imagePath,
-            'coordinates' => $coordinates,
-        ]);
+            $this->event->update([
+                'name'        => $this->name,
+                'barangay'    => $this->barangay,
+                'description' => $this->description,
+                'type'        => $this->type,
+                'start_date'  => $this->start_date,
+                'end_date'    => $this->end_date ?: null,
+                'tenant_id'   => $this->tenant_id,
+                'is_active'   => $this->is_active,
+                'featured'    => $this->featured,
+                'image_path'  => $imagePath,
+                'coordinates' => $coordinates,
+            ]);
+        });
 
         session()->flash('message', 'Event updated successfully.');
         return $this->redirectRoute('superadmin.events.index', navigate: true);
@@ -266,8 +329,9 @@ class extends Component
             <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Edit Event</h1>
         </div>
         <a href="{{ route('superadmin.events.index') }}" wire:navigate
-           class="btn-secondary focus-visible:ring-2 focus-visible:ring-primary-500/50">
-            ← Back to Events
+           class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+            Back to Events
         </a>
     </div>
 
@@ -336,19 +400,20 @@ class extends Component
                 @if($event->image_path && !$remove_existing_image)
                     <div class="mb-3">
                         <img src="{{ asset('storage/' . $event->image_path) }}" class="h-32 w-32 object-cover rounded-lg border border-gray-200 dark:border-gray-700" alt="{{ $event->name }}">
-                        <button type="button" wire:click="$set('remove_existing_image', true)" class="mt-2 text-xs text-red-500 dark:text-red-400 hover:text-red-700">Remove existing photo</button>
+                        <button type="button" wire:click="$set('remove_existing_image', true)" class="mt-2 text-xs text-red-500 dark:text-red-400 hover:text-red-700 active:scale-95 transition-transform">Remove existing photo</button>
                     </div>
                 @endif
 
                 <input type="file" wire:model="image" accept="image/*"
                        @change="handleImageInput($event)"
                        class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Max 10MB. Supported: JPEG, PNG, JPG, GIF, WebP.</p>
                 @error('image') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
 
                 {{-- Client-side preview --}}
                 <div class="mt-3" x-show="newImagePreview" x-cloak>
                     <img :src="newImagePreview" class="h-32 w-32 object-cover rounded-lg border border-gray-200 dark:border-gray-700" alt="New Event Preview">
-                    <button type="button" @click="newImagePreview = null; $wire.set('image', null)" class="mt-2 text-xs text-red-500 dark:text-red-400 hover:text-red-700">Remove new photo</button>
+                    <button type="button" @click="newImagePreview = null; $wire.set('image', null)" class="mt-2 text-xs text-red-500 dark:text-red-400 hover:text-red-700 active:scale-95 transition-transform">Remove new photo</button>
                 </div>
             </div>
 
@@ -357,7 +422,7 @@ class extends Component
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Assign to Tenant (optional)</label>
                 <select wire:model="tenant_id" class="select">
                     <option value="">None (Platform‑wide)</option>
-                    @foreach(Tenant::orderBy('name')->get() as $t)
+                    @foreach($this->tenants as $t)
                         <option value="{{ $t->id }}">{{ $t->name }}</option>
                     @endforeach
                 </select>
@@ -385,19 +450,22 @@ class extends Component
             <div class="flex flex-wrap gap-2 mb-4">
                 <button type="button"
                         wire:click="useMyLocation"
-                        class="btn-secondary text-xs focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                    📍 Use my location
+                        class="btn-secondary text-xs active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-1.5">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                    Use my location
                 </button>
                 <button type="button"
                         wire:click="toggleSatellite"
-                        class="btn-secondary text-xs focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                    🛰️ {{ $satellite ? 'Street View' : 'Satellite' }}
+                        class="btn-secondary text-xs active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-1.5">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/></svg>
+                    {{ $satellite ? 'Street View' : 'Satellite' }}
                 </button>
                 @if($latitude !== null && $longitude !== null)
                     <button type="button"
                             wire:click="clearLocation"
-                            class="btn-secondary text-xs text-red-600 focus-visible:ring-2 focus-visible:ring-red-500/50">
-                        ✕ Clear Location
+                            class="btn-secondary text-xs text-red-600 active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-red-500/50 inline-flex items-center gap-1.5">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                        Clear Location
                     </button>
                 @endif
             </div>
@@ -405,12 +473,16 @@ class extends Component
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Latitude</label>
-                    <input type="text" wire:model.live.debounce.500ms="latitude" class="input font-mono" placeholder="10.900977">
+                    <input type="number" step="any" min="-90" max="90"
+                           wire:model.live.debounce.500ms="latitude"
+                           class="input font-mono" placeholder="10.900977">
                     @error('latitude') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Longitude</label>
-                    <input type="text" wire:model.live.debounce.500ms="longitude" class="input font-mono" placeholder="123.070557">
+                    <input type="number" step="any" min="-180" max="180"
+                           wire:model.live.debounce.500ms="longitude"
+                           class="input font-mono" placeholder="123.070557">
                     @error('longitude') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             </div>
@@ -486,9 +558,9 @@ class extends Component
         </div>
 
         {{-- Actions --}}
-        <div class="pt-4 border-t border-gray-200 dark:border-gray-700 flex flex-wrap gap-3">
+        <div class="pt-4 border-t border-gray-200 dark:border-gray-700 flex flex-col sm:flex-row gap-3">
             <button type="submit" wire:loading.attr="disabled"
-                    class="btn-primary focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                    class="btn-primary w-full sm:w-auto active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
                 <span wire:loading.remove>Update Event</span>
                 <span wire:loading class="inline-flex items-center gap-2">
                     <svg class="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
@@ -496,7 +568,7 @@ class extends Component
                 </span>
             </button>
             <a href="{{ route('superadmin.events.index') }}" wire:navigate
-               class="btn-secondary focus-visible:ring-2 focus-visible:ring-primary-500/50">
+               class="btn-secondary w-full sm:w-auto active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
                 Cancel
             </a>
         </div>
