@@ -6,9 +6,11 @@ use App\Traits\BelongsToTenant;
 use Illuminate\Database\Eloquent\Model;
 use App\Scopes\TenantScope;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class PropertyType extends Model
 {
+    use HasFactory;
     use BelongsToTenant;
 
     protected $fillable = ['tenant_id', 'name'];

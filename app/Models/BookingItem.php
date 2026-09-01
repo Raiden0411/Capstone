@@ -1,11 +1,14 @@
 <?php
+
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use App\Traits\BelongsToTenant;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 
-class BookingItem extends Model 
+class BookingItem extends Model
 {
+    use HasFactory;
     use BelongsToTenant;
 
     protected $fillable = ['tenant_id', 'booking_id', 'property_id', 'price', 'check_out', 'quantity', 'subtotal'];

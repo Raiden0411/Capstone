@@ -27,15 +27,19 @@ class ProcessPayMongoPayment implements ShouldQueue
             return false;
         }
 
-        if (!in_array($checkout->status, ['paid', 'succeeded'])) {
+        $checkoutData = $checkout->getData();
+        $checkoutStatus = data_get($checkoutData, 'status');
+        $checkoutId = data_get($checkoutData, 'id');
+
+        if (!in_array($checkoutStatus, ['paid', 'succeeded'])) {
             Log::info('PayMongo session not paid yet', [
                 'session_id' => $this->sessionId,
-                'status'     => $checkout->status,
+                'status'     => $checkoutStatus,
             ]);
             return false;
         }
 
-        DB::transaction(function () use ($checkout) {
+        DB::transaction(function () use ($checkoutId) {
             $payment = Payment::withoutGlobalScope(TenantScope::class)
                 ->where('paymongo_session_id', $this->sessionId)
                 ->first();
@@ -49,7 +53,7 @@ class ProcessPayMongoPayment implements ShouldQueue
                 $payment->update([
                     'payment_status'   => 'paid',
                     'paid_at'          => now(),
-                    'reference_number' => $checkout->id,
+                    'reference_number' => $checkoutId,
                 ]);
 
                 Transaction::create([
@@ -57,7 +61,7 @@ class ProcessPayMongoPayment implements ShouldQueue
                     'booking_id'  => $payment->booking_id,
                     'type'        => 'income',
                     'amount'      => $payment->amount,
-                    'description' => 'PayMongo payment: ' . $checkout->id,
+                    'description' => 'PayMongo payment: ' . $checkoutId,
                 ]);
             }
 

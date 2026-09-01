@@ -7,9 +7,11 @@ use App\Traits\BelongsToTenant;
 use App\Scopes\TenantScope;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class Booking extends Model
 {
+    use HasFactory;
     use BelongsToTenant;
 
     protected $fillable = [
@@ -123,31 +125,20 @@ class Booking extends Model
     protected static function booted()
     {
         static::updated(function (Booking $booking) {
-            // Get property IDs from booking items (remove tenant scope for safety)
-            $propertyIds = $booking->items()
-                ->withoutGlobalScope(TenantScope::class)
-                ->pluck('property_id')
-                ->unique()
-                ->values()
-                ->toArray();
+            if (in_array($booking->status, [self::STATUS_COMPLETED, self::STATUS_CANCELLED])) {
+                // Remove tenant scope from items relationship
+                $propertyIds = $booking->items()
+                    ->withoutGlobalScope(TenantScope::class)
+                    ->pluck('property_id')
+                    ->unique()
+                    ->values()
+                    ->toArray();
 
-            if (empty($propertyIds)) {
-                return;
-            }
-
-            // Determine new property status based on booking status
-            $newStatus = match ($booking->status) {
-                self::STATUS_CONFIRMED => 'occupied',
-                self::STATUS_RESERVED  => 'reserved',
-                self::STATUS_COMPLETED,
-                self::STATUS_CANCELLED => 'available',
-                default                => null, // no change for pending, checked_in, etc.
-            };
-
-            if ($newStatus) {
-                DB::table('properties')
-                    ->whereIn('id', $propertyIds)
-                    ->update(['status' => $newStatus]);
+                if (!empty($propertyIds)) {
+                    DB::table('properties')
+                        ->whereIn('id', $propertyIds)
+                        ->update(['status' => 'available']);
+                }
             }
         });
     }

@@ -9,12 +9,14 @@ use App\Http\Middleware\IsTenantAdmin;
 use App\Models\Booking;
 use App\Http\Controllers\Auth\LoginController;
 use App\Scopes\TenantScope;
+use Illuminate\Support\Facades\DB;
 
 /*
 |--------------------------------------------------------------------------
-| Public & Guest Routes
+| Public Routes
 |--------------------------------------------------------------------------
 */
+
 Route::livewire('/', 'public::pages.index')->name('home');
 Route::livewire('/about', 'public::pages.about')->name('about');
 
@@ -48,11 +50,18 @@ Route::get('/map/satellite-style', function () {
     ], 200, [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 })->name('map.satellite.style');
 
-// Public business profile page (tenant.show)
+Route::get('/health', function () {
+    try {
+        DB::connection()->getPdo();
+        return response()->json(['status' => 'ok']);
+    } catch (\Exception $e) {
+        return response()->json(['status' => 'error'], 500);
+    }
+})->name('health');
+
 Route::livewire('/business/{slug}', 'public::pages.tenant-show')->name('tenant.show');
 Route::livewire('/business/{slug}/offerings', 'public::pages.business-offerings')->name('business.offerings');
 
-// NEW: Tourist Spots listing page
 Route::livewire('/tourist-spots', 'public::pages.tourist-spots')->name('tourist-spots.index');
 
 Route::livewire('/events', 'public::pages.events')->name('events');
@@ -72,6 +81,12 @@ Route::post('/logout', function (Request $request) {
     $request->session()->regenerateToken();
     return redirect()->route('login');
 })->name('logout');
+
+/*
+|--------------------------------------------------------------------------
+| Authenticated Routes
+|--------------------------------------------------------------------------
+*/
 
 Route::middleware(['auth'])->group(function () {
     Route::livewire('/booking/create/{publicproperty}', 'public::pages.create-booking')->name('booking.create');
@@ -97,10 +112,8 @@ Route::middleware(['auth'])->group(function () {
         ]);
     })->name('booking.receipt');
 
-    // Processing page – renamed route parameter
     Route::livewire('/booking/payment/processing/{bookingId}', 'public::pages.payment-processing')->name('booking.payment.processing');
 
-    // Success route: redirect to processing page
     Route::get('/booking/payment/success/{booking}', function ($bookingId) {
         $booking = Booking::withoutGlobalScope(TenantScope::class)->findOrFail($bookingId);
 
@@ -141,6 +154,7 @@ Route::middleware(['auth'])->group(function () {
 | Super Admin Routes
 |--------------------------------------------------------------------------
 */
+
 Route::prefix('platform')->name('superadmin.')->middleware([Authenticate::class, IsSuperAdmin::class])->group(function () {
     Route::livewire('/dashboard', 'superadmin::pages.dashboard.dashboard-page')->name('dashboard');
     Route::livewire('/analytics', 'superadmin::pages.analytics.platform-analytics')->name('analytics');
@@ -152,7 +166,7 @@ Route::prefix('platform')->name('superadmin.')->middleware([Authenticate::class,
 
     Route::livewire('/tenants', 'superadmin::pages.tenant.view-tenant')->name('tenants.index');
     Route::livewire('/tenants/create', 'superadmin::pages.tenant.create-tenant')->name('tenants.create');
-    Route::livewire('/tenants/{tenant}/preview', 'superadmin::pages.tenant.preview-tenant')->name('tenants.preview'); // ★ ADDED
+    Route::livewire('/tenants/{tenant}/preview', 'superadmin::pages.tenant.preview-tenant')->name('tenants.preview');
     Route::livewire('/tenants/{tenant}/edit', 'superadmin::pages.tenant.edit-tenant')->name('tenants.edit');
 
     Route::livewire('/roles', 'superadmin::pages.role.view-role')->name('roles.index');
@@ -179,6 +193,7 @@ Route::prefix('platform')->name('superadmin.')->middleware([Authenticate::class,
 | Tenant Admin Routes
 |--------------------------------------------------------------------------
 */
+
 Route::prefix('admin')->name('tenant.')->middleware([
     Authenticate::class,
     IsTenantAdmin::class,

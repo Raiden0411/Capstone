@@ -2,25 +2,20 @@
 
 namespace App\View\Components\Footers;
 
-use Closure;
-use Illuminate\Contracts\View\View;
 use Illuminate\View\Component;
 
 class AdminFooter extends Component
 {
-    /**
-     * Create a new component instance.
-     */
-    public function __construct()
+    /** @phpstan-var view-string */
+    public string $view;
+
+    public function __construct(string $view = 'components.footers.admin.superadmin-footer')
     {
-        //
+        $this->view = $view;
     }
 
-    /**
-     * Get the view / contents that represent the component.
-     */
-    public function render(): View|Closure|string
+    public function render()
     {
-        return view('components.footers.admin-footer');
+        return view($this->view);
     }
 }

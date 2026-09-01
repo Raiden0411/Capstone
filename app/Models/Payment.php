@@ -4,9 +4,14 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use App\Traits\BelongsToTenant;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 
+/**
+ * @property-read \App\Models\Booking|null $booking
+ */
 class Payment extends Model
 {
+    use HasFactory;
     use BelongsToTenant;
 
     protected $fillable = [

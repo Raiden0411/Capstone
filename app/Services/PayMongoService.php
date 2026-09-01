@@ -33,20 +33,15 @@ class PayMongoService
                 'metadata'             => $data['metadata'] ?? [],
             ]);
 
-            // Extract ID and checkout URL using multiple fallbacks
-            $checkoutId = $checkout->id
-                ?? (method_exists($checkout, 'getId') ? $checkout->getId() : null)
-                ?? data_get($checkout, 'id')
-                ?? (method_exists($checkout, 'getData') ? data_get($checkout->getData(), 'id') : null);
+            $checkoutData = $checkout->getData();
 
-            $checkoutUrl = $checkout->checkout_url
-                ?? (method_exists($checkout, 'getCheckoutUrl') ? $checkout->getCheckoutUrl() : null)
-                ?? data_get($checkout, 'checkout_url')
-                ?? (method_exists($checkout, 'getData') ? data_get($checkout->getData(), 'checkout_url') : null);
+            $checkoutId  = data_get($checkoutData, 'id');
+            $checkoutUrl = data_get($checkoutData, 'checkout_url');
+            $status      = data_get($checkoutData, 'status');
 
             if (!$checkoutId || !$checkoutUrl) {
                 Log::error('PayMongo Checkout missing ID or URL', [
-                    'object' => method_exists($checkout, 'getData') ? $checkout->getData() : get_object_vars($checkout),
+                    'object' => $checkoutData,
                 ]);
                 return null;
             }
@@ -54,7 +49,7 @@ class PayMongoService
             return [
                 'id'           => $checkoutId,
                 'checkout_url' => $checkoutUrl,
-                'status'       => $checkout->status ?? null,
+                'status'       => $status,
             ];
         } catch (\Exception $e) {
             Log::error('PayMongo Checkout Error: ' . $e->getMessage());

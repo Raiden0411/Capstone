@@ -42,7 +42,7 @@ class PayMongoWebhookController extends Controller
             return false;
         }
 
-        $secret = config('paymongo.webhook_secret') ?: env('PAYMONGO_WEBHOOK_SECRET');
+        $secret = config('paymongo.webhook_secret');
         if (!$secret) {
             Log::error('PayMongo webhook secret is not set.');
             return false;
