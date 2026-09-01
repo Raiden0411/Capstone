@@ -18,6 +18,7 @@ class Property extends Model
         'description',
         'price',
         'capacity',
+        'quantity',
         'status',
         'is_active',
     ];
