@@ -30,17 +30,14 @@ it('updates payment and booking status when PayMongo session is paid', function 
         'amount' => 500,
     ]);
 
-    // Create a stub Checkout that returns the required attributes
-    $checkout = new class extends Checkout {
-        public function __get(string $key): mixed
-        {
-            return match ($key) {
-                'id'     => 'sess_123',
-                'status' => 'paid',
-                default  => null,
-            };
-        }
-    };
+    // Mock the Checkout model to return the required data via getData()
+    $checkout = \Mockery::mock(Checkout::class);
+    $checkout->shouldReceive('getData')
+        ->once()
+        ->andReturn([
+            'id' => 'sess_123',
+            'status' => 'paid',
+        ]);
 
     Paymongo::shouldReceive('checkout->find')
         ->once()
