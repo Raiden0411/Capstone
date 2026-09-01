@@ -70,7 +70,6 @@ class extends Component
             abort(403, 'Unauthorized.');
         }
 
-        // Eager load relations to prevent N+1 queries
         $booking->load([
             'user',
             'items.property',
@@ -90,8 +89,9 @@ class extends Component
         $this->status = $booking->status;
         $this->booking_type = $booking->booking_type ?? Booking::TYPE_FULL;
 
-        $this->discountAmount = $booking->total_amount < $this->calculateBaseTotal()
-            ? $this->calculateBaseTotal() - $booking->total_amount
+        $baseTotal = $this->calculateBaseTotal();
+        $this->discountAmount = $booking->total_amount < $baseTotal
+            ? $baseTotal - $booking->total_amount
             : 0;
 
         foreach ($booking->items as $item) {

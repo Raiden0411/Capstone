@@ -24,7 +24,7 @@ class extends Component {
     #[Validate('required|string|max:255')]
     public $customerName = '';
     
-    #[Validate('required|string|max:20|regex:/^(09|\+639)\d{9}$/')]
+    #[Validate(['required', 'string', 'max:20', 'regex:/^(09|\+639)\d{9}$/'])]
     public $customerPhone = '';
     
     #[Validate('nullable|email|max:255')]
