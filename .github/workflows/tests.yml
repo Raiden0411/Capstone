@@ -47,5 +47,11 @@ jobs:
           DB_DATABASE: ":memory:"
         run: php artisan test
 
+      - name: Run migrations & seeders
+        env:
+          DB_CONNECTION: sqlite
+          DB_DATABASE: ":memory:"
+        run: php artisan migrate:fresh --seed --force
+
       - name: Run PHPStan
         run: vendor/bin/phpstan analyse --configuration=phpstan.neon
