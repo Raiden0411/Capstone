@@ -778,7 +778,6 @@ class extends Component
                         :directions-profile="$directionsProfile"
                         color="#C8A96E"
                         :width="4"
-                        :with-stops="true"
                         alternative-color="#60A5FA"
                     />
                     <x-map-route-list
