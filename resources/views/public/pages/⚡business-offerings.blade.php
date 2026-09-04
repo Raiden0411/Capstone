@@ -1,3 +1,4 @@
+{{-- resources/views/livewire/offerings.blade.php --}}
 <?php
 
 use Livewire\Component;
@@ -21,7 +22,10 @@ class extends Component
 
     public function mount($slug)
     {
-        $this->tenant = Tenant::where('slug', $slug)->firstOrFail();
+        $this->tenant = Tenant::withoutGlobalScope(TenantScope::class)
+            ->select('id', 'name', 'slug', 'logo')
+            ->where('slug', $slug)
+            ->firstOrFail();
 
         $settings = $this->tenant->settings()
             ->withoutGlobalScope(TenantScope::class)
@@ -315,12 +319,16 @@ class extends Component
     </div>
 
     {{-- HERO --}}
-    <section id="offerings-hero" class="relative min-h-[72vh] flex items-end overflow-hidden pb-16 md:pb-20">
+    <section id="offerings-hero" class="relative min-h-[65vh] md:min-h-[72vh] flex items-end overflow-hidden pb-16 md:pb-20">
 
         @if($coverPhoto)
             <img src="{{ asset('storage/'.$coverPhoto) }}"
                  class="absolute inset-0 w-full h-full object-cover scale-105"
                  style="filter:brightness(.35) saturate(1.2)" alt="" loading="eager">
+        @elseif($tenant->logo)
+            <img src="{{ asset('storage/'.$tenant->logo) }}"
+                 class="absolute inset-0 w-full h-full object-cover scale-105"
+                 style="filter:brightness(.35) saturate(1.2)" alt="{{ $tenant->name }} logo" loading="eager">
         @else
             <div class="absolute inset-0 bg-gradient-to-br from-neutral-950 via-neutral-900 to-neutral-950"></div>
         @endif
@@ -331,7 +339,7 @@ class extends Component
         <div class="relative z-10 max-w-7xl mx-auto px-6 md:px-16 w-full">
             <div class="mb-7">
                 <a href="{{ route('tenant.show', $tenant->slug) }}" wire:navigate
-                   class="inline-flex items-center gap-1.5 text-[10px] tracking-[0.22em] uppercase text-white/30 hover:text-primary-400 transition-colors group active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50 rounded">
+                   class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 hover:border-white/20 text-[10px] tracking-[0.22em] uppercase text-white/70 hover:text-white transition-all group active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50">
                     <svg class="w-3 h-3 group-hover:-translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 12H5m7-7l-7 7 7 7"/></svg>
                     Back to {{ $tenant->name }}
                 </a>
@@ -343,31 +351,30 @@ class extends Component
                         <span class="w-5 h-px bg-primary-400"></span>
                         <span class="text-[10px] tracking-[0.25em] uppercase text-primary-400 font-bold">Offerings</span>
                     </div>
-                    <h1 class="font-display text-4xl sm:text-5xl md:text-7xl font-semibold text-white leading-[0.88] tracking-tight">
+                    <h1 class="font-display text-4xl sm:text-5xl md:text-7xl font-semibold text-white leading-[0.95] tracking-tight">
                         What<br>
                         <em class="italic bg-gradient-to-r from-blue-300 via-blue-400 to-cyan-400 bg-clip-text text-transparent">We Offer</em>
                     </h1>
-                    <p class="mt-4 text-sm text-white/40 max-w-sm leading-relaxed">
-                        Discover our activities and services — crafted for comfort, built for memory.
-                    </p>
 
-                    <div class="mt-8 flex items-center gap-7">
-                        <div class="text-center">
-                            <div class="font-display text-4xl font-medium text-primary-400">{{ $this->properties->count() }}</div>
-                            <div class="text-[10px] tracking-[0.18em] uppercase text-white/30 mt-0.5">Activities</div>
-                        </div>
-                        <div class="w-px h-10 bg-white/10"></div>
-                        <div class="text-center">
-                            <div class="font-display text-4xl font-medium text-primary-400">{{ $this->services->count() }}</div>
-                            <div class="text-[10px] tracking-[0.18em] uppercase text-white/30 mt-0.5">Services</div>
-                        </div>
-                        @if(!empty($galleryImages))
+                    <div class="mt-10 md:mt-12 pt-6 border-t border-white/10">
+                        <div class="flex items-center gap-7">
+                            <div class="text-center">
+                                <div class="font-display text-3xl sm:text-4xl font-medium text-primary-400">{{ $this->properties->count() }}</div>
+                                <div class="text-[10px] tracking-[0.18em] uppercase text-white/30 mt-1">Activities</div>
+                            </div>
                             <div class="w-px h-10 bg-white/10"></div>
                             <div class="text-center">
-                                <div class="font-display text-4xl font-medium text-primary-400">{{ count($galleryImages) }}</div>
-                                <div class="text-[10px] tracking-[0.18em] uppercase text-white/30 mt-0.5">Photos</div>
+                                <div class="font-display text-3xl sm:text-4xl font-medium text-primary-400">{{ $this->services->count() }}</div>
+                                <div class="text-[10px] tracking-[0.18em] uppercase text-white/30 mt-1">Services</div>
                             </div>
-                        @endif
+                            @if(!empty($galleryImages))
+                                <div class="w-px h-10 bg-white/10"></div>
+                                <div class="text-center">
+                                    <div class="font-display text-3xl sm:text-4xl font-medium text-primary-400">{{ count($galleryImages) }}</div>
+                                    <div class="text-[10px] tracking-[0.18em] uppercase text-white/30 mt-1">Photos</div>
+                                </div>
+                            @endif
+                        </div>
                     </div>
                 </div>
 

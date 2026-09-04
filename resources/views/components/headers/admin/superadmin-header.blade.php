@@ -10,205 +10,233 @@
     $user = Auth::user();
     $userAvatarUrl = $user?->avatar ? asset('storage/' . $user->avatar) : null;
     $userInitial = strtoupper(substr($user?->name ?? 'SA', 0, 1));
+    $userRole = $user?->roles->first();
+    $roleLabel = $userRole ? ucwords(str_replace(['-', '_'], ' ', $userRole->name)) : null;
 @endphp
 
 <header
     x-data="{
         minified: localStorage.getItem('sidebar_minified') === '1',
         dark: localStorage.getItem('hs_theme') === 'dark',
+        init() {
+            const stored = localStorage.getItem('hs_theme');
+            if (stored === 'dark' || stored === 'light') {
+                this.dark = stored === 'dark';
+                document.documentElement.classList.toggle('dark', this.dark);
+            }
+        },
         toggleDark() {
             this.dark = !this.dark;
             localStorage.setItem('hs_theme', this.dark ? 'dark' : 'light');
             document.documentElement.classList.toggle('dark', this.dark);
+            window.dispatchEvent(new CustomEvent('theme-changed'));
         }
     }"
-    x-init="document.documentElement.classList.toggle('dark', dark)"
     @sidebar-minified.window="minified = $event.detail"
     :class="minified ? 'lg:ps-[3.25rem]' : 'lg:ps-64'"
-    class="sticky top-0 inset-x-0 z-30 flex w-full flex-wrap md:flex-nowrap md:justify-start border-b border-gray-200 bg-white/80 dark:bg-gray-900/80 backdrop-blur py-2.5 text-sm transition-all duration-300 dark:border-gray-700"
+    class="sticky top-0 inset-x-0 z-30 flex w-full flex-wrap md:flex-nowrap md:justify-start border-b border-gray-200 bg-white/90 dark:bg-gray-900/90 backdrop-blur h-16 md:h-20 text-sm transition-all duration-300 dark:border-gray-700"
 >
-  <nav class="mx-auto flex w-full basis-full items-center justify-between gap-2 px-4 sm:px-6">
+    <nav class="mx-auto flex w-full basis-full items-center justify-between gap-2 px-4 sm:px-6">
 
-    {{-- Left: Mobile sidebar toggle only --}}
-    <div class="flex items-center gap-2 lg:hidden">
-      <button type="button"
-              class="flex size-8 items-center justify-center gap-x-2 rounded-full border border-gray-300 bg-white text-gray-700 transition-colors hover:bg-gray-100 focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-              @click="$dispatch('toggle-superadmin-sidebar')"
-              aria-label="Toggle navigation">
-        <svg class="size-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
-      </button>
-    </div>
-
-    {{-- Right: Actions --}}
-    <div class="ms-auto flex items-center gap-1.5 sm:gap-2">
-
-      {{-- View Site --}}
-      <a href="{{ route('home') }}" target="_blank" rel="noopener"
-         class="hidden items-center gap-2 rounded-full px-3 py-2 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:inline-flex dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-white focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95">
-        <svg class="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9"/></svg>
-        View Site
-      </a>
-
-      {{-- Notifications Dropdown --}}
-      <div class="relative"
-           x-data="{ open: false }"
-           @click.outside="open = false"
-           @keydown.escape.window="open = false">
-        <button type="button"
-                @click="open = !open"
-                :aria-expanded="open.toString()"
-                aria-haspopup="true"
-                class="relative flex items-center gap-2 rounded-full border border-gray-300 bg-white px-2.5 py-1.5 text-gray-700 transition-colors hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-                aria-label="Notifications">
-          <svg class="size-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
-          </svg>
-          <span class="hidden text-xs font-medium md:inline">Notifications</span>
-          @if($pendingCount > 0)
-            <span class="absolute -top-1 -right-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white ring-2 ring-white dark:ring-gray-800">
-              {{ $pendingCount > 99 ? '99+' : $pendingCount }}
-            </span>
-          @endif
-        </button>
-
-        <div x-cloak
-             x-show="open"
-             x-transition:enter="transition ease-out duration-150"
-             x-transition:enter-start="opacity-0 scale-95 translate-y-1"
-             x-transition:enter-end="opacity-100 scale-100 translate-y-0"
-             x-transition:leave="transition ease-in duration-100"
-             x-transition:leave-start="opacity-100 scale-100 translate-y-0"
-             x-transition:leave-end="opacity-0 scale-95 translate-y-1"
-             class="absolute right-0 z-50 mt-2 w-72 sm:w-80 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-800">
-
-          <div class="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-gray-700">
-            <p class="text-sm font-semibold text-gray-900 dark:text-white">Notifications</p>
-            @if($pendingCount > 0)
-              <span class="text-xs text-gray-500 dark:text-gray-400">{{ $pendingCount }} pending</span>
-            @endif
-          </div>
-
-          @if($pendingTenants->isEmpty())
-            <div class="p-6 text-center">
-              <svg class="mx-auto mb-2 h-8 w-8 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
-              <p class="text-sm text-gray-500 dark:text-gray-400">No pending applications</p>
-            </div>
-          @else
-            <div class="max-h-80 overflow-y-auto">
-              @foreach($pendingTenants as $tenant)
-                <a href="{{ route('superadmin.tenants.preview', $tenant->id) }}" wire:navigate
-                   @click="open = false"
-                   class="flex items-start gap-3 border-b border-gray-100 px-4 py-3 transition-colors last:border-0 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-700/50 active:scale-[0.99]">
-                  <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-100 text-xs font-bold text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
-                    {{ strtoupper(substr($tenant->name, 0, 1)) }}
-                  </div>
-                  <div class="min-w-0 flex-1">
-                    <p class="truncate text-sm font-medium text-gray-900 dark:text-white">{{ $tenant->name }}</p>
-                    <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Business application awaiting approval</p>
-                    <p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">{{ $tenant->created_at->diffForHumans() }}</p>
-                  </div>
-                  <span class="shrink-0 text-xs font-medium text-primary-600 dark:text-primary-400">Review</span>
-                </a>
-              @endforeach
-            </div>
-
-            <div class="border-t border-gray-200 p-2 dark:border-gray-700">
-              <a href="{{ route('superadmin.tenants.index') }}" wire:navigate
-                 @click="open = false"
-                 class="flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-primary-600 transition-colors hover:bg-primary-50 dark:hover:bg-primary-500/10 active:scale-[0.98]">
-                View all pending applications
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-              </a>
-            </div>
-          @endif
+        {{-- Left: Mobile sidebar toggle --}}
+        <div class="flex items-center gap-2 lg:hidden">
+            <button type="button"
+                    class="flex size-8 items-center justify-center gap-x-2 rounded-full border border-gray-300 bg-white text-gray-700 transition-all duration-200 hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                    @click="$dispatch('toggle-superadmin-sidebar')"
+                    aria-label="Toggle navigation">
+                <svg class="size-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+                </svg>
+            </button>
         </div>
-      </div>
 
-      {{-- Dark mode toggle --}}
-      <button type="button"
-              @click="toggleDark()"
-              class="flex size-9 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white"
-              aria-label="Toggle dark mode">
-        <svg x-show="dark" class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
-        <svg x-show="!dark" class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
-      </button>
+        {{-- Right: Actions --}}
+        <div class="ms-auto flex items-center gap-1.5 sm:gap-2">
 
-      @auth
-        {{-- Profile Dropdown --}}
-        <div class="relative"
-             x-data="{ open: false }"
-             @click.outside="open = false"
-             @keydown.escape.window="open = false">
-          <button type="button"
-                  @click="open = !open"
-                  :aria-expanded="open.toString()"
-                  aria-haspopup="true"
-                  class="flex items-center gap-2 rounded-full px-2 py-1.5 text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95 dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-white">
-            <div class="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary-600 text-xs font-bold text-white">
-                @if($userAvatarUrl)
-                    <img src="{{ $userAvatarUrl }}" alt="{{ $user->name }}" class="h-full w-full object-cover">
-                @else
-                    {{ $userInitial }}
-                @endif
-            </div>
-            <span class="hidden max-w-[120px] truncate text-sm font-medium sm:inline">{{ $user->name ?? 'Super Admin' }}</span>
-            <svg class="hidden h-3 w-3 transition-transform sm:block" :class="open ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-          </button>
+            {{-- View Site --}}
+            <a href="{{ route('home') }}" target="_blank" rel="noopener"
+               class="hidden items-center gap-2 rounded-full px-3 py-2 text-xs font-medium text-gray-600 transition-all duration-200 hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95 sm:inline-flex dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-white">
+                <svg class="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9"/>
+                </svg>
+                View Site
+            </a>
 
-          <div x-cloak
-               x-show="open"
-               x-transition:enter="transition ease-out duration-150"
-               x-transition:enter-start="opacity-0 scale-95 translate-y-1"
-               x-transition:enter-end="opacity-100 scale-100 translate-y-0"
-               x-transition:leave="transition ease-in duration-100"
-               x-transition:leave-start="opacity-100 scale-100 translate-y-0"
-               x-transition:leave-end="opacity-0 scale-95 translate-y-1"
-               class="absolute right-0 z-50 mt-2 w-60 sm:w-64 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-800">
+            {{-- Notifications Dropdown --}}
+            <div class="relative"
+                 x-data="{ open: false }"
+                 @click.outside="open = false"
+                 @keydown.escape.window="open = false">
+                <button type="button"
+                        @click="open = !open"
+                        :aria-expanded="open.toString()"
+                        aria-haspopup="true"
+                        class="relative flex items-center gap-2 rounded-full border border-gray-300 bg-white px-2.5 py-1.5 text-gray-700 transition-all duration-200 hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                        aria-label="Notifications">
+                    <svg class="size-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+                    </svg>
+                    <span class="hidden text-xs font-medium md:inline">Notifications</span>
+                    @if($pendingCount > 0)
+                        <span class="absolute -top-1 -right-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white ring-2 ring-white dark:ring-gray-800">
+                            {{ $pendingCount > 99 ? '99+' : $pendingCount }}
+                        </span>
+                    @endif
+                </button>
 
-            <div class="border-b border-gray-200 px-4 py-3 dark:border-gray-700">
-              <div class="flex items-center gap-3">
-                <div class="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary-600 text-sm font-bold text-white">
-                    @if($userAvatarUrl)
-                        <img src="{{ $userAvatarUrl }}" alt="{{ $user->name }}" class="h-full w-full object-cover">
+                <div x-cloak
+                     x-show="open"
+                     x-transition:enter="transition ease-out duration-150"
+                     x-transition:enter-start="opacity-0 scale-95 translate-y-1"
+                     x-transition:enter-end="opacity-100 scale-100 translate-y-0"
+                     x-transition:leave="transition ease-in duration-100"
+                     x-transition:leave-start="opacity-100 scale-100 translate-y-0"
+                     x-transition:leave-end="opacity-0 scale-95 translate-y-1"
+                     class="absolute right-0 z-50 mt-2 w-72 sm:w-80 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-800">
+
+                    <div class="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-gray-700">
+                        <p class="text-sm font-semibold text-gray-900 dark:text-white">Notifications</p>
+                        @if($pendingCount > 0)
+                            <span class="text-xs text-gray-500 dark:text-gray-400">{{ $pendingCount }} pending</span>
+                        @endif
+                    </div>
+
+                    @if($pendingTenants->isEmpty())
+                        <div class="p-6 text-center">
+                            <svg class="mx-auto mb-2 h-8 w-8 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+                            </svg>
+                            <p class="text-sm text-gray-500 dark:text-gray-400">No pending applications</p>
+                        </div>
                     @else
-                        {{ $userInitial }}
+                        <div class="max-h-80 overflow-y-auto">
+                            @foreach($pendingTenants as $tenant)
+                                <a href="{{ route('superadmin.tenants.preview', $tenant->id) }}" wire:navigate
+                                   @click="open = false"
+                                   class="flex items-start gap-3 border-b border-gray-100 px-4 py-3 transition-colors last:border-0 hover:bg-gray-50 active:scale-[0.99] dark:border-gray-700 dark:hover:bg-gray-700/50">
+                                    <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-100 text-xs font-bold text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
+                                        {{ strtoupper(substr($tenant->name, 0, 1)) }}
+                                    </div>
+                                    <div class="min-w-0 flex-1">
+                                        <p class="truncate text-sm font-medium text-gray-900 dark:text-white">{{ $tenant->name }}</p>
+                                        <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Business application awaiting approval</p>
+                                        <p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">{{ $tenant->created_at->diffForHumans() }}</p>
+                                    </div>
+                                    <span class="shrink-0 text-xs font-medium text-primary-600 dark:text-primary-400">Review</span>
+                                </a>
+                            @endforeach
+                        </div>
+
+                        <div class="border-t border-gray-200 p-2 dark:border-gray-700">
+                            <a href="{{ route('superadmin.tenants.index') }}" wire:navigate
+                               @click="open = false"
+                               class="flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-primary-600 transition-colors hover:bg-primary-50 active:scale-[0.98] dark:hover:bg-primary-500/10">
+                                View all pending applications
+                                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                                </svg>
+                            </a>
+                        </div>
                     @endif
                 </div>
-                <div class="min-w-0">
-                  <p class="truncate text-sm font-semibold text-gray-900 dark:text-white">{{ $user->name }}</p>
-                  <p class="truncate text-xs text-gray-500 dark:text-gray-400">{{ $user->email }}</p>
-                  @php $role = $user->roles->first(); @endphp
-                  @if($role)
-                    <span class="mt-1 inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">
-                      {{ ucwords(str_replace(['-', '_'], ' ', $role->name)) }}
-                    </span>
-                  @endif
+            </div>
+
+            {{-- Dark mode toggle --}}
+            <button type="button"
+                    @click="toggleDark()"
+                    class="flex size-9 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-500 transition-all duration-200 hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white"
+                    aria-label="Toggle dark mode">
+                <svg x-show="dark" x-cloak class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>
+                </svg>
+                <svg x-show="!dark" x-cloak class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+                </svg>
+            </button>
+
+            @auth
+                {{-- Profile Dropdown --}}
+                <div class="relative"
+                     x-data="{ open: false }"
+                     @click.outside="open = false"
+                     @keydown.escape.window="open = false">
+                    <button type="button"
+                            @click="open = !open"
+                            :aria-expanded="open.toString()"
+                            aria-haspopup="true"
+                            class="flex items-center gap-2 rounded-full px-2 py-1.5 text-gray-600 transition-all duration-200 hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95 dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-white">
+                        <div class="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary-600 text-xs font-bold text-white">
+                            @if($userAvatarUrl)
+                                <img src="{{ $userAvatarUrl }}" alt="{{ $user?->name }}" class="h-full w-full object-cover">
+                            @else
+                                {{ $userInitial }}
+                            @endif
+                        </div>
+                        <span class="hidden max-w-[120px] truncate text-sm font-medium sm:inline">{{ $user?->name ?? 'Super Admin' }}</span>
+                        <svg class="hidden h-3 w-3 transition-transform sm:block" :class="open ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                    </button>
+
+                    <div x-cloak
+                         x-show="open"
+                         x-transition:enter="transition ease-out duration-150"
+                         x-transition:enter-start="opacity-0 scale-95 translate-y-1"
+                         x-transition:enter-end="opacity-100 scale-100 translate-y-0"
+                         x-transition:leave="transition ease-in duration-100"
+                         x-transition:leave-start="opacity-100 scale-100 translate-y-0"
+                         x-transition:leave-end="opacity-0 scale-95 translate-y-1"
+                         class="absolute right-0 z-50 mt-2 w-60 sm:w-64 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-800">
+
+                        <div class="border-b border-gray-200 px-4 py-3 dark:border-gray-700">
+                            <div class="flex items-center gap-3">
+                                <div class="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary-600 text-sm font-bold text-white">
+                                    @if($userAvatarUrl)
+                                        <img src="{{ $userAvatarUrl }}" alt="{{ $user?->name }}" class="h-full w-full object-cover">
+                                    @else
+                                        {{ $userInitial }}
+                                    @endif
+                                </div>
+                                <div class="min-w-0">
+                                    <p class="truncate text-sm font-semibold text-gray-900 dark:text-white">{{ $user?->name }}</p>
+                                    <p class="truncate text-xs text-gray-500 dark:text-gray-400">{{ $user?->email }}</p>
+                                    @if($roleLabel)
+                                        <span class="mt-1 inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">
+                                            {{ $roleLabel }}
+                                        </span>
+                                    @endif
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="space-y-0.5 p-1.5">
+                            <a href="{{ route('superadmin.profile') }}" wire:navigate
+                               class="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-gray-700 transition-colors hover:bg-gray-100 hover:text-gray-900 active:scale-[0.98] dark:text-gray-200 dark:hover:bg-gray-700 dark:hover:text-white"
+                               @click="open = false">
+                                <svg class="h-4 w-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+                                </svg>
+                                My Profile
+                            </a>
+
+                            <form method="POST" action="{{ route('logout') }}" class="block">
+                                @csrf
+                                <button type="submit"
+                                        class="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-red-600 transition-colors hover:bg-red-50 active:scale-[0.98] dark:text-red-400 dark:hover:bg-red-500/10">
+                                    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
+                                    </svg>
+                                    Sign Out
+                                </button>
+                            </form>
+                        </div>
+                    </div>
                 </div>
-              </div>
-            </div>
-
-            <div class="space-y-0.5 p-1.5">
-              <a href="{{ route('superadmin.profile') }}" wire:navigate
-                 class="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-gray-700 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-200 dark:hover:bg-gray-700 dark:hover:text-white active:scale-[0.98]"
-                 @click="open = false">
-                <svg class="h-4 w-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
-                My Profile
-              </a>
-
-              <form method="POST" action="{{ route('logout') }}" class="block">
-                @csrf
-                <button type="submit"
-                        class="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/10 active:scale-[0.98]">
-                  <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
-                  Sign Out
-                </button>
-              </form>
-            </div>
-          </div>
+            @else
+                <a href="{{ route('login') }}" wire:navigate class="inline-flex items-center gap-x-2 rounded-full bg-primary-600 px-4 py-2 text-sm font-medium text-white transition-all duration-200 hover:bg-primary-700 active:scale-95">
+                    Sign in
+                </a>
+            @endauth
         </div>
-      @else
-        <a href="{{ route('login') }}" class="inline-flex items-center gap-x-2 rounded-full bg-primary-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-700 active:scale-95">Sign in</a>
-      @endauth
-    </div>
-  </nav>
+    </nav>
 </header>

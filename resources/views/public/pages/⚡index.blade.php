@@ -4,7 +4,6 @@
 use Livewire\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Computed;
-use Livewire\Attributes\On;
 use App\Models\Tenant;
 use App\Models\Event;
 use App\Models\SiteSetting;
@@ -37,18 +36,49 @@ class extends Component
     }
 
     #[Computed]
-    public function tenants()
+    public function hero(): array
     {
-        return Tenant::with('typeOfTenant')
-            ->where('is_active', true)
-            ->orderBy('name')
-            ->get();
+        $keys = ['hero_title', 'hero_subtitle', 'hero_description', 'hero_background_image', 'hero_side_image_1', 'hero_side_image_2', 'hero_side_image_3', 'hero_side_image_4'];
+        $settings = SiteSetting::whereIn('key', $keys)->pluck('value', 'key');
+
+        $fallbacks = [
+            1 => 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&q=80&w=600',
+            2 => 'https://images.unsplash.com/photo-1448375240586-882707db888b?auto=format&fit=crop&q=80&w=600',
+            3 => 'https://images.unsplash.com/photo-1542273917363-3b1817f69a2d?auto=format&fit=crop&q=80&w=600',
+            4 => 'https://images.unsplash.com/photo-1501785888041-af3ef285b470?auto=format&fit=crop&q=80&w=600',
+        ];
+
+        $sideImages = [];
+        for ($i = 1; $i <= 4; $i++) {
+            $key = "hero_side_image_{$i}";
+            $path = $settings[$key] ?? null;
+            $sideImages[$i] = $path ? asset('storage/' . $path) : $fallbacks[$i];
+        }
+
+        $backgroundPath = $settings['hero_background_image'] ?? null;
+        $background = $backgroundPath
+            ? asset('storage/' . $backgroundPath)
+            : 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&q=80&w=1600';
+
+        return [
+            'title'       => $settings['hero_title'] ?? 'Welcome to the North',
+            'subtitle'    => $settings['hero_subtitle'] ?? 'Victorias City',
+            'description' => $settings['hero_description'] ?? 'Escape into a world where the air is scented with sugar cane and the mountains hum with hidden waterfalls. A breathtaking sanctuary in Negros Occidental.',
+            'background'  => $background,
+            'sideImages'  => $sideImages,
+            'discoverTitle' => SiteSetting::getValue('discover_title', 'The City of Smiles & Heritage'),
+            'discoverDescription' => SiteSetting::getValue(
+                'discover_description',
+                'Victorias is more than just an industrial hub; it is a blend of natural sanctuary, deep-rooted history, and warm hospitality. Experience the unique charm that makes this city a hidden gem in Western Visayas.'
+            ),
+        ];
     }
 
     #[Computed]
     public function popularDestinations()
     {
-        return Tenant::with('typeOfTenant')
+        return Tenant::withoutGlobalScope(\App\Models\Scopes\TenantScope::class)
+            ->with('typeOfTenant')
             ->where('is_active', true)
             ->where('is_recommended', true)
             ->orderBy('name')
@@ -58,7 +88,8 @@ class extends Component
     #[Computed]
     public function carouselItems()
     {
-        $tenantsWithLogos = Tenant::whereNotNull('logo')
+        $tenantsWithLogos = Tenant::withoutGlobalScope(\App\Models\Scopes\TenantScope::class)
+            ->whereNotNull('logo')
             ->where('is_active', true)
             ->orderBy('name')
             ->get(['id', 'name', 'slug', 'logo']);
@@ -101,7 +132,8 @@ class extends Component
     #[Computed]
     public function featuredEvents()
     {
-        return Event::where('featured', true)
+        return Event::withoutGlobalScope(\App\Models\Scopes\TenantScope::class)
+            ->where('featured', true)
             ->where('is_active', true)
             ->where('start_date', '>=', now()->subDay())
             ->orderBy('start_date')
@@ -110,21 +142,9 @@ class extends Component
     }
 
     #[Computed]
-    public function homeMapCenter(): array
+    public function markerCategoriesByKey()
     {
-        return [123.07391289720677, 10.900736693923502];
-    }
-
-    #[Computed]
-    public function homeMapZoom(): int
-    {
-        return 13;
-    }
-
-    #[On('map:loaded')]
-    public function onHomeMapLoaded(): void
-    {
-        // Intentionally left blank
+        return collect($this->markerCategories)->keyBy('key');
     }
 
     public function flyToLocation(int $index, int $coordIdx = 0): void
@@ -146,70 +166,6 @@ class extends Component
             $this->redirectRoute('explore.map', ['q' => $this->searchQuery], navigate: true);
         }
     }
-
-    #[Computed]
-    public function heroBackgroundUrl(): string
-    {
-        $path = SiteSetting::getValue('hero_background_image');
-        return $path
-            ? asset('storage/' . $path)
-            : 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&q=80&w=1600';
-    }
-
-    #[Computed]
-    public function heroSideImages(): array
-    {
-        $fallbacks = [
-            1 => 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&q=80&w=600',
-            2 => 'https://images.unsplash.com/photo-1448375240586-882707db888b?auto=format&fit=crop&q=80&w=600',
-            3 => 'https://images.unsplash.com/photo-1542273917363-3b1817f69a2d?auto=format&fit=crop&q=80&w=600',
-            4 => 'https://images.unsplash.com/photo-1501785888041-af3ef285b470?auto=format&fit=crop&q=80&w=600',
-        ];
-
-        return collect(range(1, 4))
-            ->mapWithKeys(fn($i) => [
-                $i => SiteSetting::getValue("hero_side_image_{$i}")
-                    ? asset('storage/' . SiteSetting::getValue("hero_side_image_{$i}"))
-                    : $fallbacks[$i],
-            ])
-            ->toArray();
-    }
-
-    #[Computed]
-    public function heroTitle(): string
-    {
-        return SiteSetting::getValue('hero_title', 'Welcome to the North');
-    }
-
-    #[Computed]
-    public function heroSubtitle(): string
-    {
-        return SiteSetting::getValue('hero_subtitle', 'Victorias City');
-    }
-
-    #[Computed]
-    public function heroDescription(): string
-    {
-        return SiteSetting::getValue(
-            'hero_description',
-            'Escape into a world where the air is scented with sugar cane and the mountains hum with hidden waterfalls. A breathtaking sanctuary in Negros Occidental.'
-        );
-    }
-
-    #[Computed]
-    public function discoverTitle(): string
-    {
-        return SiteSetting::getValue('discover_title', 'The City of Smiles & Heritage');
-    }
-
-    #[Computed]
-    public function discoverDescription(): string
-    {
-        return SiteSetting::getValue(
-            'discover_description',
-            'Victorias is more than just an industrial hub; it is a blend of natural sanctuary, deep-rooted history, and warm hospitality. Experience the unique charm that makes this city a hidden gem in Western Visayas.'
-        );
-    }
 };
 ?>
 
@@ -218,20 +174,20 @@ class extends Component
 
         {{-- ========== 1. HERO ========== --}}
         <section class="relative w-full h-screen min-h-[600px] overflow-hidden bg-gray-900">
-            <img src="{{ $this->heroBackgroundUrl }}"
-                 alt="{{ $this->heroSubtitle }}"
+            <img src="{{ $this->hero['background'] }}"
+                 alt="{{ $this->hero['subtitle'] }}"
                  class="absolute inset-0 w-full h-full object-cover scale-105">
             <div class="absolute inset-0 bg-gradient-to-b from-black/70 via-black/40 to-black/80"></div>
 
             <div class="relative z-10 flex flex-col items-center justify-center h-full px-4 sm:px-6 lg:px-12 text-center">
                 <p class="text-yellow-400 font-semibold tracking-[0.35em] uppercase text-sm md:text-base mb-4">
-                    {{ $this->heroTitle }}
+                    {{ $this->hero['title'] }}
                 </p>
                 <h1 class="text-white font-display text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-bold leading-tight max-w-4xl">
-                    {{ $this->heroSubtitle }}
+                    {{ $this->hero['subtitle'] }}
                 </h1>
 
-                <form wire:submit.prevent="search"
+                <form wire:submit="search"
                       class="mt-10 w-full max-w-3xl bg-white/95 dark:bg-gray-800/95 backdrop-blur border-2 border-primary-600 dark:border-blue-500 shadow-2xl rounded-full pl-6 pr-2 h-16 md:h-20 flex items-center">
                     <svg class="shrink-0 text-gray-400 dark:text-gray-500 mr-3 w-5 h-5"
                          fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -245,7 +201,7 @@ class extends Component
                     <button type="submit"
                             wire:loading.attr="disabled"
                             wire:target="search"
-                            class="ml-4 px-8 py-3 md:px-10 md:py-3.5 rounded-full bg-primary-600 hover:bg-primary-700 text-white text-sm md:text-base font-bold shrink-0 transition-colors focus-visible:ring-2 focus-visible:ring-primary-500/50 disabled:opacity-60 disabled:cursor-not-allowed active:scale-95">
+                            class="ml-4 px-8 py-3 md:px-10 md:py-3.5 rounded-full bg-primary-600 hover:bg-primary-700 text-white text-sm md:text-base font-bold shrink-0 transition-all duration-200 focus-visible:ring-2 focus-visible:ring-primary-500/50 disabled:opacity-60 disabled:cursor-not-allowed active:scale-95">
                         <span wire:loading.remove wire:target="search">Search</span>
                         <span wire:loading wire:target="search" class="inline-flex items-center gap-2">
                             <svg class="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
@@ -283,6 +239,7 @@ class extends Component
                             : 'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?q=80&w=800&auto=format&fit=crop';
                     @endphp
                     <a href="{{ route('business.offerings', $tenant->slug) }}" wire:navigate
+                       wire:key="popular-{{ $tenant->id }}"
                        class="group relative block rounded-2xl overflow-hidden aspect-[4/5] bg-gray-200 dark:bg-gray-800 shadow-sm hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-1 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:outline-none">
                         <img src="{{ $cardImage }}" alt="{{ $tenant->name }}"
                              class="w-full h-full object-cover group-hover:scale-110 transition duration-700"
@@ -307,14 +264,14 @@ class extends Component
             <img src="https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=1600&q=80"
                  alt="Discover Victorias"
                  class="absolute inset-0 object-cover w-full h-full opacity-20">
-            <div class="absolute inset-0 bg-gradient-to-br from-[#2b5fb3] to-[#1e3a5f]"></div>
+            <div class="absolute inset-0 bg-gradient-to-br from-blue-800 to-blue-950"></div>
             <div class="relative z-10 grid items-center max-w-6xl grid-cols-1 md:grid-cols-2 gap-8 md:gap-12 mx-auto">
                 <div>
-                    <h2 class="mb-4 text-2xl md:text-3xl font-display font-bold leading-snug">{{ $this->discoverTitle }}</h2>
-                    <p class="max-w-sm text-sm md:text-base leading-relaxed text-blue-100">{{ $this->discoverDescription }}</p>
+                    <h2 class="mb-4 text-2xl md:text-3xl font-display font-bold leading-snug">{{ $this->hero['discoverTitle'] }}</h2>
+                    <p class="max-w-sm text-sm md:text-base leading-relaxed text-blue-100">{{ $this->hero['discoverDescription'] }}</p>
                 </div>
                 <div class="grid grid-cols-2 gap-3 md:gap-4">
-                    @foreach($this->heroSideImages as $image)
+                    @foreach($this->hero['sideImages'] as $image)
                         <img src="{{ $image }}"
                              alt="Discover Victorias"
                              class="object-cover w-full h-28 md:h-36 rounded-xl shadow-lg">
@@ -457,8 +414,8 @@ class extends Component
                 <div class="relative bg-white dark:bg-gray-800 rounded-[2rem] p-3 md:p-4 shadow-xl border border-gray-100 dark:border-gray-700 h-[350px] sm:h-[450px] md:h-[500px] group">
                     <x-map
                         id="home-map"
-                        :center="$this->homeMapCenter"
-                        :zoom="$this->homeMapZoom"
+                        :center="[123.07391289720677, 10.900736693923502]"
+                        :zoom="13"
                         height="100%"
                         provider="carto-voyager"
                         theme="auto"
@@ -481,12 +438,11 @@ class extends Component
                                     $isActive = $homeHighlightedLocation === $locIndex;
 
                                     $childType = $coord['type'] ?? 'other';
-                                    $category = collect($this->markerCategories)->firstWhere('key', $childType);
+                                    $category = $this->markerCategoriesByKey->get($childType);
                                     $childColor = $isParent ? $loc['color'] : ($category['color'] ?? '#94a3b8');
                                     $childIconSvg = $isParent ? null : ($category['icon_svg'] ?? null);
                                 @endphp
                                 <x-map-marker
-                                    :key="'home-marker-'.$locIndex.'-'.$coordIdx"
                                     wire:key="home-marker-{{ $locIndex }}-{{ $coordIdx }}"
                                     :lat="$coord['lat']"
                                     :lng="$coord['lng']"
@@ -639,7 +595,7 @@ class extends Component
                                             @foreach($subBranches as $subIndex => $sub)
                                                 @php
                                                     $subType = $sub['type'] ?? 'other';
-                                                    $subCategory = collect($this->markerCategories)->firstWhere('key', $subType);
+                                                    $subCategory = $this->markerCategoriesByKey->get($subType);
                                                     $subColor = $subCategory['color'] ?? '#94a3b8';
                                                     $subIconSvg = $subCategory['icon_svg'] ?? null;
                                                 @endphp
@@ -705,6 +661,7 @@ class extends Component
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8">
                         @foreach($this->featuredEvents as $event)
                             <a href="{{ route('events', ['event' => $event->id]) }}" wire:navigate
+                               wire:key="event-{{ $event->id }}"
                                class="group bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-3xl overflow-hidden shadow-sm hover:shadow-xl transition-all duration-300 block focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-[0.98]">
                                 @if($event->image_path)
                                     <div class="h-52 overflow-hidden">
@@ -723,7 +680,10 @@ class extends Component
                                     </div>
                                     <h3 class="font-display text-lg md:text-xl font-semibold text-gray-900 dark:text-white mb-2">{{ $event->name }}</h3>
                                     <p class="text-gray-600 dark:text-gray-300 text-sm leading-relaxed">{{ Str::limit($event->description, 80) }}</p>
-                                    <span class="mt-4 inline-block text-primary-600 dark:text-blue-400 hover:underline text-sm font-medium">Learn more →</span>
+                                    <span class="mt-4 inline-flex items-center gap-1 text-primary-600 dark:text-blue-400 text-sm font-medium group-hover:gap-2 transition-all">
+                                        Learn more
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14m-7-7l7 7-7 7"/></svg>
+                                    </span>
                                 </div>
                             </a>
                         @endforeach

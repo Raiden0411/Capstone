@@ -1,21 +1,37 @@
 {{-- resources/views/components/headers/public-header.blade.php --}}
 @php
-    $logoPath = \App\Models\SiteSetting::getValue('site_logo');
-    $siteName = \App\Models\SiteSetting::getValue('site_name', 'Tourism Management');
+    $settings = \App\Models\SiteSetting::whereIn('key', ['site_logo', 'site_name'])
+        ->pluck('value', 'key');
+
+    $logoPath = $settings['site_logo'] ?? null;
+    $siteName = $settings['site_name'] ?? 'Tourism Management';
 
     $logoUrl = null;
     if ($logoPath) {
         $fullPath = public_path('storage/' . $logoPath);
         $logoUrl = asset('storage/' . $logoPath);
-        if (file_exists($fullPath)) {
-            $logoUrl .= '?v=' . filemtime($fullPath);
-        } else {
-            $logoUrl .= '?v=' . time();
-        }
+        $logoUrl .= '?v=' . (file_exists($fullPath) ? filemtime($fullPath) : time());
     }
+
+    $authUser = Auth::user();
+    $avatarUrl = $authUser?->avatar ? asset('storage/' . $authUser->avatar) : null;
+    $avatarInitial = $authUser ? strtoupper(substr($authUser->name, 0, 1)) : '';
 @endphp
 
-<div x-data="{ scrolled: false, mobileOpen: false, userDropdownOpen: false, dark: document.documentElement.classList.contains('dark') }"
+<div x-data="{
+        scrolled: false,
+        mobileOpen: false,
+        userDropdownOpen: false,
+        dark: document.documentElement.classList.contains('dark'),
+
+        init() {
+            const stored = localStorage.getItem('hs_theme');
+            if (stored === 'dark' || stored === 'light') {
+                this.dark = stored === 'dark';
+                document.documentElement.classList.toggle('dark', this.dark);
+            }
+        }
+    }"
      @scroll.window="scrolled = window.scrollY > 10"
      @keydown.escape.window="mobileOpen = false; userDropdownOpen = false">
 
@@ -26,7 +42,8 @@
         <nav class="w-full max-w-[90rem] px-4 sm:px-6 lg:px-8 mx-auto flex items-center justify-between gap-4">
 
             {{-- Logo & Brand --}}
-            <a class="flex items-center gap-3 group shrink-0" href="{{ route('home') }}" wire:navigate>
+            <a class="flex items-center gap-3 group shrink-0 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-md"
+               href="{{ route('home') }}" wire:navigate>
                 @if($logoUrl)
                     <img src="{{ $logoUrl }}"
                          alt="{{ $siteName }} logo"
@@ -72,7 +89,6 @@
                 {{-- Dark mode toggle --}}
                 <button type="button"
                         @click="
-                            dark = document.documentElement.classList.contains('dark');
                             dark = !dark;
                             document.documentElement.classList.toggle('dark', dark);
                             localStorage.setItem('hs_theme', dark ? 'dark' : 'light');
@@ -101,15 +117,15 @@
                                 @click="userDropdownOpen = !userDropdownOpen"
                                 :aria-expanded="userDropdownOpen.toString()"
                                 class="flex items-center gap-2 text-sm font-medium py-1.5 px-3 rounded-full bg-primary-600 text-white hover:bg-primary-700 transition-all duration-200 shadow-sm active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50">
-                            {{-- Avatar --}}
-                            <img x-show="'{{ Auth::user()->avatar ? asset('storage/'. Auth::user()->avatar) : '' }}' !== ''"
-                                 src="{{ Auth::user()->avatar ? asset('storage/'. Auth::user()->avatar) : '' }}"
-                                 class="object-cover w-6 h-6 rounded-full shrink-0">
-                            <div x-show="'{{ Auth::user()->avatar ? asset('storage/'. Auth::user()->avatar) : '' }}' === ''"
-                                 class="flex items-center justify-center w-6 h-6 text-sm font-bold text-white rounded-full bg-white/20 shrink-0">
-                                {{ strtoupper(substr(Auth::user()->name, 0, 1)) }}
-                            </div>
-                            <span class="hidden sm:inline max-w-[120px] truncate">{{ Auth::user()->name }}</span>
+                            @if($avatarUrl)
+                                <img src="{{ $avatarUrl }}"
+                                     class="object-cover w-6 h-6 rounded-full shrink-0">
+                            @else
+                                <div class="flex items-center justify-center w-6 h-6 text-sm font-bold text-white rounded-full bg-white/20 shrink-0">
+                                    {{ $avatarInitial }}
+                                </div>
+                            @endif
+                            <span class="hidden sm:inline max-w-[120px] truncate">{{ $authUser->name }}</span>
                             <svg class="hidden sm:block w-4 h-4 transition-transform duration-200" :class="userDropdownOpen ? 'rotate-180' : ''" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m19 9-7 7-7-7"/></svg>
                         </button>
 
@@ -124,17 +140,18 @@
                             {{-- User info --}}
                             <div class="px-4 py-3 border-b border-gray-100 dark:border-gray-700">
                                 <div class="flex items-center gap-3">
-                                    <img x-show="'{{ Auth::user()->avatar ? asset('storage/'. Auth::user()->avatar) : '' }}' !== ''"
-                                         src="{{ Auth::user()->avatar ? asset('storage/'. Auth::user()->avatar) : '' }}"
-                                         class="object-cover w-9 h-9 rounded-full shrink-0">
-                                    <div x-show="'{{ Auth::user()->avatar ? asset('storage/'. Auth::user()->avatar) : '' }}' === ''"
-                                         class="flex items-center justify-center w-9 h-9 text-sm font-bold text-white bg-primary-600 rounded-full shrink-0">
-                                        {{ strtoupper(substr(Auth::user()->name, 0, 1)) }}
-                                    </div>
+                                    @if($avatarUrl)
+                                        <img src="{{ $avatarUrl }}"
+                                             class="object-cover w-9 h-9 rounded-full shrink-0">
+                                    @else
+                                        <div class="flex items-center justify-center w-9 h-9 text-sm font-bold text-white bg-primary-600 rounded-full shrink-0">
+                                            {{ $avatarInitial }}
+                                        </div>
+                                    @endif
                                     <div class="min-w-0">
-                                        <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">{{ Auth::user()->name }}</p>
-                                        <p class="text-xs text-gray-500 dark:text-gray-400 truncate">{{ Auth::user()->email }}</p>
-                                        @if(Auth::user()->hasRole('tourist'))
+                                        <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">{{ $authUser->name }}</p>
+                                        <p class="text-xs text-gray-500 dark:text-gray-400 truncate">{{ $authUser->email }}</p>
+                                        @if($authUser->hasRole('tourist'))
                                             <span class="mt-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300">
                                                 Tourist
                                             </span>

@@ -1,24 +1,24 @@
 {{-- resources/views/livewire/partials/explore-sidebar.blade.php --}}
-<div class="flex h-[calc(100vh-4rem)] md:h-[calc(100vh-5rem)] flex-col bg-white dark:bg-gray-900 mt-16 md:mt-20"
-     x-data="{ filterModalOpen: false, mobileOpen: true }">
+<div class="flex h-full w-full flex-col bg-white dark:bg-gray-900"
+     x-data="{ filterModalOpen: false }">
 
     {{-- Header --}}
-    <div class="shrink-0 border-b border-gray-100 px-4 pb-3 pt-4 dark:border-gray-800">
+    <div class="shrink-0 border-b border-gray-200 px-4 pb-3 pt-4 dark:border-gray-800">
         <div class="flex items-start justify-between gap-3">
             <div class="min-w-0">
-                <p class="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-[0.18em] text-primary-600 dark:text-blue-400">
-                    <span class="h-1.5 w-1.5 rounded-full bg-primary-600 dark:bg-blue-400"></span>
+                <p class="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-primary-600 dark:text-primary-400">
+                    <span class="h-1.5 w-1.5 rounded-full bg-primary-600 dark:bg-primary-400"></span>
                     Victorias City
                 </p>
-                <h2 class="mt-1 text-lg font-extrabold leading-tight tracking-tight text-gray-900 dark:text-white">
+                <h2 class="mt-1 font-display text-xl font-bold leading-tight tracking-tight text-gray-900 dark:text-white">
                     Explore Destinations
                 </h2>
             </div>
 
             <div class="flex shrink-0 items-center gap-2">
-                <div class="flex items-center gap-1 rounded-full border border-blue-100 bg-blue-50 px-3 py-1.5 dark:border-blue-500/20 dark:bg-blue-500/10">
-                    <span class="tabular-nums text-[11px] font-bold text-blue-700 dark:text-blue-300">{{ $this->tenants->count() }}</span>
-                    <span class="text-[9px] font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-400">spots</span>
+                <div class="flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 dark:border-blue-500/20 dark:bg-blue-500/10">
+                    <span class="tabular-nums text-sm font-bold text-blue-700 dark:text-blue-300">{{ $this->tenants->count() }}</span>
+                    <span class="text-[10px] font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-400">spots</span>
                 </div>
 
                 @if(count($favorites) > 0)
@@ -28,15 +28,15 @@
                         aria-pressed="{{ $favoritesOnly ? 'true' : 'false' }}"
                         @class([
                             'flex items-center gap-1 rounded-full border px-3 py-1.5 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50',
-                            'border-rose-200 bg-rose-100 dark:border-rose-500/30 dark:bg-rose-500/20' => $favoritesOnly,
-                            'border-gray-200 bg-gray-50 hover:border-rose-200 dark:border-gray-700 dark:bg-gray-800 dark:hover:border-rose-500/30' => !$favoritesOnly,
+                            'border-rose-200 bg-rose-50 text-rose-600 dark:border-rose-500/30 dark:bg-rose-500/20 dark:text-rose-300' => $favoritesOnly,
+                            'border-gray-200 bg-gray-50 text-gray-600 hover:border-rose-200 hover:text-rose-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:border-rose-500/30 dark:hover:text-rose-300' => !$favoritesOnly,
                         ])
                     >
                         <svg class="h-4 w-4" fill="{{ $favoritesOnly ? 'currentColor' : 'none' }}" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/>
                         </svg>
                         <span @class([
-                            'tabular-nums text-[11px] font-bold',
+                            'tabular-nums text-sm font-bold',
                             'text-rose-700 dark:text-rose-300' => $favoritesOnly,
                             'text-gray-600 dark:text-gray-400' => !$favoritesOnly,
                         ])>
@@ -48,7 +48,7 @@
         </div>
 
         {{-- Quick nav links --}}
-        <div class="mt-3 flex items-center gap-2 text-[10px] font-medium">
+        <div class="mt-3 flex items-center gap-2 text-[11px] font-medium">
             <a href="{{ route('home') }}" wire:navigate
                class="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-gray-50 px-3 py-1.5 text-gray-600 transition-all duration-200 hover:border-primary-300 hover:text-primary-600 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:border-blue-500/30 dark:hover:text-blue-400">
                 <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/></svg>
@@ -65,7 +65,7 @@
     </div>
 
     {{-- Primary Controls (Always Visible) --}}
-    <div class="shrink-0 border-b border-gray-100 bg-white px-4 py-3 dark:border-gray-800 dark:bg-gray-900">
+    <div class="shrink-0 border-b border-gray-200 bg-white px-4 py-3 dark:border-gray-800 dark:bg-gray-900">
         <div class="flex gap-2">
             {{-- Search --}}
             <div class="relative flex-1">
@@ -139,7 +139,6 @@
     {{-- Filter Modal (teleported to body) --}}
     @teleport('body')
     <div x-show="filterModalOpen" x-cloak class="relative z-[100]" aria-labelledby="modal-title" role="dialog" aria-modal="true" x-trap.inert.noscroll="filterModalOpen">
-        {{-- Backdrop --}}
         <div x-show="filterModalOpen"
              x-transition:enter="ease-out duration-300" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
              x-transition:leave="ease-in duration-200" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
@@ -148,13 +147,12 @@
 
         <div class="fixed inset-0 z-10 w-screen overflow-y-auto">
             <div class="flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-0">
-                {{-- Modal Panel --}}
                 <div x-show="filterModalOpen"
                      x-transition:enter="ease-out duration-300" x-transition:enter-start="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95" x-transition:enter-end="opacity-100 translate-y-0 sm:scale-100"
                      x-transition:leave="ease-in duration-200" x-transition:leave-start="opacity-100 translate-y-0 sm:scale-100" x-transition:leave-end="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"
                      class="relative w-full max-w-sm transform overflow-hidden rounded-2xl bg-white text-left align-middle shadow-2xl transition-all dark:bg-gray-900 dark:ring-1 dark:ring-gray-800">
                     
-                    <div class="flex items-center justify-between border-b border-gray-100 px-5 py-4 dark:border-gray-800">
+                    <div class="flex items-center justify-between border-b border-gray-200 px-5 py-4 dark:border-gray-800">
                         <h3 class="text-sm font-bold text-gray-900 dark:text-white" id="modal-title">Refine Search</h3>
                         <button type="button" @click="filterModalOpen = false" class="rounded-full bg-gray-50 p-1.5 text-gray-500 hover:bg-gray-100 active:scale-95 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-500/50 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700">
                             <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
@@ -256,25 +254,19 @@
     {{-- Destination List --}}
     <div wire:loading.remove wire:target="search,categoryFilter,openNow,hasOfferings,favoritesOnly,showEvents,sortBy" class="scrollbar-thin scrollbar-track-transparent scrollbar-thumb-gray-200 dark:scrollbar-thumb-gray-700 flex-1 overflow-y-auto py-2">
         @forelse($this->tenants as $tenant)
-            @php
-                $isFavorite = in_array($tenant->id, $favorites, true);
-                $hasDistance = isset($tenant->distance);
-                $minPrice = $tenant->min_price ?? null;
-            @endphp
             <div
                 x-data="{ expanded: false }"
                 wire:key="dest-{{ $tenant->id }}"
                 @class([
                     'group mx-2 my-1 overflow-hidden rounded-xl border transition-all duration-150',
                     'border-primary-500/30 bg-primary-50/50 ring-1 ring-primary-500/20 dark:border-blue-500/40 dark:bg-blue-500/10 dark:ring-blue-500/30' => $highlightedId === $tenant->id,
-                    'border-gray-100 hover:border-gray-200 hover:bg-gray-50 dark:border-gray-800 dark:hover:border-gray-700 dark:hover:bg-gray-800/50' => $highlightedId !== $tenant->id,
+                    'border-gray-200 hover:border-gray-300 hover:bg-gray-50 dark:border-gray-800 dark:hover:border-gray-700 dark:hover:bg-gray-800/50' => $highlightedId !== $tenant->id,
                 ])
             >
                 <div class="flex cursor-pointer items-center gap-2.5 px-2.5 py-2.5"
                      wire:click="flyToTenant({{ $tenant->id }})"
                      wire:loading.class="opacity-60"
-                     wire:target="flyToTenant({{ $tenant->id }})"
-                     @click="mobileOpen = false">
+                     wire:target="flyToTenant({{ $tenant->id }})">
                     
                     @if($tenant->logo)
                         <img src="{{ asset('storage/'.$tenant->logo) }}" alt="{{ $tenant->name }}" loading="lazy" decoding="async" class="h-10 w-10 shrink-0 rounded-lg border border-gray-200 object-cover dark:border-gray-700">
@@ -286,19 +278,19 @@
                     @endif
 
                     <div class="min-w-0 flex-1">
-                        <p class="truncate text-xs font-semibold leading-snug text-gray-900 dark:text-white">{{ $tenant->name }}</p>
-                        <p class="mt-0.5 text-[10px] font-medium text-gray-500 dark:text-gray-400">{{ $tenant->typeOfTenant?->type ?? 'Business' }}</p>
+                        <p class="truncate text-sm font-semibold leading-snug text-gray-900 dark:text-white">{{ $tenant->name }}</p>
+                        <p class="mt-0.5 text-xs font-medium text-gray-500 dark:text-gray-400">{{ $tenant->typeOfTenant?->type ?? 'Business' }}</p>
 
-                        @if($minPrice !== null)
-                            <p class="mt-0.5 text-[10px] font-bold text-gray-700 dark:text-gray-300">
-                                From ₱{{ number_format($minPrice, 2) }}
+                        @if($tenant->properties_min_price !== null)
+                            <p class="mt-0.5 text-xs font-bold text-gray-700 dark:text-gray-300">
+                                From ₱{{ number_format($tenant->properties_min_price, 2) }}
                             </p>
                         @endif
 
-                        @if($hasDistance)
+                        @if(isset($tenant->distance))
                             <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                                <span class="inline-flex items-center gap-0.5 text-[9px] font-semibold text-gray-500 dark:text-gray-400">
-                                    <svg class="h-2.5 w-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><circle cx="12" cy="10" r="2" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+                                <span class="inline-flex items-center gap-0.5 text-[11px] font-semibold text-gray-500 dark:text-gray-400">
+                                    <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><circle cx="12" cy="10" r="2" stroke="currentColor" stroke-width="2" fill="none"/></svg>
                                     {{ number_format($tenant->distance, 1) }} km
                                 </span>
                             </div>
@@ -311,12 +303,12 @@
                             wire:click.stop="toggleFavorite({{ $tenant->id }})"
                             @class([
                                 'flex h-8 w-8 items-center justify-center rounded-full border transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50',
-                                'border-rose-200 bg-rose-50 text-rose-500 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300' => $isFavorite,
-                                'border-gray-200 bg-white text-gray-400 hover:border-rose-200 hover:text-rose-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-500 dark:hover:border-rose-500/30 dark:hover:text-rose-300' => !$isFavorite,
+                                'border-rose-200 bg-rose-50 text-rose-500 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300' => in_array($tenant->id, $favorites, true),
+                                'border-gray-200 bg-white text-gray-400 hover:border-rose-200 hover:text-rose-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-500 dark:hover:border-rose-500/30 dark:hover:text-rose-300' => !in_array($tenant->id, $favorites, true),
                             ])
-                            aria-label="{{ $isFavorite ? 'Remove from favorites' : 'Save to favorites' }}"
+                            aria-label="{{ in_array($tenant->id, $favorites, true) ? 'Remove from favorites' : 'Save to favorites' }}"
                         >
-                            <svg class="h-4 w-4" fill="{{ $isFavorite ? 'currentColor' : 'none' }}" stroke="currentColor" viewBox="0 0 24 24">
+                            <svg class="h-4 w-4" fill="{{ in_array($tenant->id, $favorites, true) ? 'currentColor' : 'none' }}" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/>
                             </svg>
                         </button>
@@ -338,9 +330,9 @@
                 <div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800">
                     <svg class="h-6 w-6 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><circle cx="12" cy="10" r="2" stroke="currentColor" stroke-width="2" fill="none"/></svg>
                 </div>
-                <p class="text-xs font-semibold text-gray-600 dark:text-gray-300">No destinations match</p>
-                <p class="mt-1 text-[10px] text-gray-400 dark:text-gray-500">Try adjusting your filters or search terms.</p>
-                <button type="button" wire:click="resetFilters" class="mt-4 inline-flex items-center gap-1 rounded-full bg-primary-600 px-4 py-2 text-[11px] font-bold text-white transition-all duration-200 hover:bg-primary-700 active:scale-95 focus:outline-none focus:ring-2 focus:ring-primary-500/50 dark:bg-blue-600 dark:hover:bg-blue-500">
+                <p class="text-sm font-semibold text-gray-600 dark:text-gray-300">No destinations match</p>
+                <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">Try adjusting your filters or search terms.</p>
+                <button type="button" wire:click="resetFilters" class="mt-4 inline-flex items-center gap-1 rounded-full bg-primary-600 px-4 py-2 text-xs font-bold text-white transition-all duration-200 hover:bg-primary-700 active:scale-95 focus:outline-none focus:ring-2 focus:ring-primary-500/50 dark:bg-blue-600 dark:hover:bg-blue-500">
                     Reset filters
                 </button>
             </div>
