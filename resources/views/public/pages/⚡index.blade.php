@@ -6,6 +6,7 @@ use Livewire\Attributes\Layout;
 use Livewire\Attributes\Computed;
 use App\Models\Tenant;
 use App\Models\Event;
+use App\Models\Booking;
 use App\Models\SiteSetting;
 use Illuminate\Support\Str;
 
@@ -16,10 +17,8 @@ class extends Component
     public ?int $homeHighlightedLocation = null;
     public string $searchQuery = '';
 
-    // Dynamic marker categories loaded from site settings
     public array $markerCategories = [];
 
-    // Type colours for parent markers on the homepage map
     protected array $typeColors = [
         'Eco Park'    => '#22c55e',
         'Resort'      => '#3b82f6',
@@ -78,11 +77,17 @@ class extends Component
     public function popularDestinations()
     {
         return Tenant::withoutGlobalScope(\App\Models\Scopes\TenantScope::class)
-            ->with('typeOfTenant')
             ->where('is_active', true)
-            ->where('is_recommended', true)
+            ->withCount([
+                'bookings' => fn ($q) => $q
+                    ->withoutGlobalScope(\App\Models\Scopes\TenantScope::class)
+                    ->whereNotIn('status', [Booking::STATUS_CANCELLED]),
+            ])
+            ->orderByDesc('bookings_count')
             ->orderBy('name')
-            ->get();
+            ->limit(3)
+            ->with(['typeOfTenant:id,type'])
+            ->get(['id', 'name', 'slug', 'logo', 'type_of_tenant_id']);
     }
 
     #[Computed]
@@ -221,12 +226,20 @@ class extends Component
             </div>
         </section>
 
-        {{-- ========== 2. POPULAR DESTINATIONS ========== --}}
+        {{-- ========== 2. POPULAR PICKS (TOP 3) ========== --}}
         <section class="max-w-6xl px-4 sm:px-6 lg:px-8 mx-auto mt-16 md:mt-24 mb-12 md:mb-16">
-            <div class="flex items-center justify-between mb-6 md:mb-8">
-                <h2 class="text-2xl md:text-3xl font-bold text-gray-900 dark:text-white">Popular Destinations</h2>
+            <div class="flex items-end justify-between mb-6 md:mb-8 gap-4">
+                <div>
+                    <p class="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-primary-600 dark:text-primary-400">
+                        <span class="h-px w-4 bg-primary-600 dark:bg-primary-400"></span>
+                        Featured
+                    </p>
+                    <h2 class="text-2xl md:text-3xl font-display font-semibold text-gray-900 dark:text-white">
+                        Popular <em class="italic text-primary-600 dark:text-primary-400">Picks</em>
+                    </h2>
+                </div>
                 <a href="{{ route('explore.map') }}" wire:navigate
-                   class="inline-flex items-center gap-1 text-sm font-semibold text-primary-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 transition-all duration-200 focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded active:scale-95">
+                   class="inline-flex items-center gap-1 text-sm font-semibold text-primary-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 transition-all duration-200 focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded active:scale-95 shrink-0">
                     View All
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
                 </a>
@@ -253,7 +266,7 @@ class extends Component
                     </a>
                 @empty
                     <p class="text-gray-500 dark:text-gray-400 col-span-full text-center py-8">
-                        No recommended destinations yet.
+                        No destinations yet.
                     </p>
                 @endforelse
             </div>
@@ -320,23 +333,95 @@ class extends Component
                         }
                         this.startAutoPlay();
                     },
+
+                    // ─────────────────────────────────────────────────────────
+                    //  Adaptive slot layout.
+                    //
+                    //  Instead of a fixed 0..4 index table (which broke when the
+                    //  item count wasn't exactly 5), we compute each card's
+                    //  *signed shortest offset* from the active card and place
+                    //  it into a left/right slot. This guarantees the same
+                    //  number of cards appear on each side regardless of how
+                    //  many items exist — 3, 4, 5, or 20 all look balanced.
+                    //
+                    //    offset  0        → center (large, on top)
+                    //    offset +1 / -1   → inner slot (right / left)
+                    //    offset +2 / -2   → outer slot (right / left)
+                    //    |offset| > 2     → hidden
+                    // ─────────────────────────────────────────────────────────
                     getPositionStyle(index) {
                         const length = this.items.length;
-                        const rel = (index - this.active + length) % length;
-                        const styles = {
-                            0: { left: '50%', width: '60%', height: '100%', transform: 'translate(-50%, -50%)', zIndex: 30, opacity: 1 },
-                            1: { right: '8%', width: '28%', height: '80%', transform: 'translateY(-50%)', zIndex: 20, opacity: 0.85 },
-                            2: { right: '0%', width: '20%', height: '60%', transform: 'translate(20%, -50%)', zIndex: 10, opacity: 0.5 },
-                            3: { left: '8%', width: '28%', height: '80%', transform: 'translateY(-50%)', zIndex: 20, opacity: 0.85 },
-                            4: { left: '0%', width: '20%', height: '60%', transform: 'translate(-20%, -50%)', zIndex: 10, opacity: 0.5 },
-                        };
-                        const style = styles[rel] || { left: '50%', width: '0%', height: '0%', transform: 'translate(-50%, -50%)', zIndex: 0, opacity: 0 };
-                        return {
+                        if (length === 0) return { display: 'none' };
+
+                        // Signed shortest distance from active card to this card.
+                        let offset = (index - this.active + length) % length;
+                        if (offset > length / 2) offset -= length;
+
+                        const absOffset = Math.abs(offset);
+                        const maxSlots  = Math.min(Math.floor((length - 1) / 2), 2);
+
+                        const base = {
                             position: 'absolute',
                             top: '50%',
-                            transition: 'all 0.5s ease',
+                            transition: 'all 0.55s cubic-bezier(0.4, 0, 0.2, 1)',
                             overflow: 'hidden',
-                            ...style,
+                            willChange: 'width, height, transform, opacity',
+                        };
+
+                        // ── CENTER ───────────────────────────────────────
+                        if (offset === 0) {
+                            return {
+                                ...base,
+                                left: '50%',
+                                width: '60%',
+                                height: '100%',
+                                transform: 'translate(-50%, -50%)',
+                                zIndex: 30,
+                                opacity: 1,
+                            };
+                        }
+
+                        // ── HIDDEN ───────────────────────────────────────
+                        if (absOffset > maxSlots) {
+                            return {
+                                ...base,
+                                left: '50%',
+                                width: '0%',
+                                height: '0%',
+                                transform: 'translate(-50%, -50%)',
+                                zIndex: 0,
+                                opacity: 0,
+                            };
+                        }
+
+                        // ── SIDE CARD ────────────────────────────────────
+                        const isRight = offset > 0;
+                        const isInner = absOffset === 1;
+
+                        // When both inner + outer slots exist, inner shrinks
+                        // a little to make room for the outer peek. When only
+                        // one slot per side exists, that single slot grows to
+                        // fill the space so the composition stays balanced.
+                        const innerWidth  = maxSlots >= 2 ? 28 : 36;
+                        const outerWidth  = 20;
+                        const innerHeight = maxSlots >= 2 ? 80 : 86;
+                        const outerHeight = 62;
+
+                        const width   = isInner ? innerWidth  : outerWidth;
+                        const height  = isInner ? innerHeight : outerHeight;
+                        const edgePct = isInner ? (maxSlots >= 2 ? 8 : 4) : 0;
+                        const pushX   = isInner ? '0%' : (isRight ? '22%' : '-22%');
+                        const opacity = isInner ? 0.85 : 0.5;
+                        const z       = isInner ? 20 : 10;
+
+                        return {
+                            ...base,
+                            ...(isRight ? { right: edgePct + '%' } : { left: edgePct + '%' }),
+                            width: width + '%',
+                            height: height + '%',
+                            transform: `translate(${pushX}, -50%)`,
+                            zIndex: z,
+                            opacity: opacity,
                         };
                     }
                  }"
@@ -356,11 +441,14 @@ class extends Component
 
             <div class="relative flex items-center justify-center max-w-6xl mx-auto h-[280px] sm:h-[350px] md:h-[450px] px-4 sm:px-6 lg:px-8">
                 <template x-for="(item, index) in items" :key="index">
-                    <div class="absolute rounded-3xl overflow-hidden shadow-xl transition-all duration-500"
+                    <div class="absolute rounded-3xl overflow-hidden shadow-xl"
                          :style="getPositionStyle(index)">
                         <a :href="item.slug ? '/business/' + item.slug + '/offerings' : '#'" class="block h-full w-full focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-3xl">
-                            <img :src="item.image" :alt="item.name" class="object-cover w-full h-full">
+                            <img :src="item.image" :alt="item.name" class="object-cover w-full h-full" loading="lazy">
                             <div x-show="index === active"
+                                 x-transition:enter="transition duration-500"
+                                 x-transition:enter-start="opacity-0"
+                                 x-transition:enter-end="opacity-100"
                                  class="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent flex items-end justify-center pb-4">
                                 <span class="text-white font-semibold text-sm md:text-lg" x-text="item.name"></span>
                             </div>
@@ -379,6 +467,7 @@ class extends Component
                 <div class="flex items-center gap-2">
                     <template x-for="(item, index) in items" :key="`dot-${index}`">
                         <button type="button" @click="goTo(index)"
+                                :aria-label="'Go to slide ' + (index + 1)"
                                 :class="index === active ? 'w-3 h-3 bg-primary-600' : 'w-2 h-2 bg-gray-300 dark:bg-gray-600 hover:bg-gray-400'"
                                 class="rounded-full transition-all duration-300 focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95"></button>
                     </template>

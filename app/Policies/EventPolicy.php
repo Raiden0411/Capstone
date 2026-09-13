@@ -7,17 +7,16 @@ use App\Models\User;
 
 class EventPolicy
 {
-    public function before(User $user, string $ability): bool|null
+    public function before(User $user, string $ability): ?bool
     {
-        if ($user->hasRole('super-admin')) {
-            return true;
-        }
-        return null;
+        return $user->hasRole('super-admin') ? true : null;
     }
 
     public function viewAny(User $user): bool
     {
-        return $user->hasRole('admin') || $user->hasPermissionTo('manage events');
+        return $user->hasRole('admin')
+            || $user->getAllPermissions()->contains('name', 'manage events')
+            || $user->getAllPermissions()->contains('name', 'view events');
     }
 
     public function view(User $user, Event $event): bool
@@ -27,7 +26,8 @@ class EventPolicy
 
     public function create(User $user): bool
     {
-        return $user->hasRole('admin') || $user->hasPermissionTo('manage events');
+        return $user->hasRole('admin')
+            || $user->getAllPermissions()->contains('name', 'manage events');
     }
 
     public function update(User $user, Event $event): bool

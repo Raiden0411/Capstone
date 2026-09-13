@@ -15,6 +15,9 @@ use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 
 new
 #[Layout('tenant.layouts.app')]
@@ -47,64 +50,80 @@ class extends Component
     public bool $is_active = true;
 
     // Location & markers
-    public float $latitude;
-    public float $longitude;
-    public array $markers = [];
+    public float $latitude  = 10.900977766937142;
+    public float $longitude = 123.07055771888716;
+    public array $markers    = [];
 
     // Map & editing mode
     public bool $satellite = false;
     public string $locationMode = 'main';
     public int $mapVersion = 0;
     public array $mapView = [
-        'lat' => 10.900977766937142,
-        'lng' => 123.07055771888716,
+        'lat'  => 10.900977766937142,
+        'lng'  => 123.07055771888716,
         'zoom' => 13,
     ];
     public ?int $selectedMarkerIndex = null;
 
-    // Dynamic marker categories
     public array $markerCategories = [];
 
+    // ─────────────────────────────────────────────────────────
+    //  Computed
+    // ─────────────────────────────────────────────────────────
+
     #[Computed]
-    public function barangays()
+    public function barangays(): array
     {
-        $list = config('barangays', [
-            'Barangay I', 'Barangay II', 'Barangay III', 'Barangay IV',
-            'Barangay V', 'Barangay VI', 'Barangay VII', 'Barangay VIII',
-            'Barangay IX', 'Barangay X', 'Barangay XI', 'Barangay XII',
-            'Barangay XIII', 'Barangay XIV', 'Barangay XV', 'Barangay XVI',
-        ]);
-        return collect($list)->sort()->values();
+        return Cache::remember('config.barangays', now()->addDay(), function () {
+            $list = config('barangays', [
+                'Barangay I', 'Barangay II', 'Barangay III', 'Barangay IV',
+                'Barangay V', 'Barangay VI', 'Barangay VII', 'Barangay VIII',
+                'Barangay IX', 'Barangay X', 'Barangay XI', 'Barangay XII',
+                'Barangay XIII', 'Barangay XIV', 'Barangay XV', 'Barangay XVI',
+            ]);
+
+            return collect($list)->sort()->values()->all();
+        });
     }
 
     #[Computed]
     public function tenantTypes()
     {
-        return TypeOfTenant::query()->select('id', 'type')->orderBy('type')->get();
+        return Cache::remember('tenant_types.all', now()->addHour(), function () {
+            return TypeOfTenant::query()
+                ->select('id', 'type')
+                ->orderBy('type')
+                ->get()
+                ->toArray();
+        });
     }
 
-    public function mount()
+    // ─────────────────────────────────────────────────────────
+    //  Lifecycle
+    // ─────────────────────────────────────────────────────────
+
+    public function mount(): void
     {
         $user = Auth::user();
         $this->tenant = $user?->tenant;
 
-        if (!$this->tenant) {
-            abort(403, 'No business is linked to your account.');
-        }
+        abort_unless($this->tenant, 403, 'No business is linked to your account.');
+        abort_unless($this->tenant->id === $user->tenant_id, 403, 'You are not authorized to edit this business profile.');
 
-        $this->name = $this->tenant->name ?? '';
-        $this->slug = $this->tenant->slug ?? '';
+        $this->name              = $this->tenant->name ?? '';
+        $this->slug              = $this->tenant->slug ?? '';
         $this->type_of_tenant_id = $this->tenant->type_of_tenant_id;
-        $this->address = $this->tenant->address ?? '';
-        $this->public_email = $this->tenant->email ?? '';
-        $this->contact_number = $this->tenant->contact_number ?? '';
-        $this->is_active = (bool) $this->tenant->is_active;
+        $this->address           = $this->tenant->address ?? '';
+        $this->public_email      = $this->tenant->email ?? '';
+        $this->contact_number    = $this->tenant->contact_number ?? '';
+        $this->is_active         = (bool) $this->tenant->is_active;
 
         $coords = $this->tenant->coordinates ?? [];
-        $main = $coords[0] ?? null;
-        $this->latitude = isset($main['lat']) ? (float) $main['lat'] : 10.900977766937142;
+        $main   = $coords[0] ?? null;
+
+        $this->latitude  = isset($main['lat']) ? (float) $main['lat'] : 10.900977766937142;
         $this->longitude = isset($main['lng']) ? (float) $main['lng'] : 123.07055771888716;
-        $this->markers = array_slice($coords, 1);
+        $this->markers   = array_slice($coords, 1);
 
         foreach ($this->markers as &$marker) {
             if (!isset($marker['uid'])) {
@@ -114,8 +133,8 @@ class extends Component
         unset($marker);
 
         $this->mapView = [
-            'lat' => $this->latitude,
-            'lng' => $this->longitude,
+            'lat'  => $this->latitude,
+            'lng'  => $this->longitude,
             'zoom' => 13,
         ];
 
@@ -125,52 +144,96 @@ class extends Component
 
         if ($info && is_array($info->value)) {
             $v = $info->value;
-            $this->description = $v['description'] ?? '';
-            $this->website = $v['website'] ?? '';
-            $this->facebook = $v['social_links']['facebook'] ?? '';
-            $this->instagram = $v['social_links']['instagram'] ?? '';
+
+            $this->description  = $v['description'] ?? '';
+            $this->website      = $v['website'] ?? '';
+            $this->facebook     = $v['social_links']['facebook'] ?? '';
+            $this->instagram    = $v['social_links']['instagram'] ?? '';
             $this->opening_time = $v['opening_hours']['opening'] ?? '08:00';
             $this->closing_time = $v['opening_hours']['closing'] ?? '17:00';
-            $this->barangay = $v['barangay'] ?? '';
-            $this->city = $v['city'] ?? '';
-            $this->province = $v['province'] ?? '';
+            $this->barangay     = $v['barangay'] ?? '';
+            $this->city         = $v['city'] ?? '';
+            $this->province     = $v['province'] ?? '';
         }
 
-        $this->markerCategories = SiteSetting::getValue('marker_categories', []);
+        $this->markerCategories = SiteSetting::getValue('marker_categories', []) ?? [];
     }
 
-    public function updatedName($value)
+    // ─────────────────────────────────────────────────────────
+    //  Field hooks
+    // ─────────────────────────────────────────────────────────
+
+    /**
+     * Regenerate the URL slug whenever the name changes.
+     *
+     * The slug field is readonly on the form — if we didn't auto-suffix
+     * collisions, a name clash with another tenant would leave the user
+     * stuck (unique validation fails, but they can't edit the field to fix it).
+     */
+    public function updatedName(): void
     {
-        $this->name = trim($value);
-        $this->slug = Str::slug($this->name);
+        $this->name = trim((string) $this->name);
+
+        if (!$this->tenant) {
+            return;
+        }
+
+        $base = Str::slug($this->name) ?: 'business';
+
+        // If the name produced the same slug we already have, keep it.
+        if ($base === $this->slug) {
+            return;
+        }
+
+        // Auto-suffix on collision with any OTHER tenant.
+        $slug = $base;
+        $i    = 2;
+        while (
+            Tenant::where('slug', $slug)
+                ->where('id', '!=', $this->tenant->id)
+                ->exists()
+        ) {
+            $slug = "{$base}-{$i}";
+            $i++;
+        }
+
+        $this->slug = $slug;
     }
 
-    public function updatedLatitude($value)
+    public function updatedLatitude($value): void
     {
-        $this->latitude = round((float) $value, 6);
-        $this->mapView = ['lat' => $this->latitude, 'lng' => $this->longitude, 'zoom' => 16];
+        $this->latitude = round(max(-90, min(90, (float) $value)), 6);
+        $this->mapView['lat']  = $this->latitude;
+        $this->mapView['zoom'] = 16;
         $this->mapVersion++;
-        $this->dispatch('map:fly-to', center: [(float)$this->longitude, (float)$this->latitude], zoom: 16);
     }
 
-    public function updatedLongitude($value)
+    public function updatedLongitude($value): void
     {
-        $this->longitude = round((float) $value, 6);
-        $this->mapView = ['lat' => $this->latitude, 'lng' => $this->longitude, 'zoom' => 16];
+        $this->longitude = round(max(-180, min(180, (float) $value)), 6);
+        $this->mapView['lng']  = $this->longitude;
+        $this->mapView['zoom'] = 16;
         $this->mapVersion++;
-        $this->dispatch('map:fly-to', center: [(float)$this->longitude, (float)$this->latitude], zoom: 16);
     }
 
-    public function updated($property)
+    public function updated(string $property): void
     {
-        $trimFields = ['name','address','barangay','city','province','description','website','facebook','instagram','public_email','contact_number'];
-        if (in_array($property, $trimFields)) {
-            $this->$property = trim($this->$property);
+        $trimFields = [
+            'address', 'barangay', 'city', 'province',
+            'description', 'website', 'facebook', 'instagram',
+            'public_email', 'contact_number',
+        ];
+
+        if (in_array($property, $trimFields, true)) {
+            $this->$property = trim((string) $this->$property);
         }
 
         if ($property === 'contact_number') {
-            $this->contact_number = preg_replace('/[^0-9]/', '', $this->contact_number);
-            $this->contact_number = substr($this->contact_number, 0, 11);
+            $this->contact_number = substr(
+                (string) preg_replace('/[^0-9]/', '', $this->contact_number),
+                0,
+                11
+            );
         }
 
         if (preg_match('/^markers\.\d+\.type$/', $property)) {
@@ -178,40 +241,60 @@ class extends Component
         }
     }
 
-    public function setLocationMode($mode)
+    // ─────────────────────────────────────────────────────────
+    //  Map interactions
+    // ─────────────────────────────────────────────────────────
+
+    public function setLocationMode(string $mode): void
     {
-        if (in_array($mode, ['main', 'nearby'])) {
-            $this->locationMode = $mode;
-            if ($mode === 'main') {
-                $this->selectedMarkerIndex = null;
-            }
-            $this->mapVersion++;
+        if (!in_array($mode, ['main', 'nearby'], true)) {
+            return;
         }
+
+        $this->locationMode = $mode;
+
+        if ($mode === 'main') {
+            $this->selectedMarkerIndex = null;
+        }
+
+        $this->mapVersion++;
     }
 
-    public function addMarker()
+    public function addMarker(): void
     {
         $this->addMarkerAt($this->latitude, $this->longitude);
     }
 
-    public function removeMarker($index)
+    public function removeMarker(int $index): void
     {
+        if (!isset($this->markers[$index])) {
+            return;
+        }
+
         unset($this->markers[$index]);
         $this->markers = array_values($this->markers);
+
         if ($this->selectedMarkerIndex === $index) {
             $this->selectedMarkerIndex = null;
+        } elseif ($this->selectedMarkerIndex !== null && $this->selectedMarkerIndex > $index) {
+            $this->selectedMarkerIndex--;
         }
+
         $this->mapVersion++;
         $this->dispatch('toast', message: 'Nearby place removed.', type: 'info');
     }
 
     #[On('map:click')]
-    public function onMapClick($lat, $lng)
+    public function onMapClick($lat, $lng): void
     {
         if ($this->locationMode === 'main') {
-            $this->latitude = round((float) $lat, 6);
+            $this->latitude  = round((float) $lat, 6);
             $this->longitude = round((float) $lng, 6);
-            $this->mapView = ['lat' => $this->latitude, 'lng' => $this->longitude, 'zoom' => $this->mapView['zoom']];
+            $this->mapView   = [
+                'lat'  => $this->latitude,
+                'lng'  => $this->longitude,
+                'zoom' => $this->mapView['zoom'],
+            ];
             $this->mapVersion++;
         } else {
             $this->addMarkerAt($lat, $lng);
@@ -219,17 +302,22 @@ class extends Component
     }
 
     #[On('map:marker-drag-end')]
-    public function onMarkerDragEnd($id, $lat, $lng)
+    public function onMarkerDragEnd($id, $lat, $lng): void
     {
         if ($id === 'main-marker' && $this->locationMode === 'main') {
-            $this->latitude = round((float) $lat, 6);
+            $this->latitude  = round((float) $lat, 6);
             $this->longitude = round((float) $lng, 6);
-            $this->mapView = ['lat' => $this->latitude, 'lng' => $this->longitude, 'zoom' => $this->mapView['zoom']];
+            $this->mapView   = [
+                'lat'  => $this->latitude,
+                'lng'  => $this->longitude,
+                'zoom' => $this->mapView['zoom'],
+            ];
             $this->mapVersion++;
+            return;
         }
 
-        if (str_starts_with($id, 'sub-marker-') && $this->locationMode === 'nearby') {
-            $index = (int) substr($id, strlen('sub-marker-'));
+        if (str_starts_with((string) $id, 'sub-marker-') && $this->locationMode === 'nearby') {
+            $index = (int) substr((string) $id, strlen('sub-marker-'));
             if (isset($this->markers[$index])) {
                 $this->markers[$index]['lat'] = round((float) $lat, 6);
                 $this->markers[$index]['lng'] = round((float) $lng, 6);
@@ -239,62 +327,69 @@ class extends Component
     }
 
     #[On('map:marker-clicked')]
-    public function onMarkerClicked($id, $lat, $lng)
+    public function onMarkerClicked($id, $lat, $lng): void
     {
-        if (str_starts_with($id, 'sub-marker-')) {
-            $index = (int) substr($id, strlen('sub-marker-'));
-            $this->selectedMarkerIndex = $index;
-            $this->locationMode = 'nearby';
-            $this->mapVersion++;
+        if (str_starts_with((string) $id, 'sub-marker-')) {
+            $index = (int) substr((string) $id, strlen('sub-marker-'));
+            if (isset($this->markers[$index])) {
+                $this->selectedMarkerIndex = $index;
+                $this->locationMode        = 'nearby';
+                $this->mapVersion++;
+            }
         } elseif ($id === 'main-marker') {
-            $this->locationMode = 'main';
+            $this->locationMode        = 'main';
             $this->selectedMarkerIndex = null;
             $this->mapVersion++;
         }
     }
 
     #[On('map:center-changed')]
-    public function onMapCenterChanged($lat, $lng)
+    public function onMapCenterChanged($lat, $lng): void
     {
         $this->mapView['lat'] = round((float) $lat, 6);
         $this->mapView['lng'] = round((float) $lng, 6);
+
         if ($this->locationMode === 'main') {
-            $this->latitude = $this->mapView['lat'];
+            $this->latitude  = $this->mapView['lat'];
             $this->longitude = $this->mapView['lng'];
         }
     }
 
     #[On('map:zoom-changed')]
-    public function onMapZoomChanged($zoom)
+    public function onMapZoomChanged($zoom): void
     {
         $this->mapView['zoom'] = (int) $zoom;
     }
 
-    public function toggleSatellite()
+    public function toggleSatellite(): void
     {
         $this->satellite = !$this->satellite;
         $this->mapVersion++;
     }
 
-    public function useMyLocation()
+    public function useMyLocation(): void
     {
         $this->dispatch('request-geolocation');
     }
 
     #[On('geolocation-result')]
-    public function onGeolocationResult($lat, $lng)
+    public function onGeolocationResult($lat, $lng): void
     {
         if ($this->locationMode === 'main') {
-            $this->latitude = round((float) $lat, 6);
+            $this->latitude  = round((float) $lat, 6);
             $this->longitude = round((float) $lng, 6);
-            $this->mapView = ['lat' => $this->latitude, 'lng' => $this->longitude, 'zoom' => 16];
+            $this->mapView   = [
+                'lat'  => $this->latitude,
+                'lng'  => $this->longitude,
+                'zoom' => 16,
+            ];
             $this->mapVersion++;
         } else {
             $this->addMarkerAt($lat, $lng);
         }
     }
 
-    protected function addMarkerAt($lat, $lng)
+    protected function addMarkerAt($lat, $lng): void
     {
         if (count($this->markers) >= 20) {
             $this->dispatch('toast', message: 'You can add up to 20 nearby places.', type: 'error');
@@ -308,52 +403,67 @@ class extends Component
             'lng'  => round((float) $lng, 6),
             'type' => '',
         ];
+
         $this->selectedMarkerIndex = count($this->markers) - 1;
         $this->mapVersion++;
-        $this->mapView = ['lat' => round((float) $lat, 6), 'lng' => round((float) $lng, 6), 'zoom' => 15];
+        $this->mapView = [
+            'lat'  => round((float) $lat, 6),
+            'lng'  => round((float) $lng, 6),
+            'zoom' => 15,
+        ];
+
         $this->dispatch('toast', message: 'Nearby place added. Please set its category.', type: 'info');
     }
 
-    public function save()
+    // ─────────────────────────────────────────────────────────
+    //  Save
+    // ─────────────────────────────────────────────────────────
+
+    public function save(): void
     {
+        abort_unless($this->tenant && $this->tenant->id === Auth::user()->tenant_id, 403);
+
         $this->validate([
-            'name' => ['required','min:3','max:255', Rule::unique('tenants','name')->ignore($this->tenant->id)],
-            'slug' => ['required','string','max:255','regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/', Rule::unique('tenants','slug')->ignore($this->tenant->id)],
-            'type_of_tenant_id' => 'required|integer|exists:type_of_tenants,id',
-            'address' => 'nullable|string|max:255',
-            'barangay' => 'nullable|string|max:255',
-            'city' => 'nullable|string|max:255',
-            'province' => 'nullable|string|max:255',
-            'public_email' => ['required','email','max:255', Rule::unique('tenants','email')->ignore($this->tenant->id)],
-            'contact_number' => ['nullable', 'string', 'max:11', 'regex:/^[0-9]{10,11}$/'],
-            'latitude' => 'required|numeric|min:-90|max:90',
-            'longitude' => 'required|numeric|min:-180|max:180',
-            'markers' => 'array',
-            'markers.*.name' => 'required|string|max:100',
-            'markers.*.lat' => 'required|numeric|min:-90|max:90',
-            'markers.*.lng' => 'required|numeric|min:-180|max:180',
-            'markers.*.type' => 'required|string|max:255',
-            'description' => 'nullable|string|max:500',
-            'website' => 'nullable|url|max:255',
-            'facebook' => 'nullable|string|max:255',
-            'instagram' => 'nullable|string|max:255',
-            'opening_time' => 'nullable|date_format:H:i',
-            'closing_time' => 'nullable|date_format:H:i',
-            'logo' => 'nullable|image|max:2048',
-            'is_active' => 'boolean',
+            'name'              => ['required', 'min:3', 'max:255', Rule::unique('tenants', 'name')->ignore($this->tenant->id)],
+            'slug'              => ['required', 'string', 'max:255', 'regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/', Rule::unique('tenants', 'slug')->ignore($this->tenant->id)],
+            'type_of_tenant_id' => ['required', 'integer', 'exists:type_of_tenants,id'],
+            'address'           => ['nullable', 'string', 'max:255'],
+            'barangay'          => ['nullable', 'string', 'max:255'],
+            'city'              => ['nullable', 'string', 'max:255'],
+            'province'          => ['nullable', 'string', 'max:255'],
+            'public_email'      => ['required', 'email', 'max:255', Rule::unique('tenants', 'email')->ignore($this->tenant->id)],
+            'contact_number'    => ['nullable', 'string', 'max:11', 'regex:/^[0-9]{10,11}$/'],
+            'latitude'          => ['required', 'numeric', 'min:-90', 'max:90'],
+            'longitude'         => ['required', 'numeric', 'min:-180', 'max:180'],
+            'markers'           => ['array', 'max:20'],
+            'markers.*.name'    => ['required', 'string', 'max:100'],
+            'markers.*.lat'     => ['required', 'numeric', 'min:-90', 'max:90'],
+            'markers.*.lng'     => ['required', 'numeric', 'min:-180', 'max:180'],
+            'markers.*.type'    => ['required', 'string', 'max:255'],
+            'description'       => ['nullable', 'string', 'max:500'],
+            'website'           => ['nullable', 'url', 'max:255'],
+            'facebook'          => ['nullable', 'string', 'max:255'],
+            'instagram'         => ['nullable', 'string', 'max:255'],
+            'opening_time'      => ['nullable', 'date_format:H:i'],
+            'closing_time'      => ['nullable', 'date_format:H:i'],
+            'logo'              => ['nullable', 'image', 'max:2048'],
+            'is_active'         => ['boolean'],
         ], [
-            'slug.regex' => 'Slug may only contain lowercase letters, numbers, and hyphens.',
-            'contact_number.regex' => 'Contact number must be 10-11 digits only.',
-            'contact_number.max' => 'Contact number cannot exceed 11 digits.',
+            'slug.regex'                 => 'Slug may only contain lowercase letters, numbers, and hyphens.',
+            'contact_number.regex'       => 'Contact number must be 10-11 digits only.',
+            'contact_number.max'         => 'Contact number cannot exceed 11 digits.',
+            'markers.max'                => 'You can have at most 20 nearby places.',
+            'markers.*.type.required'    => 'Please select a category for each nearby place.',
         ]);
 
+        $newLogoPath = null;
+        $oldLogoPath = $this->tenant->logo;
+
+        // Store the new file BEFORE the transaction — file I/O must not
+        // hold the DB lock. Cleanup happens on failure (below) or after
+        // commit (further below).
         if ($this->logo) {
-            $logoPath = $this->logo->store('tenant-logos', 'public');
-            if ($this->tenant->logo && Storage::disk('public')->exists($this->tenant->logo)) {
-                Storage::disk('public')->delete($this->tenant->logo);
-            }
-        } else {
-            $logoPath = $this->tenant->logo;
+            $newLogoPath = $this->logo->store('tenant-logos', 'public');
         }
 
         $coordinates = [[
@@ -362,6 +472,7 @@ class extends Component
             'name' => 'Main Location',
             'type' => 'parent',
         ]];
+
         foreach ($this->markers as $marker) {
             unset($marker['uid']);
             $coordinates[] = $marker;
@@ -377,22 +488,55 @@ class extends Component
             'province'      => $this->province,
         ];
 
-        $this->tenant->update([
-            'name'              => $this->name,
-            'slug'              => $this->slug,
-            'type_of_tenant_id' => $this->type_of_tenant_id,
-            'address'           => $this->address,
-            'email'             => $this->public_email,
-            'contact_number'    => $this->contact_number,
-            'logo'              => $logoPath,
-            'coordinates'       => $coordinates,
-            'is_active'         => $this->is_active,
-        ]);
+        try {
+            DB::transaction(function () use ($coordinates, $businessInfo, $newLogoPath): void {
+                // Lock the row before mutating.
+                $tenant = Tenant::whereKey($this->tenant->id)
+                    ->lockForUpdate()
+                    ->firstOrFail();
 
-        TenantSetting::updateOrCreate(
-            ['tenant_id' => $this->tenant->id, 'key' => 'business_info'],
-            ['value' => $businessInfo]
-        );
+                $tenant->update([
+                    'name'              => $this->name,
+                    'slug'              => $this->slug,
+                    'type_of_tenant_id' => $this->type_of_tenant_id,
+                    'address'           => $this->address,
+                    'email'             => $this->public_email,
+                    'contact_number'    => $this->contact_number,
+                    'logo'              => $newLogoPath ?? $tenant->logo,
+                    'coordinates'       => $coordinates,
+                    'is_active'         => $this->is_active,
+                ]);
+
+                TenantSetting::updateOrCreate(
+                    ['tenant_id' => $tenant->id, 'key' => 'business_info'],
+                    ['value'     => $businessInfo]
+                );
+            });
+        } catch (\Throwable $e) {
+            // Transaction failed — the newly stored logo is orphaned.
+            // Remove it so the disk doesn't accumulate dead files.
+            if ($newLogoPath && Storage::disk('public')->exists($newLogoPath)) {
+                Storage::disk('public')->delete($newLogoPath);
+            }
+
+            Log::error('Business profile save error', [
+                'tenant_id' => $this->tenant->id,
+                'error'     => $e->getMessage(),
+                'file'      => $e->getFile(),
+                'line'      => $e->getLine(),
+            ]);
+
+            session()->flash('error', 'An error occurred while saving. Please try again.');
+            return;
+        }
+
+        // Delete the old logo AFTER a successful commit — Golden Rule #14.
+        if ($newLogoPath && $oldLogoPath && Storage::disk('public')->exists($oldLogoPath)) {
+            Storage::disk('public')->delete($oldLogoPath);
+        }
+
+        $this->reset('logo');
+        $this->tenant->refresh();
 
         session()->flash('message', 'Business profile updated successfully.');
         $this->dispatch('profile-saved');
@@ -408,11 +552,10 @@ class extends Component
         setTimeout(() => { toasts = toasts.filter(t => t.id !== id) }, 4000);
     "
     x-on:profile-saved.window="window.scrollTo({ top: 0, behavior: 'smooth' });"
-    class="p-4 sm:p-6 lg:p-8 max-w-[1440px] mx-auto space-y-6"
+    class="p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto space-y-6"
 >
-
-    {{-- Toast notifications --}}
-    <div class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 w-full max-w-sm pointer-events-none">
+    {{-- Toasts --}}
+    <div class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 w-full max-w-sm pointer-events-none no-print">
         <template x-for="toast in toasts" :key="toast.id">
             <div
                 x-transition:enter="transition ease-out duration-300"
@@ -433,174 +576,256 @@ class extends Component
         </template>
     </div>
 
-    @if(session()->has('message'))
-        <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium flex items-center gap-2">
-            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-            {{ session('message') }}
-        </div>
-    @endif
-
+    {{-- Header — tenant-admin eyebrow pattern, matches booking pages --}}
     <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
         <div>
-            <h1 class="font-display text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Business Profile</h1>
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Update your business information and location.</p>
+            <p class="text-xs font-semibold uppercase tracking-wider text-primary-600 dark:text-primary-400">
+                Settings
+            </p>
+            <h1 class="mt-1 text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">
+                Business Profile
+            </h1>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                Update your business information, contact details, and location.
+            </p>
         </div>
     </div>
 
-    <form wire:submit="save" class="space-y-8">
+    {{-- Flash --}}
+    @if(session()->has('message'))
+        <div class="flex items-start gap-3 bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md">
+            <svg class="w-5 h-5 text-green-600 dark:text-green-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+            </svg>
+            <p class="text-sm text-green-700 dark:text-green-300 font-medium">{{ session('message') }}</p>
+        </div>
+    @endif
+    @if(session()->has('error'))
+        <div class="flex items-start gap-3 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 border-l-4 border-l-red-500 p-4 rounded-md">
+            <svg class="w-5 h-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <p class="text-sm text-red-700 dark:text-red-300 font-medium">{{ session('error') }}</p>
+        </div>
+    @endif
+    @if($errors->any())
+        <div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 border-l-4 border-l-red-500 p-4 rounded-md">
+            <div class="flex items-start gap-3">
+                <svg class="w-5 h-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <div class="text-sm text-red-700 dark:text-red-300">
+                    <p class="font-semibold mb-1">Please fix the following:</p>
+                    <ul class="list-disc list-inside space-y-0.5">
+                        @foreach($errors->all() as $err)
+                            <li>{{ $err }}</li>
+                        @endforeach
+                    </ul>
+                </div>
+            </div>
+        </div>
+    @endif
 
-        {{-- Business Details --}}
-        <div class="card p-6 space-y-6">
-            <h2 class="font-display text-xl font-semibold text-gray-900 dark:text-white mb-4">Business Details</h2>
+    <form wire:submit="save" class="space-y-6">
+
+        {{-- ── Business Details ─────────────────────────────────── --}}
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6 space-y-6">
+            <h2 class="text-lg font-bold text-gray-900 dark:text-white">Business Details</h2>
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Business name <span class="text-red-500">*</span></label>
-                    <input type="text" wire:model.live.debounce.300ms="name" class="input">
+                    <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
+                        Business name <span class="text-red-500">*</span>
+                    </label>
+                    <input type="text" wire:model.live.debounce.300ms="name" class="input w-full">
                     @error('name') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">URL slug</label>
+                    <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
+                        URL slug
+                    </label>
                     <div class="flex rounded-xl overflow-hidden border border-gray-300 dark:border-gray-600 bg-gray-100 dark:bg-gray-900">
                         <span class="py-2.5 px-3 bg-gray-200 dark:bg-gray-700 text-xs text-gray-500 dark:text-gray-400 border-r border-gray-300 dark:border-gray-600">spot/</span>
-                        <input type="text" wire:model="slug" readonly class="flex-1 bg-transparent border-none py-2.5 px-4 text-sm text-gray-500 dark:text-gray-400 cursor-default outline-none">
+                        <input type="text" wire:model="slug" readonly
+                               class="flex-1 bg-transparent border-none py-2.5 px-4 text-sm text-gray-500 dark:text-gray-400 cursor-default outline-none font-mono">
                     </div>
+                    <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">Auto-generated from the name. Collisions are auto-suffixed.</p>
                     @error('slug') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             </div>
 
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Business type <span class="text-red-500">*</span></label>
-                    <select wire:model="type_of_tenant_id" class="select">
+                    <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
+                        Business type <span class="text-red-500">*</span>
+                    </label>
+                    <select wire:model="type_of_tenant_id" class="input w-full">
                         <option value="">— Select type —</option>
                         @foreach($this->tenantTypes as $type)
-                            <option value="{{ $type->id }}">{{ $type->type }}</option>
+                            <option value="{{ $type['id'] }}" wire:key="type-{{ $type['id'] }}">{{ $type['type'] }}</option>
                         @endforeach
                     </select>
                     @error('type_of_tenant_id') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Public email <span class="text-red-500">*</span></label>
-                    <input type="email" wire:model="public_email" class="input">
+                    <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
+                        Public email <span class="text-red-500">*</span>
+                    </label>
+                    <input type="email" wire:model="public_email" class="input w-full">
                     @error('public_email') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Contact number</label>
+                    <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
+                        Contact number
+                    </label>
                     <input type="tel" id="field-contact"
                            inputmode="numeric" pattern="[0-9]*" maxlength="11"
                            wire:model.live.debounce.400ms="contact_number"
                            x-on:input="event.target.value = event.target.value.replace(/[^0-9]/g, '').slice(0, 11)"
-                           class="input" placeholder="09xxxxxxxxx">
+                           class="input w-full" placeholder="09xxxxxxxxx">
                     @error('contact_number') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             </div>
 
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Barangay</label>
-                    <input type="text" wire:model="barangay" list="barangays-list" class="input">
+                    <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Barangay</label>
+                    <input type="text" wire:model="barangay" list="barangays-list" class="input w-full">
                     <datalist id="barangays-list">
                         @foreach($this->barangays as $b)
-                            <option value="{{ $b }}">
+                            <option value="{{ $b }}" wire:key="brgy-{{ Str::slug($b) }}">
                         @endforeach
                     </datalist>
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">City</label>
-                    <input type="text" wire:model="city" class="input">
+                    <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">City</label>
+                    <input type="text" wire:model="city" class="input w-full">
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Province</label>
-                    <input type="text" wire:model="province" class="input">
+                    <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Province</label>
+                    <input type="text" wire:model="province" class="input w-full">
                 </div>
             </div>
 
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Full address (optional)</label>
-                <input type="text" wire:model="address" class="input">
+                <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Full address (optional)</label>
+                <input type="text" wire:model="address" class="input w-full">
             </div>
 
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Description</label>
-                <textarea wire:model="description" rows="3" class="textarea"></textarea>
+                <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Description</label>
+                <textarea wire:model="description" rows="3" class="input w-full" maxlength="500"></textarea>
+                <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">Max 500 characters</p>
+                @error('description') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
 
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Website</label>
-                    <input type="url" wire:model="website" class="input">
+                    <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Website</label>
+                    <input type="url" wire:model="website" class="input w-full" placeholder="https://">
+                    @error('website') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Facebook</label>
-                    <input type="text" wire:model="facebook" class="input">
+                    <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Facebook</label>
+                    <input type="text" wire:model="facebook" class="input w-full">
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Instagram</label>
-                    <input type="text" wire:model="instagram" class="input">
+                    <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Instagram</label>
+                    <input type="text" wire:model="instagram" class="input w-full">
                 </div>
             </div>
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Opening time</label>
-                    <input type="time" wire:model="opening_time" class="input">
+                    <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Opening time</label>
+                    <input type="time" wire:model="opening_time" class="input w-full">
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Closing time</label>
-                    <input type="time" wire:model="closing_time" class="input">
+                    <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Closing time</label>
+                    <input type="time" wire:model="closing_time" class="input w-full">
                 </div>
             </div>
 
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Business logo</label>
+                <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Business logo</label>
                 <div x-data="{ previewUrl: null }">
                     <input type="file"
                            wire:model="logo"
                            x-ref="logoInput"
                            accept="image/*"
-                           @change="previewUrl = URL.createObjectURL($refs.logoInput.files[0])"
-                           class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition">
+                           @change="previewUrl = $refs.logoInput.files[0] ? URL.createObjectURL($refs.logoInput.files[0]) : null"
+                           class="w-full text-sm text-gray-700 dark:text-gray-300
+                                  file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0
+                                  file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300
+                                  hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 file:cursor-pointer
+                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition">
                     @error('logo') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+
+                    <div wire:loading wire:target="logo" class="mt-2 text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1.5">
+                        <svg class="animate-spin w-3.5 h-3.5 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                        </svg>
+                        Uploading…
+                    </div>
 
                     <div class="mt-3">
                         <template x-if="previewUrl">
                             <img :src="previewUrl" class="h-24 w-24 object-cover rounded-lg border border-gray-200 dark:border-gray-700" alt="New logo preview">
                         </template>
-                        <template x-if="!previewUrl && @js($tenant->logo)">
-                            <img src="{{ asset('storage/' . $tenant->logo) }}" class="h-24 w-24 object-cover rounded-lg border border-gray-200 dark:border-gray-700" alt="Current logo">
-                        </template>
+                        @if($tenant->logo)
+                            <template x-if="!previewUrl">
+                                <img src="{{ asset('storage/' . $tenant->logo) }}" class="h-24 w-24 object-cover rounded-lg border border-gray-200 dark:border-gray-700" alt="Current logo">
+                            </template>
+                        @endif
                     </div>
                 </div>
             </div>
 
-            <div class="flex items-center justify-between">
-                <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Active</span>
-                <label class="relative inline-flex items-center cursor-pointer">
+            <div class="flex items-center justify-between pt-2 border-t border-gray-100 dark:border-gray-700">
+                <div>
+                    <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Business Active</span>
+                    <p class="text-xs text-gray-500 dark:text-gray-400">When inactive, the business will not be visible to tourists.</p>
+                </div>
+                <label class="relative inline-flex items-center cursor-pointer focus-within:ring-2 focus-within:ring-primary-500/50 rounded-full">
                     <input type="checkbox" wire:model="is_active" class="sr-only peer">
-                    <div class="w-11 h-6 bg-gray-200 dark:bg-gray-600 rounded-full peer peer-checked:bg-primary-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-full"></div>
+                    <div class="w-11 h-6 bg-gray-200 dark:bg-gray-600 rounded-full peer peer-checked:bg-primary-600
+                                after:content-[''] after:absolute after:top-[2px] after:left-[2px]
+                                after:bg-white after:rounded-full after:h-5 after:w-5
+                                after:transition-all peer-checked:after:translate-x-full"></div>
                 </label>
             </div>
         </div>
 
-        {{-- Location & Nearby Places --}}
-        <div class="card p-6 space-y-6">
-            <h2 class="font-display text-xl font-semibold text-gray-900 dark:text-white mb-4">Location & Nearby Places</h2>
+        {{-- ── Location & Nearby Places ────────────────────────── --}}
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6 space-y-6">
+            <h2 class="text-lg font-bold text-gray-900 dark:text-white">Location &amp; Nearby Places</h2>
 
             {{-- Mode selector --}}
-            <div class="flex flex-wrap gap-2 mb-4">
+            <div class="flex flex-wrap gap-2">
                 <button type="button"
                         wire:click="setLocationMode('main')"
-                        class="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50
-                               {{ $locationMode === 'main' ? 'bg-primary-600 text-white shadow-md' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600' }}">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                        class="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider transition active:scale-95
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                               {{ $locationMode === 'main'
+                                  ? 'bg-primary-600 text-white shadow-md shadow-primary-600/20'
+                                  : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600' }}">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
+                    </svg>
                     Edit Main Location
                 </button>
                 <button type="button"
                         wire:click="setLocationMode('nearby')"
-                        class="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50
-                               {{ $locationMode === 'nearby' ? 'bg-primary-600 text-white shadow-md' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600' }}">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
+                        class="inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider transition active:scale-95
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                               {{ $locationMode === 'nearby'
+                                  ? 'bg-primary-600 text-white shadow-md shadow-primary-600/20'
+                                  : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600' }}">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
+                    </svg>
                     Add / Edit Nearby Places
                 </button>
                 <span class="text-xs text-gray-400 dark:text-gray-500 self-center">
@@ -612,37 +837,53 @@ class extends Component
                 </span>
             </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Latitude <span class="text-red-500">*</span></label>
+                    <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
+                        Latitude <span class="text-red-500">*</span>
+                    </label>
                     <input type="number" step="any" min="-90" max="90"
-                           wire:model.live.debounce.500ms="latitude" onfocus="this.select()" class="input font-mono"
+                           wire:model.live.debounce.500ms="latitude" onfocus="this.select()"
+                           class="input w-full font-mono"
                            @if($locationMode !== 'main') readonly @endif>
                     @error('latitude') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Longitude <span class="text-red-500">*</span></label>
+                    <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
+                        Longitude <span class="text-red-500">*</span>
+                    </label>
                     <input type="number" step="any" min="-180" max="180"
-                           wire:model.live.debounce.500ms="longitude" onfocus="this.select()" class="input font-mono"
+                           wire:model.live.debounce.500ms="longitude" onfocus="this.select()"
+                           class="input w-full font-mono"
                            @if($locationMode !== 'main') readonly @endif>
                     @error('longitude') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             </div>
 
-            <div class="flex flex-wrap gap-2 mb-4">
+            <div class="flex flex-wrap gap-2">
                 <button type="button" wire:click="useMyLocation"
-                        class="btn-secondary text-xs active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-1.5">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                        class="btn-secondary text-xs active:scale-95 transition-transform
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                               inline-flex items-center gap-1.5">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
+                    </svg>
                     Use my location
                 </button>
                 <button type="button" wire:click="toggleSatellite"
-                        class="btn-secondary text-xs active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-1.5">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/></svg>
+                        class="btn-secondary text-xs active:scale-95 transition-transform
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                               inline-flex items-center gap-1.5">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/>
+                    </svg>
                     {{ $satellite ? 'Street View' : 'Satellite' }}
                 </button>
             </div>
 
-            <div class="card overflow-hidden relative" style="height: 400px;"
+            <div class="rounded-2xl overflow-hidden relative border border-gray-200/80 dark:border-gray-700/80"
+                 style="height: 400px;"
                  x-data="{ showOverlay: true }"
                  x-init="setTimeout(() => showOverlay = false, 800)">
                 <div x-show="showOverlay"
@@ -651,7 +892,7 @@ class extends Component
                      x-transition:leave-end="opacity-0"
                      class="absolute inset-0 z-10 flex items-center justify-center bg-gray-50 dark:bg-gray-800">
                     <div class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
-                        <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                        <svg class="animate-spin h-4 w-4 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                         </svg>
@@ -662,7 +903,7 @@ class extends Component
                 <div wire:key="tenant-edit-map-{{ $mapVersion }}">
                     <x-map
                         id="tenant-edit-map"
-                        :center="[(float)$mapView['lng'], (float)$mapView['lat']]"
+                        :center="[(float) $mapView['lng'], (float) $mapView['lat']]"
                         :zoom="$mapView['zoom']"
                         height="400px"
                         :provider="$satellite ? 'custom' : 'carto-voyager'"
@@ -684,10 +925,10 @@ class extends Component
 
                         @foreach($markers as $index => $marker)
                             @php
-                                $type = $marker['type'] ?? '';
+                                $type     = $marker['type'] ?? '';
                                 $category = collect($this->markerCategories)->firstWhere('key', $type);
-                                $color = $category['color'] ?? '#94a3b8';
-                                $iconSvg = $category['icon_svg'] ?? null;
+                                $color    = $category['color'] ?? '#94a3b8';
+                                $iconSvg  = $category['icon_svg'] ?? null;
                             @endphp
                             <x-map-marker
                                 wire:key="sub-marker-{{ $marker['uid'] }}-{{ $marker['type'] }}"
@@ -698,8 +939,7 @@ class extends Component
                                 :draggable="$locationMode === 'nearby'"
                             >
                                 <x-marker-content>
-                                    <div class="relative flex h-10 w-10 items-center justify-center transform-gpu will-change-transform transition-transform duration-200 group-hover:scale-110 active:scale-95"
-                                         style="cursor: pointer;">
+                                    <div class="relative flex h-10 w-10 items-center justify-center transform-gpu will-change-transform transition-transform duration-200 group-hover:scale-110 active:scale-95" style="cursor: pointer;">
                                         <svg class="absolute inset-0 size-10 drop-shadow-md fill-white dark:fill-gray-900 stroke-slate-400 dark:stroke-slate-600 stroke-1" viewBox="0 0 24 24" aria-hidden="true">
                                             <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
                                         </svg>
@@ -708,7 +948,7 @@ class extends Component
                                                 {!! str_replace('<svg ', '<svg class="size-full stroke-current fill-none" ', $iconSvg) !!}
                                             </div>
                                         @else
-                                            <span class="absolute mb-1 text-[10px] font-bold text-gray-800 dark:text-white">{{ strtoupper(substr($type, 0, 1)) }}</span>
+                                            <span class="absolute mb-1 text-[10px] font-bold text-gray-800 dark:text-white">{{ strtoupper(substr($type ?: '?', 0, 1)) }}</span>
                                         @endif
                                     </div>
                                 </x-marker-content>
@@ -722,7 +962,7 @@ class extends Component
                         @endforeach
 
                         <x-map-marker
-                            wire:key="main-marker-{{ $latitude }}-{{ $longitude }}"
+                            wire:key="main-marker"
                             :lat="$latitude"
                             :lng="$longitude"
                             color="#ef4444"
@@ -731,7 +971,7 @@ class extends Component
                         >
                             <x-marker-content>
                                 <div class="relative flex items-center justify-center transform-gpu will-change-transform transition-transform duration-200 group-hover:scale-110 active:scale-95">
-                                    <svg class="h-10 w-10 drop-shadow-lg" viewBox="0 0 24 24" fill="#ef4444" stroke="white" stroke-width="1.5">
+                                    <svg class="h-10 w-10 drop-shadow-lg" viewBox="0 0 24 24" fill="#ef4444" stroke="white" stroke-width="1.5" aria-hidden="true">
                                         <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
                                         <circle cx="12" cy="9" r="2.5" fill="white"/>
                                     </svg>
@@ -755,7 +995,8 @@ class extends Component
                             Nearby places <span class="text-gray-400 font-normal">({{ count($markers) }}/20)</span>
                         </span>
                         <button type="button" wire:click="addMarker"
-                                class="text-xs font-semibold text-primary-600 hover:underline focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded active:scale-95 transition-transform">
+                                class="text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline rounded transition active:scale-95
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                             + Add nearby place
                         </button>
                     </div>
@@ -763,7 +1004,7 @@ class extends Component
                     @if(count($markers) > 0)
                         <div class="flex flex-wrap items-center gap-3 mb-3 text-[11px] text-gray-500 dark:text-gray-400">
                             @foreach($this->markerCategories as $cat)
-                                <span class="inline-flex items-center gap-1">
+                                <span class="inline-flex items-center gap-1" wire:key="cat-legend-{{ $cat['key'] }}">
                                     <span class="w-2.5 h-2.5 rounded-full" style="background:{{ $cat['color'] }}"></span>
                                     {{ $cat['label'] }}
                                 </span>
@@ -772,23 +1013,32 @@ class extends Component
                         <div class="space-y-2">
                             @foreach($markers as $index => $marker)
                                 <div wire:key="marker-row-{{ $marker['uid'] }}"
-                                     class="flex flex-wrap items-center gap-3 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-200 dark:border-gray-700
+                                     class="flex flex-wrap items-center gap-3 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-200 dark:border-gray-700 transition
                                             {{ $selectedMarkerIndex === $index ? 'ring-2 ring-primary-600/40 border-primary-600/30' : '' }}">
-                                    <input type="text" wire:model.debounce.500ms="markers.{{ $index }}.name" placeholder="Place name" class="input !py-2 flex-1 min-w-[140px]">
-                                    <input type="number" step="any" min="-90" max="90" wire:model.debounce.500ms="markers.{{ $index }}.lat" placeholder="Lat" class="input !py-2 !w-28 font-mono">
-                                    <input type="number" step="any" min="-180" max="180" wire:model.debounce.500ms="markers.{{ $index }}.lng" placeholder="Lng" class="input !py-2 !w-28 font-mono">
-                                    <select wire:model.live="markers.{{ $index }}.type" class="select !py-2 !w-40">
+                                    <input type="text" wire:model="markers.{{ $index }}.name" placeholder="Place name" class="input !py-2 flex-1 min-w-[140px]">
+                                    <input type="number" step="any" min="-90" max="90"
+                                           wire:model="markers.{{ $index }}.lat" placeholder="Lat"
+                                           class="input !py-2 !w-28 font-mono">
+                                    <input type="number" step="any" min="-180" max="180"
+                                           wire:model="markers.{{ $index }}.lng" placeholder="Lng"
+                                           class="input !py-2 !w-28 font-mono">
+                                    <select wire:model.live="markers.{{ $index }}.type" class="input !py-2 !w-40">
                                         <option value="">Select category *</option>
                                         @foreach($this->markerCategories as $cat)
-                                            <option value="{{ $cat['key'] }}">{{ $cat['label'] }}</option>
+                                            <option value="{{ $cat['key'] }}" wire:key="opt-{{ $index }}-{{ $cat['key'] }}">{{ $cat['label'] }}</option>
                                         @endforeach
                                     </select>
                                     <button type="button" wire:click="removeMarker({{ $index }})"
-                                            class="p-1.5 text-red-500 hover:text-red-700 rounded-full transition active:scale-95 focus-visible:ring-2 focus-visible:ring-red-500/50"
+                                            class="p-1.5 text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-500/20 rounded-full transition active:scale-95
+                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50"
                                             title="Remove">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                        </svg>
                                     </button>
                                 </div>
+                                @error("markers.{$index}.name") <p class="text-red-500 dark:text-red-400 text-[10px] mt-1">{{ $message }}</p> @enderror
+                                @error("markers.{$index}.type") <p class="text-red-500 dark:text-red-400 text-[10px] mt-1">{{ $message }}</p> @enderror
                             @endforeach
                         </div>
                     @else
@@ -800,42 +1050,45 @@ class extends Component
 
         {{-- Actions --}}
         <div class="pt-4 border-t border-gray-200 dark:border-gray-700 flex justify-end">
-            <button type="submit" wire:loading.attr="disabled"
-                    class="btn-primary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
-                <span wire:loading.remove>Save Changes</span>
-                <span wire:loading class="inline-flex items-center gap-2">
-                    <svg class="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+            <button type="submit" wire:loading.attr="disabled" wire:target="save"
+                    class="btn-primary active:scale-95 transition-transform
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                           inline-flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed">
+                <span wire:loading.remove wire:target="save">Save Changes</span>
+                <span wire:loading wire:target="save" class="inline-flex items-center gap-2">
+                    <svg class="animate-spin h-4 w-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                    </svg>
                     Saving…
                 </span>
             </button>
         </div>
     </form>
+</div>
 
-    @script
-    <script>
-        function notify(message, type = 'info') {
-            window.dispatchEvent(new CustomEvent('toast', { detail: { message, type } }));
+<script>
+    function notify(message, type = 'info') {
+        window.dispatchEvent(new CustomEvent('toast', { detail: { message, type } }));
+    }
+
+    window.addEventListener('request-geolocation', () => {
+        if (!navigator.geolocation) {
+            notify('Geolocation is not supported by your browser.', 'error');
+            return;
         }
 
-        window.addEventListener('request-geolocation', () => {
-            if (!navigator.geolocation) {
-                notify('Geolocation is not supported by your browser.', 'error');
-                return;
-            }
-            navigator.geolocation.getCurrentPosition(
-                (position) => {
-                    Livewire.dispatch('geolocation-result', {
-                        lat: position.coords.latitude,
-                        lng: position.coords.longitude,
-                    });
-                },
-                () => {
-                    notify('Unable to retrieve your location. Check browser permissions.', 'error');
-                },
-                { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
-            );
-        });
-    </script>
-    @endscript
-
-</div>
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                Livewire.dispatch('geolocation-result', {
+                    lat: position.coords.latitude,
+                    lng: position.coords.longitude,
+                });
+            },
+            () => {
+                notify('Unable to retrieve your location. Check browser permissions.', 'error');
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+        );
+    });
+</script>

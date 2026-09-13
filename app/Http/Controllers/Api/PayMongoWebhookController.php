@@ -3,15 +3,16 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\ProcessPayMongoPayment;
+use App\Services\PayMongoService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use App\Services\PayMongoService;
 
 class PayMongoWebhookController extends Controller
 {
-    public function __invoke(Request $request)
+    public function __invoke(Request $request, PayMongoService $payMongoService)
     {
-        $payload = $request->getContent();
+        $payload         = $request->getContent();
         $signatureHeader = $request->header('Paymongo-Signature');
 
         if (!$this->verifySignature($payload, $signatureHeader)) {
@@ -19,19 +20,22 @@ class PayMongoWebhookController extends Controller
             return response()->json(['error' => 'Invalid signature'], 401);
         }
 
-        $data = $request->json()->all();
+        // Decode once — avoid re-reading the body.
+        $data      = json_decode($payload, true) ?: [];
         $eventType = $data['data']['attributes']['type'] ?? null;
         $sessionId = $data['data']['attributes']['data']['id'] ?? null;
 
-        if ($eventType === 'checkout_session.payment.paid' && $sessionId) {
-            // Dispatch queued job (async fallback)
-            \App\Jobs\ProcessPayMongoPayment::dispatch($sessionId);
+        if ($eventType !== 'checkout_session.payment.paid' || !$sessionId) {
+            Log::info('PayMongo webhook received unsupported event', [
+                'type'       => $eventType,
+                'session_id' => $sessionId,
+            ]);
 
-            // Also process synchronously to update immediately
-            app(PayMongoService::class)->handlePaymentPaid($sessionId);
-
-            Log::info('PayMongo webhook processed synchronously', ['session_id' => $sessionId]);
+            return response()->json(['status' => 'ignored']);
         }
+
+        // Process off-request. The job is idempotent (lockForUpdate + status check).
+        ProcessPayMongoPayment::dispatch($sessionId);
 
         return response()->json(['status' => 'ok']);
     }
@@ -48,6 +52,7 @@ class PayMongoWebhookController extends Controller
             return false;
         }
 
+        // Header format: "t=...,te=..." or "t=...,li=...".
         $parts = [];
         foreach (explode(',', $signatureHeader) as $part) {
             $kv = explode('=', $part, 2);
@@ -56,14 +61,19 @@ class PayMongoWebhookController extends Controller
             }
         }
 
-        $timestamp = $parts['t'] ?? '';
+        $timestamp = $parts['t']  ?? '';
         $signature = $parts['te'] ?? $parts['li'] ?? '';
 
         if (!$timestamp || !$signature) {
             return false;
         }
 
-        $signedPayload = "{$timestamp}.{$payload}";
+        // Replay protection: 5-minute tolerance.
+        if (abs(time() - (int) $timestamp) > 300) {
+            return false;
+        }
+
+        $signedPayload     = "{$timestamp}.{$payload}";
         $expectedSignature = hash_hmac('sha256', $signedPayload, $secret);
 
         return hash_equals($expectedSignature, $signature);

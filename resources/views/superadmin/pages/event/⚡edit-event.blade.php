@@ -5,12 +5,15 @@ use Livewire\Component;
 use Livewire\WithFileUploads;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
-use Livewire\Attributes\On;
 use Livewire\Attributes\Computed;
+use Livewire\Attributes\Locked;
 use App\Models\Event;
 use App\Models\Tenant;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
 
 new
 #[Layout('superadmin.layouts.app')]
@@ -19,254 +22,381 @@ class extends Component
 {
     use WithFileUploads;
 
+    /** Bound from route. Auto-locked (Eloquent model). */
     public Event $event;
-    public string $name = '';
-    public string $barangay = '';
+
+    // ── Event fields ──
+    public string $name        = '';
     public string $description = '';
-    public string $type = '';
-    public string $start_date = '';
-    public string $end_date = '';
+    public string $type        = '';
+    public string $start_date  = '';
+    public string $end_date    = '';
+
     public ?int $tenant_id = null;
+
     public bool $is_active = true;
-    public bool $featured = false;
+    public bool $featured  = false;
+
     public $image;
     public bool $remove_existing_image = false;
 
-    // Location
-    public ?float $latitude = null;
-    public ?float $longitude = null;
+    public string $tenantSearch = '';
+
+    // ── Derived from the selected tenant (never trusted from the client) ──
+    #[Locked] public string $barangay  = '';
+    #[Locked] public ?float $latitude  = null;
+    #[Locked] public ?float $longitude = null;
+
     public bool $satellite = false;
-    public int $mapVersion = 0;
-    public array $mapView = [
-        'lat' => 10.900977766937142,
-        'lng' => 123.07055771888716,
+
+    #[Locked] public int $mapVersion = 0;
+
+    #[Locked] public array $mapView = [
+        'lat'  => 10.900977766937142,
+        'lng'  => 123.07055771888716,
         'zoom' => 13,
     ];
 
-    protected function rules()
-    {
-        return [
-            'name'        => 'required|string|max:255',
-            'barangay'    => 'required|string|max:255',
-            'description' => 'nullable|string|max:1000',
-            'type'        => 'required|string|max:255',
-            'start_date'  => 'required|date',
-            'end_date'    => 'nullable|date|after_or_equal:start_date',
-            'tenant_id'   => 'nullable|exists:tenants,id',
-            'is_active'   => 'boolean',
-            'featured'    => 'boolean',
-            'image'       => 'nullable|image|mimes:jpeg,png,jpg,gif,webp|max:10240', // ★ 10MB
-            'latitude'    => 'nullable|numeric|min:-90|max:90',
-            'longitude'   => 'nullable|numeric|min:-180|max:180',
-        ];
-    }
-
-    protected function messages()
-    {
-        return [
-            'image.max' => 'The event photo must not exceed 10MB.',
-            'image.mimes' => 'The event photo must be a valid image (JPEG, PNG, JPG, GIF, or WebP).',
-        ];
-    }
+    // ─────────────────────────────────────────────────────────
+    //  Lifecycle
+    // ─────────────────────────────────────────────────────────
 
     public function mount(Event $event): void
     {
-        $this->event = $event;
-        $this->name = $event->name;
-        $this->barangay = $event->barangay;
-        $this->description = $event->description;
-        $this->type = $event->type;
-        $this->start_date = $event->start_date->format('Y-m-d\TH:i');
-        $this->end_date = $event->end_date?->format('Y-m-d\TH:i');
-        $this->tenant_id = $event->tenant_id;
-        $this->is_active = (bool) $event->is_active;
-        $this->featured = (bool) $event->featured;
+        abort_unless(Auth::user()?->hasRole('super-admin'), 403, 'Super-admin access only.');
 
-        // Location
-        $coords = is_array($event->coordinates) ? $event->coordinates : json_decode($event->coordinates, true);
-        if ($coords && isset($coords['lat'], $coords['lng'])) {
-            $this->latitude = (float) $coords['lat'];
-            $this->longitude = (float) $coords['lng'];
-            $this->mapView = [
-                'lat' => $this->latitude,
-                'lng' => $this->longitude,
+        $this->event       = $event;
+        $this->name        = $event->name;
+        $this->description = $event->description ?? '';
+        $this->type        = $event->type;
+        $this->start_date  = $event->start_date?->format('Y-m-d\TH:i') ?? '';
+        $this->end_date    = $event->end_date?->format('Y-m-d\TH:i') ?? '';
+        $this->tenant_id   = $event->tenant_id;
+        $this->is_active   = (bool) $event->is_active;
+        $this->featured    = (bool) $event->featured;
+        $this->barangay    = $event->barangay ?? '';
+
+        // Prefer the event's own coordinates; fall back to the tenant's.
+        $eventCoords = $this->extractEventCoords($event);
+
+        if ($eventCoords) {
+            $this->latitude  = $eventCoords['lat'];
+            $this->longitude = $eventCoords['lng'];
+            $this->mapView   = [
+                'lat'  => $this->latitude,
+                'lng'  => $this->longitude,
                 'zoom' => 16,
             ];
+            return;
+        }
+
+        if ($this->tenant_id) {
+            $tenant  = Tenant::find($this->tenant_id);
+            $primary = $this->extractPrimaryCoords($tenant);
+
+            if ($primary) {
+                $this->latitude  = $primary['lat'];
+                $this->longitude = $primary['lng'];
+                $this->mapView   = [
+                    'lat'  => $this->latitude,
+                    'lng'  => $this->longitude,
+                    'zoom' => 15,
+                ];
+            }
         }
     }
 
+    // ─────────────────────────────────────────────────────────
+    //  Validation
+    // ─────────────────────────────────────────────────────────
+
+    protected function rules(): array
+    {
+        return [
+            'name'        => ['required', 'string', 'min:3', 'max:255'],
+            'description' => ['nullable', 'string', 'max:1000'],
+            'type'        => ['required', 'string', 'min:2', 'max:255'],
+            'start_date'  => ['required', 'date'],
+            'end_date'    => ['nullable', 'date', 'after_or_equal:start_date'],
+            'tenant_id'   => ['required', 'integer', 'exists:tenants,id'],
+            'is_active'   => ['boolean'],
+            'featured'    => ['boolean'],
+            'image'       => ['nullable', 'image', 'mimes:jpeg,png,jpg,gif,webp', 'max:10240'],
+        ];
+    }
+
+    protected function messages(): array
+    {
+        return [
+            'image.max'          => 'The event photo must not exceed 10MB.',
+            'image.mimes'        => 'The event photo must be a valid image (JPEG, PNG, JPG, GIF, or WebP).',
+            'tenant_id.required' => 'Please choose the tourist spot this event belongs to.',
+            'tenant_id.exists'   => 'The selected tourist spot no longer exists.',
+        ];
+    }
+
+    public function updated(string $field): void
+    {
+        if (in_array($field, ['name', 'description', 'type', 'tenantSearch'], true)) {
+            $this->$field = trim((string) $this->$field);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Coordinate helpers
+    // ─────────────────────────────────────────────────────────
+
+    /**
+     * Extract the primary lat/lng pair from a Tenant's coordinates array.
+     *
+     * Reads the model's `coordinates` attribute directly (cast to array),
+     * so it works regardless of how the model was hydrated.
+     *
+     * @return array{lat: float, lng: float}|null
+     */
+    protected function extractPrimaryCoords(?Tenant $tenant): ?array
+    {
+        if (!$tenant) {
+            return null;
+        }
+
+        $coords = $tenant->coordinates ?? null;
+
+        if (!is_array($coords) || empty($coords[0])) {
+            return null;
+        }
+
+        $primary = $coords[0];
+
+        if (!is_array($primary) || !isset($primary['lat'], $primary['lng'])) {
+            return null;
+        }
+
+        return [
+            'lat' => (float) $primary['lat'],
+            'lng' => (float) $primary['lng'],
+        ];
+    }
+
+    /**
+     * Extract lat/lng from an Event's coordinates attribute.
+     * Event.coordinates is a single `{lat, lng}` object (not an array of locations).
+     *
+     * @return array{lat: float, lng: float}|null
+     */
+    protected function extractEventCoords(?Event $event): ?array
+    {
+        if (!$event) {
+            return null;
+        }
+
+        $coords = $event->coordinates ?? null;
+
+        // Defensive: cast should already produce an array, but handle JSON strings too.
+        if (is_string($coords)) {
+            $coords = json_decode($coords, true);
+        }
+
+        if (!is_array($coords) || !isset($coords['lat'], $coords['lng'])) {
+            return null;
+        }
+
+        return [
+            'lat' => (float) $coords['lat'],
+            'lng' => (float) $coords['lng'],
+        ];
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Computed
+    // ─────────────────────────────────────────────────────────
+
     #[Computed]
-    public function tenants()
+    public function allTenants()
     {
         return Tenant::query()
-            ->select('id', 'name')
+            ->select('id', 'name', 'barangay', 'address', 'coordinates', 'slug')
+            ->where('is_active', true)
             ->orderBy('name')
+            ->when($this->tenantSearch !== '', fn ($q) =>
+                $q->where('name', 'like', '%' . $this->tenantSearch . '%')
+            )
+            ->limit(50)
             ->get();
     }
 
     #[Computed]
-    public function barangays()
+    public function selectedTenant(): ?Tenant
     {
+        if (!$this->tenant_id) {
+            return null;
+        }
+
         return Tenant::query()
-            ->select('barangay')
-            ->distinct()
-            ->orderBy('barangay')
-            ->pluck('barangay')
-            ->filter()
-            ->values();
+            ->select('id', 'name', 'barangay', 'address', 'contact_number', 'email', 'coordinates', 'slug')
+            ->find($this->tenant_id);
     }
 
-    public function updatedName($value)
+    #[Computed]
+    public function selectedTenantHasLocation(): bool
     {
-        $this->name = trim($value);
+        return $this->extractPrimaryCoords($this->selectedTenant) !== null;
     }
 
-    public function updatedDescription($value)
+    // ─────────────────────────────────────────────────────────
+    //  Tenant selection
+    // ─────────────────────────────────────────────────────────
+
+    public function updatedTenantId($value): void
     {
-        $this->description = trim($value);
-    }
-
-    // ★ Fly map when coordinates are typed manually
-    public function updatedLatitude($value)
-    {
-        if ($value === null || $value === '') {
-            $this->latitude = null;
-            return;
-        }
-
-        $this->latitude = round((float) $value, 6);
-        $this->mapView = [
-            'lat' => $this->latitude,
-            'lng' => $this->longitude ?? $this->mapView['lng'],
-            'zoom' => 16,
-        ];
-        $this->mapVersion++;
-        $this->dispatch('map:fly-to', center: [(float)$this->mapView['lng'], (float)$this->latitude], zoom: 16);
-    }
-
-    public function updatedLongitude($value)
-    {
-        if ($value === null || $value === '') {
-            $this->longitude = null;
-            return;
-        }
-
-        $this->longitude = round((float) $value, 6);
-        $this->mapView = [
-            'lat' => $this->latitude ?? $this->mapView['lat'],
-            'lng' => $this->longitude,
-            'zoom' => 16,
-        ];
-        $this->mapVersion++;
-        $this->dispatch('map:fly-to', center: [(float)$this->longitude, (float)$this->mapView['lat']], zoom: 16);
-    }
-
-    #[On('map:click')]
-    public function onMapClick($lat, $lng): void
-    {
-        $this->latitude = round((float) $lat, 6);
-        $this->longitude = round((float) $lng, 6);
-        $this->mapView = [
-            'lat' => $this->latitude,
-            'lng' => $this->longitude,
-            'zoom' => 16,
-        ];
-        $this->mapVersion++;
-    }
-
-    #[On('map:marker-drag-end')]
-    public function onMarkerDragEnd($id, $lat, $lng): void
-    {
-        if ($id === 'event-location-marker') {
-            $this->latitude = round((float) $lat, 6);
-            $this->longitude = round((float) $lng, 6);
-            $this->mapView = [
-                'lat' => $this->latitude,
-                'lng' => $this->longitude,
-                'zoom' => $this->mapView['zoom'],
-            ];
+        if (!$value) {
+            $this->reset(['barangay', 'latitude', 'longitude']);
             $this->mapVersion++;
+            return;
         }
+
+        $tenant = Tenant::query()
+            ->select('id', 'barangay', 'coordinates')
+            ->find($value);
+
+        if (!$tenant) {
+            $this->reset(['barangay', 'latitude', 'longitude']);
+            $this->mapVersion++;
+            return;
+        }
+
+        $this->barangay = $tenant->barangay ?? '';
+        $primary        = $this->extractPrimaryCoords($tenant);
+
+        if ($primary) {
+            $this->latitude  = $primary['lat'];
+            $this->longitude = $primary['lng'];
+            $this->mapView   = [
+                'lat'  => $this->latitude,
+                'lng'  => $this->longitude,
+                'zoom' => 15,
+            ];
+        } else {
+            $this->latitude  = null;
+            $this->longitude = null;
+            $this->mapView   = [
+                'lat'  => 10.900977766937142,
+                'lng'  => 123.07055771888716,
+                'zoom' => 13,
+            ];
+        }
+
+        $this->mapVersion++;
     }
 
-    #[On('map:center-changed')]
-    public function onMapCenterChanged($lat, $lng): void
+    public function clearTenant(): void
     {
-        $this->mapView['lat'] = round((float) $lat, 6);
-        $this->mapView['lng'] = round((float) $lng, 6);
-    }
+        $this->reset(['tenant_id', 'tenantSearch', 'barangay', 'latitude', 'longitude']);
 
-    #[On('map:zoom-changed')]
-    public function onMapZoomChanged($zoom): void
-    {
-        $this->mapView['zoom'] = (int) $zoom;
+        $this->mapView = [
+            'lat'  => 10.900977766937142,
+            'lng'  => 123.07055771888716,
+            'zoom' => 13,
+        ];
+
+        $this->mapVersion++;
     }
 
     public function toggleSatellite(): void
     {
-        $this->satellite = ! $this->satellite;
+        $this->satellite = !$this->satellite;
         $this->mapVersion++;
     }
 
-    public function useMyLocation(): void
-    {
-        $this->dispatch('request-geolocation');
-    }
-
-    #[On('geolocation-result')]
-    public function onGeolocationResult($lat, $lng): void
-    {
-        $this->latitude = round((float) $lat, 6);
-        $this->longitude = round((float) $lng, 6);
-        $this->mapView = [
-            'lat' => $this->latitude,
-            'lng' => $this->longitude,
-            'zoom' => 16,
-        ];
-        $this->mapVersion++;
-        $this->dispatch('toast', message: 'Location updated from your device.', type: 'success');
-    }
-
-    public function clearLocation(): void
-    {
-        $this->latitude = null;
-        $this->longitude = null;
-        $this->mapVersion++;
-        $this->dispatch('toast', message: 'Location removed.', type: 'info');
-    }
+    // ─────────────────────────────────────────────────────────
+    //  Update
+    // ─────────────────────────────────────────────────────────
 
     public function update()
     {
+        abort_unless(Auth::user()?->hasRole('super-admin'), 403, 'Super-admin access only.');
+
         $this->validate();
 
-        DB::transaction(function () {
-            $imagePath = $this->event->image_path;
-            if ($this->remove_existing_image) {
-                $imagePath = null;
-            }
+        // Re-derive barangay + coordinates from the tenant at save time.
+        $tenant = Tenant::query()
+            ->select('id', 'barangay', 'coordinates')
+            ->find($this->tenant_id);
+
+        if (!$tenant) {
+            $this->addError('tenant_id', 'The selected tourist spot no longer exists.');
+            return null;
+        }
+
+        $this->barangay = $tenant->barangay ?? $this->barangay;
+
+        $primary     = $this->extractPrimaryCoords($tenant);
+        $coordinates = $primary
+            ? ['lat' => $primary['lat'], 'lng' => $primary['lng']]
+            : null;
+
+        $newImagePath = null;
+        $oldImagePath = $this->event->image_path;
+
+        try {
             if ($this->image) {
-                $imagePath = $this->image->store('event-images', 'public');
+                $newImagePath = $this->image->store('event-images', 'public');
             }
 
-            $coordinates = null;
-            if ($this->latitude !== null && $this->longitude !== null) {
-                $coordinates = ['lat' => $this->latitude, 'lng' => $this->longitude];
+            DB::transaction(function () use ($tenant, $coordinates, $newImagePath): void {
+                // Lock the event row.
+                $event = Event::whereKey($this->event->id)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                // Decide which image path the event ends up with.
+                $imagePath = $event->image_path;
+                if ($newImagePath) {
+                    $imagePath = $newImagePath;
+                } elseif ($this->remove_existing_image) {
+                    $imagePath = null;
+                }
+
+                $event->update([
+                    'name'        => $this->name,
+                    'barangay'    => $this->barangay,
+                    'description' => $this->description ?: null,
+                    'type'        => $this->type,
+                    'start_date'  => $this->start_date,
+                    'end_date'    => $this->end_date ?: null,
+                    'tenant_id'   => $tenant->id,
+                    'is_active'   => $this->is_active,
+                    'featured'    => $this->featured,
+                    'image_path'  => $imagePath,
+                    'coordinates' => $coordinates,
+                ]);
+            });
+        } catch (\Throwable $e) {
+            // Clean up the newly stored image — the DB rolled back.
+            if ($newImagePath && Storage::disk('public')->exists($newImagePath)) {
+                Storage::disk('public')->delete($newImagePath);
             }
 
-            $this->event->update([
-                'name'        => $this->name,
-                'barangay'    => $this->barangay,
-                'description' => $this->description,
-                'type'        => $this->type,
-                'start_date'  => $this->start_date,
-                'end_date'    => $this->end_date ?: null,
-                'tenant_id'   => $this->tenant_id,
-                'is_active'   => $this->is_active,
-                'featured'    => $this->featured,
-                'image_path'  => $imagePath,
-                'coordinates' => $coordinates,
+            Log::error('Event update failed', [
+                'event_id' => $this->event->id,
+                'actor_id' => Auth::id(),
+                'error'    => $e->getMessage(),
+                'file'     => $e->getFile(),
+                'line'     => $e->getLine(),
             ]);
-        });
+
+            session()->flash('error', 'Failed to update the event. Please try again.');
+            return null;
+        }
+
+        // Delete the old image AFTER a successful commit — and only if it was
+        // replaced by a new one or explicitly removed.
+        if (($newImagePath || $this->remove_existing_image)
+            && $oldImagePath
+            && Storage::disk('public')->exists($oldImagePath)
+        ) {
+            Storage::disk('public')->delete($oldImagePath);
+        }
 
         session()->flash('message', 'Event updated successfully.');
         return $this->redirectRoute('superadmin.events.index', navigate: true);
@@ -274,28 +404,24 @@ class extends Component
 };
 ?>
 
-<div x-data="{
-    newImagePreview: null,
-    handleImageInput(event) {
-        const file = event.target.files[0];
-        if (file) {
-            this.newImagePreview = URL.createObjectURL(file);
-        } else {
-            this.newImagePreview = null;
+<div
+    x-data="{
+        newImagePreview: null,
+        toasts: [],
+        handleImageInput(event) {
+            const file = event.target.files[0];
+            this.newImagePreview = file ? URL.createObjectURL(file) : null;
         }
-    }
-}" class="p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto space-y-6">
-
-    {{-- Toast notifications --}}
-    <div
-        x-data="{ toasts: [] }"
-        x-on:toast.window="
-            const id = Date.now() + Math.random();
-            toasts.push({ id, message: $event.detail.message, type: $event.detail.type || 'info' });
-            setTimeout(() => { toasts = toasts.filter(t => t.id !== id) }, 4000);
-        "
-        class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 w-full max-w-sm pointer-events-none"
-    >
+    }"
+    x-on:toast.window="
+        const id = Date.now() + Math.random();
+        toasts.push({ id, message: $event.detail.message, type: $event.detail.type || 'info' });
+        setTimeout(() => { toasts = toasts.filter(t => t.id !== id) }, 4000);
+    "
+    class="p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto space-y-6"
+>
+    {{-- Toast stack --}}
+    <div class="fixed bottom-4 right-4 z-2000 flex flex-col gap-2 w-full max-w-sm pointer-events-none">
         <template x-for="toast in toasts" :key="toast.id">
             <div
                 x-transition:enter="transition ease-out duration-300"
@@ -306,8 +432,8 @@ class extends Component
                 x-transition:leave-end="opacity-0"
                 class="pointer-events-auto rounded-xl px-4 py-3 shadow-lg text-sm font-medium flex items-center gap-2 border"
                 :class="{
-                    'bg-green-50 border-green-200 text-green-800 dark:bg-green-500/10 dark:border-green-500/30 dark:text-green-300': toast.type === 'success',
-                    'bg-red-50 border-red-200 text-red-800 dark:bg-red-500/10 dark:border-red-500/30 dark:text-red-300': toast.type === 'error',
+                    'bg-emerald-50 border-emerald-200 text-emerald-800 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-300': toast.type === 'success',
+                    'bg-rose-50 border-rose-200 text-rose-800 dark:bg-rose-500/10 dark:border-rose-500/30 dark:text-rose-300': toast.type === 'error',
                     'bg-blue-50 border-blue-200 text-blue-800 dark:bg-blue-500/10 dark:border-blue-500/30 dark:text-blue-300': toast.type === 'info',
                 }"
             >
@@ -316,21 +442,58 @@ class extends Component
         </template>
     </div>
 
-    {{-- Flash Message --}}
+    {{-- Flash messages --}}
     @if(session()->has('message'))
-        <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium">
-            {{ session('message') }}
+        <div class="flex items-start gap-3 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 border-l-4 border-l-emerald-500 p-4 rounded-md">
+            <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+            </svg>
+            <p class="text-sm text-emerald-700 dark:text-emerald-300 font-medium">{{ session('message') }}</p>
+        </div>
+    @endif
+    @if(session()->has('error'))
+        <div class="flex items-start gap-3 bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 border-l-4 border-l-rose-500 p-4 rounded-md">
+            <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <p class="text-sm text-rose-700 dark:text-rose-300 font-medium">{{ session('error') }}</p>
+        </div>
+    @endif
+    @if($errors->any())
+        <div class="bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 border-l-4 border-l-rose-500 p-4 rounded-md">
+            <div class="flex items-start gap-3">
+                <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <div class="text-sm text-rose-700 dark:text-rose-300">
+                    <p class="font-semibold mb-1">Please fix the following:</p>
+                    <ul class="list-disc list-inside space-y-0.5">
+                        @foreach($errors->all() as $err)
+                            <li>{{ $err }}</li>
+                        @endforeach
+                    </ul>
+                </div>
+            </div>
         </div>
     @endif
 
-    {{-- Header --}}
+    {{-- Header — superadmin plain pattern --}}
     <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
         <div>
-            <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Edit Event</h1>
+            <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
+                Edit Event
+            </h1>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                Update the event's details. Its location inherits from the tourist spot.
+            </p>
         </div>
         <a href="{{ route('superadmin.events.index') }}" wire:navigate
-           class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+           class="btn-secondary active:scale-95 transition-transform
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                  inline-flex items-center justify-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+            </svg>
             Back to Events
         </a>
     </div>
@@ -338,266 +501,450 @@ class extends Component
     {{-- Form --}}
     <form wire:submit="update" class="space-y-6">
 
-        {{-- Event Details --}}
-        <div class="card p-6 space-y-6">
-            <h2 class="font-display text-xl font-semibold text-gray-900 dark:text-white mb-2">Event Details</h2>
+        {{-- ═══════════════ EVENT DETAILS ═══════════════ --}}
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6 space-y-6">
+            <div class="flex items-center gap-2">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <h2 class="text-base font-bold text-gray-900 dark:text-white">Event Details</h2>
+            </div>
 
-            {{-- Event Name --}}
+            {{-- Event name --}}
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Event Name *</label>
-                <input type="text" wire:model="name" class="input" placeholder="e.g. Sinulog Festival">
+                <div class="flex justify-between items-baseline mb-1">
+                    <label for="field-event-name" class="block text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider">
+                        Event Name <span class="text-red-500">*</span>
+                    </label>
+                    <span class="text-[11px] text-gray-400 dark:text-gray-500 tabular-nums">{{ Str::length($name) }}/255</span>
+                </div>
+                <input type="text" id="field-event-name" wire:model.live.debounce.300ms="name"
+                       maxlength="255" class="input w-full" placeholder="e.g. Sinulog Festival">
                 @error('name') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
 
-            {{-- Barangay and Type --}}
+            {{-- Type + Tourist spot --}}
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Barangay *</label>
-                    <input type="text" wire:model="barangay" list="barangays-list" class="input" placeholder="Type or select barangay">
-                    <datalist id="barangays-list">
-                        @foreach($this->barangays as $b)
-                            <option value="{{ $b }}">
-                        @endforeach
+                    <label for="field-event-type" class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
+                        Event Type <span class="text-red-500">*</span>
+                    </label>
+                    <input type="text" id="field-event-type" wire:model="type"
+                           list="event-type-suggestions" class="input w-full"
+                           placeholder="e.g. Fiesta, Sports, Environment">
+                    <datalist id="event-type-suggestions">
+                        <option value="Fiesta"></option>
+                        <option value="Festival"></option>
+                        <option value="Sports"></option>
+                        <option value="Environment"></option>
+                        <option value="Cultural"></option>
+                        <option value="Religious"></option>
+                        <option value="Exhibition"></option>
                     </datalist>
-                    @error('barangay') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Type *</label>
-                    <input type="text" wire:model="type" class="input" placeholder="e.g. Fiesta, Sports, Environment">
                     @error('type') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                </div>
+
+                <div>
+                    <label for="field-event-tenant" class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
+                        Tourist Spot <span class="text-red-500">*</span>
+                    </label>
+
+                    <div class="relative mb-2">
+                        <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                        </svg>
+                        <input type="text" wire:model.live.debounce.300ms="tenantSearch"
+                               placeholder="Search tourist spots…"
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2 pl-10 pr-4 text-sm text-gray-900 dark:text-white placeholder-gray-400
+                                      focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                    </div>
+
+                    <select id="field-event-tenant" wire:model.live="tenant_id" class="input w-full">
+                        <option value="">— Select a tourist spot —</option>
+                        @foreach($this->allTenants as $t)
+                            <option value="{{ $t->id }}" wire:key="tenant-option-{{ $t->id }}">{{ $t->name }}</option>
+                        @endforeach
+                    </select>
+                    @error('tenant_id') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+                        The event inherits this spot's barangay and map location.
+                    </p>
                 </div>
             </div>
 
-            {{-- Description with counter --}}
+            {{-- Description --}}
             <div>
                 <div class="flex justify-between items-baseline mb-1">
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Description</label>
-                    <span class="text-xs text-gray-400 dark:text-gray-500">{{ Str::length($description) }}/1000</span>
+                    <label for="field-event-description" class="block text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider">
+                        Description
+                    </label>
+                    <span class="text-[11px] text-gray-400 dark:text-gray-500 tabular-nums">{{ Str::length($description) }}/1000</span>
                 </div>
-                <textarea wire:model.live="description" rows="4" class="textarea"
-                          placeholder="Describe the event..."></textarea>
+                <textarea id="field-event-description" wire:model.live.debounce.300ms="description"
+                          rows="4" class="input w-full" maxlength="1000"
+                          placeholder="Describe the event…"></textarea>
                 @error('description') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
 
             {{-- Dates --}}
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Start Date *</label>
-                    <input type="datetime-local" wire:model="start_date" class="input">
+                    <label for="field-event-start" class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
+                        Start Date <span class="text-red-500">*</span>
+                    </label>
+                    <input type="datetime-local" id="field-event-start" wire:model="start_date" class="input w-full">
                     @error('start_date') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">End Date</label>
-                    <input type="datetime-local" wire:model="end_date" class="input">
+                    <label for="field-event-end" class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
+                        End Date <span class="text-gray-400 dark:text-gray-500 font-normal normal-case">(optional)</span>
+                    </label>
+                    <input type="datetime-local" id="field-event-end" wire:model="end_date" class="input w-full">
                     @error('end_date') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             </div>
 
-            {{-- Event Photo --}}
+            {{-- Image --}}
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Event Photo</label>
+                <label for="field-event-image" class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
+                    Event Photo
+                </label>
 
-                @if($event->image_path && !$remove_existing_image)
-                    <div class="mb-3">
-                        <img src="{{ asset('storage/' . $event->image_path) }}" class="h-32 w-32 object-cover rounded-lg border border-gray-200 dark:border-gray-700" alt="{{ $event->name }}">
-                        <button type="button" wire:click="$set('remove_existing_image', true)" class="mt-2 text-xs text-red-500 dark:text-red-400 hover:text-red-700 active:scale-95 transition-transform">Remove existing photo</button>
+                {{-- Existing image (shown only when no new image selected) --}}
+                @if($event->image_path && !$remove_existing_image && !$image)
+                    <div class="mb-3 flex items-center gap-3">
+                        <img src="{{ asset('storage/' . $event->image_path) }}"
+                             class="h-24 w-24 object-cover rounded-lg border border-gray-200 dark:border-gray-700"
+                             alt="{{ $event->name }}">
+                        <div>
+                            <p class="text-xs text-gray-500 dark:text-gray-400">Current photo</p>
+                            <button type="button"
+                                    wire:click="$set('remove_existing_image', true)"
+                                    class="mt-1 text-xs font-semibold text-rose-500 hover:text-rose-700 active:scale-95 transition-transform
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 rounded">
+                                Remove existing photo
+                            </button>
+                        </div>
                     </div>
                 @endif
 
-                <input type="file" wire:model="image" accept="image/*"
+                {{-- "Will be removed" hint --}}
+                @if($remove_existing_image && !$image)
+                    <div class="mb-3 flex items-center gap-3 p-3 rounded-lg bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30">
+                        <svg class="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                        </svg>
+                        <p class="text-xs text-rose-700 dark:text-rose-300 font-medium flex-1">
+                            The current photo will be removed on save.
+                        </p>
+                        <button type="button"
+                                wire:click="$set('remove_existing_image', false)"
+                                class="text-xs font-semibold text-rose-700 dark:text-rose-300 hover:underline
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 rounded">
+                            Undo
+                        </button>
+                    </div>
+                @endif
+
+                <input type="file" id="field-event-image" wire:model="image" accept="image/*"
                        @change="handleImageInput($event)"
-                       class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Max 10MB. Supported: JPEG, PNG, JPG, GIF, WebP.</p>
+                       class="w-full text-sm text-gray-700 dark:text-gray-300
+                              file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0
+                              file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300
+                              hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition">
+                <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">Max 10MB. Supported: JPEG, PNG, JPG, GIF, WebP.</p>
                 @error('image') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
 
-                {{-- Client-side preview --}}
-                <div class="mt-3" x-show="newImagePreview" x-cloak>
-                    <img :src="newImagePreview" class="h-32 w-32 object-cover rounded-lg border border-gray-200 dark:border-gray-700" alt="New Event Preview">
-                    <button type="button" @click="newImagePreview = null; $wire.set('image', null)" class="mt-2 text-xs text-red-500 dark:text-red-400 hover:text-red-700 active:scale-95 transition-transform">Remove new photo</button>
+                <div wire:loading wire:target="image" class="mt-2 text-xs text-primary-600 dark:text-primary-400 flex items-center gap-1.5">
+                    <svg class="animate-spin w-3.5 h-3.5 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                    </svg>
+                    Uploading…
+                </div>
+
+                {{-- New image preview --}}
+                <div x-show="newImagePreview" x-cloak class="mt-3 flex items-center gap-3">
+                    <img :src="newImagePreview"
+                         class="h-24 w-24 object-cover rounded-lg border border-gray-200 dark:border-gray-700"
+                         alt="New preview">
+                    <div>
+                        <p class="text-xs text-gray-500 dark:text-gray-400">New photo (not saved yet)</p>
+                        <button type="button"
+                                @click="newImagePreview = null; $wire.set('image', null)"
+                                class="mt-1 text-xs font-semibold text-rose-500 hover:text-rose-700 active:scale-95 transition-transform
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 rounded">
+                            Remove new photo
+                        </button>
+                    </div>
                 </div>
             </div>
 
-            {{-- Tenant Assignment --}}
-            <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Assign to Tenant (optional)</label>
-                <select wire:model="tenant_id" class="select">
-                    <option value="">None (Platform‑wide)</option>
-                    @foreach($this->tenants as $t)
-                        <option value="{{ $t->id }}">{{ $t->name }}</option>
-                    @endforeach
-                </select>
-                @error('tenant_id') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-            </div>
-
-            {{-- Active / Featured toggles --}}
-            <div class="flex flex-wrap items-center gap-6">
+            {{-- Toggles --}}
+            <div class="flex flex-wrap items-center gap-6 pt-2 border-t border-gray-100 dark:border-gray-700">
                 <label class="inline-flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" wire:model="is_active" class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary-600 focus:ring-primary-500">
+                    <input type="checkbox" wire:model="is_active"
+                           class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary-600 focus:ring-primary-500">
                     <span class="text-sm text-gray-700 dark:text-gray-300">Active</span>
                 </label>
                 <label class="inline-flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" wire:model="featured" class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary-600 focus:ring-primary-500">
+                    <input type="checkbox" wire:model="featured"
+                           class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary-600 focus:ring-primary-500">
                     <span class="text-sm text-gray-700 dark:text-gray-300">Featured</span>
                 </label>
             </div>
         </div>
 
-        {{-- Location Picker --}}
-        <div class="card p-6 space-y-6">
-            <h2 class="font-display text-xl font-semibold text-gray-900 dark:text-white mb-2">Event Location</h2>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">Click on the map to set the event location, or use the coordinates below.</p>
-
-            <div class="flex flex-wrap gap-2 mb-4">
-                <button type="button"
-                        wire:click="useMyLocation"
-                        class="btn-secondary text-xs active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-1.5">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                    Use my location
-                </button>
-                <button type="button"
-                        wire:click="toggleSatellite"
-                        class="btn-secondary text-xs active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-1.5">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/></svg>
-                    {{ $satellite ? 'Street View' : 'Satellite' }}
-                </button>
-                @if($latitude !== null && $longitude !== null)
-                    <button type="button"
-                            wire:click="clearLocation"
-                            class="btn-secondary text-xs text-red-600 active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-red-500/50 inline-flex items-center gap-1.5">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                        Clear Location
-                    </button>
-                @endif
+        {{-- ═══════════════ LOCATION PREVIEW ═══════════════ --}}
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6 space-y-5">
+            <div class="flex items-center gap-2">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <h2 class="text-base font-bold text-gray-900 dark:text-white">Location Preview</h2>
             </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Latitude</label>
-                    <input type="number" step="any" min="-90" max="90"
-                           wire:model.live.debounce.500ms="latitude"
-                           class="input font-mono" placeholder="10.900977">
-                    @error('latitude') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Longitude</label>
-                    <input type="number" step="any" min="-180" max="180"
-                           wire:model.live.debounce.500ms="longitude"
-                           class="input font-mono" placeholder="123.070557">
-                    @error('longitude') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-                </div>
-            </div>
+            @if($this->selectedTenant)
+                @php $tenant = $this->selectedTenant; @endphp
 
-            <div class="card overflow-hidden relative" style="height: 400px;"
-                 x-data="{ showOverlay: true }"
-                 x-init="setTimeout(() => showOverlay = false, 800)">
-                <div x-show="showOverlay"
-                     x-transition:leave="transition-opacity duration-500"
-                     x-transition:leave-start="opacity-100"
-                     x-transition:leave-end="opacity-0"
-                     class="absolute inset-0 z-10 flex items-center justify-center bg-gray-50 dark:bg-gray-800">
-                    <div class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
-                        <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
-                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-                        </svg>
-                        Updating map…
+                {{-- Info card --}}
+                <div class="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/60 overflow-hidden">
+
+                    {{-- Header row --}}
+                    <div class="flex items-start gap-3 px-4 py-3.5 border-b border-gray-200 dark:border-gray-700">
+                        <div class="p-2 rounded-lg bg-primary-50 dark:bg-primary-500/10 text-primary-600 dark:text-primary-400 shrink-0">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
+                            </svg>
+                        </div>
+                        <div class="min-w-0 flex-1">
+                            <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Tourist Spot</p>
+                            <p class="text-sm font-semibold text-gray-900 dark:text-white mt-0.5 truncate">{{ $tenant->name }}</p>
+                        </div>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-primary-600 dark:text-primary-400 bg-primary-50 dark:bg-primary-500/10 border border-primary-200 dark:border-primary-500/30 px-2 py-0.5 rounded-full shrink-0">
+                            Read-only
+                        </span>
                     </div>
-                </div>
 
-                <div wire:key="event-edit-map-{{ $mapVersion }}">
-                    <x-map
-                        id="event-edit-map"
-                        :center="[(float)$mapView['lng'], (float)$mapView['lat']]"
-                        :zoom="$mapView['zoom']"
-                        height="400px"
-                        :provider="$satellite ? 'custom' : 'carto-voyager'"
-                        :style="$satellite ? route('map.satellite.style') : null"
-                        :light-style="$satellite ? route('map.satellite.style') : null"
-                        :dark-style="$satellite ? route('map.satellite.style') : null"
-                        theme="auto"
-                        class="h-full w-full"
-                        :events="['click', 'marker-drag-end']"
-                    >
-                        <x-map-controls
-                            :zoom="true"
-                            :compass="true"
-                            :locate="true"
-                            :fullscreen="true"
-                            :scale="true"
-                            position="top-right"
-                        />
+                    <dl class="divide-y divide-gray-200 dark:divide-gray-700">
+                        {{-- Barangay --}}
+                        <div class="flex items-start gap-3 px-4 py-3">
+                            <div class="p-1.5 rounded-md bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v11a2 2 0 002 2h14a2 2 0 002-2V7M3 7l9-4 9 4M3 7h18"/>
+                                </svg>
+                            </div>
+                            <div class="min-w-0 flex-1">
+                                <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Barangay</dt>
+                                <dd class="text-sm font-semibold text-gray-900 dark:text-white mt-0.5">
+                                    {{ $barangay ?: 'Not set for this tourist spot' }}
+                                </dd>
+                            </div>
+                        </div>
 
-                        @if($latitude !== null && $longitude !== null)
-                            <x-map-marker
-                                wire:key="event-location-marker-{{ $latitude }}-{{ $longitude }}"
-                                :lat="$latitude"
-                                :lng="$longitude"
-                                color="#ef4444"
-                                id="event-location-marker"
-                                draggable
-                            >
-                                <x-marker-content>
-                                    <div class="relative flex items-center justify-center">
-                                        <svg class="h-10 w-10 drop-shadow-lg" viewBox="0 0 24 24" fill="#ef4444" stroke="white" stroke-width="1.5">
-                                            <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
-                                            <circle cx="12" cy="9" r="2.5" fill="white"/>
-                                        </svg>
-                                    </div>
-                                </x-marker-content>
-                                <x-marker-popup>
-                                    <div class="p-2">
-                                        <strong class="text-gray-900 dark:text-white">Event Location</strong>
-                                        <p class="text-xs text-gray-500 dark:text-gray-400">{{ $latitude }}, {{ $longitude }}</p>
-                                    </div>
-                                </x-marker-popup>
-                            </x-map-marker>
+                        {{-- Full address --}}
+                        <div class="flex items-start gap-3 px-4 py-3">
+                            <div class="p-1.5 rounded-md bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
+                                </svg>
+                            </div>
+                            <div class="min-w-0 flex-1">
+                                <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Full Address</dt>
+                                <dd class="text-sm text-gray-900 dark:text-white mt-0.5 leading-snug">
+                                    {{ $tenant->address ?: 'No address on file' }}
+                                </dd>
+                            </div>
+                        </div>
+
+                        {{-- Coordinates --}}
+                        <div class="flex items-start gap-3 px-4 py-3">
+                            <div class="p-1.5 rounded-md bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
+                                </svg>
+                            </div>
+                            <div class="min-w-0 flex-1">
+                                <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Coordinates</dt>
+                                <dd class="text-xs font-mono text-gray-900 dark:text-white mt-0.5 tabular-nums">
+                                    {{ $latitude !== null && $longitude !== null
+                                        ? number_format($latitude, 5) . ', ' . number_format($longitude, 5)
+                                        : 'Not set' }}
+                                </dd>
+                            </div>
+                        </div>
+
+                        {{-- Contact --}}
+                        @if($tenant->contact_number || $tenant->email)
+                            <div class="flex items-start gap-3 px-4 py-3">
+                                <div class="p-1.5 rounded-md bg-purple-50 dark:bg-purple-500/10 text-purple-600 dark:text-purple-400 shrink-0 mt-0.5">
+                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/>
+                                    </svg>
+                                </div>
+                                <div class="min-w-0 flex-1">
+                                    <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Contact</dt>
+                                    <dd class="text-xs text-gray-900 dark:text-white mt-0.5 space-y-0.5">
+                                        @if($tenant->contact_number)
+                                            <p>{{ $tenant->contact_number }}</p>
+                                        @endif
+                                        @if($tenant->email)
+                                            <p class="truncate">{{ $tenant->email }}</p>
+                                        @endif
+                                    </dd>
+                                </div>
+                            </div>
                         @endif
-                    </x-map>
+                    </dl>
                 </div>
-            </div>
+
+                {{-- Map (read-only) --}}
+                @if($this->selectedTenantHasLocation)
+                    <div class="flex items-center justify-between">
+                        <p class="text-xs text-gray-500 dark:text-gray-400">
+                            The marker is fixed to the tourist spot's location.
+                        </p>
+                        <button type="button" wire:click="toggleSatellite"
+                                class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg
+                                       bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700
+                                       text-xs font-medium text-gray-700 dark:text-gray-300 shadow-sm
+                                       hover:bg-gray-50 dark:hover:bg-gray-800 transition active:scale-95
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/>
+                            </svg>
+                            {{ $satellite ? 'Street View' : 'Satellite' }}
+                        </button>
+                    </div>
+
+                    <div class="rounded-2xl overflow-hidden border border-gray-200/80 dark:border-gray-700/80 relative" style="height: 360px;">
+                        <div wire:key="event-location-preview-{{ $tenant->id }}-{{ $satellite ? 'sat' : 'std' }}-{{ $mapVersion }}">
+                            <x-map
+                                id="event-location-preview"
+                                :center="[(float) $mapView['lng'], (float) $mapView['lat']]"
+                                :zoom="$mapView['zoom']"
+                                height="360px"
+                                :provider="$satellite ? 'custom' : 'carto-voyager'"
+                                :style="$satellite ? route('map.satellite.style') : null"
+                                :light-style="$satellite ? route('map.satellite.style') : null"
+                                :dark-style="$satellite ? route('map.satellite.style') : null"
+                                theme="auto"
+                                class="h-full w-full"
+                                :interactive="false"
+                            >
+                                <x-map-controls
+                                    :zoom="false"
+                                    :compass="false"
+                                    :locate="false"
+                                    :fullscreen="true"
+                                    :scale="false"
+                                    position="top-right"
+                                />
+
+                                @if($latitude !== null && $longitude !== null)
+                                    <x-map-marker
+                                        wire:key="event-preview-marker-{{ $tenant->id }}"
+                                        :lat="$latitude"
+                                        :lng="$longitude"
+                                        color="#ef4444"
+                                        id="event-preview-marker"
+                                        :draggable="false"
+                                    >
+                                        <x-marker-content>
+                                            <div class="relative flex items-center justify-center transform-gpu will-change-transform transition-transform duration-200">
+                                                <svg class="h-11 w-11 drop-shadow-lg" viewBox="0 0 24 24" fill="#ef4444" stroke="white" stroke-width="1.5" aria-hidden="true">
+                                                    <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
+                                                    <circle cx="12" cy="9" r="2.5" fill="white"/>
+                                                </svg>
+                                            </div>
+                                        </x-marker-content>
+                                        <x-marker-popup>
+                                            <div class="p-3 min-w-55">
+                                                <strong class="text-gray-900 dark:text-white text-sm block">{{ $tenant->name }}</strong>
+                                                @if($barangay)
+                                                    <p class="text-xs text-gray-600 dark:text-gray-300 mt-1">
+                                                        <span class="font-semibold">{{ $barangay }}</span>
+                                                    </p>
+                                                @endif
+                                                @if($tenant->address)
+                                                    <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 leading-snug">{{ $tenant->address }}</p>
+                                                @endif
+                                                <p class="text-[10px] text-gray-400 dark:text-gray-500 mt-2 font-mono tabular-nums">
+                                                    {{ number_format($latitude, 5) }}, {{ number_format($longitude, 5) }}
+                                                </p>
+                                            </div>
+                                        </x-marker-popup>
+                                    </x-map-marker>
+                                @endif
+                            </x-map>
+                        </div>
+                    </div>
+                @else
+                    <div class="rounded-xl border border-amber-200 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/5 p-4 flex items-start gap-3">
+                        <svg class="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                        <div>
+                            <p class="text-sm font-semibold text-amber-800 dark:text-amber-200">No map location set</p>
+                            <p class="text-xs text-amber-700 dark:text-amber-300 mt-0.5 leading-relaxed">
+                                This tourist spot has no coordinates on file. The event will still be saved without a map position.
+                                Add a location on the
+                                <a href="{{ route('superadmin.map-markers.index') }}" wire:navigate class="font-semibold underline hover:no-underline">Map Markers</a>
+                                page to display it on the map.
+                            </p>
+                        </div>
+                    </div>
+                @endif
+
+                <div class="flex justify-end pt-1">
+                    <button type="button" wire:click="clearTenant"
+                            class="inline-flex items-center gap-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400
+                                   hover:text-rose-600 dark:hover:text-rose-400 active:scale-95 transition
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 rounded">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                        Change tourist spot
+                    </button>
+                </div>
+            @else
+                <div class="rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-600 p-8 text-center">
+                    <div class="mx-auto p-3 rounded-2xl bg-gray-100 dark:bg-gray-800 w-fit text-gray-400 dark:text-gray-500 mb-3">
+                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
+                        </svg>
+                    </div>
+                    <p class="text-sm font-semibold text-gray-900 dark:text-white">No tourist spot selected</p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 max-w-sm mx-auto">
+                        Pick a tourist spot above. Its barangay, address, and map location will appear here automatically.
+                    </p>
+                </div>
+            @endif
         </div>
 
-        {{-- Actions --}}
-        <div class="pt-4 border-t border-gray-200 dark:border-gray-700 flex flex-col sm:flex-row gap-3">
-            <button type="submit" wire:loading.attr="disabled"
-                    class="btn-primary w-full sm:w-auto active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
-                <span wire:loading.remove>Update Event</span>
-                <span wire:loading class="inline-flex items-center gap-2">
-                    <svg class="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
-                    Updating…
+        {{-- ═══════════════ ACTIONS ═══════════════ --}}
+        <div class="flex flex-col sm:flex-row gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
+            <button type="submit"
+                    wire:loading.attr="disabled"
+                    wire:target="update"
+                    class="btn-primary w-full sm:w-auto active:scale-95 transition-transform
+                           inline-flex items-center justify-center gap-2
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                           disabled:opacity-60 disabled:cursor-not-allowed">
+                <span wire:loading.remove wire:target="update">Update Event</span>
+                <span wire:loading wire:target="update" class="inline-flex items-center gap-2">
+                    <svg class="animate-spin h-4 w-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
+                    </svg>
+                    Saving…
                 </span>
             </button>
             <a href="{{ route('superadmin.events.index') }}" wire:navigate
-               class="btn-secondary w-full sm:w-auto active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
+               class="btn-secondary w-full sm:w-auto active:scale-95 transition-transform
+                      inline-flex items-center justify-center gap-2
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                 Cancel
             </a>
         </div>
     </form>
-
-    @script
-    <script>
-        function notify(message, type = 'info') {
-            window.dispatchEvent(new CustomEvent('toast', { detail: { message, type } }));
-        }
-
-        window.addEventListener('request-geolocation', () => {
-            if (!navigator.geolocation) {
-                notify('Geolocation is not supported by your browser.', 'error');
-                return;
-            }
-            navigator.geolocation.getCurrentPosition(
-                (position) => {
-                    Livewire.dispatch('geolocation-result', {
-                        lat: position.coords.latitude,
-                        lng: position.coords.longitude,
-                    });
-                },
-                () => {
-                    notify('Unable to retrieve your location. Check browser permissions.', 'error');
-                },
-                { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
-            );
-        });
-    </script>
-    @endscript
 </div>

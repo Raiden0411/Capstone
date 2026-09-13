@@ -14,7 +14,7 @@ return new class extends Migration
             $table->string('slug')->unique();
             $table->foreignId('type_of_tenant_id')->constrained('type_of_tenants')->cascadeOnDelete();
             $table->string('address');
-            $table->string('barangay')->nullable();               // ← added
+            $table->string('barangay')->nullable();              
             $table->string('contact_number');
             $table->string('email');
             $table->string('logo')->nullable();

@@ -1,0 +1,182 @@
+<?php
+
+use App\Services\PublicNotificationService;
+use Illuminate\Support\Facades\Auth;
+use Livewire\Attributes\Computed;
+use Livewire\Component;
+
+new class extends Component
+{
+    /** Polling interval in seconds. Set to 0 to disable. */
+    public int $pollInterval = 60;
+
+    #[Computed]
+    public function payload(): array
+    {
+        $user = Auth::user();
+        if (!$user) {
+            return ['items' => [], 'count' => 0];
+        }
+
+        return app(PublicNotificationService::class)->forUser($user);
+    }
+
+    #[Computed]
+    public function count(): int
+    {
+        return (int) ($this->payload['count'] ?? 0);
+    }
+
+    #[Computed]
+    public function items(): array
+    {
+        return $this->payload['items'] ?? [];
+    }
+
+    public function iconPath(string $icon): string
+    {
+        return match ($icon) {
+            'clock'        => 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z',
+            'check-circle' => 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z',
+            'alert'        => 'M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z',
+            'inbox'        => 'M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4',
+            default        => 'M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9',
+        };
+    }
+
+    /** @return array{bg: string, text: string, border: string} */
+    public function colorClasses(string $color): array
+    {
+        return match ($color) {
+            'emerald' => [
+                'bg'     => 'bg-emerald-100 dark:bg-emerald-500/20',
+                'text'   => 'text-emerald-700 dark:text-emerald-300',
+                'border' => 'border-emerald-200 dark:border-emerald-500/30',
+            ],
+            'rose' => [
+                'bg'     => 'bg-rose-100 dark:bg-rose-500/20',
+                'text'   => 'text-rose-700 dark:text-rose-300',
+                'border' => 'border-rose-200 dark:border-rose-500/30',
+            ],
+            'amber' => [
+                'bg'     => 'bg-amber-100 dark:bg-amber-500/20',
+                'text'   => 'text-amber-700 dark:text-amber-300',
+                'border' => 'border-amber-200 dark:border-amber-500/30',
+            ],
+            'blue' => [
+                'bg'     => 'bg-blue-100 dark:bg-blue-500/20',
+                'text'   => 'text-blue-700 dark:text-blue-300',
+                'border' => 'border-blue-200 dark:border-blue-500/30',
+            ],
+            default => [
+                'bg'     => 'bg-gray-100 dark:bg-gray-500/20',
+                'text'   => 'text-gray-700 dark:text-gray-300',
+                'border' => 'border-gray-200 dark:border-gray-500/30',
+            ],
+        };
+    }
+
+    public function render()
+    {
+        return $this->view();
+    }
+};
+?>
+
+{{-- Livewire polls here; Alpine owns the open/close state entirely. --}}
+<div
+    @if ($pollInterval > 0) wire:poll.{{ $pollInterval }}s @endif
+    x-data="{ open: false }"
+    x-on:livewire:navigated.window="$wire.$refresh()"
+    x-on:click.outside="open = false"
+    x-on:keydown.escape.window="open = false"
+    class="relative">
+
+    {{-- Bell button --}}
+    <button type="button"
+            @click="open = !open"
+            :aria-expanded="open.toString()"
+            aria-haspopup="true"
+            class="relative flex items-center justify-center size-10 md:size-9 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 transition-all duration-200 active:scale-95"
+            aria-label="Notifications">
+
+        <svg class="shrink-0 size-4 md:size-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+        </svg>
+
+        @if ($this->count > 0)
+            <span class="absolute -top-1 -right-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white ring-2 ring-white dark:ring-gray-900">
+                {{ $this->count > 9 ? '9+' : $this->count }}
+            </span>
+        @endif
+    </button>
+
+    {{-- Dropdown --}}
+    <div x-cloak
+         x-show="open"
+         x-transition:enter="transition ease-out duration-150"
+         x-transition:enter-start="opacity-0 scale-95 -translate-y-1"
+         x-transition:enter-end="opacity-100 scale-100 translate-y-0"
+         x-transition:leave="transition ease-in duration-100"
+         x-transition:leave-start="opacity-100 scale-100 translate-y-0"
+         x-transition:leave-end="opacity-0 scale-95 -translate-y-1"
+         class="absolute right-0 z-50 mt-2 w-80 sm:w-96 overflow-hidden rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-2xl origin-top-right">
+
+        <div class="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-4 py-3">
+            <p class="text-sm font-semibold text-gray-900 dark:text-white">Notifications</p>
+            @if ($this->count > 0)
+                <span class="text-xs text-gray-500 dark:text-gray-400">
+                    {{ $this->count }} active
+                </span>
+            @endif
+        </div>
+
+        @if (empty($this->items))
+            <div class="p-8 text-center">
+                <div class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-gray-100 dark:bg-gray-800 mb-3">
+                    <svg class="w-6 h-6 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M9.143 17.082a24.248 24.248 0 003.844.148m-3.844-.148a23.856 23.856 0 01-5.455-1.31 8.964 8.964 0 002.3-5.542m3.155 6.852a3 3 0 005.667 1.97m1.965-2.277L21 21m-4.225-4.225a23.81 23.81 0 003.536-1.003A8.967 8.967 0 0118 9.75V9A6 6 0 006.53 6.53m10.245 10.245L6.53 6.53M3 3l3.53 3.53"/>
+                    </svg>
+                </div>
+                <p class="text-sm font-semibold text-gray-900 dark:text-white">You're all caught up</p>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">No notifications right now.</p>
+            </div>
+        @else
+            <div class="max-h-[28rem] overflow-y-auto">
+                @foreach ($this->items as $notification)
+                    @php
+                        $colors   = $this->colorClasses($notification['color'] ?? 'gray');
+                        $iconPath = $this->iconPath($notification['icon'] ?? 'bell');
+                    @endphp
+                    <a href="{{ $notification['url'] }}"
+                       wire:navigate
+                       wire:key="notif-{{ $notification['id'] }}"
+                       @click="open = false"
+                       class="flex items-start gap-3 px-4 py-3 border-b border-gray-100 dark:border-gray-700/60 last:border-0 hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors">
+                        <div class="flex items-center justify-center shrink-0 w-9 h-9 rounded-xl border {{ $colors['bg'] }} {{ $colors['text'] }} {{ $colors['border'] }}">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="{{ $iconPath }}"/>
+                            </svg>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">
+                                {{ $notification['title'] }}
+                            </p>
+                            <p class="mt-0.5 text-xs text-gray-600 dark:text-gray-400 leading-relaxed line-clamp-2">
+                                {{ $notification['message'] }}
+                            </p>
+                            @if (!empty($notification['time']))
+                                <p class="mt-1 text-[10px] font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                                    {{ \Carbon\Carbon::createFromTimestamp($notification['time'])->diffForHumans() }}
+                                </p>
+                            @endif
+                        </div>
+                        <svg class="w-4 h-4 shrink-0 text-gray-300 dark:text-gray-600 mt-2.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
+                        </svg>
+                    </a>
+                @endforeach
+            </div>
+        @endif
+    </div>
+</div>

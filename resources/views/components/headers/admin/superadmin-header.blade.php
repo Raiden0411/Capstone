@@ -1,17 +1,10 @@
 {{-- resources/views/components/headers/admin/superadmin-header.blade.php --}}
 @php
-    $pendingTenants = \App\Models\Tenant::where('is_active', false)
-                        ->select('id', 'name', 'created_at')
-                        ->latest()
-                        ->take(5)
-                        ->get();
-    $pendingCount = \App\Models\Tenant::where('is_active', false)->count();
-
-    $user = Auth::user();
+    $user          = Auth::user();
     $userAvatarUrl = $user?->avatar ? asset('storage/' . $user->avatar) : null;
-    $userInitial = strtoupper(substr($user?->name ?? 'SA', 0, 1));
-    $userRole = $user?->roles->first();
-    $roleLabel = $userRole ? ucwords(str_replace(['-', '_'], ' ', $userRole->name)) : null;
+    $userInitial   = strtoupper(substr($user?->name ?? 'SA', 0, 1));
+    $userRole      = $user?->roles->first();
+    $roleLabel     = $userRole ? ucwords(str_replace(['-', '_'], ' ', $userRole->name)) : null;
 @endphp
 
 <header
@@ -62,84 +55,8 @@
                 View Site
             </a>
 
-            {{-- Notifications Dropdown --}}
-            <div class="relative"
-                 x-data="{ open: false }"
-                 @click.outside="open = false"
-                 @keydown.escape.window="open = false">
-                <button type="button"
-                        @click="open = !open"
-                        :aria-expanded="open.toString()"
-                        aria-haspopup="true"
-                        class="relative flex items-center gap-2 rounded-full border border-gray-300 bg-white px-2.5 py-1.5 text-gray-700 transition-all duration-200 hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-                        aria-label="Notifications">
-                    <svg class="size-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
-                    </svg>
-                    <span class="hidden text-xs font-medium md:inline">Notifications</span>
-                    @if($pendingCount > 0)
-                        <span class="absolute -top-1 -right-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white ring-2 ring-white dark:ring-gray-800">
-                            {{ $pendingCount > 99 ? '99+' : $pendingCount }}
-                        </span>
-                    @endif
-                </button>
-
-                <div x-cloak
-                     x-show="open"
-                     x-transition:enter="transition ease-out duration-150"
-                     x-transition:enter-start="opacity-0 scale-95 translate-y-1"
-                     x-transition:enter-end="opacity-100 scale-100 translate-y-0"
-                     x-transition:leave="transition ease-in duration-100"
-                     x-transition:leave-start="opacity-100 scale-100 translate-y-0"
-                     x-transition:leave-end="opacity-0 scale-95 translate-y-1"
-                     class="absolute right-0 z-50 mt-2 w-72 sm:w-80 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-800">
-
-                    <div class="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-gray-700">
-                        <p class="text-sm font-semibold text-gray-900 dark:text-white">Notifications</p>
-                        @if($pendingCount > 0)
-                            <span class="text-xs text-gray-500 dark:text-gray-400">{{ $pendingCount }} pending</span>
-                        @endif
-                    </div>
-
-                    @if($pendingTenants->isEmpty())
-                        <div class="p-6 text-center">
-                            <svg class="mx-auto mb-2 h-8 w-8 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
-                            </svg>
-                            <p class="text-sm text-gray-500 dark:text-gray-400">No pending applications</p>
-                        </div>
-                    @else
-                        <div class="max-h-80 overflow-y-auto">
-                            @foreach($pendingTenants as $tenant)
-                                <a href="{{ route('superadmin.tenants.preview', $tenant->id) }}" wire:navigate
-                                   @click="open = false"
-                                   class="flex items-start gap-3 border-b border-gray-100 px-4 py-3 transition-colors last:border-0 hover:bg-gray-50 active:scale-[0.99] dark:border-gray-700 dark:hover:bg-gray-700/50">
-                                    <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-100 text-xs font-bold text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
-                                        {{ strtoupper(substr($tenant->name, 0, 1)) }}
-                                    </div>
-                                    <div class="min-w-0 flex-1">
-                                        <p class="truncate text-sm font-medium text-gray-900 dark:text-white">{{ $tenant->name }}</p>
-                                        <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Business application awaiting approval</p>
-                                        <p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">{{ $tenant->created_at->diffForHumans() }}</p>
-                                    </div>
-                                    <span class="shrink-0 text-xs font-medium text-primary-600 dark:text-primary-400">Review</span>
-                                </a>
-                            @endforeach
-                        </div>
-
-                        <div class="border-t border-gray-200 p-2 dark:border-gray-700">
-                            <a href="{{ route('superadmin.tenants.index') }}" wire:navigate
-                               @click="open = false"
-                               class="flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-primary-600 transition-colors hover:bg-primary-50 active:scale-[0.98] dark:hover:bg-primary-500/10">
-                                View all pending applications
-                                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-                                </svg>
-                            </a>
-                        </div>
-                    @endif
-                </div>
-            </div>
+            {{-- Notifications — Livewire SFC, auto-refreshes --}}
+            <livewire:superadmin::partials.notification-bell />
 
             {{-- Dark mode toggle --}}
             <button type="button"

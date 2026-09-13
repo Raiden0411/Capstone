@@ -15,6 +15,9 @@
 
     <link rel="icon" href="{{ asset('favicon.ico') }}" sizes="any">
 
+    {{-- Hide x-cloak elements before Alpine boots. Tailwind v4 does not emit this rule. --}}
+    <style>[x-cloak]{display:none!important}</style>
+
     {{-- Dark mode flash prevention + livewire:navigated re-apply --}}
     <script>
         function applyTheme() {
@@ -57,27 +60,25 @@
 
     <x-headers.public-header />
 
-    <main class="flex-1 pt-17">
+    {{-- Offset matches header height: h-16 (64px) mobile, h-20 (80px) desktop --}}
+    <main class="flex-1 pt-16 md:pt-20">
         {{ $slot }}
     </main>
 
     <x-footers.public-footer />
 
-    {{-- Livewire Scripts (using CDN to bypass local corruption) --}}
-    <script src="https://cdn.jsdelivr.net/npm/livewire@4.0.0/dist/livewire.js"></script>
-    
-    {{-- Alpine Collapse plugin (required for x-collapse) --}}
-    <script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3.x.x/dist/cdn.min.js"></script>
-    <script>
-        document.addEventListener('alpine:init', () => {
-            Alpine.plugin(window.AlpineCollapse);
-        });
-    </script>
+    {{--
+        Alpine Collapse is registered in resources/js/app.js via
+        `Alpine.plugin(collapse)` on `alpine:init`. No CDN script here.
+        See app.js for the full rationale.
+    --}}
+
+    {{-- Livewire Scripts (asset pipeline — required for @livewireMapScripts and wire:navigate). --}}
+    @livewireScripts
 
     @livewireMapScripts
 
-    {{-- Preline JS --}}
-    <script src="https://unpkg.com/preline/dist/preline.js"></script>
     @stack('scripts')
 </body>
+
 </html>

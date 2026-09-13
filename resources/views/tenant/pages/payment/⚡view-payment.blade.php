@@ -6,11 +6,13 @@ use Livewire\WithPagination;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
+use Livewire\Attributes\Url;
 use App\Models\Payment;
-use App\Models\Transaction;
 use App\Models\Booking;
 use App\Jobs\ProcessPayMongoPayment;
+use App\Scopes\TenantScope;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Carbon\Carbon;
 
@@ -20,12 +22,18 @@ new
 class extends Component {
     use WithPagination;
 
-    public string $search        = '';
-    public string $statusFilter  = '';
-    public string $methodFilter  = '';
-    public ?string $fromDate     = null;
-    public ?string $toDate       = null;
-    public string $sortBy        = 'newest';
+    #[Url]
+    public string $search = '';
+    #[Url]
+    public string $statusFilter = '';
+    #[Url]
+    public string $methodFilter = '';
+    #[Url]
+    public ?string $fromDate = null;
+    #[Url]
+    public ?string $toDate = null;
+    #[Url]
+    public string $sortBy = 'newest';
 
     public function mount()
     {
@@ -39,22 +47,30 @@ class extends Component {
     public function updatingToDate()       { $this->resetPage(); }
     public function updatingSortBy()       { $this->resetPage(); }
 
+    /**
+     * Sync status of recent unpaid PayMongo payments.
+     * Uses a transaction to avoid multiple syncs overlapping.
+     */
     public function syncUnpaidPayments(int $limit = 20)
     {
-        $payments = Payment::where('tenant_id', Auth::user()->tenant_id)
-            ->where('payment_status', 'unpaid')
-            ->whereNotNull('paymongo_session_id')
-            ->latest()
-            ->limit($limit)
-            ->get();
+        DB::transaction(function () use ($limit) {
+            $payments = Payment::where('tenant_id', Auth::user()->tenant_id)
+                ->where('payment_status', 'unpaid')
+                ->whereNotNull('paymongo_session_id')
+                ->latest()
+                ->limit($limit)
+                ->lockForUpdate()
+                ->get();
 
-        foreach ($payments as $payment) {
-            try {
-                ProcessPayMongoPayment::dispatchSync($payment->paymongo_session_id);
-            } catch (\Exception $e) {
-                Log::error('Failed to dispatch PayMongo sync: ' . $e->getMessage());
+            foreach ($payments as $payment) {
+                try {
+                    // Use async dispatch to avoid blocking the UI
+                    ProcessPayMongoPayment::dispatch($payment->paymongo_session_id);
+                } catch (\Exception $e) {
+                    Log::error('Failed to dispatch PayMongo sync: ' . $e->getMessage());
+                }
             }
-        }
+        });
     }
 
     public function refreshSync()
@@ -67,7 +83,17 @@ class extends Component {
     #[Computed]
     public function payments()
     {
-        return Payment::with(['booking.user:id,name,email,phone'])
+        return Payment::query()
+            ->with([
+                'booking' => fn($q) => $q
+                    ->withoutGlobalScope(TenantScope::class) // ensure all related bookings load
+                    ->with([
+                        'user:id,name,email,phone',
+                        'payments' => fn($q) => $q->withoutGlobalScope(TenantScope::class)
+                            ->select('id', 'booking_id', 'payment_status', 'amount')
+                    ])
+                    ->select('id', 'tenant_id', 'user_id', 'total_amount', 'booking_reference', 'status')
+            ])
             ->where('tenant_id', Auth::user()->tenant_id)
             ->when($this->search, function ($q) {
                 $q->where(function ($sq) {
@@ -88,13 +114,12 @@ class extends Component {
                 ]);
             })
             ->when($this->sortBy, function ($q) {
-                switch ($this->sortBy) {
-                    case 'newest': $q->latest(); break;
-                    case 'oldest': $q->oldest(); break;
-                    case 'amount_high': $q->orderByDesc('amount'); break;
-                    case 'amount_low': $q->orderBy('amount'); break;
-                    default: $q->latest();
-                }
+                match ($this->sortBy) {
+                    'oldest'      => $q->oldest(),
+                    'amount_high' => $q->orderByDesc('amount'),
+                    'amount_low'  => $q->orderBy('amount'),
+                    default       => $q->latest(),
+                };
             })
             ->paginate(15);
     }
@@ -104,12 +129,22 @@ class extends Component {
     {
         $tid = Auth::user()->tenant_id;
 
+        $agg = Payment::where('tenant_id', $tid)
+            ->selectRaw("
+                SUM(CASE WHEN payment_status = 'paid' THEN amount ELSE 0 END) as total_received,
+                SUM(CASE WHEN payment_status = 'unpaid' THEN amount ELSE 0 END) as total_pending,
+                SUM(CASE WHEN payment_status = 'paid' THEN 1 ELSE 0 END) as paid_count,
+                SUM(CASE WHEN payment_status = 'unpaid' THEN 1 ELSE 0 END) as unpaid_count,
+                SUM(CASE WHEN payment_type = 'reservation' AND payment_status = 'paid' THEN amount ELSE 0 END) as reservation_fees
+            ")
+            ->first();
+
         return [
-            'total_received'   => Payment::where('tenant_id', $tid)->where('payment_status', 'paid')->sum('amount'),
-            'total_pending'    => Payment::where('tenant_id', $tid)->where('payment_status', 'unpaid')->sum('amount'),
-            'paid_count'       => Payment::where('tenant_id', $tid)->where('payment_status', 'paid')->count(),
-            'unpaid_count'     => Payment::where('tenant_id', $tid)->where('payment_status', 'unpaid')->count(),
-            'reservation_fees' => Payment::where('tenant_id', $tid)->where('payment_type', Payment::TYPE_RESERVATION)->where('payment_status', 'paid')->sum('amount'),
+            'total_received'   => $agg->total_received ?? 0,
+            'total_pending'    => $agg->total_pending ?? 0,
+            'paid_count'       => $agg->paid_count ?? 0,
+            'unpaid_count'     => $agg->unpaid_count ?? 0,
+            'reservation_fees' => $agg->reservation_fees ?? 0,
         ];
     }
 
@@ -124,14 +159,22 @@ class extends Component {
 <div class="p-4 sm:p-6 lg:p-8 max-w-[1440px] mx-auto space-y-6">
 
     {{-- Header --}}
-    <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
+    <div class="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
         <div>
-            <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Payments</h1>
+            <div class="flex items-center gap-2 mb-2">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Transactions</span>
+            </div>
+            <h1 class="font-display text-3xl md:text-4xl font-semibold text-gray-900 dark:text-white">
+                Payments <em class="italic text-primary-600 dark:text-primary-400">Overview</em>
+            </h1>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mt-2">Monitor all received and pending payments.</p>
         </div>
         <div class="flex flex-wrap gap-2">
             <button wire:click="refreshSync"
                     wire:loading.attr="disabled"
-                    class="btn-secondary text-xs sm:text-sm active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-2">
+                    class="btn-secondary text-xs sm:text-sm active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-2"
+                    data-loading:opacity-50>
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h5M4 9a9 9 0 0014.5 4.5M20 20v-5h-5M20 15a9 9 0 00-14.5-4.5"/></svg>
                 <span wire:loading.remove wire:target="refreshSync">Sync PayMongo</span>
                 <span wire:loading wire:target="refreshSync" class="inline-flex items-center gap-1">
@@ -156,24 +199,43 @@ class extends Component {
         </div>
     @endif
 
-    {{-- Stats --}}
+    {{-- Stats Cards --}}
     @php $s = $this->stats; @endphp
-    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+    <div class="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <div class="card p-4">
-            <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Total Received</p>
+            <div class="flex items-center justify-between">
+                <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Total Received</p>
+                <svg class="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
             <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">₱{{ number_format($s['total_received'], 2) }}</p>
         </div>
         <div class="card p-4">
-            <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Total Pending</p>
+            <div class="flex items-center justify-between">
+                <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Pending</p>
+                <svg class="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
             <p class="text-2xl font-bold text-amber-600 dark:text-amber-400 mt-2">₱{{ number_format($s['total_pending'], 2) }}</p>
         </div>
         <div class="card p-4">
-            <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Paid Transactions</p>
+            <div class="flex items-center justify-between">
+                <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Paid Transactions</p>
+                <svg class="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+            </div>
             <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $s['paid_count'] }}</p>
         </div>
         <div class="card p-4">
-            <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Reservation Fees</p>
+            <div class="flex items-center justify-between">
+                <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Reservation Fees</p>
+                <svg class="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v10a2 2 0 002 2h14a2 2 0 002-2V7a2 2 0 00-2-2H5z"/></svg>
+            </div>
             <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">₱{{ number_format($s['reservation_fees'], 2) }}</p>
+        </div>
+        <div class="card p-4">
+            <div class="flex items-center justify-between">
+                <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Unpaid Count</p>
+                <svg class="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </div>
+            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $s['unpaid_count'] }}</p>
         </div>
     </div>
 
@@ -229,7 +291,7 @@ class extends Component {
 
     {{-- Payments Table --}}
     <div class="card overflow-hidden">
-        <div class="overflow-x-auto">
+        <div class="overflow-x-auto" wire:loading.class="opacity-50">
             <table class="w-full text-left">
                 <thead class="border-b border-gray-200 dark:border-gray-700">
                     <tr>
@@ -248,9 +310,9 @@ class extends Component {
                         @php
                             $booking = $payment->booking;
                             $totalPaid = $booking?->payments?->where('payment_status','paid')->sum('amount') ?? 0;
-                            $balance = $booking?->total_amount - $totalPaid ?? 0;
+                            $balance = $booking ? $booking->total_amount - $totalPaid : 0;
                         @endphp
-                        <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
+                        <tr wire:key="payment-row-{{ $payment->id }}" class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
                             <td class="px-4 sm:px-6 py-4 font-mono text-sm">
                                 @if($booking)
                                     <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate

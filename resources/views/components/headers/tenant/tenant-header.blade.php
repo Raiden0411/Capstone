@@ -1,6 +1,8 @@
 {{-- resources/views/components/headers/tenant/tenant-header.blade.php --}}
 @php
-    $user = auth()->user();
+    use App\Models\User;
+
+    $user   = auth()->user();
     $tenant = $user?->tenant;
 
     $tenantLogoUrl = null;
@@ -10,14 +12,19 @@
         $tenantLogoUrl .= '?v=' . (file_exists($fullPath) ? filemtime($fullPath) : time());
     }
 
-    $userName = $user->name ?? 'U';
-    $userInitial = strtoupper(substr($userName, 0, 1));
-    $userRole = $user->roles->first();
-    $roleLabel = $userRole ? ucwords(str_replace(['-', '_'], ' ', $userRole->name)) : null;
+    $userName     = $user->name ?? 'U';
+    $userInitial  = strtoupper(substr($userName, 0, 1));
+    $userRole     = $user->roles->first();
+    $roleLabel    = $userRole ? ucwords(str_replace(['-', '_'], ' ', $userRole->name)) : null;
 
-    // Determine the correct dashboard route for the header link
-    $isEmployee = !$user->hasRole('admin') && $user->tenant_id;
-    $dashboardRoute = $isEmployee ? route('tenant.employee.dashboard') : route('tenant.dashboard');
+    // Determine the correct dashboard route for the header link.
+    $isEmployee     = !$user->hasRole('admin') && $user->tenant_id;
+    $dashboardRoute = $isEmployee
+        ? route('tenant.employee.dashboard')
+        : route('tenant.dashboard');
+
+    // Dual-role accounts (business owners) can switch back to tourist mode.
+    $canSwitchModes = $user instanceof User && $user->canSwitchModes();
 @endphp
 
 <header
@@ -69,6 +76,23 @@
 
         {{-- Right: Actions --}}
         <div class="flex items-center gap-2 ms-auto">
+
+            {{-- ─────────────────────────────────────────────────────
+                 Switch to Tourist — dual-role owners only
+                 ───────────────────────────────────────────────────── --}}
+            @if($canSwitchModes)
+                <form method="POST" action="{{ route('mode.switch') }}" class="hidden sm:block">
+                    @csrf
+                    <input type="hidden" name="mode" value="{{ User::MODE_TOURIST }}">
+                    <button type="submit"
+                            class="inline-flex items-center gap-2 py-2 px-3 rounded-full border border-blue-200 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300 text-xs font-semibold transition-all duration-200 hover:bg-blue-100 dark:hover:bg-blue-500/20 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50">
+                        <svg class="size-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v3m0 12v3M5.636 5.636l2.121 2.121m8.486 8.486l2.121 2.121M3 12h3m12 0h3M5.636 18.364l2.121-2.121m8.486-8.486l2.121-2.121"/>
+                        </svg>
+                        <span>Switch to Tourist</span>
+                    </button>
+                </form>
+            @endif
 
             {{-- View Public Site --}}
             @if($tenant)
@@ -147,7 +171,14 @@
                                 <div class="min-w-0">
                                     <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">{{ $userName }}</p>
                                     <p class="text-xs text-gray-500 dark:text-gray-400 truncate">{{ $user->email }}</p>
-                                    @if($roleLabel)
+
+                                    {{-- Mode-aware badge for owners; role label for others --}}
+                                    @if($canSwitchModes)
+                                        <span class="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300">
+                                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                                            Business Mode
+                                        </span>
+                                    @elseif($roleLabel)
                                         <span class="mt-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-primary-100 dark:bg-primary-500/20 text-primary-700 dark:text-primary-300">
                                             {{ $roleLabel }}
                                         </span>
@@ -158,6 +189,24 @@
 
                         {{-- Menu Items --}}
                         <div class="p-1.5 space-y-0.5">
+
+                            {{-- Mode switch — visible on every screen size --}}
+                            @if($canSwitchModes)
+                                <form method="POST" action="{{ route('mode.switch') }}" class="block">
+                                    @csrf
+                                    <input type="hidden" name="mode" value="{{ User::MODE_TOURIST }}">
+                                    <button type="submit"
+                                            class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50">
+                                        <svg class="size-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v3m0 12v3M5.636 5.636l2.121 2.121m8.486 8.486l2.121 2.121M3 12h3m12 0h3M5.636 18.364l2.121-2.121m8.486-8.486l2.121-2.121"/>
+                                        </svg>
+                                        Switch to Tourist Mode
+                                    </button>
+                                </form>
+
+                                <div class="border-t border-gray-200 dark:border-gray-700 my-2"></div>
+                            @endif
+
                             @if($tenant)
                                 <a href="{{ route('tenant.settings.index') }}" wire:navigate
                                    class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"

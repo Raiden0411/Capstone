@@ -10,23 +10,33 @@ use Illuminate\Support\Facades\Auth;
 class TenantScope implements Scope
 {
     /**
-     * @template TModel of \Illuminate\Database\Eloquent\Model
-     * @param \Illuminate\Database\Eloquent\Builder<TModel> $builder
-     * @param TModel $model
+     * Apply the scope to a given Eloquent query builder.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $builder
+     * @param  \Illuminate\Database\Eloquent\Model  $model
+     * @return void
      */
     public function apply(Builder $builder, Model $model)
     {
-        if (Auth::check()) {
-            
-            /** @var \App\Models\User $user */
-            $user = Auth::user();
-
-            if (!$user->hasRole('super-admin')) {
-              
-                $builder->where([
-                    $model->getTable() . '.tenant_id' => $user->tenant_id
-                ]);
-            }
+        if (!Auth::check()) {
+            // No authenticated user: no scope filtering (public context)
+            return;
         }
+
+        $user = Auth::user();
+
+        if ($user->hasRole('super-admin')) {
+            // Super admins bypass tenant scope
+            return;
+        }
+
+        $tenantId = $user->tenant_id;
+        if (!$tenantId) {
+            // Authenticated user without tenant (tourist) sees nothing
+            $builder->whereRaw('1 = 0');
+            return;
+        }
+
+        $builder->where($model->getTable() . '.tenant_id', $tenantId);
     }
 }

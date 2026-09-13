@@ -1,4 +1,4 @@
-{{-- resources/views/public/pages/⚡tourist-spots.blade.php --}}
+{{-- resources/views/public/pages/tourist-spots.blade.php --}}
 <?php
 
 use Livewire\Component;
@@ -8,6 +8,8 @@ use Livewire\Attributes\Url;
 use Livewire\Attributes\Computed;
 use App\Models\Tenant;
 use App\Models\TypeOfTenant;
+use App\Models\Booking;
+use App\Scopes\TenantScope;
 
 new
 #[Layout('layouts.app')]
@@ -20,60 +22,82 @@ class extends Component
     #[Url(as: 'category', history: true)]
     public string $categoryFilter = '';
 
+    #[Url(as: 'view', history: true)]
+    public string $viewMode = 'grid'; // grid | list
+
     #[Computed]
     public function tenants()
     {
         $term = trim($this->search);
 
-        return Tenant::query()
+        return Tenant::withoutGlobalScope(TenantScope::class)
             ->where('is_active', true)
             ->with(['typeOfTenant:id,type'])
-            ->when($term !== '', function ($q) use ($term) {
-                $like = '%' . $term . '%';
-                $q->where(function ($sub) use ($like) {
-                    $sub->where('name', 'like', $like)
-                       ->orWhere('address', 'like', $like)
-                       ->orWhereHas('typeOfTenant', fn($t) => $t->where('type', 'like', $like));
-                });
-            })
-            ->when($this->categoryFilter, fn($q) => $q->whereHas(
-                'typeOfTenant',
-                fn($sub) => $sub->where('type', $this->categoryFilter)
+            ->withCount(['properties', 'services'])
+            ->withMin('properties', 'price')
+            ->when($term, fn($q) => $q->where(fn($s) =>
+                $s->where('name', 'like', "%$term%")
+                  ->orWhere('address', 'like', "%$term%")
+                  ->orWhereHas('typeOfTenant', fn($t) => $t->where('type', 'like', "%$term%"))
             ))
+            ->when($this->categoryFilter, fn($q) =>
+                $q->whereHas('typeOfTenant', fn($s) => $s->where('type', $this->categoryFilter))
+            )
             ->orderBy('name')
-            ->get([
-                'id', 'name', 'slug', 'logo', 'address', 'is_recommended', 'type_of_tenant_id'
-            ]);
+            ->get(['id', 'name', 'slug', 'logo', 'address', 'type_of_tenant_id', 'created_at']);
     }
 
     #[Computed]
-    public function popularDestinations()
+    public function featured()
     {
-        return Tenant::query()
+        return Tenant::withoutGlobalScope(TenantScope::class)
             ->where('is_active', true)
-            ->where('is_recommended', true)
-            ->with(['typeOfTenant:id,type'])
+            ->withCount([
+                'bookings' => fn($q) => $q->withoutGlobalScope(TenantScope::class)
+                    ->whereNotIn('status', [Booking::STATUS_CANCELLED])
+            ])
+            ->orderByDesc('bookings_count')
             ->orderBy('name')
-            ->limit(6)
-            ->get([
-                'id', 'name', 'slug', 'logo', 'address', 'is_recommended', 'type_of_tenant_id'
-            ]);
+            ->limit(3)
+            ->with(['typeOfTenant:id,type'])
+            ->get(['id', 'name', 'slug', 'logo', 'address', 'type_of_tenant_id']);
     }
 
     #[Computed]
     public function categories()
     {
-        return TypeOfTenant::query()
-            ->withCount(['tenants' => fn($q) => $q->where('is_active', true)])
-            ->whereHas('tenants', fn($q) => $q->where('is_active', true))
+        return TypeOfTenant::withoutGlobalScope(TenantScope::class)
+            ->withCount(['tenants' => fn($q) => $q->where('is_active', true)->withoutGlobalScope(TenantScope::class)])
+            ->whereHas('tenants', fn($q) => $q->where('is_active', true)->withoutGlobalScope(TenantScope::class))
             ->orderBy('type')
-            ->get(['id', 'type']);
+            ->get(['id', 'type', 'tenants_count']);
+    }
+
+    #[Computed]
+    public function totalCount(): int
+    {
+        return Tenant::withoutGlobalScope(TenantScope::class)->where('is_active', true)->count();
     }
 
     #[Computed]
     public function hasActiveFilters(): bool
     {
         return $this->search !== '' || $this->categoryFilter !== '';
+    }
+
+    #[Computed]
+    public function heroImages(): array
+    {
+        // Prioritise top picks for the hero carousel
+        $topPicks = $this->featured->filter(fn($t) => $t->logo);
+        if ($topPicks->isNotEmpty()) {
+            $images = $topPicks->map(fn($t) => asset('storage/'.$t->logo))->values()->toArray();
+        } else {
+            $withLogos = $this->tenants->filter(fn($t) => $t->logo);
+            $images = $withLogos->map(fn($t) => asset('storage/'.$t->logo))->values()->toArray();
+        }
+
+        return array_slice($images, 0, 5);
     }
 
     public function resetFilters(): void
@@ -83,209 +107,266 @@ class extends Component
 };
 ?>
 
-<div class="min-h-screen bg-gray-50 dark:bg-gray-900 pb-20">
-    {{-- Hero Section --}}
-    <div class="relative bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 sm:py-24 text-center">
-            <p class="text-sm font-bold uppercase tracking-widest text-primary-600 dark:text-primary-400 mb-3">
-                Explore Victorias City
-            </p>
-            <h1 class="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-gray-900 dark:text-white tracking-tight mb-6">
-                Discover Local Wonders
-            </h1>
-            <p class="max-w-2xl mx-auto text-lg text-gray-600 dark:text-gray-300">
-                Find the perfect destinations, hidden gems, and must-visit attractions in and around the city.
-            </p>
-        </div>
-    </div>
+<div x-data="{ heroIndex: 0, heroImages: @js($this->heroImages) }"
+     x-init="if (heroImages.length > 1) { setInterval(() => { heroIndex = (heroIndex + 1) % heroImages.length }, 5000) }"
+     class="min-h-screen bg-gray-50 dark:bg-gray-950">
 
-    {{-- Main Content --}}
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 -mt-8 relative z-10">
-        
-        {{-- Unified Control Panel --}}
-        <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-100 dark:border-gray-700 p-4 sm:p-6 mb-12">
-            <div class="flex flex-col md:flex-row gap-4 items-center justify-between">
-                
-                {{-- Search Bar --}}
-                <div class="relative w-full md:w-1/2">
-                    <svg class="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-                    </svg>
-                    <input
-                        type="text"
-                        wire:model.live.debounce.300ms="search"
-                        placeholder="Search spots, addresses, or categories..."
-                        class="w-full bg-gray-50 dark:bg-gray-900 border-0 rounded-xl pl-12 pr-10 py-3.5 text-gray-900 dark:text-white placeholder-gray-500 focus:ring-2 focus:ring-primary-500 transition-shadow"
-                    >
-                    @if($search)
-                        <button type="button" wire:click="$set('search', '')" class="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition">
-                            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                        </button>
-                    @endif
-                </div>
+    {{-- Hero with carousel background --}}
+    <section class="relative overflow-hidden bg-gray-900 py-14 md:py-20">
+        <template x-if="heroImages.length > 0">
+            <div class="absolute inset-0">
+                <template x-for="(img, index) in heroImages" :key="index">
+                    <img :src="img"
+                         class="absolute inset-0 h-full w-full object-cover transition-opacity duration-1000"
+                         :class="index === heroIndex ? 'opacity-40' : 'opacity-0'"
+                         alt="Tourist spot background" />
+                </template>
+            </div>
+        </template>
+        <template x-if="heroImages.length === 0">
+            <div class="absolute inset-0 bg-gradient-to-br from-gray-900 to-gray-800"></div>
+        </template>
+
+        <div class="absolute inset-0 bg-gradient-to-r from-black/70 via-black/50 to-black/70"></div>
+
+        <div class="relative z-10 mx-auto flex max-w-7xl flex-col justify-between gap-8 px-6 md:flex-row md:items-center lg:px-8">
+            <div class="max-w-xl">
+                <p class="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-primary-400">
+                    <span class="h-px w-4 bg-primary-400"></span>
+                    Victorias City
+                </p>
+                <h1 class="font-display text-4xl font-semibold leading-tight text-white sm:text-5xl md:text-6xl">
+                    Discover Local<br><em class="italic text-primary-300">Wonders</em>
+                </h1>
+                <p class="mt-4 max-w-md text-sm leading-relaxed text-white/60">
+                    Find the perfect destinations, hidden gems, and must-visit attractions throughout the city and its barangays.
+                </p>
             </div>
 
-            {{-- Categories --}}
-            <div class="mt-6 flex gap-2 overflow-x-auto pb-2 hide-scrollbar items-center">
-                <span class="text-sm text-gray-500 dark:text-gray-400 font-medium mr-2 shrink-0">Filters:</span>
-                <button
-                    type="button"
-                    wire:click="$set('categoryFilter', '')"
-                    class="shrink-0 rounded-full px-5 py-2 text-sm font-medium transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                        {{ $categoryFilter === '' ? 'bg-gray-900 dark:bg-white text-white dark:text-gray-900 shadow-md' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600' }}"
-                >
+            <div class="flex gap-6 rounded-2xl border border-primary-500/20 bg-primary-500/10 p-6 backdrop-blur md:flex-col md:gap-4">
+                <div>
+                    <div class="font-display text-3xl font-medium text-primary-300">{{ $this->totalCount }}</div>
+                    <div class="text-xs font-semibold uppercase tracking-wider text-white/50">Destinations</div>
+                </div>
+                <div class="h-10 w-px bg-primary-500/20 md:h-px md:w-10"></div>
+                <div>
+                    <div class="font-display text-3xl font-medium text-primary-300">{{ $this->categories->count() }}</div>
+                    <div class="text-xs font-semibold uppercase tracking-wider text-white/50">Categories</div>
+                </div>
+                <div class="h-10 w-px bg-primary-500/20 md:h-px md:w-10"></div>
+                <div>
+                    <div class="font-display text-3xl font-medium text-primary-300">{{ $this->featured->count() }}</div>
+                    <div class="text-xs font-semibold uppercase tracking-wider text-white/50">Top Picks</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    {{-- Sticky Controls --}}
+    <div class="sticky top-16 z-20 border-b border-gray-200 bg-white/95 backdrop-blur dark:border-gray-800 dark:bg-gray-900/95">
+        <div class="mx-auto flex max-w-7xl flex-col gap-4 px-6 py-4 md:flex-row md:items-center lg:px-8">
+            {{-- Search --}}
+            <div class="relative max-w-xs flex-1">
+                <svg class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                </svg>
+                <input type="text" wire:model.live.debounce.300ms="search"
+                       class="w-full rounded-xl border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-9 text-sm text-gray-900 placeholder-gray-400 transition focus:border-primary-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-gray-700 dark:bg-gray-800 dark:text-white dark:placeholder-gray-500 dark:focus:border-blue-500 dark:focus:bg-gray-900 dark:focus:ring-blue-500/20"
+                       placeholder="Search destinations…" aria-label="Search">
+                @if($search)
+                    <button type="button" wire:click="$set('search','')" class="absolute right-2 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-gray-400 transition hover:bg-gray-200 active:scale-95 dark:hover:bg-gray-700" aria-label="Clear search">
+                        <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
+                @endif
+            </div>
+
+            {{-- Category Pills --}}
+            <div class="flex flex-1 gap-2 overflow-x-auto pb-1 scrollbar-hide">
+                <button type="button" wire:click="$set('categoryFilter','')"
+                        class="flex shrink-0 items-center gap-1 rounded-full px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-all duration-200 active:scale-95 focus:outline-none focus:ring-2 focus:ring-primary-500/50
+                               {{ blank($categoryFilter) ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900' : 'border border-gray-200 bg-gray-50 text-gray-600 hover:border-gray-300 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400' }}">
                     All
+                    <span class="rounded-full bg-white/20 px-1.5 text-[10px]">{{ $this->totalCount }}</span>
                 </button>
                 @foreach($this->categories as $cat)
-                    <button
-                        type="button"
-                        wire:click="$set('categoryFilter', '{{ $cat->type }}')"
-                        class="shrink-0 rounded-full px-5 py-2 text-sm font-medium transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                            {{ $categoryFilter === $cat->type ? 'bg-primary-600 text-white shadow-md' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600' }}"
-                    >
+                    <button type="button" wire:click="$set('categoryFilter','{{ $cat->type }}')"
+                            class="flex shrink-0 items-center gap-1 rounded-full px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-all duration-200 active:scale-95 focus:outline-none focus:ring-2 focus:ring-primary-500/50
+                                   {{ $categoryFilter === $cat->type ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900' : 'border border-gray-200 bg-gray-50 text-gray-600 hover:border-gray-300 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400' }}">
                         {{ $cat->type }}
+                        <span class="rounded-full bg-white/20 px-1.5 text-[10px]">{{ $cat->tenants_count }}</span>
                     </button>
                 @endforeach
             </div>
-        </div>
 
-        {{-- Popular Destinations Section --}}
-        @if($this->popularDestinations->isNotEmpty())
-            <div class="mb-14">
-                <div class="flex items-center gap-2 mb-6">
-                    <div class="p-2 bg-amber-100 dark:bg-amber-500/20 rounded-lg">
-                        <svg class="w-5 h-5 text-amber-600 dark:text-amber-400" fill="currentColor" viewBox="0 0 20 20">
-                            <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
-                        </svg>
+            {{-- View Toggle --}}
+            <div class="flex shrink-0 overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
+                <button type="button" wire:click="$set('viewMode','grid')"
+                        class="flex h-9 w-9 items-center justify-center transition active:scale-95 focus:outline-none focus:ring-2 focus:ring-primary-500/50
+                               {{ $viewMode === 'grid' ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900' : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800' }}"
+                        title="Grid view">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>
+                </button>
+                <button type="button" wire:click="$set('viewMode','list')"
+                        class="flex h-9 w-9 items-center justify-center transition active:scale-95 focus:outline-none focus:ring-2 focus:ring-primary-500/50
+                               {{ $viewMode === 'list' ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900' : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800' }}"
+                        title="List view">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    {{-- Body --}}
+    <div class="mx-auto max-w-7xl px-6 py-10 lg:px-8">
+
+        {{-- Featured Destinations --}}
+        @if(!$this->hasActiveFilters && $this->featured->isNotEmpty())
+            <section class="mb-12">
+                <div class="mb-6 flex items-end justify-between">
+                    <div>
+                        <p class="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-primary-600 dark:text-primary-400">
+                            <span class="h-px w-4 bg-primary-600 dark:bg-primary-400"></span>
+                            Featured
+                        </p>
+                        <h2 class="font-display text-2xl font-semibold text-gray-900 dark:text-white md:text-3xl">Popular <em class="italic text-primary-600 dark:text-primary-400">Picks</em></h2>
                     </div>
-                    <h2 class="text-2xl font-bold text-gray-900 dark:text-white">Popular Destinations</h2>
+                    <div class="font-display text-5xl font-light text-gray-200 dark:text-gray-800">{{ str_pad($this->featured->count(), 2, '0', STR_PAD_LEFT) }}</div>
                 </div>
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 lg:gap-8">
-                    @foreach($this->popularDestinations as $tenant)
+
+                <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                    @foreach($this->featured as $tenant)
                         @php
-                            $cardImage = $tenant->logo
-                                ? asset('storage/' . $tenant->logo)
-                                : 'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?q=80&w=800&auto=format&fit=crop';
+                            $img = $tenant->logo ? asset('storage/'.$tenant->logo) : null;
                         @endphp
-                        <a href="{{ route('business.offerings', $tenant->slug) }}" wire:navigate
-                           class="group flex flex-col bg-white dark:bg-gray-800 rounded-3xl overflow-hidden border border-amber-200/60 dark:border-amber-500/30 shadow-sm hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-2 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50">
-                            <div class="relative h-52 w-full overflow-hidden">
-                                <img src="{{ $cardImage }}" alt="{{ $tenant->name }}" loading="lazy"
-                                     onerror="this.src='https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?q=80&w=800&auto=format&fit=crop'"
-                                     class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500">
-                                <div class="absolute inset-0 bg-gradient-to-t from-gray-900/70 via-gray-900/20 to-transparent opacity-80"></div>
-                                <div class="absolute top-4 right-4 bg-white/95 backdrop-blur-sm px-3 py-1.5 rounded-full shadow-lg flex items-center gap-1.5">
-                                    <svg class="w-3.5 h-3.5 text-amber-500" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
-                                    <span class="text-xs font-bold text-gray-900 tracking-wide">Top Pick</span>
-                                </div>
-                                <div class="absolute bottom-4 left-4 right-4">
-                                    <h3 class="text-xl font-bold text-white mb-1 line-clamp-1">{{ $tenant->name }}</h3>
-                                    <p class="text-gray-300 text-sm flex items-center gap-1.5">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                                        {{ $tenant->typeOfTenant->type ?? 'Destination' }}
+                        <a href="{{ route('business.offerings', $tenant->slug) }}" wire:navigate wire:key="feat-{{ $tenant->id }}"
+                           class="group relative flex aspect-[4/5] flex-col justify-end overflow-hidden rounded-2xl transition-all duration-300 hover:-translate-y-1 hover:shadow-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                            @if($img)
+                                <img src="{{ $img }}" alt="{{ $tenant->name }}" class="absolute inset-0 h-full w-full object-cover brightness-75 transition duration-700 group-hover:scale-105 group-hover:brightness-90" loading="lazy">
+                            @else
+                                <div class="absolute inset-0 bg-gradient-to-br from-gray-900 to-gray-700"></div>
+                            @endif
+                            <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent"></div>
+                            <div class="relative z-10 p-5">
+                                <span class="mb-2 inline-flex items-center gap-1 rounded bg-primary-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary-300">
+                                    <svg class="h-3 w-3" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
+                                    Featured
+                                </span>
+                                <div class="text-xs font-semibold uppercase tracking-wider text-white/50">{{ $tenant->typeOfTenant?->type ?? 'Destination' }}</div>
+                                <h3 class="font-display text-xl font-semibold text-white">{{ $tenant->name }}</h3>
+                                @if($tenant->address)
+                                    <p class="mt-1 flex items-start gap-1 text-xs text-white/50">
+                                        <svg class="mt-0.5 h-3 w-3 shrink-0 text-primary-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/></svg>
+                                        {{ $tenant->address }}
                                     </p>
-                                </div>
+                                @endif
+                                <span class="mt-3 inline-flex items-center gap-1 text-xs font-bold uppercase tracking-wider text-primary-400 opacity-0 transition group-hover:opacity-100">
+                                    Explore
+                                    <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
+                                </span>
                             </div>
                         </a>
                     @endforeach
                 </div>
-            </div>
+
+                <div class="my-10 h-px bg-gradient-to-r from-transparent via-gray-200 to-transparent dark:via-gray-800"></div>
+            </section>
         @endif
 
-        {{-- Results Header --}}
-        <div class="flex items-center justify-between mb-6 px-2">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
-                Found <span class="text-primary-600">{{ $this->tenants->count() }}</span> {{ Str::plural('spot', $this->tenants->count()) }}
-            </h2>
-            @if($this->hasActiveFilters)
-                <button type="button" wire:click="resetFilters" class="text-sm font-medium text-red-500 hover:text-red-600 transition flex items-center gap-1 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50 rounded-md px-2 py-1">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-                    Reset Filters
-                </button>
-            @endif
-        </div>
+        {{-- All Destinations --}}
+        <section>
+            <div class="mb-6 flex flex-wrap items-end justify-between gap-4">
+                <div>
+                    <p class="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-primary-600 dark:text-primary-400">
+                        <span class="h-px w-4 bg-primary-600 dark:bg-primary-400"></span>
+                        {{ $this->hasActiveFilters ? 'Search Results' : 'All Destinations' }}
+                    </p>
+                    <h2 class="font-display text-2xl font-semibold text-gray-900 dark:text-white md:text-3xl">
+                        @if($this->hasActiveFilters)
+                            <em class="italic text-primary-600 dark:text-primary-400">{{ $this->tenants->count() }}</em> {{ Str::plural('Spot', $this->tenants->count()) }} Found
+                        @else
+                            Explore <em class="italic text-primary-600 dark:text-primary-400">Everywhere</em>
+                        @endif
+                    </h2>
+                </div>
+                <div class="flex items-center gap-4">
+                    @if($this->hasActiveFilters)
+                        <button type="button" wire:click="resetFilters" class="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-red-600 transition hover:bg-red-100 active:scale-95 focus:outline-none focus:ring-2 focus:ring-red-500/50 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400">
+                            <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                            Clear
+                        </button>
+                    @endif
+                    <div class="font-display text-5xl font-light text-gray-200 dark:text-gray-800">{{ str_pad($this->tenants->count(), 2, '0', STR_PAD_LEFT) }}</div>
+                </div>
+            </div>
 
-        {{-- Main Grid --}}
-        @if($this->tenants->isNotEmpty())
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8 transition-opacity duration-200" wire:loading.class="opacity-50">
-                @foreach($this->tenants as $tenant)
+            <div class="grid gap-6 {{ $viewMode === 'list' ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4' }}"
+                 wire:loading.class="opacity-50">
+                @forelse($this->tenants as $tenant)
                     @php
-                        $cardImage = $tenant->logo
-                            ? asset('storage/' . $tenant->logo)
-                            : 'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?q=80&w=800&auto=format&fit=crop';
+                        $img  = $tenant->logo ? asset('storage/'.$tenant->logo) : null;
+                        $minP = $tenant->properties_min_price;
                     @endphp
-                    <a
-                        href="{{ route('business.offerings', $tenant->slug) }}"
-                        wire:navigate
-                        class="group flex flex-col bg-white dark:bg-gray-800 rounded-3xl overflow-hidden border border-gray-100 dark:border-gray-700 shadow-sm hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-2 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
-                    >
-                        <div class="relative h-56 w-full overflow-hidden">
-                            <img
-                                src="{{ $cardImage }}"
-                                alt="{{ $tenant->name }}"
-                                loading="lazy"
-                                onerror="this.src='https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?q=80&w=800&auto=format&fit=crop'"
-                                class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                            >
-                            <div class="absolute inset-0 bg-gradient-to-t from-gray-900/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
-                            @if($tenant->is_recommended)
-                                <div class="absolute top-4 right-4 bg-white/95 backdrop-blur-sm px-3 py-1.5 rounded-full shadow-lg flex items-center gap-1.5">
-                                    <svg class="w-3.5 h-3.5 text-amber-500" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
-                                    <span class="text-xs font-bold text-gray-900 tracking-wide">Top Pick</span>
+                    <a href="{{ route('business.offerings', $tenant->slug) }}" wire:navigate wire:key="dest-{{ $tenant->id }}"
+                       class="group flex overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 dark:border-gray-800 dark:bg-gray-900 {{ $viewMode === 'list' ? 'flex-row' : 'flex-col' }}">
+                        <div class="relative {{ $viewMode === 'list' ? 'h-auto w-32 shrink-0' : 'aspect-[4/3] w-full' }}">
+                            @if($img)
+                                <img src="{{ $img }}" alt="{{ $tenant->name }}" class="h-full w-full object-cover brightness-90 transition duration-700 group-hover:scale-105 group-hover:brightness-100" loading="lazy">
+                            @else
+                                <div class="flex h-full w-full items-center justify-center bg-gray-100 dark:bg-gray-800">
+                                    <svg class="h-10 w-10 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
                                 </div>
                             @endif
+                            @if($tenant->typeOfTenant)
+                                <span class="absolute bottom-2 left-2 rounded bg-black/70 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white">{{ $tenant->typeOfTenant->type }}</span>
+                            @endif
                         </div>
-                        <div class="p-6 flex flex-col flex-1">
-                            <span class="text-xs font-bold uppercase tracking-wider text-primary-600 dark:text-primary-400 mb-2">
-                                {{ $tenant->typeOfTenant->type ?? 'Destination' }}
-                            </span>
-                            <h3 class="text-xl font-bold text-gray-900 dark:text-white mb-3 line-clamp-1 group-hover:text-primary-600 dark:group-hover:text-primary-400 transition-colors">
-                                {{ $tenant->name }}
-                            </h3>
-                            <div class="mt-auto pt-4 border-t border-gray-100 dark:border-gray-700">
-                                @if($tenant->address)
-                                    <p class="text-sm text-gray-500 dark:text-gray-400 flex items-start gap-2 line-clamp-2">
-                                        <svg class="w-4 h-4 mt-0.5 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                                        {{ $tenant->address }}
-                                    </p>
-                                @endif
+
+                        <div class="flex flex-1 flex-col p-4">
+                            <h3 class="font-display text-lg font-semibold leading-tight text-gray-900 transition group-hover:text-primary-600 dark:text-white dark:group-hover:text-primary-400">{{ $tenant->name }}</h3>
+                            @if($tenant->address)
+                                <p class="mt-1 flex items-start gap-1 text-xs text-gray-500 dark:text-gray-400">
+                                    <svg class="mt-0.5 h-3 w-3 shrink-0 text-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/></svg>
+                                    <span class="line-clamp-2">{{ $tenant->address }}</span>
+                                </p>
+                            @endif
+
+                            <div class="mt-auto flex items-center justify-between border-t border-gray-100 pt-3 dark:border-gray-800">
+                                <div>
+                                    @if($minP !== null)
+                                        <div class="font-display text-lg font-semibold text-gray-900 dark:text-white">₱{{ number_format($minP, 0) }}</div>
+                                        <div class="text-[10px] uppercase tracking-wider text-gray-400">from / unit</div>
+                                    @else
+                                        <div class="text-xs text-gray-500 dark:text-gray-400">{{ $tenant->properties_count + $tenant->services_count }} offering{{ ($tenant->properties_count + $tenant->services_count) !== 1 ? 's' : '' }}</div>
+                                    @endif
+                                </div>
+                                <span class="inline-flex items-center gap-1 text-xs font-bold uppercase tracking-wider text-primary-600 opacity-0 transition group-hover:opacity-100 dark:text-primary-400">
+                                    Explore
+                                    <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
+                                </span>
                             </div>
                         </div>
                     </a>
-                @endforeach
+                @empty
+                    <div class="col-span-full rounded-xl border border-dashed border-gray-300 p-12 text-center dark:border-gray-700">
+                        <svg class="mx-auto mb-4 h-12 w-12 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                        </svg>
+                        <h3 class="font-display text-xl italic text-gray-500 dark:text-gray-400">No destinations found.</h3>
+                        <p class="mt-2 text-sm text-gray-400 dark:text-gray-500">Try a different keyword or clear your filters.</p>
+                        @if($this->hasActiveFilters)
+                            <button type="button" wire:click="resetFilters" class="mt-4 inline-flex items-center gap-2 rounded-full bg-gray-900 px-4 py-2 text-xs font-bold uppercase tracking-wider text-white transition hover:bg-gray-800 active:scale-95 focus:outline-none focus:ring-2 focus:ring-primary-500/50 dark:bg-white dark:text-gray-900">
+                                <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                                Reset Filters
+                            </button>
+                        @endif
+                    </div>
+                @endforelse
             </div>
 
-            <div wire:loading.delay class="flex justify-center mt-8">
-                <svg class="animate-spin h-8 w-8 text-primary-600" fill="none" viewBox="0 0 24 24">
-                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-                </svg>
+            {{-- Loading indicator --}}
+            <div wire:loading.block wire:target="search,categoryFilter" class="py-8 text-center">
+                <div class="inline-block h-8 w-8 animate-spin rounded-full border-2 border-primary-600 border-t-transparent"></div>
             </div>
-        @else
-            <div class="bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 p-12 text-center shadow-sm">
-                <div class="mx-auto h-20 w-20 rounded-full bg-gray-50 dark:bg-gray-900 flex items-center justify-center mb-6">
-                    <svg class="h-10 w-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7"/>
-                    </svg>
-                </div>
-                <h3 class="text-xl font-bold text-gray-900 dark:text-white mb-2">No destinations found</h3>
-                <p class="text-gray-500 dark:text-gray-400 mb-6 max-w-md mx-auto">We couldn't find any tourist spots matching your current filters. Try adjusting your search criteria.</p>
-                @if($this->hasActiveFilters)
-                    <button wire:click="resetFilters" class="inline-flex items-center gap-2 px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white font-semibold rounded-xl transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                        Clear all filters
-                    </button>
-                @endif
-            </div>
-        @endif
+        </section>
     </div>
 </div>
-
-<style>
-    .hide-scrollbar::-webkit-scrollbar {
-        display: none;
-    }
-    .hide-scrollbar {
-        -ms-overflow-style: none;
-        scrollbar-width: none;
-    }
-</style>

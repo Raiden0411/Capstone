@@ -1,17 +1,20 @@
 {{-- resources/views/components/headers/admin/superadmin-sidebar.blade.php --}}
 @php
-    $settings = \App\Models\SiteSetting::whereIn('key', ['site_logo', 'site_name'])
-        ->pluck('value', 'key');
+    use App\Services\SuperadminNotificationService;
 
-    $logoPath = $settings['site_logo'] ?? null;
-    $siteName = $settings['site_name'] ?? config('app.name');
+    // Cached site settings lookups.
+    $logoPath = \App\Models\SiteSetting::getValue('site_logo');
+    $siteName = \App\Models\SiteSetting::getValue('site_name', config('app.name'));
 
     $logoUrl = null;
     if ($logoPath) {
         $fullPath = public_path('storage/' . $logoPath);
-        $logoUrl = asset('storage/' . $logoPath);
-        $logoUrl .= '?v=' . (file_exists($fullPath) ? filemtime($fullPath) : time());
+        $logoUrl  = asset('storage/' . $logoPath)
+            . '?v=' . (file_exists($fullPath) ? filemtime($fullPath) : time());
     }
+
+    // Pending KYB count via the cached service (no DB hit on every render).
+    $pendingApplications = app(SuperadminNotificationService::class)->pendingCount();
 @endphp
 
 <div>
@@ -55,7 +58,7 @@
     >
         <div class="relative flex h-full max-h-full flex-col">
 
-            {{-- Header (aligned height with top header) --}}
+            {{-- Header --}}
             <div class="flex h-16 md:h-20 shrink-0 items-center justify-between border-b border-gray-200 px-4 dark:border-gray-700"
                  :class="minified ? 'lg:justify-center lg:px-2' : ''">
                 <div class="flex items-center gap-2 overflow-hidden">
@@ -121,6 +124,26 @@
                         {{-- ===== PLATFORM MANAGEMENT ===== --}}
                         <li x-show="!minified" class="pt-4 pb-1" x-cloak>
                             <span class="block px-3 text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500">Platform Management</span>
+                        </li>
+
+                        {{-- Business Applications --}}
+                        <li>
+                            <a href="{{ route('superadmin.business-applications.index') }}" wire:navigate
+                               aria-current="{{ request()->routeIs('superadmin.business-applications.*') ? 'page' : 'false' }}"
+                               title="Business Applications"
+                               class="group relative flex items-center gap-x-3.5 rounded-lg px-3 py-2.5 text-sm transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                                      {{ request()->routeIs('superadmin.business-applications.*') ? 'bg-primary-50 text-primary-700 dark:bg-primary-500/20 dark:text-primary-300 border-l-2 border-l-primary-600' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-white border-l-2 border-l-transparent' }}">
+                                <svg class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                                </svg>
+                                <span x-show="!minified" x-cloak class="flex-1">Business Applications</span>
+                                @if($pendingApplications > 0)
+                                    <span x-show="!minified" x-cloak
+                                          class="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-amber-500 text-white text-[10px] font-bold">
+                                        {{ $pendingApplications > 99 ? '99+' : $pendingApplications }}
+                                    </span>
+                                @endif
+                            </a>
                         </li>
 
                         {{-- Tenants --}}

@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use App\Traits\BelongsToTenant;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
  * @property-read \App\Models\Booking|null $booking
@@ -36,7 +37,7 @@ class Payment extends Model
     public const TYPE_FULL = 'full';
     public const TYPE_RESERVATION = 'reservation';
 
-    public function booking()
+    public function booking(): BelongsTo
     {
         return $this->belongsTo(Booking::class);
     }

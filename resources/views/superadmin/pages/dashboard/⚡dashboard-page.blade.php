@@ -1,11 +1,12 @@
-{{-- resources/views/superadmin/pages/dashboard/dashboard-page.blade.php --}}
+{{-- resources/views/superadmin/pages/dashboard/⚡dashboard-page.blade.php --}}
 <?php
 
 use Livewire\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
-use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Models\Event;
@@ -16,38 +17,72 @@ new
 #[Title('Platform Dashboard')]
 class extends Component
 {
+    public function mount(): void
+    {
+        abort_unless(Auth::user()?->hasRole('super-admin'), 403, 'Super-admin access only.');
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Stats — consolidated aggregates
+    // ─────────────────────────────────────────────────────────
+
+    /**
+     * @return array<string, int>
+     */
     #[Computed]
     public function stats(): array
     {
-        $now = now();
+        $now          = now();
+        $weekAgo      = $now->copy()->subDays(7);
+        $startOfMonth = $now->copy()->startOfMonth();
+
+        // Tenants — 1 aggregate query
+        $tenantStats = Tenant::query()
+            ->selectRaw('
+                COUNT(*) as total,
+                COALESCE(SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END), 0) as active,
+                COALESCE(SUM(CASE WHEN is_active = 0 THEN 1 ELSE 0 END), 0) as pending,
+                COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), 0) as new_this_week,
+                COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), 0) as new_this_month
+            ', [$weekAgo, $startOfMonth])
+            ->first();
+
+        // Events — 1 aggregate query
+        $eventStats = Event::query()
+            ->selectRaw('
+                COUNT(*) as total,
+                COALESCE(SUM(CASE WHEN start_date >= ? AND is_active = 1 THEN 1 ELSE 0 END), 0) as upcoming,
+                COALESCE(SUM(CASE WHEN featured = 1 AND is_active = 1 THEN 1 ELSE 0 END), 0) as featured
+            ', [$now])
+            ->first();
+
         return [
-            'total_tenants'    => Tenant::toBase()->count(),
-            'active_tenants'   => Tenant::where('is_active', true)->toBase()->count(),
-            'pending_tenants'  => Tenant::where('is_active', false)->toBase()->count(),
-            'total_users'      => User::toBase()->count(),
-            'total_roles'      => Role::where('name', '!=', 'super-admin')->toBase()->count(),
-            'new_this_week'    => Tenant::where('created_at', '>=', $now->copy()->subDays(7))->toBase()->count(),
-            'new_this_month'   => Tenant::whereMonth('created_at', $now->month)
-                                        ->whereYear('created_at', $now->year)->toBase()->count(),
-            'total_events'     => Event::toBase()->count(),
-            'upcoming_events'  => Event::where('start_date', '>=', $now)->where('is_active', true)->toBase()->count(),
-            'featured_events'  => Event::where('featured', true)->where('is_active', true)->toBase()->count(),
+            'total_tenants'   => (int) ($tenantStats?->total ?? 0),
+            'active_tenants'  => (int) ($tenantStats?->active ?? 0),
+            'pending_tenants' => (int) ($tenantStats?->pending ?? 0),
+            'new_this_week'   => (int) ($tenantStats?->new_this_week ?? 0),
+            'new_this_month'  => (int) ($tenantStats?->new_this_month ?? 0),
+            'total_users'     => User::query()->count(),
+            'total_roles'     => Role::query()->where('name', '!=', 'super-admin')->count(),
+            'total_events'    => (int) ($eventStats?->total ?? 0),
+            'upcoming_events' => (int) ($eventStats?->upcoming ?? 0),
+            'featured_events' => (int) ($eventStats?->featured ?? 0),
         ];
     }
 
     #[Computed]
-    public function recentTenants(): Collection
+    public function recentTenants()
     {
         return Tenant::query()
-            ->select('id', 'name', 'created_at')
             ->with('typeOfTenant:id,type')
+            ->select('id', 'name', 'slug', 'type_of_tenant_id', 'is_active', 'created_at')
             ->orderByDesc('created_at')
             ->limit(6)
             ->get();
     }
 
     #[Computed]
-    public function recentUsers(): Collection
+    public function recentUsers()
     {
         return User::query()
             ->select('id', 'name', 'email', 'created_at')
@@ -56,11 +91,14 @@ class extends Component
             ->get();
     }
 
+    /**
+     * The next 3 upcoming active events (public visibility).
+     */
     #[Computed]
-    public function recentEvents(): Collection
+    public function upcomingEvents()
     {
         return Event::query()
-            ->select('id', 'name', 'start_date', 'barangay')
+            ->select('id', 'name', 'start_date', 'barangay', 'type', 'image_path')
             ->where('is_active', true)
             ->where('start_date', '>=', now())
             ->orderBy('start_date')
@@ -68,348 +106,615 @@ class extends Component
             ->get();
     }
 
+    /**
+     * Tenant registration counts for the last 6 months.
+     *
+     * ONE grouped query instead of six per-month counts.
+     *
+     * @return array<int, array{label: string, value: int}>
+     */
     #[Computed]
     public function tenantSparkline(): array
     {
+        $startMonth = now()->startOfMonth()->subMonths(5);
+
+        $counts = Tenant::query()
+            ->where('created_at', '>=', $startMonth)
+            ->selectRaw("DATE_FORMAT(created_at, '%Y-%m') as ym, COUNT(*) as total")
+            ->groupBy('ym')
+            ->pluck('total', 'ym');
+
         $data = [];
-        $now = now()->startOfMonth();
-
         for ($i = 5; $i >= 0; $i--) {
-            $date = $now->copy()->subMonths($i);
-            $count = Tenant::whereMonth('created_at', $date->month)
-                ->whereYear('created_at', $date->year)
-                ->toBase()
-                ->count();
-
+            $date   = now()->startOfMonth()->subMonths($i);
+            $key    = $date->format('Y-m');
             $data[] = [
                 'label' => $date->format('M'),
-                'value' => $count,
+                'value' => (int) $counts->get($key, 0),
             ];
         }
+
         return $data;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    #[Computed]
+    public function systemInfo(): array
+    {
+        return [
+            'php'         => PHP_VERSION,
+            'laravel'     => app()->version(),
+            'environment' => (string) app()->environment(),
+            'debug'       => config('app.debug') ? 'On' : 'Off',
+            'cache'       => (string) config('cache.default'),
+            'queue'       => (string) config('queue.default'),
+        ];
+    }
+
+    #[Computed]
+    public function serverTime(): \Carbon\Carbon
+    {
+        return now();
     }
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-8 max-w-[1440px] mx-auto space-y-8" wire:poll.60s>
+<div class="p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto space-y-8" wire:poll.60s>
 
-    {{-- Header --}}
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+    {{-- ═══════════════ HEADER ═══════════════ --}}
+    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 pb-2 border-b border-gray-200/80 dark:border-gray-800">
         <div>
-            <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
-                Platform Dashboard
-            </h1>
-            <p class="text-sm sm:text-base text-gray-600 dark:text-gray-300 mt-1">
-                Super Admin Overview · {{ now()->format('F j, Y') }}
+            <div class="flex items-center gap-2">
+                <h1 class="text-2xl sm:text-3xl font-extrabold tracking-tight text-gray-900 dark:text-white">
+                    Platform Dashboard
+                </h1>
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider
+                             bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-400
+                             border border-emerald-200 dark:border-emerald-800">
+                    <span class="w-1.5 h-1.5 mr-1.5 rounded-full bg-emerald-500 animate-pulse motion-reduce:animate-none"></span>
+                    Live · 60s
+                </span>
+            </div>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                Super Admin Overview · {{ $this->serverTime->format('F j, Y') }}
             </p>
         </div>
-        <div class="text-right">
+
+        <div class="text-left md:text-right">
             <div class="text-xs text-gray-500 dark:text-gray-400">
-                System time <span class="text-gray-700 dark:text-gray-200">{{ now()->format('D, d M Y · H:i') }}</span>
+                System time
+                <span class="text-gray-700 dark:text-gray-200 font-medium tabular-nums">
+                    {{ $this->serverTime->format('D, d M Y · H:i') }}
+                </span>
             </div>
-            <div class="text-xs text-gray-500 dark:text-gray-400">
-                Environment <span class="text-gray-700 dark:text-gray-200">{{ app()->environment() }}</span>
+            <div class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                Environment
+                <span class="text-gray-700 dark:text-gray-200 font-medium">{{ app()->environment() }}</span>
             </div>
         </div>
     </div>
 
-    {{-- Quick Actions --}}
+    {{-- ═══════════════ QUICK ACTIONS ═══════════════ --}}
     <div class="flex flex-wrap gap-2">
         <a href="{{ route('superadmin.tenants.create') }}" wire:navigate
-           class="btn-primary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+           class="btn-primary text-sm active:scale-95 transition-transform
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                  inline-flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+            </svg>
             Add Tenant
         </a>
         <a href="{{ route('superadmin.users.index') }}" wire:navigate
-           class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
+           class="btn-secondary text-sm active:scale-95 transition-transform
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                  inline-flex items-center gap-2">
             Manage Users
         </a>
         <a href="{{ route('superadmin.analytics') }}" wire:navigate
-           class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
+           class="btn-secondary text-sm active:scale-95 transition-transform
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                  inline-flex items-center gap-2">
             View Reports
         </a>
         <a href="{{ route('superadmin.homepage.editor') }}" wire:navigate
-           class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
+           class="btn-secondary text-sm active:scale-95 transition-transform
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                  inline-flex items-center gap-2">
             Edit Site Settings
         </a>
         <a href="{{ route('superadmin.events.index') }}" wire:navigate
-           class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
+           class="btn-secondary text-sm active:scale-95 transition-transform
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                  inline-flex items-center gap-2">
             Manage Events
         </a>
     </div>
 
-    {{-- KPI Cards --}}
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div class="card p-5">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total Tenants</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $this->stats['total_tenants'] }}</p>
-            <p class="text-xs text-green-600 dark:text-green-400 mt-1">{{ $this->stats['active_tenants'] }} active</p>
+    {{-- ═══════════════ KPI CARDS ═══════════════ --}}
+    @php $s = $this->stats; @endphp
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {{-- Total Tenants --}}
+        <div class="bg-white dark:bg-gray-800/90 p-5 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm
+                    hover:shadow-md transition-shadow duration-200">
+            <div class="flex items-center justify-between">
+                <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total Tenants</p>
+                <div class="p-2 bg-primary-50 dark:bg-primary-950/50 rounded-xl text-primary-600 dark:text-primary-400">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
+                    </svg>
+                </div>
+            </div>
+            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2 tabular-nums">{{ number_format($s['total_tenants']) }}</p>
+            <p class="text-xs font-medium text-emerald-600 dark:text-emerald-400 mt-2">{{ $s['active_tenants'] }} active</p>
         </div>
-        <div class="card p-5">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Active Tenants</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $this->stats['active_tenants'] }}</p>
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">operational</p>
+
+        {{-- Active Tenants --}}
+        <div class="bg-white dark:bg-gray-800/90 p-5 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm
+                    hover:shadow-md transition-shadow duration-200">
+            <div class="flex items-center justify-between">
+                <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Active</p>
+                <div class="p-2 bg-emerald-50 dark:bg-emerald-950/50 rounded-xl text-emerald-600 dark:text-emerald-400">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                </div>
+            </div>
+            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2 tabular-nums">{{ number_format($s['active_tenants']) }}</p>
+            <p class="text-xs font-medium text-gray-500 dark:text-gray-400 mt-2">Operational</p>
         </div>
-        <div class="card p-5">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Pending Tenants</p>
-            <p class="text-2xl font-bold text-amber-600 dark:text-amber-400 mt-2">{{ $this->stats['pending_tenants'] }}</p>
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">awaiting activation</p>
+
+        {{-- Pending --}}
+        <div class="bg-white dark:bg-gray-800/90 p-5 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm
+                    hover:shadow-md transition-shadow duration-200">
+            <div class="flex items-center justify-between">
+                <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Pending</p>
+                <div class="p-2 bg-amber-50 dark:bg-amber-950/50 rounded-xl text-amber-600 dark:text-amber-400">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                </div>
+            </div>
+            <p class="text-2xl font-bold text-amber-600 dark:text-amber-400 mt-2 tabular-nums">{{ number_format($s['pending_tenants']) }}</p>
+            <p class="text-xs font-medium text-gray-500 dark:text-gray-400 mt-2">Awaiting action</p>
         </div>
-        <div class="card p-5">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">New This Week</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $this->stats['new_this_week'] }}</p>
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">businesses onboarded</p>
+
+        {{-- New This Week --}}
+        <div class="bg-white dark:bg-gray-800/90 p-5 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm
+                    hover:shadow-md transition-shadow duration-200">
+            <div class="flex items-center justify-between">
+                <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">New (Week)</p>
+                <div class="p-2 bg-purple-50 dark:bg-purple-950/50 rounded-xl text-purple-600 dark:text-purple-400">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+                    </svg>
+                </div>
+            </div>
+            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2 tabular-nums">{{ number_format($s['new_this_week']) }}</p>
+            <p class="text-xs font-medium text-gray-500 dark:text-gray-400 mt-2">Onboarded</p>
         </div>
     </div>
 
-    {{-- Events Overview --}}
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div class="card p-5">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total Events</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $this->stats['total_events'] }}</p>
+    {{-- ═══════════════ EVENTS OVERVIEW ═══════════════ --}}
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div class="bg-white dark:bg-gray-800/90 p-4 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm">
+            <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total Events</p>
+            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2 tabular-nums">{{ number_format($s['total_events']) }}</p>
         </div>
-        <div class="card p-5">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Upcoming Events</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $this->stats['upcoming_events'] }}</p>
+        <div class="bg-white dark:bg-gray-800/90 p-4 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm">
+            <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Upcoming</p>
+            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2 tabular-nums">{{ number_format($s['upcoming_events']) }}</p>
         </div>
-        <div class="card p-5">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Featured Events</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $this->stats['featured_events'] }}</p>
+        <div class="bg-white dark:bg-gray-800/90 p-4 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm">
+            <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Featured</p>
+            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2 tabular-nums">{{ number_format($s['featured_events']) }}</p>
         </div>
     </div>
 
-    {{-- Pending Approval Callout --}}
-    @if($this->stats['pending_tenants'] > 0)
-        <div class="card border-l-4 border-l-amber-500 p-4">
+    {{-- ═══════════════ PENDING APPROVAL CALLOUT ═══════════════ --}}
+    @if($s['pending_tenants'] > 0)
+        <div class="bg-amber-50 dark:bg-amber-900/20 border-l-4 border-amber-500 rounded-2xl p-5 shadow-sm">
             <div class="flex flex-wrap items-center justify-between gap-4">
                 <div>
-                    <p class="font-semibold text-amber-600 dark:text-amber-400">Pending Approval</p>
-                    <p class="text-sm text-gray-600 dark:text-gray-300 mt-1">{{ $this->stats['pending_tenants'] }} businesses are waiting for activation.</p>
+                    <p class="font-semibold text-amber-700 dark:text-amber-400">Action Required: Pending Approvals</p>
+                    <p class="text-sm text-amber-600/80 dark:text-amber-300 mt-1">
+                        {{ $s['pending_tenants'] }} {{ \Illuminate\Support\Str::plural('business', $s['pending_tenants']) }} waiting for activation.
+                    </p>
                 </div>
                 <a href="{{ route('superadmin.tenants.index') }}" wire:navigate
-                   class="inline-flex items-center gap-1 px-4 py-2 rounded-full bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 text-sm font-semibold border border-amber-200 dark:border-amber-500/20 hover:bg-amber-100 dark:hover:bg-amber-500/20 transition active:scale-95 focus-visible:ring-2 focus-visible:ring-amber-500/50">
+                   class="inline-flex items-center gap-1 px-4 py-2 rounded-full
+                          bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300
+                          text-sm font-semibold border border-amber-200 dark:border-amber-500/30
+                          hover:bg-amber-200 dark:hover:bg-amber-500/30 transition active:scale-95
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50">
                     Review Tenants
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                    </svg>
                 </a>
             </div>
         </div>
     @endif
 
-    {{-- Tenant Growth Sparkline --}}
-    <div class="card p-6">
-        <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Tenant Growth — Last 6 Months</h2>
-        <div class="w-full h-40 relative" wire:ignore>
+    {{-- ═══════════════ TENANT GROWTH SPARKLINE ═══════════════ --}}
+    <div class="bg-white dark:bg-gray-800/90 p-6 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm">
+        <div class="flex items-center justify-between mb-6">
+            <div>
+                <h2 class="text-lg font-bold text-gray-900 dark:text-white">Tenant Growth</h2>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">New tenant registrations over the last 6 months.</p>
+            </div>
+            <div class="hidden sm:flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                <span class="w-3 h-3 rounded-full bg-cyan-500 inline-block"></span>
+                New Tenants
+            </div>
+        </div>
+        <div id="chart-container"
+             data-sparkline="{{ json_encode($this->tenantSparkline, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
+             class="w-full h-40 relative"
+             wire:ignore>
             <canvas id="sparklineChart"></canvas>
         </div>
     </div>
 
-    {{-- Recent Tenants & Users --}}
+    {{-- ═══════════════ RECENT ACTIVITY ═══════════════ --}}
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div class="card overflow-hidden">
+
+        {{-- Recent Tenants --}}
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm overflow-hidden flex flex-col">
             <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
                 <h2 class="font-bold text-gray-900 dark:text-white">Recently Onboarded</h2>
-                <a href="{{ route('superadmin.tenants.index') }}" wire:navigate class="inline-flex items-center gap-1 text-sm font-semibold text-primary-600 hover:underline focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded active:scale-95">
+                <a href="{{ route('superadmin.tenants.index') }}" wire:navigate
+                   class="inline-flex items-center gap-1 text-sm font-semibold text-primary-600 dark:text-primary-400
+                          hover:text-primary-700 dark:hover:text-primary-300
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded
+                          active:scale-95 transition">
                     View all
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                    </svg>
                 </a>
             </div>
-            <div class="p-6 space-y-3">
+            <div class="p-6 space-y-3 flex-1">
                 @forelse($this->recentTenants as $tenant)
-                    <div class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
-                        <div class="w-9 h-9 rounded-lg bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20 flex items-center justify-center font-mono text-sm font-medium text-blue-700 dark:text-blue-300 shrink-0">
+                    <div wire:key="tenant-{{ $tenant->id }}"
+                         class="flex items-center gap-3 p-3 rounded-xl
+                                bg-gray-50 dark:bg-gray-800/50 border border-gray-200/60 dark:border-gray-700
+                                hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-colors">
+                        <div class="w-10 h-10 rounded-lg bg-blue-100 dark:bg-blue-500/10
+                                    border border-blue-200 dark:border-blue-500/20
+                                    flex items-center justify-center font-bold text-sm
+                                    text-blue-700 dark:text-blue-400 shrink-0">
                             {{ strtoupper(substr($tenant->name, 0, 1)) }}
                         </div>
                         <div class="flex-1 min-w-0">
-                            <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ Str::limit($tenant->name, 22) }}</p>
+                            <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">{{ $tenant->name }}</p>
                             <p class="text-xs text-gray-500 dark:text-gray-400">{{ $tenant->created_at->diffForHumans() }}</p>
                         </div>
-                        <a href="{{ route('superadmin.tenants.edit', $tenant->id) }}" wire:navigate class="inline-flex items-center gap-1 text-xs font-semibold text-primary-600 hover:underline shrink-0 focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded active:scale-95">
+                        <a href="{{ route('superadmin.tenants.edit', $tenant->id) }}" wire:navigate
+                           class="text-xs font-semibold text-primary-600 dark:text-primary-400
+                                  hover:text-primary-700 dark:hover:text-primary-300 shrink-0 p-1 rounded
+                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition">
                             Manage
-                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
                         </a>
                     </div>
                 @empty
-                    <p class="text-sm text-gray-500 dark:text-gray-400 py-6 text-center">No tenants onboarded yet.</p>
+                    <div class="flex flex-col items-center justify-center py-8 text-center text-gray-500 dark:text-gray-400">
+                        <svg class="w-10 h-10 mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
+                        </svg>
+                        <p class="text-sm">No tenants onboarded yet.</p>
+                    </div>
                 @endforelse
             </div>
         </div>
 
-        <div class="card overflow-hidden">
+        {{-- Recent Users --}}
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm overflow-hidden flex flex-col">
             <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
                 <h2 class="font-bold text-gray-900 dark:text-white">Recent User Registrations</h2>
-                <a href="{{ route('superadmin.users.index') }}" wire:navigate class="inline-flex items-center gap-1 text-sm font-semibold text-primary-600 hover:underline focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded active:scale-95">
+                <a href="{{ route('superadmin.users.index') }}" wire:navigate
+                   class="inline-flex items-center gap-1 text-sm font-semibold text-primary-600 dark:text-primary-400
+                          hover:text-primary-700 dark:hover:text-primary-300
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded
+                          active:scale-95 transition">
                     View all
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                    </svg>
                 </a>
             </div>
-            <div class="p-6 space-y-3">
+            <div class="p-6 space-y-3 flex-1">
                 @forelse($this->recentUsers as $user)
-                    <div class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
-                        <div class="w-9 h-9 rounded-lg bg-purple-50 dark:bg-purple-500/10 border border-purple-200 dark:border-purple-500/20 flex items-center justify-center font-mono text-sm font-medium text-purple-700 dark:text-purple-300 shrink-0">
+                    <div wire:key="user-{{ $user->id }}"
+                         class="flex items-center gap-3 p-3 rounded-xl
+                                bg-gray-50 dark:bg-gray-800/50 border border-gray-200/60 dark:border-gray-700
+                                hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-colors">
+                        <div class="w-10 h-10 rounded-lg bg-purple-100 dark:bg-purple-500/10
+                                    border border-purple-200 dark:border-purple-500/20
+                                    flex items-center justify-center font-bold text-sm
+                                    text-purple-700 dark:text-purple-400 shrink-0">
                             {{ strtoupper(substr($user->name, 0, 1)) }}
                         </div>
                         <div class="flex-1 min-w-0">
-                            <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ Str::limit($user->name, 22) }}</p>
-                            <p class="text-xs text-gray-500 dark:text-gray-400">{{ $user->email }}</p>
+                            <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">{{ $user->name }}</p>
+                            <p class="text-xs text-gray-500 dark:text-gray-400 truncate">{{ $user->email }}</p>
                         </div>
-                        <span class="text-xs text-gray-500 dark:text-gray-400 shrink-0">{{ $user->created_at->diffForHumans() }}</span>
+                        <span class="text-[10px] text-gray-500 dark:text-gray-400 shrink-0
+                                     bg-white dark:bg-gray-900 px-2 py-1 rounded-md
+                                     border border-gray-200 dark:border-gray-700">
+                            {{ $user->created_at->diffForHumans() }}
+                        </span>
                     </div>
                 @empty
-                    <p class="text-sm text-gray-500 dark:text-gray-400 py-6 text-center">No users registered yet.</p>
+                    <div class="flex flex-col items-center justify-center py-8 text-center text-gray-500 dark:text-gray-400">
+                        <svg class="w-10 h-10 mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/>
+                        </svg>
+                        <p class="text-sm">No users registered yet.</p>
+                    </div>
                 @endforelse
             </div>
         </div>
     </div>
 
-    {{-- Upcoming Events --}}
-    <div class="card overflow-hidden">
+    {{-- ═══════════════ UPCOMING EVENTS ═══════════════ --}}
+    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm overflow-hidden">
         <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
-            <h2 class="font-bold text-gray-900 dark:text-white">Upcoming Events</h2>
-            <a href="{{ route('superadmin.events.index') }}" wire:navigate class="inline-flex items-center gap-1 text-sm font-semibold text-primary-600 hover:underline focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded active:scale-95">
+            <div>
+                <h2 class="font-bold text-gray-900 dark:text-white">Upcoming Events</h2>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Next active events across the platform.</p>
+            </div>
+            <a href="{{ route('superadmin.events.index') }}" wire:navigate
+               class="inline-flex items-center gap-1 text-sm font-semibold text-primary-600 dark:text-primary-400
+                      hover:text-primary-700 dark:hover:text-primary-300
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded
+                      active:scale-95 transition">
                 View all
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                </svg>
             </a>
         </div>
-        <div class="p-6 space-y-3">
-            @forelse($this->recentEvents as $event)
-                <div class="flex items-center gap-3 p-3 rounded-xl bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
-                    <div class="w-10 h-10 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 flex items-center justify-center text-lg shrink-0">
-                        <svg class="w-5 h-5 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                    </div>
-                    <div class="flex-1 min-w-0">
-                        <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ $event->name }}</p>
-                        <p class="text-xs text-gray-500 dark:text-gray-400">{{ $event->start_date->format('M d, Y') }} · {{ $event->barangay }}</p>
-                    </div>
-                    <a href="{{ route('superadmin.events.edit', $event->id) }}" wire:navigate class="inline-flex items-center gap-1 text-xs font-semibold text-primary-600 hover:underline shrink-0 focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded active:scale-95">
-                        Manage
-                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+
+        @if($this->upcomingEvents->isNotEmpty())
+            <div class="p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                @foreach($this->upcomingEvents as $event)
+                    <a href="{{ route('superadmin.events.edit', $event) }}" wire:navigate
+                       wire:key="upcoming-{{ $event->id }}"
+                       class="group flex items-start gap-3 p-3 rounded-xl
+                              bg-gray-50 dark:bg-gray-800/50 border border-gray-200/60 dark:border-gray-700
+                              hover:bg-gray-100 dark:hover:bg-gray-700/60 hover:border-primary-200 dark:hover:border-primary-500/30
+                              transition-colors
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                        <div class="w-14 h-14 rounded-lg overflow-hidden shrink-0
+                                    bg-gradient-to-br from-primary-100 to-primary-50 dark:from-primary-900/40 dark:to-primary-800/20
+                                    border border-primary-200/60 dark:border-primary-500/20 flex items-center justify-center">
+                            @if($event->image_path)
+                                <img src="{{ asset('storage/' . $event->image_path) }}"
+                                     class="w-full h-full object-cover"
+                                     alt="{{ $event->name }}">
+                            @else
+                                <svg class="w-6 h-6 text-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                                </svg>
+                            @endif
+                        </div>
+                        <div class="min-w-0 flex-1">
+                            <p class="text-[10px] font-bold uppercase tracking-wider text-primary-600 dark:text-primary-400">
+                                {{ $event->type }}
+                            </p>
+                            <p class="text-sm font-semibold text-gray-900 dark:text-white truncate mt-0.5">
+                                {{ $event->name }}
+                            </p>
+                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 flex items-center gap-1">
+                                <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                                </svg>
+                                {{ $event->start_date?->format('M d, Y') ?? '—' }}
+                            </p>
+                            @if($event->barangay)
+                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{{ $event->barangay }}</p>
+                            @endif
+                        </div>
                     </a>
+                @endforeach
+            </div>
+        @else
+            <div class="p-12 text-center">
+                <div class="w-14 h-14 mx-auto rounded-full bg-gray-100 dark:bg-gray-800
+                            flex items-center justify-center mb-3">
+                    <svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                    </svg>
                 </div>
-            @empty
-                <p class="text-sm text-gray-500 dark:text-gray-400 py-6 text-center">No upcoming events.</p>
-            @endforelse
-        </div>
+                <p class="text-sm font-semibold text-gray-900 dark:text-white">No upcoming events</p>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Nothing scheduled at the moment.</p>
+            </div>
+        @endif
     </div>
 
-    {{-- System Info --}}
-    <div class="card p-6">
-        <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">System Overview</h2>
-        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-            <div class="bg-gray-50 dark:bg-gray-700/50 rounded-xl p-4">
-                <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">PHP Version</p>
-                <p class="text-xl font-bold text-gray-900 dark:text-white mt-1">{{ PHP_VERSION }}</p>
-            </div>
-            <div class="bg-gray-50 dark:bg-gray-700/50 rounded-xl p-4">
-                <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Laravel Version</p>
-                <p class="text-xl font-bold text-gray-900 dark:text-white mt-1">{{ app()->version() }}</p>
-            </div>
-            <div class="bg-gray-50 dark:bg-gray-700/50 rounded-xl p-4">
-                <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total Users</p>
-                <p class="text-xl font-bold text-gray-900 dark:text-white mt-1">{{ $this->stats['total_users'] }}</p>
-            </div>
-            <div class="bg-gray-50 dark:bg-gray-700/50 rounded-xl p-4">
-                <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">System Roles</p>
-                <p class="text-xl font-bold text-gray-900 dark:text-white mt-1">{{ $this->stats['total_roles'] }}</p>
-            </div>
-            <div class="bg-gray-50 dark:bg-gray-700/50 rounded-xl p-4">
-                <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total Businesses</p>
-                <p class="text-xl font-bold text-gray-900 dark:text-white mt-1">{{ $this->stats['total_tenants'] }}</p>
-            </div>
-            <div class="bg-gray-50 dark:bg-gray-700/50 rounded-xl p-4">
-                <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">New This Month</p>
-                <p class="text-xl font-bold text-gray-900 dark:text-white mt-1">{{ $this->stats['new_this_month'] }}</p>
-            </div>
+    {{-- ═══════════════ SYSTEM OVERVIEW ═══════════════ --}}
+    @php $sys = $this->systemInfo; @endphp
+    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6">
+        <h2 class="text-lg font-bold text-gray-900 dark:text-white mb-4">System Overview</h2>
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+            @php
+                $infoCells = [
+                    ['label' => 'PHP',         'value' => $sys['php']],
+                    ['label' => 'Laravel',     'value' => $sys['laravel']],
+                    ['label' => 'Environment', 'value' => $sys['environment']],
+                    ['label' => 'Debug',       'value' => $sys['debug']],
+                    ['label' => 'Cache',       'value' => $sys['cache']],
+                    ['label' => 'Queue',       'value' => $sys['queue']],
+                ];
+            @endphp
+            @foreach($infoCells as $cell)
+                <div class="bg-gray-50 dark:bg-gray-800/50 rounded-xl p-4 border border-gray-200/60 dark:border-gray-700/50">
+                    <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">{{ $cell['label'] }}</p>
+                    <p class="text-sm font-bold text-gray-900 dark:text-white mt-1.5 font-mono truncate" title="{{ $cell['value'] }}">
+                        {{ $cell['value'] }}
+                    </p>
+                </div>
+            @endforeach
         </div>
     </div>
+</div>
 
-    @script
-    <script>
-        let sparklineChart = null;
+<script>
+(function () {
+    'use strict';
 
-        function getChartTheme() {
-            return document.documentElement.classList.contains('dark') ? {
-                textColor: '#9ca3af',
-                gridColor: 'rgba(255,255,255,0.06)',
-                lineColor: '#22d3ee',
-                fillColor: 'rgba(34,211,238,0.10)',
-            } : {
-                textColor: '#4b5563',
-                gridColor: 'rgba(0,0,0,0.08)',
-                lineColor: '#0891b2',
-                fillColor: 'rgba(8,145,178,0.10)',
-            };
+    // ──────────────────────────────────────────────────────────
+    //  Module-level state on `window` so SPA re-registrations
+    //  can clean up the previous instance before rebuilding.
+    // ──────────────────────────────────────────────────────────
+    if (window.__sparklineChart) {
+        try { window.__sparklineChart.destroy(); } catch (e) { /* noop */ }
+        window.__sparklineChart = null;
+    }
+
+    function getTheme() {
+        const isDark = document.documentElement.classList.contains('dark');
+        return {
+            textColor:   isDark ? '#9ca3af' : '#4b5563',
+            gridColor:   isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)',
+            lineColor:   isDark ? '#22d3ee' : '#0891b2',
+            fillColor:   isDark ? 'rgba(34,211,238,0.15)' : 'rgba(8,145,178,0.12)',
+            tooltipBg:   isDark ? '#1f2937' : '#ffffff',
+            tooltipText: isDark ? '#f3f4f6' : '#111827',
+        };
+    }
+
+    function getData() {
+        const container = document.getElementById('chart-container');
+        if (!container || !container.dataset.sparkline) return [];
+
+        try {
+            return JSON.parse(container.dataset.sparkline);
+        } catch (e) {
+            console.error('Sparkline data parse failed', e);
+            return [];
+        }
+    }
+
+    function buildOptions(theme) {
+        return {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend:  { display: false },
+                tooltip: {
+                    backgroundColor: theme.tooltipBg,
+                    titleColor:      theme.tooltipText,
+                    bodyColor:       theme.textColor,
+                    padding:         10,
+                    cornerRadius:    8,
+                    displayColors:   false,
+                },
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    ticks:  { color: theme.textColor, precision: 0, font: { size: 11 } },
+                    grid:   { color: theme.gridColor, borderDash: [4, 4] },
+                    border: { display: false },
+                },
+                x: {
+                    ticks:  { color: theme.textColor, font: { size: 11 } },
+                    grid:   { display: false },
+                    border: { display: false },
+                },
+            },
+            interaction: { intersect: false, mode: 'index' },
+        };
+    }
+
+    window.renderDashboardSparkline = function () {
+        if (typeof Chart === 'undefined') {
+            setTimeout(window.renderDashboardSparkline, 100);
+            return;
         }
 
-        function renderSparkline(data) {
-            const canvas = document.getElementById('sparklineChart');
-            if (!canvas || !data || data.length === 0) return;
-            
-            const theme = getChartTheme();
+        const canvas = document.getElementById('sparklineChart');
+        if (!canvas) return;
 
-            if (sparklineChart) {
-                sparklineChart.data.labels = data.map(d => d.label);
-                sparklineChart.data.datasets[0].data = data.map(d => d.value);
-                sparklineChart.data.datasets[0].borderColor = theme.lineColor;
-                sparklineChart.data.datasets[0].backgroundColor = theme.fillColor;
-                sparklineChart.data.datasets[0].pointBackgroundColor = theme.lineColor;
-                sparklineChart.options.scales.y.ticks.color = theme.textColor;
-                sparklineChart.options.scales.y.grid.color = theme.gridColor;
-                sparklineChart.options.scales.x.ticks.color = theme.textColor;
-                sparklineChart.update();
-                return;
-            }
+        const data = getData();
+        if (!data.length) return;
 
-            const ctx = canvas.getContext('2d');
-            sparklineChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: data.map(d => d.label),
-                    datasets: [{
-                        data: data.map(d => d.value),
-                        borderColor: theme.lineColor,
-                        borderWidth: 2,
-                        tension: 0.4,
-                        fill: true,
-                        backgroundColor: theme.fillColor,
-                        pointRadius: 3,
-                        pointBackgroundColor: theme.lineColor,
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
-                    scales: {
-                        y: { beginAtZero: true, ticks: { color: theme.textColor }, grid: { color: theme.gridColor } },
-                        x: { ticks: { color: theme.textColor }, grid: { display: false } }
-                    }
+        const theme = getTheme();
+        const labels = data.map(d => d.label);
+        const values = data.map(d => d.value);
+
+        // Update in place if the chart still points at the same canvas.
+        if (window.__sparklineChart && window.__sparklineChart.canvas === canvas) {
+            const chart = window.__sparklineChart;
+            chart.data.labels = labels;
+            chart.data.datasets[0].data = values;
+            chart.data.datasets[0].borderColor = theme.lineColor;
+            chart.data.datasets[0].backgroundColor = theme.fillColor;
+            chart.data.datasets[0].pointBackgroundColor = theme.lineColor;
+            chart.options.scales.y.ticks.color = theme.textColor;
+            chart.options.scales.y.grid.color  = theme.gridColor;
+            chart.options.scales.x.ticks.color = theme.textColor;
+            chart.options.plugins.tooltip.backgroundColor = theme.tooltipBg;
+            chart.options.plugins.tooltip.titleColor      = theme.tooltipText;
+            chart.options.plugins.tooltip.bodyColor       = theme.textColor;
+            chart.update('none');
+            return;
+        }
+
+        // Otherwise destroy + create.
+        if (window.__sparklineChart) {
+            try { window.__sparklineChart.destroy(); } catch (e) { /* noop */ }
+        }
+
+        window.__sparklineChart = new Chart(canvas.getContext('2d'), {
+            type: 'line',
+            data: {
+                labels,
+                datasets: [{
+                    data: values,
+                    borderColor: theme.lineColor,
+                    borderWidth: 2.5,
+                    tension: 0.4,
+                    fill: true,
+                    backgroundColor: theme.fillColor,
+                    pointRadius: 3,
+                    pointHoverRadius: 6,
+                    pointBackgroundColor: theme.lineColor,
+                    pointBorderColor: '#ffffff',
+                    pointBorderWidth: 2,
+                }],
+            },
+            options: buildOptions(theme),
+        });
+    };
+
+    // First render.
+    window.renderDashboardSparkline();
+
+    // Hook into Livewire morphs + theme changes ONCE per page load.
+    if (!window.__sparklineHooked) {
+        window.__sparklineHooked = true;
+
+        document.addEventListener('livewire:init', () => {
+            Livewire.hook('morph.updated', ({ el }) => {
+                if (el && el.id === 'chart-container') {
+                    window.renderDashboardSparkline();
                 }
             });
-        }
+        });
 
-        const sparklineData = @js($this->tenantSparkline);
-
-        function initCharts() {
-            if (typeof Chart !== 'undefined') {
-                renderSparkline(sparklineData);
-            } else {
-                document.addEventListener('DOMContentLoaded', () => {
-                    renderSparkline(sparklineData);
-                });
+        let lastDark = document.documentElement.classList.contains('dark');
+        new MutationObserver(() => {
+            const isDark = document.documentElement.classList.contains('dark');
+            if (isDark !== lastDark) {
+                lastDark = isDark;
+                window.renderDashboardSparkline();
             }
-        }
-
-        initCharts();
-
-        Livewire.hook('morph.updated', () => {
-            const newData = @js($this->tenantSparkline);
-            renderSparkline(newData);
-        });
-
-        const observer = new MutationObserver(() => {
-            renderSparkline(sparklineData);
-        });
-        observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
-    </script>
-    @endscript
-</div>
+        }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    }
+})();
+</script>

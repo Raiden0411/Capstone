@@ -1,31 +1,27 @@
-    <?php
+<?php
 
-    use Illuminate\Database\Migrations\Migration;
-    use Illuminate\Database\Schema\Blueprint;
-    use Illuminate\Support\Facades\Schema;
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
 
-    return new class extends Migration
+return new class extends Migration
+{
+    public function up(): void
     {
-        /**
-         * Run the migrations.
-         */
-        public function up(): void
-        {
         Schema::create('property_availability', function (Blueprint $table) {
-        $table->id();
-        $table->foreignId('tenant_id')->constrained('tenants')->cascadeOnDelete();
-        $table->foreignId('property_id')->constrained('properties')->cascadeOnDelete();
-        $table->date('date');
-        $table->boolean('is_available')->default(true);
-        $table->timestamps();
-    });
-        }
+            $table->id();
+            $table->foreignId('tenant_id')->constrained('tenants')->cascadeOnDelete();
+            $table->foreignId('property_id')->constrained('properties')->cascadeOnDelete();
+            $table->date('date');
+            $table->boolean('is_available')->default(true);
+            $table->timestamps();
 
-        /**
-         * Reverse the migrations.
-         */
-        public function down(): void
-        {
-            Schema::dropIfExists('property_availabilities');
-        }
-    };
+            $table->index(['tenant_id', 'property_id', 'date'], 'pa_tenant_prop_date_idx');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('property_availability');
+    }
+};

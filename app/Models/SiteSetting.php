@@ -3,26 +3,23 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Cache;
 
 class SiteSetting extends Model
 {
     protected $fillable = ['key', 'value'];
 
-    /**
-     * Use JSON casting so string values remain strings.
-     * Do NOT use `array` cast.
-     */
     protected $casts = [
         'value' => 'json',
     ];
 
     public static function getValue(string $key, $default = null)
     {
-        $setting = static::query()
-            ->where('key', $key)
-            ->first();
-
-        return $setting ? $setting->value : $default;
+        return Cache::remember(
+            "site_setting_{$key}",
+            now()->addHours(6),
+            fn () => static::query()->where('key', $key)->value('value') ?? $default
+        );
     }
 
     public static function setValue(string $key, $value): void
@@ -31,10 +28,24 @@ class SiteSetting extends Model
             ['key' => $key],
             ['value' => $value]
         );
+
+        Cache::forget("site_setting_{$key}");
     }
 
+    /**
+     * Forget the cached value for a key, without deleting the DB row.
+     */
     public static function forget(string $key): void
     {
+        Cache::forget("site_setting_{$key}");
+    }
+
+    /**
+     * Delete the DB row and its cache entry.
+     */
+    public static function deleteKey(string $key): void
+    {
         static::query()->where('key', $key)->delete();
+        Cache::forget("site_setting_{$key}");
     }
 }

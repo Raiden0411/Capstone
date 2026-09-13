@@ -1,31 +1,31 @@
 <?php
 
-use Livewire\Component;
-use Livewire\Attributes\Title;
-use Livewire\Attributes\Layout;
+use App\Models\User;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
-use App\Models\User;
+use Livewire\Attributes\Layout;
+use Livewire\Attributes\Title;
+use Livewire\Component;
 
-new 
-#[Layout('layouts.app')]
+new
+#[Layout('layouts.auth')]
 #[Title('Create Tourist Account')]
-class extends Component {
-
-    public $name = '';
-    public $email = '';
-    public $password = '';
-    public $password_confirmation = '';
-    public $phone = '';
+class extends Component
+{
+    public string $name                  = '';
+    public string $email                 = '';
+    public string $password              = '';
+    public string $password_confirmation = '';
+    public string $phone                 = '';
 
     public ?string $redirectTo = null;
 
-    public function mount()
+    public function mount(): void
     {
-        $this->redirectTo = request()->query('redirect');
+        $this->redirectTo = $this->sanitizeRedirect(request()->query('redirect'));
     }
 
-    protected function rules()
+    protected function rules(): array
     {
         return [
             'name'     => ['required', 'string', 'min:3', 'max:255'],
@@ -35,7 +35,7 @@ class extends Component {
         ];
     }
 
-    public function messages()
+    protected function messages(): array
     {
         return [
             'phone.regex' => 'Use a valid PH number: 09xxxxxxxxx or +639xxxxxxxxx.',
@@ -47,17 +47,23 @@ class extends Component {
         $this->validate();
 
         $user = User::create([
-            'name'      => $this->name,
-            'email'     => $this->email,
+            'name'      => trim($this->name),
+            'email'     => strtolower(trim($this->email)),
             'password'  => Hash::make($this->password),
-            'phone'     => $this->phone,
+            'phone'     => $this->phone !== '' ? $this->phone : null,
             'tenant_id' => null,
             'is_active' => true,
         ]);
 
-        $user->assignRole('tourist');
+        $user->syncRoles(['tourist']);
 
         auth()->login($user);
+
+        // Rotate the session ID to prevent session fixation. auth()->login()
+        // writes the user id into the CURRENT session; without this call,
+        // an attacker who planted a known session cookie could ride the
+        // victim's new authenticated session.
+        session()->regenerate();
 
         $message = 'Account created successfully! Welcome to Victorias Tourism.';
 
@@ -67,16 +73,36 @@ class extends Component {
 
         return redirect()->route('home')->with('message', $message);
     }
+
+    /**
+     * Only allow same-origin absolute paths. Rejects:
+     *   - External URLs        https://evil.com
+     *   - Protocol-relative    //evil.com
+     *   - Backslash trickery   /\evil.com  (older browsers treat \ as /)
+     *   - Anything not starting with a single forward slash
+     */
+    protected function sanitizeRedirect(?string $url): ?string
+    {
+        if (!$url || !str_starts_with($url, '/')) {
+            return null;
+        }
+
+        if (str_starts_with($url, '//') || str_starts_with($url, '/\\')) {
+            return null;
+        }
+
+        return $url;
+    }
 };
 ?>
 
 @php
     $siteName = \App\Models\SiteSetting::getValue('site_name', config('app.name'));
     $logoPath = \App\Models\SiteSetting::getValue('site_logo');
-    $logoUrl = $logoPath ? asset('storage/' . $logoPath) : null;
+    $logoUrl  = $logoPath ? asset('storage/' . $logoPath) : null;
 
     $heroPath = \App\Models\SiteSetting::getValue('hero_background_image');
-    $heroUrl = $heroPath
+    $heroUrl  = $heroPath
         ? asset('storage/' . $heroPath)
         : 'https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1600&q=80';
 @endphp
@@ -113,7 +139,7 @@ class extends Component {
         <div class="w-full max-w-md">
 
             {{-- Back to Home --}}
-            <a href="{{ route('home') }}"
+            <a href="{{ route('home') }}" wire:navigate
                class="inline-flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors mb-6 focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
                 Back to Home
@@ -218,7 +244,7 @@ class extends Component {
                                class="block w-full px-4 py-3 pr-11 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
 
                         <button type="button" @click="showPassword = !showPassword"
-                                class="absolute inset-y-0 flex items-center right-4 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                                class="absolute inset-y-0 flex items-center right-4 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-full"
                                 tabindex="-1" aria-label="Toggle password visibility">
                             <svg x-show="!showPassword" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
@@ -250,7 +276,7 @@ class extends Component {
                                class="block w-full px-4 py-3 pr-11 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
 
                         <button type="button" @click="showConfirmPassword = !showConfirmPassword"
-                                class="absolute inset-y-0 flex items-center right-4 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                                class="absolute inset-y-0 flex items-center right-4 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-full"
                                 tabindex="-1" aria-label="Toggle confirm password visibility">
                             <svg x-show="!showConfirmPassword" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
@@ -269,7 +295,7 @@ class extends Component {
                 {{-- Submit Button --}}
                 <button type="submit"
                         wire:loading.attr="disabled"
-                        class="w-full py-3.5 mt-2 text-[15px] font-semibold text-white transition-colors bg-primary-600 hover:bg-primary-700 rounded-xl shadow-sm disabled:opacity-50 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                        class="w-full py-3.5 mt-2 text-[15px] font-semibold text-white transition-all duration-200 bg-primary-600 hover:bg-primary-700 rounded-xl shadow-sm disabled:opacity-50 disabled:cursor-not-allowed active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:outline-none">
                     <span wire:loading.remove>Create Account</span>
                     <span wire:loading class="inline-flex items-center gap-2">
                         <svg class="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
@@ -281,7 +307,7 @@ class extends Component {
             {{-- Sign In Link (preserve redirect) --}}
             <p class="mt-8 text-sm font-medium text-center text-gray-500 dark:text-gray-400">
                 Already Have An Account?
-                <a href="{{ route('login', $redirectTo ? ['redirect' => $redirectTo] : []) }}"
+                <a href="{{ route('login', $redirectTo ? ['redirect' => $redirectTo] : []) }}" wire:navigate
                    class="text-primary-600 hover:underline ml-1 focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
                     Sign In
                 </a>
@@ -290,7 +316,7 @@ class extends Component {
             {{-- Business Registration (preserve redirect) --}}
             <p class="mt-2 text-sm font-medium text-center text-gray-500 dark:text-gray-400">
                 Own a tourist spot?
-                <a href="{{ route('register_business', $redirectTo ? ['redirect' => $redirectTo] : []) }}"
+                <a href="{{ route('register_business', $redirectTo ? ['redirect' => $redirectTo] : []) }}" wire:navigate
                    class="text-primary-600 hover:underline ml-1 focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
                     Register your business
                 </a>

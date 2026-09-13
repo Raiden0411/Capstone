@@ -37,6 +37,7 @@ class extends Component {
             'typeName' => [
                 'required',
                 'string',
+                'min:2',
                 'max:255',
                 Rule::unique('type_of_tenants', 'type')->ignore($this->type->id),
             ],
@@ -46,6 +47,7 @@ class extends Component {
 
     public function update()
     {
+        $this->typeName = trim($this->typeName);
         $this->validate();
 
         $this->type->update([
@@ -69,12 +71,13 @@ class extends Component {
     @endif
 
     {{-- Header --}}
-    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-800">
         <div>
-            <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Edit Tenant Type</h1>
+            <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white">Edit Tenant Type</h1>
+            <p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1">Update the name or description of this business type.</p>
         </div>
         <a href="{{ route('superadmin.tenant-types.index') }}" wire:navigate
-           class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
+           class="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 font-semibold text-xs sm:text-sm shadow-sm transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
             Back to Tenant Types
         </a>
@@ -104,9 +107,10 @@ class extends Component {
         <div class="flex flex-col sm:flex-row gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
             <button type="submit"
                     wire:loading.attr="disabled"
-                    class="btn-primary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                <span wire:loading.remove>Update Type</span>
-                <span wire:loading class="inline-flex items-center gap-2">
+                    wire:target="update"
+                    class="btn-primary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50 disabled:opacity-60 disabled:cursor-not-allowed">
+                <span wire:loading.remove wire:target="update">Update Type</span>
+                <span wire:loading wire:target="update" class="inline-flex items-center gap-2">
                     <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>

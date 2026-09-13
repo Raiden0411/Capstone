@@ -1,8 +1,13 @@
 {{-- resources/views/components/headers/tenant/sidebar.blade.php --}}
 @php
-    $tenant = auth()->user()?->tenant;
-    $isEmployee = !auth()->user()->hasRole('admin') && auth()->user()->tenant_id;
+    $user       = auth()->user();
+    $tenant     = $user?->tenant;
+    $isAdmin    = $user?->hasAnyRole(['admin', 'super-admin']) ?? false;
+    $isEmployee = $user && !$user->hasRole('admin') && $user->tenant_id;
     $dashboardRoute = $isEmployee ? route('tenant.employee.dashboard') : route('tenant.dashboard');
+
+    // Cache permission checks once so we don't hit the DB repeatedly
+    $can = fn (string $permission) => $user && $user->hasPermissionTo($permission);
 
     $tenantLogoUrl = null;
     if ($tenant && $tenant->logo) {
@@ -29,12 +34,9 @@
         mobileOpen ? 'translate-x-0' : '-translate-x-full',
         'lg:translate-x-0'
     ]"
-    class="
-        fixed inset-y-0 start-0 z-50 h-full
-        bg-white dark:bg-gray-900 border-e border-gray-200 dark:border-gray-700
-        transition-all duration-300 transform
-        lg:block
-    "
+    class="fixed inset-y-0 inset-s-0 z-50 h-full
+           bg-white dark:bg-gray-900 border-e border-gray-200 dark:border-gray-700
+           transition-all duration-300 transform lg:block"
     role="dialog" tabindex="-1" aria-label="Sidebar"
 >
     {{-- Mobile backdrop --}}
@@ -44,7 +46,7 @@
 
     <div class="relative flex flex-col h-full max-h-full">
 
-        {{-- Header with dynamic business profile (aligned height with top header) --}}
+        {{-- Header --}}
         <div class="flex h-16 md:h-20 items-center justify-between px-4 border-b border-gray-200 dark:border-gray-700 shrink-0"
              :class="minified ? 'lg:justify-center lg:px-2' : ''">
             <div class="flex items-center gap-2 overflow-hidden">
@@ -66,7 +68,6 @@
                 </a>
             </div>
 
-            {{-- Mobile Close Button --}}
             <button type="button"
                     class="flex lg:hidden justify-center items-center size-8 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-gray-700 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                     @click="mobileOpen = false"
@@ -97,7 +98,7 @@
                         </a>
                     </li>
 
-                    @can('view analytics')
+                    @if($can('view analytics'))
                     <li>
                         <a href="{{ route('tenant.analytics.index') }}" wire:navigate
                            class="group flex items-center gap-x-3.5 py-2.5 px-3 text-sm rounded-lg transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 border-l-2
@@ -110,16 +111,16 @@
                             <span x-show="!minified" x-cloak>Analytics</span>
                         </a>
                     </li>
-                    @endcan
+                    @endif
 
                     {{-- ===== OPERATIONS ===== --}}
-                    @hasanyrole('admin|super-admin')
+                    @if($isAdmin)
                     <li x-show="!minified" class="pt-4 pb-1" x-cloak>
                         <span class="block px-3 text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">Operations</span>
                     </li>
-                    @endhasanyrole
+                    @endif
 
-                    @can('view bookings')
+                    @if($can('view bookings'))
                     <li>
                         <a href="{{ route('tenant.bookings.index') }}" wire:navigate
                            class="group flex items-center gap-x-3.5 py-2.5 px-3 text-sm rounded-lg transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 border-l-2
@@ -144,9 +145,9 @@
                             <span x-show="!minified" x-cloak>Booking History</span>
                         </a>
                     </li>
-                    @endcan
+                    @endif
 
-                    @can('manage events')
+                    @if($can('manage events'))
                     <li>
                         <a href="{{ route('tenant.events.index') }}" wire:navigate
                            class="group flex items-center gap-x-3.5 py-2.5 px-3 text-sm rounded-lg transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 border-l-2
@@ -159,16 +160,16 @@
                             <span x-show="!minified" x-cloak>Events</span>
                         </a>
                     </li>
-                    @endcan
+                    @endif
 
                     {{-- ===== INVENTORY ===== --}}
-                    @hasanyrole('admin|super-admin')
+                    @if($isAdmin)
                     <li x-show="!minified" class="pt-4 pb-1" x-cloak>
                         <span class="block px-3 text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">Inventory</span>
                     </li>
-                    @endhasanyrole
+                    @endif
 
-                    @can('view properties')
+                    @if($can('view properties'))
                     <li>
                         <a href="{{ route('tenant.properties.index') }}" wire:navigate
                            class="group flex items-center gap-x-3.5 py-2.5 px-3 text-sm rounded-lg transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 border-l-2
@@ -181,9 +182,6 @@
                             <span x-show="!minified" x-cloak>Properties</span>
                         </a>
                     </li>
-                    @endcan
-
-                    @can('view properties')
                     <li>
                         <a href="{{ route('tenant.property-types.index') }}" wire:navigate
                            class="group flex items-center gap-x-3.5 py-2.5 px-3 text-sm rounded-lg transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 border-l-2
@@ -196,9 +194,9 @@
                             <span x-show="!minified" x-cloak>Property Types</span>
                         </a>
                     </li>
-                    @endcan
+                    @endif
 
-                    @can('view services')
+                    @if($can('view services'))
                     <li>
                         <a href="{{ route('tenant.services.index') }}" wire:navigate
                            class="group flex items-center gap-x-3.5 py-2.5 px-3 text-sm rounded-lg transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 border-l-2
@@ -211,16 +209,16 @@
                             <span x-show="!minified" x-cloak>Services</span>
                         </a>
                     </li>
-                    @endcan
+                    @endif
 
                     {{-- ===== FINANCE ===== --}}
-                    @hasanyrole('admin|super-admin')
+                    @if($isAdmin)
                     <li x-show="!minified" class="pt-4 pb-1" x-cloak>
                         <span class="block px-3 text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">Finance</span>
                     </li>
-                    @endhasanyrole
+                    @endif
 
-                    @can('view payments')
+                    @if($can('view payments'))
                     <li>
                         <a href="{{ route('tenant.payments.index') }}" wire:navigate
                            class="group flex items-center gap-x-3.5 py-2.5 px-3 text-sm rounded-lg transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 border-l-2
@@ -233,16 +231,16 @@
                             <span x-show="!minified" x-cloak>Payments</span>
                         </a>
                     </li>
-                    @endcan
+                    @endif
 
                     {{-- ===== PEOPLE & ACCESS ===== --}}
-                    @hasanyrole('admin|super-admin')
+                    @if($isAdmin)
                     <li x-show="!minified" class="pt-4 pb-1" x-cloak>
                         <span class="block px-3 text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">People & Access</span>
                     </li>
-                    @endhasanyrole
+                    @endif
 
-                    @can('view employees')
+                    @if($can('view employees'))
                     <li>
                         <a href="{{ route('tenant.employees.index') }}" wire:navigate
                            class="group flex items-center gap-x-3.5 py-2.5 px-3 text-sm rounded-lg transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 border-l-2
@@ -255,9 +253,9 @@
                             <span x-show="!minified" x-cloak>Employees</span>
                         </a>
                     </li>
-                    @endcan
+                    @endif
 
-                    @hasanyrole('admin|super-admin')
+                    @if($isAdmin)
                     <li>
                         <a href="{{ route('tenant.roles.index') }}" wire:navigate
                            class="group flex items-center gap-x-3.5 py-2.5 px-3 text-sm rounded-lg transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 border-l-2
@@ -270,16 +268,13 @@
                             <span x-show="!minified" x-cloak>Roles</span>
                         </a>
                     </li>
-                    @endhasanyrole
+                    @endif
 
                     {{-- ===== SYSTEM ===== --}}
-                    @hasanyrole('admin|super-admin')
+                    @if($isAdmin)
                     <li x-show="!minified" class="pt-4 pb-1" x-cloak>
                         <span class="block px-3 text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">System</span>
                     </li>
-                    @endhasanyrole
-
-                    @hasanyrole('admin|super-admin')
                     <li>
                         <a href="{{ route('tenant.settings.index') }}" wire:navigate
                            class="group flex items-center gap-x-3.5 py-2.5 px-3 text-sm rounded-lg transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 border-l-2
@@ -293,13 +288,13 @@
                             <span x-show="!minified" x-cloak>Settings</span>
                         </a>
                     </li>
-                    @endhasanyrole
+                    @endif
 
                 </ul>
             </nav>
         </div>
 
-        {{-- Floating collapse/expand button (desktop only) --}}
+        {{-- Floating collapse/expand button --}}
         <button type="button"
                 @click="toggleMinified()"
                 class="hidden lg:flex absolute top-1/2 -right-3 z-50 size-7 -translate-y-1/2 items-center justify-center rounded-full border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-300 shadow-sm hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition-all duration-200 active:scale-95"

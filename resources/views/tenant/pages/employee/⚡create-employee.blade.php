@@ -6,14 +6,18 @@ use Livewire\WithFileUploads;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Validate;
+use Livewire\Attributes\Computed;
 use App\Models\Employee;
 use App\Models\User;
 use App\Models\TenantSetting;
 use Spatie\Permission\Models\Role;
 use Spatie\Permission\Models\Permission;
+use Spatie\Permission\PermissionRegistrar;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Str;
 
@@ -49,28 +53,46 @@ class extends Component {
     public string $password = '';
     public string $password_confirmation = '';
 
-    // Multiple role selection
     public array $selectedRoles = [];
 
-    // Role filtering
     public string $roleSearch = '';
     public string $roleTypeFilter = 'all';
 
-    // Quick role creation
     public bool $showNewRoleForm = false;
     public string $newRoleName = '';
     public array $newRolePermissions = [];
+    public string $newRolePermissionSearch = '';
 
     public bool $saveAndAddAnother = false;
 
     public function mount()
     {
+        $user = Auth::user();
+        if (!$user || !$user->tenant_id) {
+            abort(403);
+        }
+
+        $canManage = $user->hasAnyRole(['admin', 'super-admin'])
+            || $user->getAllPermissions()->contains('name', 'manage employees');
+
+        if (!$canManage) {
+            abort(403, 'You are not authorized to add employees.');
+        }
+
         $this->generateCode();
     }
 
     public function generateCode()
     {
-        $this->code = 'EMP-' . strtoupper(Str::random(6));
+        do {
+            $candidate = 'EMP-' . strtoupper(Str::random(6));
+        } while (
+            Employee::where('tenant_id', Auth::user()->tenant_id)
+                ->where('code', $candidate)
+                ->exists()
+        );
+
+        $this->code = $candidate;
     }
 
     public function updated($field)
@@ -92,6 +114,8 @@ class extends Component {
         if ($this->user_mode !== 'new') {
             $this->password = '';
             $this->password_confirmation = '';
+        }
+        if ($this->user_mode === 'none') {
             $this->selectedRoles = [];
         }
         if ($this->user_mode !== 'existing') {
@@ -109,6 +133,8 @@ class extends Component {
         }
 
         $this->existingUserResults = User::where('tenant_id', Auth::user()->tenant_id)
+            ->where('is_active', true)
+            ->where('id', '!=', Auth::id())
             ->where(function ($q) {
                 $q->where('name', 'like', '%'.$this->search.'%')
                   ->orWhere('email', 'like', '%'.$this->search.'%')
@@ -130,63 +156,201 @@ class extends Component {
         $this->email = $user->email ?? '';
         $this->search = $user->name;
         $this->existingUserResults = [];
+
+        $tenantId  = Auth::user()->tenant_id;
+        $usesTeams = (bool) config('permission.teams');
+        $teamKey   = $usesTeams
+            ? config('permission.column_names.team_foreign_key', 'team_id')
+            : null;
+
+        $values = [];
+        foreach ($user->roles as $role) {
+            if (in_array($role->name, ['super-admin', 'admin'], true)) {
+                continue;
+            }
+
+            if ($usesTeams && $teamKey) {
+                $roleTeamId = $role->{$teamKey} ?? null;
+                if ($roleTeamId === null) {
+                    $values[] = $role->name;
+                } elseif ((int) $roleTeamId === (int) $tenantId) {
+                    $values[] = 'role_' . $role->id;
+                }
+            } else {
+                $values[] = $role->name;
+            }
+        }
+
+        $this->selectedRoles = array_values(array_unique($values));
     }
 
-    public function getAvailableRolesProperty()
+    /**
+     * @return Collection<int, array{
+     *     type: string,
+     *     value: string,
+     *     label: string,
+     *     permissions: array<int, string>
+     * }>
+     */
+    #[Computed]
+    public function availableRoles()
     {
-        $roles = collect();
+        $tenantId  = Auth::user()->tenant_id;
+        $usesTeams = (bool) config('permission.teams');
+        $teamKey   = $usesTeams
+            ? config('permission.column_names.team_foreign_key', 'team_id')
+            : null;
 
-        $globalRoles = Role::whereNotIn('name', ['super-admin', 'admin'])
-            ->orderBy('name')
-            ->get()
-            ->map(fn($role) => [
+        $roles = [];
+
+        $globalQuery = Role::query()
+            ->whereNotIn('name', ['super-admin', 'admin'])
+            ->where('guard_name', 'web')
+            ->with('permissions:id,name')
+            ->orderBy('name');
+
+        if ($usesTeams && $teamKey) {
+            $globalQuery->whereNull($teamKey);
+        }
+
+        foreach ($globalQuery->get() as $role) {
+            $roles[] = [
                 'type'        => 'global',
                 'value'       => $role->name,
                 'label'       => ucfirst($role->name),
-                'permissions' => $role->permissions->pluck('name')->toArray(),
-            ]);
-
-        $roles = $roles->concat($globalRoles);
-
-        $setting = TenantSetting::where('tenant_id', '=', Auth::user()->tenant_id, 'and')
-            ->where('key', '=', 'custom_roles', 'and')
-            ->first();
-        $customRoles = $setting ? $setting->value : [];
-
-        foreach ($customRoles as $index => $customRole) {
-            $roles->push([
-                'type'        => 'custom',
-                'value'       => 'custom_' . $index,
-                'label'       => $customRole['name'],
-                'permissions' => $customRole['permissions'] ?? [],
-            ]);
+                'permissions' => $role->permissions->pluck('name')->all(),
+            ];
         }
 
-        return $roles
-            ->when($this->roleSearch !== '', function ($collection) {
-                return $collection->filter(fn($role) => stripos($role['label'], $this->roleSearch) !== false);
-            })
-            ->when($this->roleTypeFilter !== 'all', function ($collection) {
-                return $collection->where('type', $this->roleTypeFilter);
-            })
-            ->values();
+        $customQuery = Role::query()
+            ->where('guard_name', 'web')
+            ->with('permissions:id,name')
+            ->orderBy('name');
+
+        if ($usesTeams && $teamKey) {
+            $customQuery->where($teamKey, $tenantId);
+        } else {
+            $setting = TenantSetting::query()
+                ->where('tenant_id', $tenantId)
+                ->where('key', 'custom_roles')
+                ->first();
+
+            $meta = ($setting && is_array($setting->value)) ? $setting->value : [];
+            $ids  = array_values(array_unique(array_filter(array_column($meta, 'role_id'))));
+
+            if (empty($ids)) {
+                $customQuery->whereRaw('1 = 0');
+            } else {
+                $customQuery->whereIn('id', $ids);
+            }
+        }
+
+        foreach ($customQuery->get() as $role) {
+            $roles[] = [
+                'type'        => 'custom',
+                'value'       => 'role_' . $role->id,
+                'label'       => $role->name,
+                'permissions' => $role->permissions->pluck('name')->all(),
+            ];
+        }
+
+        $search     = $this->roleSearch;
+        $typeFilter = $this->roleTypeFilter;
+
+        if ($search !== '') {
+            $roles = array_values(array_filter(
+                $roles,
+                fn (array $r) => stripos($r['label'], $search) !== false
+            ));
+        }
+
+        if ($typeFilter !== 'all') {
+            $roles = array_values(array_filter(
+                $roles,
+                fn (array $r) => $r['type'] === $typeFilter
+            ));
+        }
+
+        return collect($roles);
     }
 
-    public function getAllPermissionsProperty()
+    /**
+     * @return Collection<int, Permission>
+     */
+    #[Computed]
+    public function allPermissions(): Collection
     {
-        return Permission::orderBy('name')->get(['name']);
+        $excludedExact = [
+            'manage roles',
+            'manage permissions',
+            'manage tenants',
+            'manage platform',
+            'manage users',
+            'delete tenants',
+            'delete users',
+        ];
+
+        return Permission::query()
+            ->whereNotIn('name', $excludedExact)
+            ->where('guard_name', 'web')
+            ->orderBy('name')
+            ->get(['id', 'name']);
+    }
+
+    /**
+     * @return Collection<string, Collection<int, Permission>>
+     */
+    #[Computed]
+    public function groupedPermissions(): Collection
+    {
+        return $this->allPermissions->groupBy(function ($permission) {
+            $parts = explode(' ', str_replace(['-', '_'], ' ', $permission->name));
+            if (count($parts) >= 2) {
+                return ucwords(end($parts));
+            }
+            return 'General';
+        })->sortKeys();
+    }
+
+    /**
+     * @return Collection<string, Collection<int, Permission>>
+     */
+    #[Computed]
+    public function filteredGroupedPermissions(): Collection
+    {
+        if (empty($this->newRolePermissionSearch)) {
+            return $this->groupedPermissions;
+        }
+
+        $search = strtolower($this->newRolePermissionSearch);
+
+        return $this->groupedPermissions->map(function ($permissions) use ($search) {
+            return $permissions->filter(function ($permission) use ($search) {
+                return str_contains(strtolower($permission->name), $search);
+            });
+        })->filter(fn ($permissions) => $permissions->isNotEmpty());
+    }
+
+    public function selectAllQuickRolePermissions()
+    {
+        $this->newRolePermissions = $this->allPermissions->pluck('name')->all();
+    }
+
+    public function deselectAllQuickRolePermissions()
+    {
+        $this->newRolePermissions = [];
     }
 
     public function maybeAutoSelectRole()
     {
         if ($this->user_mode !== 'new' || count($this->selectedRoles) > 0) return;
 
-        $jobTitle = strtolower($this->employeeRole);
+        $jobTitle = strtolower(trim($this->employeeRole));
         if (strlen($jobTitle) < 3) return;
 
-        $match = $this->availableRoles->first(function ($role) use ($jobTitle) {
-            return stripos(strtolower($role['label']), $jobTitle) !== false;
-        });
+        $match = $this->availableRoles->first(
+            fn ($role) => strtolower($role['label']) === $jobTitle
+        );
 
         if ($match) {
             $this->selectedRoles = [$match['value']];
@@ -198,38 +362,67 @@ class extends Component {
         $this->showNewRoleForm = !$this->showNewRoleForm;
         $this->newRoleName = '';
         $this->newRolePermissions = [];
+        $this->newRolePermissionSearch = '';
+        $this->resetErrorBag(['newRoleName', 'newRolePermissions']);
     }
 
     public function createQuickRole()
     {
         $this->validate([
-            'newRoleName' => 'required|string|max:50',
-            'newRolePermissions' => 'array',
+            'newRoleName' => ['required', 'string', 'min:3', 'max:50', function ($attr, $value, $fail) {
+                if (preg_match('/(^|\s|\-|_)(super[\s\-_]?admin|admin)($|\s|\-|_)/i', $value)) {
+                    $fail('Role names containing "admin" are reserved.');
+                }
+            }],
+            'newRolePermissions' => 'required|array|min:1',
         ]);
 
-        $setting = TenantSetting::where('tenant_id', '=', Auth::user()->tenant_id, 'and')
-            ->where('key', '=', 'custom_roles', 'and')
-            ->first();
+        try {
+            DB::transaction(function () {
+                $tenantId  = Auth::user()->tenant_id;
+                $guard     = 'web';
+                $usesTeams = (bool) config('permission.teams');
 
-        $customRoles = $setting ? $setting->value : [];
-        $customRoles[] = [
-            'name' => $this->newRoleName,
-            'permissions' => $this->newRolePermissions,
-        ];
+                $data = ['name' => $this->newRoleName, 'guard_name' => $guard];
+                if ($usesTeams) {
+                    $teamKey = config('permission.column_names.team_foreign_key', 'team_id');
+                    $data[$teamKey] = $tenantId;
+                }
 
-        TenantSetting::updateOrCreate(
-            ['tenant_id' => Auth::user()->tenant_id, 'key' => 'custom_roles'],
-            ['value' => $customRoles]
-        );
+                $role = Role::create($data);
+                $role->syncPermissions($this->newRolePermissions);
 
-        $this->showNewRoleForm = false;
-        $this->newRoleName = '';
-        $this->newRolePermissions = [];
+                $setting = TenantSetting::where('tenant_id', $tenantId)
+                    ->where('key', 'custom_roles')
+                    ->first();
+                $customRoles = ($setting && is_array($setting->value)) ? $setting->value : [];
+                $customRoles[] = [
+                    'role_id'     => $role->id,
+                    'name'        => $role->name,
+                    'permissions' => $this->newRolePermissions,
+                ];
 
-        $newIndex = count($customRoles) - 1;
-        $this->selectedRoles[] = 'custom_' . $newIndex;
+                TenantSetting::updateOrCreate(
+                    ['tenant_id' => $tenantId, 'key' => 'custom_roles'],
+                    ['value' => $customRoles]
+                );
 
-        session()->flash('message', 'Custom role created and selected.');
+                $this->selectedRoles[] = 'role_' . $role->id;
+
+                app(PermissionRegistrar::class)->forgetCachedPermissions();
+            });
+
+            $this->showNewRoleForm = false;
+            $this->newRoleName = '';
+            $this->newRolePermissions = [];
+            $this->newRolePermissionSearch = '';
+            session()->flash('message', 'Custom role created and selected.');
+        } catch (\Spatie\Permission\Exceptions\RoleAlreadyExists $e) {
+            $this->addError('newRoleName', 'A role with this name already exists.');
+        } catch (\Exception $e) {
+            Log::error('Quick role creation failed: ' . $e->getMessage());
+            session()->flash('error', 'Failed to create role. Please try again.');
+        }
     }
 
     public function rules()
@@ -239,84 +432,96 @@ class extends Component {
             'employeeRole' => 'required|string|max:50',
             'phone'        => ['required', 'string', 'max:20', 'regex:/^(09|\+639)\d{9}$/'],
             'is_active'    => 'boolean',
-            'code'         => 'nullable|string|max:20|unique:employees,code',
+            'code'         => ['nullable', 'string', 'max:20',
+                Rule::unique('employees', 'code')->where('tenant_id', Auth::user()->tenant_id),
+            ],
             'avatar'       => 'nullable|image|max:2048',
         ];
 
         if ($this->user_mode === 'existing') {
-            $rules['existing_user_id'] = 'required|exists:users,id';
+            $rules['existing_user_id'] = [
+                'required',
+                Rule::exists('users', 'id')->where('tenant_id', Auth::user()->tenant_id),
+            ];
+            $rules['selectedRoles'] = 'array';
         }
 
         if ($this->user_mode === 'new') {
-            $rules['email'] = [
-                'required',
-                'email',
-                Rule::unique('users', 'email'),
-            ];
-            $rules['password'] = 'required|min:8|confirmed';
+            $rules['email']         = ['required', 'email', 'max:255', Rule::unique('users', 'email')];
+            $rules['password']      = 'required|min:8|confirmed';
             $rules['selectedRoles'] = 'required|array|min:1';
         }
 
         return $rules;
     }
 
+    public function saveAndAddAnotherEmployee()
+    {
+        $this->saveAndAddAnother = true;
+        $this->save();
+    }
+
     public function save()
     {
         $this->validate();
 
-        $employee = DB::transaction(function () {
-            $userId = null;
+        try {
+            DB::transaction(function () {
+                $userId = null;
 
-            if ($this->user_mode === 'existing') {
-                $userId = $this->existing_user_id;
-            } elseif ($this->user_mode === 'new') {
-                $user = User::create([
+                if ($this->user_mode === 'existing') {
+                    $userId = $this->existing_user_id;
+                    $this->syncUserRoles($userId);
+                } elseif ($this->user_mode === 'new') {
+                    $user = User::create([
+                        'tenant_id' => Auth::user()->tenant_id,
+                        'name'      => $this->name,
+                        'email'     => $this->email,
+                        'phone'     => $this->phone,
+                        'password'  => Hash::make($this->password),
+                        'is_active' => true,
+                    ]);
+
+                    $this->syncUserRoles($user->id);
+                    $userId = $user->id;
+                }
+
+                $avatarPath = null;
+                if ($this->avatar) {
+                    $avatarPath = $this->avatar->store('employee-avatars', 'public');
+                }
+
+                Employee::create([
                     'tenant_id' => Auth::user()->tenant_id,
+                    'user_id'   => $userId,
+                    'code'      => $this->code ?: null,
                     'name'      => $this->name,
-                    'email'     => $this->email,
-                    'password'  => Hash::make($this->password),
-                    'is_active' => true,
+                    'role'      => $this->employeeRole,
+                    'phone'     => $this->phone,
+                    'avatar'    => $avatarPath,
+                    'is_active' => $this->is_active,
                 ]);
-
-                $permissionsToAssign = [];
-                foreach ($this->selectedRoles as $roleValue) {
-                    $selected = $this->availableRoles->firstWhere('value', $roleValue);
-                    if (!$selected) continue;
-
-                    if ($selected['type'] === 'global') {
-                        $user->assignRole($selected['value']);
-                    } else {
-                        $permissionsToAssign = array_merge($permissionsToAssign, $selected['permissions']);
-                    }
-                }
-                if (!empty($permissionsToAssign)) {
-                    $user->givePermissionTo(array_unique($permissionsToAssign));
-                }
-
-                $userId = $user->id;
-            }
-
-            $avatarPath = null;
-            if ($this->avatar) {
-                $avatarPath = $this->avatar->store('employee-avatars', 'public');
-            }
-
-            return Employee::create([
+            });
+        } catch (\Exception $e) {
+            Log::error('Employee creation failed: ' . $e->getMessage(), [
                 'tenant_id' => Auth::user()->tenant_id,
-                'user_id'   => $userId,
-                'code'      => $this->code ?: ('EMP-' . strtoupper(Str::random(6))),
-                'name'      => $this->name,
-                'role'      => $this->employeeRole,
-                'phone'     => $this->phone,
-                'avatar'    => $avatarPath,
-                'is_active' => $this->is_active,
+                'email'     => $this->email,
             ]);
-        });
+            session()->flash('error', 'Failed to create employee. Please try again.');
+            $this->saveAndAddAnother = false;
+            return;
+        }
 
         session()->flash('message', 'Employee created successfully.');
 
         if ($this->saveAndAddAnother) {
-            $this->reset(['name', 'employeeRole', 'phone', 'avatar', 'user_mode', 'existing_user_id', 'email', 'password', 'password_confirmation', 'selectedRoles', 'roleSearch', 'roleTypeFilter']);
+            $this->saveAndAddAnother = false;
+            $this->reset([
+                'name', 'employeeRole', 'phone', 'avatar',
+                'user_mode', 'existing_user_id', 'email',
+                'password', 'password_confirmation',
+                'selectedRoles', 'roleSearch', 'roleTypeFilter',
+            ]);
             $this->generateCode();
             $this->is_active = true;
             return;
@@ -324,22 +529,77 @@ class extends Component {
 
         return $this->redirectRoute('tenant.employees.index', navigate: true);
     }
+
+    protected function syncUserRoles(int $userId): void
+    {
+        $user = User::find($userId);
+        if (!$user) return;
+
+        $roleNames = [];
+
+        foreach ($this->selectedRoles as $roleValue) {
+            $selected = $this->availableRoles->firstWhere('value', $roleValue);
+            if (!$selected) continue;
+
+            if ($selected['type'] === 'global') {
+                $roleNames[] = $selected['value'];
+            } else {
+                $roleId    = (int) substr($selected['value'], strlen('role_'));
+                $roleModel = Role::findById($roleId, 'web');
+                if ($roleModel) {
+                    $roleNames[] = $roleModel->name;
+                }
+            }
+        }
+
+        $roleNames = array_values(array_unique($roleNames));
+
+        if ($this->user_mode === 'new') {
+            if (!empty($roleNames)) {
+                $user->syncRoles($roleNames);
+            }
+        } else {
+            if (!empty($roleNames)) {
+                $user->assignRole($roleNames);
+            }
+        }
+
+        app(PermissionRegistrar::class)->forgetCachedPermissions();
+    }
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto space-y-6">
+<div class="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto space-y-6"
+     x-data="{ avatarPreview: null }">
 
+    {{-- Flash Messages --}}
     @if (session()->has('message'))
         <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium flex items-center gap-2">
             <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
             {{ session('message') }}
         </div>
     @endif
+    @if (session()->has('error'))
+        <div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 border-l-4 border-l-red-500 p-4 rounded-md text-sm text-red-700 dark:text-red-300 font-medium flex items-center gap-2">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            {{ session('error') }}
+        </div>
+    @endif
 
-    <div class="flex items-center justify-between pb-6 border-b border-gray-200 dark:border-gray-700">
-        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Add Employee</h1>
+    {{-- Header --}}
+    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
+        <div>
+            <div class="flex items-center gap-2 mb-2">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Employees</span>
+            </div>
+            <h1 class="font-display text-3xl md:text-4xl font-semibold text-gray-900 dark:text-white">
+                Add <em class="italic text-primary-600 dark:text-primary-400">Employee</em>
+            </h1>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mt-2">Register a new team member.</p>
+        </div>
         <a href="{{ route('tenant.employees.index') }}" wire:navigate
-           class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-2">
+           class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
             Back to Employees
         </a>
@@ -351,24 +611,60 @@ class extends Component {
         <div class="flex flex-col sm:flex-row gap-3">
             <div class="flex-1">
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Employee Code</label>
-                <input type="text" wire:model="code" class="input">
+                <input type="text" wire:model="code" class="input font-mono">
                 @error('code') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
             <button type="button" wire:click="generateCode"
                     class="btn-secondary self-start sm:self-end active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                Generate
+                Regenerate
             </button>
         </div>
 
-        {{-- Avatar --}}
+        {{-- Avatar — Drag & Drop with Preview --}}
         <div>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Profile Picture</label>
-            <input type="file" wire:model="avatar" accept="image/*"
-                   class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+            <div
+                x-data="{ dragging: false }"
+                x-on:dragover.prevent="dragging = true"
+                x-on:dragleave.prevent="dragging = false"
+                x-on:drop.prevent="dragging = false; $refs.avatarInput.files = $event.dataTransfer.files; $refs.avatarInput.dispatchEvent(new Event('change'))"
+                :class="dragging ? 'border-primary-600 bg-primary-50 dark:bg-primary-500/10' : 'border-gray-300 dark:border-gray-600'"
+                class="relative flex items-center gap-4 rounded-xl border-2 border-dashed p-4 transition-colors"
+            >
+                {{-- Preview --}}
+                <template x-if="avatarPreview">
+                    <img :src="avatarPreview" class="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-700 shrink-0">
+                </template>
+
+                <template x-if="!avatarPreview">
+                    <div class="h-16 w-16 rounded-lg bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-gray-400 shrink-0">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 11c2.209 0 4-1.791 4-4s-1.791-4-4-4-4 1.791-4 4 1.791 4 4 4zm0 2c-2.67 0-8 1.34-8 4v3h16v-3c0-2.66-5.33-4-8-4z"/></svg>
+                    </div>
+                </template>
+
+                <div class="flex-1 min-w-0">
+                    <span class="inline-flex items-center gap-1.5 text-sm font-semibold text-primary-600 dark:text-primary-400">
+                        {{ $avatar ? 'Change photo' : 'Upload a photo' }}
+                    </span>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Drag & drop, or click to browse. PNG/JPG up to 2MB.</p>
+                    <div wire:loading wire:target="avatar" class="text-xs text-primary-600 dark:text-primary-400 mt-1 flex items-center gap-1">
+                        <svg class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                        Uploading…
+                    </div>
+                </div>
+
+                @if ($avatar)
+                    <button type="button" wire:click="$set('avatar', null)" @click="avatarPreview = null"
+                            class="relative z-10 shrink-0 text-xs font-semibold text-rose-500 hover:text-rose-700 active:scale-95 transition-transform">
+                        Remove
+                    </button>
+                @endif
+
+                <input x-ref="avatarInput" type="file" wire:model="avatar" accept="image/*"
+                       @change="avatarPreview = $refs.avatarInput.files[0] ? URL.createObjectURL($refs.avatarInput.files[0]) : null"
+                       class="absolute inset-0 opacity-0 cursor-pointer">
+            </div>
             @error('avatar') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-            @if($avatar)
-                <img src="{{ $avatar->temporaryUrl() }}" class="mt-2 h-20 w-20 object-cover rounded-lg border border-gray-200 dark:border-gray-700">
-            @endif
         </div>
 
         {{-- Name & Job Title --}}
@@ -380,7 +676,7 @@ class extends Component {
             </div>
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Job Title / Role *</label>
-                <input type="text" wire:model="employeeRole" placeholder="e.g. Receptionist, Guide" class="input">
+                <input type="text" wire:model.live.debounce.300ms="employeeRole" placeholder="e.g. Receptionist, Guide" class="input">
                 @error('employeeRole') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
         </div>
@@ -393,9 +689,11 @@ class extends Component {
                 @error('phone') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
             <div class="flex items-center sm:pt-6">
-                <input type="checkbox" wire:model="is_active"
-                       class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary-600 focus:ring-primary-500">
-                <label class="ml-2 text-sm text-gray-700 dark:text-gray-300">Active</label>
+                <label class="relative inline-flex items-center cursor-pointer focus-within:ring-2 focus-within:ring-primary-500/50 rounded-full">
+                    <input type="checkbox" wire:model="is_active" class="sr-only peer">
+                    <div class="w-11 h-6 bg-gray-200 dark:bg-gray-600 rounded-full peer peer-checked:bg-primary-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-full"></div>
+                    <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">Active</span>
+                </label>
             </div>
         </div>
 
@@ -408,7 +706,7 @@ class extends Component {
                     ['existing', 'Link Existing User'],
                     ['new', 'Create New User'],
                 ] as [$val, $label])
-                    <label class="cursor-pointer">
+                    <label class="cursor-pointer" wire:key="user-mode-{{ $val }}">
                         <input type="radio" wire:model.live="user_mode" value="{{ $val }}" class="sr-only peer">
                         <div class="border-2 border-gray-200 dark:border-gray-700 rounded-xl p-3 text-center transition-all duration-200 active:scale-[0.98]
                                     {{ $user_mode === $val ? 'border-primary-600 bg-primary-50 dark:bg-primary-500/10' : 'hover:border-gray-300 dark:hover:border-gray-600' }}">
@@ -421,11 +719,12 @@ class extends Component {
             @if($user_mode === 'existing')
                 <div class="mt-4">
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Search Existing User</label>
-                    <input type="text" wire:model.live="search" placeholder="Type name, email or phone…" class="input">
+                    <input type="text" wire:model.live.debounce.300ms="search" placeholder="Type name, email or phone…" class="input">
                     @if(count($existingUserResults) > 0)
                         <div class="mt-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl max-h-40 overflow-y-auto shadow-lg">
                             @foreach($existingUserResults as $user)
-                                <button type="button" wire:click="selectExistingUser({{ $user->id }})"
+                                <button type="button" wire:key="existing-user-{{ $user->id }}"
+                                        wire:click="selectExistingUser({{ $user->id }})"
                                         class="w-full text-left px-4 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 transition active:scale-[0.99]">
                                     <p class="text-sm text-gray-900 dark:text-white">{{ $user->name }}</p>
                                     <p class="text-xs text-gray-500 dark:text-gray-400">{{ $user->email ?? $user->phone }}</p>
@@ -438,7 +737,7 @@ class extends Component {
             @endif
 
             @if($user_mode === 'new')
-                <div class="grid grid-cols-1 gap-4 mt-4 pl-4 border-l-2 border-primary-600">
+                <div class="mt-4 pl-4 border-l-2 border-primary-600 space-y-4">
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email *</label>
                         <input type="email" wire:model="email" class="input">
@@ -455,78 +754,154 @@ class extends Component {
                             <input type="password" wire:model="password_confirmation" class="input">
                         </div>
                     </div>
+                </div>
+            @endif
 
-                    {{-- Role selection --}}
-                    <div>
-                        <div class="flex items-center justify-between mb-2">
-                            <label class="text-sm font-medium text-gray-700 dark:text-gray-300">Assign System Roles *</label>
-                            <button type="button" wire:click="toggleNewRoleForm"
-                                    class="text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
-                                + New Role
-                            </button>
-                        </div>
+            {{-- Role selection (shown for BOTH new and existing) --}}
+            @if($user_mode === 'new' || $user_mode === 'existing')
+                <div class="mt-4 pl-4 border-l-2 border-primary-600">
+                    <div class="flex items-center justify-between mb-2">
+                        <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                            {{ $user_mode === 'existing' ? 'Roles (additive)' : 'Assign System Roles *' }}
+                        </label>
+                        <button type="button" wire:click="toggleNewRoleForm"
+                                class="text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                            + New Role
+                        </button>
+                    </div>
 
-                        @if($showNewRoleForm)
-                            <div class="mb-4 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-200 dark:border-gray-700 space-y-3">
+                    @if($user_mode === 'existing')
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                            Existing roles are preserved. Checked roles will be added.
+                        </p>
+                    @endif
+
+                    @if($showNewRoleForm)
+                        <div class="mb-4 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-200 dark:border-gray-700 space-y-4">
+
+                            {{-- Role Name --}}
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Role Name</label>
+                                <input type="text" wire:model="newRoleName" class="input" placeholder="e.g. Front Desk">
+                                @error('newRoleName') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                            </div>
+
+                            {{-- Permissions Toolbar --}}
+                            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                                 <div>
-                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Role Name</label>
-                                    <input type="text" wire:model="newRoleName" class="input">
-                                    @error('newRoleName') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                                        Permissions *
+                                    </label>
+                                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                                        {{ count($newRolePermissions) }} of {{ $this->allPermissions->count() }} selected
+                                    </p>
                                 </div>
-                                <div>
-                                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Permissions</label>
-                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-1 max-h-40 overflow-y-auto">
-                                        @foreach($this->allPermissions as $perm)
-                                            <label class="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
-                                                <input type="checkbox" wire:model.live="newRolePermissions" value="{{ $perm->name }}"
-                                                       class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary-600 focus:ring-primary-500">
-                                                {{ $perm->name }}
-                                            </label>
-                                        @endforeach
+
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <button type="button" wire:click="selectAllQuickRolePermissions"
+                                            class="btn-secondary text-xs active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                        Select All
+                                    </button>
+                                    <button type="button" wire:click="deselectAllQuickRolePermissions"
+                                            class="btn-secondary text-xs active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                        Clear All
+                                    </button>
+
+                                    <div class="relative w-full sm:w-40">
+                                        <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                                        </svg>
+                                        <input type="text" wire:model.live.debounce.200ms="newRolePermissionSearch"
+                                               placeholder="Filter…"
+                                               class="pl-9 pr-3 py-2 text-sm bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition w-full">
                                     </div>
-                                </div>
-                                <div class="flex flex-col sm:flex-row gap-2">
-                                    <button type="button" wire:click="createQuickRole"
-                                            class="btn-primary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                        Create Role
-                                    </button>
-                                    <button type="button" wire:click="toggleNewRoleForm"
-                                            class="btn-secondary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                        Cancel
-                                    </button>
                                 </div>
                             </div>
-                        @endif
 
-                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
-                            <input type="text" wire:model.live="roleSearch" placeholder="Search roles…" class="input">
-                            <select wire:model.live="roleTypeFilter" class="select">
-                                <option value="all">All Roles</option>
-                                <option value="global">Global Only</option>
-                                <option value="custom">Custom Only</option>
-                            </select>
-                        </div>
-
-                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto">
-                            @foreach($this->availableRoles as $role)
-                                <label class="cursor-pointer">
-                                    <input type="checkbox" wire:model.live="selectedRoles" value="{{ $role['value'] }}" class="sr-only peer">
-                                    <div class="border-2 border-gray-200 dark:border-gray-700 rounded-xl p-3 transition-all duration-200 active:scale-[0.98]
-                                                {{ in_array($role['value'], $selectedRoles) ? 'border-primary-600 bg-primary-50 dark:bg-primary-500/10' : 'hover:border-gray-300 dark:hover:border-gray-600' }}">
-                                        <p class="font-semibold text-gray-900 dark:text-white">{{ $role['label'] }}</p>
-                                        <div class="flex flex-wrap gap-1 mt-2">
-                                            @foreach($role['permissions'] as $perm)
-                                                <span class="inline-flex items-center px-2 py-0.5 rounded-md bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 text-[10px] font-medium">
-                                                    {{ $perm }}
-                                                </span>
-                                            @endforeach
+                            {{-- Grouped Permission Grid --}}
+                            @if($this->filteredGroupedPermissions->isEmpty())
+                                <div class="text-center py-6 text-xs text-gray-500 dark:text-gray-400">
+                                    No permissions match your search.
+                                </div>
+                            @else
+                                <div class="space-y-3 max-h-72 overflow-y-auto pr-2">
+                                    @foreach($this->filteredGroupedPermissions as $module => $permissions)
+                                        <div wire:key="quick-group-{{ md5($module) }}"
+                                             class="border border-gray-200 dark:border-gray-700 rounded-lg p-3 bg-white dark:bg-gray-800">
+                                            <h4 class="font-semibold text-xs text-gray-900 dark:text-white mb-2 flex items-center gap-2">
+                                                <span class="w-1 h-4 bg-primary-600 rounded-full"></span>
+                                                {{ $module }}
+                                                <span class="text-[10px] font-normal text-gray-500 dark:text-gray-400">({{ $permissions->count() }})</span>
+                                            </h4>
+                                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                                                @foreach($permissions as $perm)
+                                                    <label wire:key="quick-perm-{{ $perm->id }}"
+                                                           class="flex items-center gap-2 p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer transition-colors">
+                                                        <input type="checkbox"
+                                                               wire:model.live="newRolePermissions"
+                                                               value="{{ $perm->name }}"
+                                                               class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary-600 focus:ring-primary-500">
+                                                        <span class="text-xs text-gray-700 dark:text-gray-300">
+                                                            {{ ucwords(str_replace(['-', '_'], ' ', $perm->name)) }}
+                                                        </span>
+                                                    </label>
+                                                @endforeach
+                                            </div>
                                         </div>
-                                    </div>
-                                </label>
-                            @endforeach
+                                    @endforeach
+                                </div>
+                            @endif
+
+                            @error('newRolePermissions') <span class="text-red-500 dark:text-red-400 text-xs block">{{ $message }}</span> @enderror
+
+                            <div class="flex flex-col sm:flex-row gap-2 pt-2">
+                                <button type="button" wire:click="createQuickRole"
+                                        class="btn-primary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                    Create Role
+                                </button>
+                                <button type="button" wire:click="toggleNewRoleForm"
+                                        class="btn-secondary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                    Cancel
+                                </button>
+                            </div>
                         </div>
-                        @error('selectedRoles') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    @endif
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
+                        <input type="text" wire:model.live.debounce.300ms="roleSearch" placeholder="Search roles…" class="input">
+                        <select wire:model.live="roleTypeFilter" class="select">
+                            <option value="all">All Roles</option>
+                            <option value="global">Global Only</option>
+                            <option value="custom">Custom Only</option>
+                        </select>
                     </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto">
+                        @forelse($this->availableRoles as $role)
+                            <label class="cursor-pointer" wire:key="role-{{ $role['value'] }}">
+                                <input type="checkbox" wire:model.live="selectedRoles" value="{{ $role['value'] }}" class="sr-only peer">
+                                <div class="border-2 border-gray-200 dark:border-gray-700 rounded-xl p-3 transition-all duration-200 active:scale-[0.98]
+                                            {{ in_array($role['value'], $selectedRoles) ? 'border-primary-600 bg-primary-50 dark:bg-primary-500/10' : 'hover:border-gray-300 dark:hover:border-gray-600' }}">
+                                    <p class="font-semibold text-gray-900 dark:text-white">{{ $role['label'] }}</p>
+                                    <div class="flex flex-wrap gap-1 mt-2">
+                                        @forelse(array_slice($role['permissions'], 0, 4) as $perm)
+                                            <span class="inline-flex items-center px-2 py-0.5 rounded-md bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 text-[10px] font-medium">
+                                                {{ $perm }}
+                                            </span>
+                                        @empty
+                                            <span class="text-[10px] text-gray-400 italic">No permissions</span>
+                                        @endforelse
+                                        @if(count($role['permissions']) > 4)
+                                            <span class="text-[10px] text-gray-400">+{{ count($role['permissions']) - 4 }} more</span>
+                                        @endif
+                                    </div>
+                                </div>
+                            </label>
+                        @empty
+                            <p class="col-span-2 text-sm text-gray-400 dark:text-gray-500 text-center py-6">No roles match your filters.</p>
+                        @endforelse
+                    </div>
+                    @error('selectedRoles') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             @endif
         </div>
@@ -535,15 +910,19 @@ class extends Component {
         <div class="flex flex-col sm:flex-row gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
             <button type="submit"
                     wire:loading.attr="disabled"
-                    class="btn-primary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                <span wire:loading.remove>Save Employee</span>
-                <span wire:loading class="inline-flex items-center gap-2">
+                    wire:target="save"
+                    class="btn-primary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50 disabled:opacity-60 disabled:cursor-not-allowed">
+                <span wire:loading.remove wire:target="save">Save Employee</span>
+                <span wire:loading wire:target="save" class="inline-flex items-center gap-2">
                     <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-                    Saving...
+                    Saving…
                 </span>
             </button>
-            <button type="button" wire:click="$set('saveAndAddAnother', true); $wire.submit()"
-                    class="btn-secondary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
+            <button type="button"
+                    wire:click="saveAndAddAnotherEmployee"
+                    wire:loading.attr="disabled"
+                    wire:target="saveAndAddAnotherEmployee"
+                    class="btn-secondary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50 disabled:opacity-60 disabled:cursor-not-allowed">
                 Save & Add Another
             </button>
             <a href="{{ route('tenant.employees.index') }}" wire:navigate

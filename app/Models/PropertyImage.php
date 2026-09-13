@@ -1,14 +1,19 @@
 <?php
+
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Model;
 use App\Traits\BelongsToTenant;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-class PropertyImage extends Model 
+class PropertyImage extends Model
 {
     use BelongsToTenant;
 
     protected $fillable = ['tenant_id', 'property_id', 'image_path'];
-    
-    public function property() { return $this->belongsTo(Property::class); }
+
+    public function property(): BelongsTo
+    {
+        return $this->belongsTo(Property::class);
+    }
 }

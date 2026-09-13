@@ -13,7 +13,7 @@ return new class extends Migration
     {
         Schema::create('type_of_tenants', function (Blueprint $table) {
     $table->id();
-    $table->string('type'); // inn, eco_park, mangrove, resort
+    $table->string('type');
     $table->text('description')->nullable();
     $table->timestamps();
 });

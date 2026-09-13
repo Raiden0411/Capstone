@@ -1,10 +1,10 @@
-{{-- resources/views/superadmin/pages/tenant/⚡edit-tenant.blade.php --}}
 <?php
 
 use Livewire\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
+use Livewire\Attributes\Locked;
 use Livewire\Attributes\On;
 use Livewire\WithFileUploads;
 use App\Models\Tenant;
@@ -17,6 +17,7 @@ use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 new
 #[Layout('superadmin.layouts.app')]
@@ -28,36 +29,38 @@ class extends Component {
     public Tenant $tenantRecord;
 
     // Business details
-    public $name = '';
-    public $slug = '';
-    public $type_of_tenant_id = '';
-    public $address = '';
-    public $barangay = '';
-    public $city = '';
-    public $province = '';
-    public $public_email = '';
-    public $contact_number = '';
+    public string $name = '';
+    public string $slug = '';
+    public string $type_of_tenant_id = '';
+    public string $address = '';
+    public string $barangay = '';
+    public string $city = '';
+    public string $province = '';
+    public string $public_email = '';
+    public string $contact_number = '';
 
     // Location
-    public $latitude;
-    public $longitude;
-    public $markers = [];
+    public float $latitude = 10.900977766937142;
+    public float $longitude = 123.07055771888716;
+    public array $markers = [];
 
     // Extra business info
-    public $description = '';
-    public $opening_time = '08:00';
-    public $closing_time = '17:00';
+    public string $description = '';
+    public string $opening_time = '08:00';
+    public string $closing_time = '17:00';
     public $logo;
-    public $is_active = true;
-    public $is_recommended = false;
+    public bool $is_active = true;
+    public bool $is_recommended = false;
 
     // Admin account
-    public $admin_name = '';
-    public $admin_email = '';
-    public $admin_password = '';
-    public $admin_password_confirmation = '';
+    public string $admin_name = '';
+    public string $admin_email = '';
+    public string $admin_password = '';
+    public string $admin_password_confirmation = '';
 
-    public $adminUserRecord = null;
+    /** Locked — set in mount, read in update; never trusted from the client. */
+    #[Locked]
+    public ?int $adminUserRecordId = null;
 
     // Map & editing mode
     public bool $satellite = false;
@@ -70,7 +73,7 @@ class extends Component {
     ];
     public ?int $selectedMarkerIndex = null;
 
-    // Dynamic marker categories (loaded from site_settings)
+    // Marker categories (loaded from site_settings)
     public array $markerCategories = [];
 
     // Add category modal
@@ -80,27 +83,33 @@ class extends Component {
     public string $newCategoryColor = '#3b82f6';
     public $newCategoryIcon;
 
+    // Add business type modal
+    public bool $showNewTenantTypeModal = false;
+    public string $newTenantTypeName = '';
+    public string $newTenantTypeDescription = '';
+
     #[Computed]
     public function tenantTypes()
     {
-        return TypeOfTenant::query()->select('id', 'type')->get();
+        return TypeOfTenant::query()->select('id', 'type')->orderBy('type')->get();
     }
 
-    public function mount(Tenant $tenant)
+    public function mount(Tenant $tenant): void
     {
         $this->tenantRecord = $tenant;
-        $this->name = $tenant->name;
-        $this->slug = $tenant->slug;
-        $this->type_of_tenant_id = $tenant->type_of_tenant_id;
-        $this->address = $tenant->address;
-        $this->public_email = $tenant->email;
-        $this->contact_number = $tenant->contact_number;
+        $this->name = $tenant->name ?? '';
+        $this->slug = $tenant->slug ?? '';
+        $this->type_of_tenant_id = (string) ($tenant->type_of_tenant_id ?? '');
+        $this->address = $tenant->address ?? '';
+        $this->public_email = $tenant->email ?? '';
+        $this->contact_number = $tenant->contact_number ?? '';
         $this->is_active = (bool) $tenant->is_active;
         $this->is_recommended = (bool) $tenant->is_recommended;
 
         $coords = $tenant->coordinates ?? [];
-        $this->latitude = $coords[0]['lat'] ?? 10.900977766937142;
-        $this->longitude = $coords[0]['lng'] ?? 123.07055771888716;
+        $this->latitude = (float) ($coords[0]['lat'] ?? 10.900977766937142);
+        $this->longitude = (float) ($coords[0]['lng'] ?? 123.07055771888716);
+
         $this->markers = array_slice($coords, 1);
         foreach ($this->markers as &$marker) {
             if (!isset($marker['uid'])) {
@@ -129,35 +138,40 @@ class extends Component {
             $this->province = $info['province'] ?? '';
         }
 
-        $this->adminUserRecord = User::where('tenant_id', $tenant->id)
-                                     ->whereHas('roles', fn($q) => $q->where('name', 'admin'))
-                                     ->select('id', 'name', 'email', 'tenant_id')
-                                     ->first();
+        // Find the tenant admin — the account with `admin` role scoped to this tenant.
+        $adminUser = User::where('tenant_id', $tenant->id)
+            ->whereHas('roles', fn ($q) => $q->where('name', 'admin'))
+            ->select('id', 'name', 'email', 'tenant_id')
+            ->first();
 
-        if ($this->adminUserRecord) {
-            $this->admin_name = $this->adminUserRecord->name;
-            $this->admin_email = $this->adminUserRecord->email;
+        if ($adminUser) {
+            $this->adminUserRecordId = $adminUser->id;
+            $this->admin_name = $adminUser->name;
+            $this->admin_email = $adminUser->email;
         }
 
-        // Load marker categories from site settings
         $this->markerCategories = SiteSetting::getValue('marker_categories', []);
     }
 
-    public function updatedName($value)
+    public function updatedName($value): void
     {
-        $this->slug = Str::slug(trim($value));
+        $this->slug = Str::slug(trim((string) $value));
     }
 
-    public function updated($property)
+    public function updated(string $property): void
     {
-        $trimFields = ['name','address','barangay','city','province','description','admin_name','public_email','admin_email','contact_number'];
-        if (in_array($property, $trimFields)) {
-            $this->$property = trim($this->$property);
+        $trimFields = [
+            'name', 'address', 'barangay', 'city', 'province', 'description',
+            'admin_name', 'public_email', 'admin_email', 'contact_number',
+            'newTenantTypeName', 'newTenantTypeDescription',
+        ];
+
+        if (in_array($property, $trimFields, true)) {
+            $this->$property = trim((string) $this->$property);
         }
 
         if ($property === 'contact_number') {
-            $this->contact_number = preg_replace('/[^0-9]/', '', $this->contact_number);
-            $this->contact_number = substr($this->contact_number, 0, 11);
+            $this->contact_number = substr(preg_replace('/[^0-9]/', '', $this->contact_number), 0, 11);
         }
 
         if (preg_match('/^markers\.\d+\.type$/', $property)) {
@@ -165,49 +179,51 @@ class extends Component {
         }
     }
 
-    public function updatedLatitude($value)
+    public function updatedLatitude($value): void
     {
         $this->latitude = round((float) $value, 6);
         $this->mapView = ['lat' => $this->latitude, 'lng' => $this->longitude, 'zoom' => 16];
         $this->mapVersion++;
-        $this->dispatch('map:fly-to', center: [(float)$this->longitude, (float)$this->latitude], zoom: 16);
+        $this->dispatch('map:fly-to', center: [(float) $this->longitude, (float) $this->latitude], zoom: 16);
     }
 
-    public function updatedLongitude($value)
+    public function updatedLongitude($value): void
     {
         $this->longitude = round((float) $value, 6);
         $this->mapView = ['lat' => $this->latitude, 'lng' => $this->longitude, 'zoom' => 16];
         $this->mapVersion++;
-        $this->dispatch('map:fly-to', center: [(float)$this->longitude, (float)$this->latitude], zoom: 16);
+        $this->dispatch('map:fly-to', center: [(float) $this->longitude, (float) $this->latitude], zoom: 16);
     }
 
-    public function setLocationMode($mode)
+    public function setLocationMode(string $mode): void
     {
-        if (in_array($mode, ['main', 'nearby'])) {
+        if (in_array($mode, ['main', 'nearby'], true)) {
             $this->locationMode = $mode;
             $this->selectedMarkerIndex = null;
             $this->mapVersion++;
         }
     }
 
-    public function addMarker()
+    public function addMarker(): void
     {
         $this->addMarkerAt($this->mapView['lat'], $this->mapView['lng']);
     }
 
-    public function removeMarker($index)
+    public function removeMarker(int $index): void
     {
         unset($this->markers[$index]);
         $this->markers = array_values($this->markers);
+
         if ($this->selectedMarkerIndex === $index) {
             $this->selectedMarkerIndex = null;
         }
+
         $this->mapVersion++;
         $this->dispatch('toast', message: 'Nearby place removed.', type: 'info');
     }
 
     #[On('map:click')]
-    public function onMapClick($lat, $lng)
+    public function onMapClick(float|string $lat, float|string $lng): void
     {
         if ($this->locationMode === 'main') {
             $this->latitude = round((float) $lat, 6);
@@ -220,7 +236,7 @@ class extends Component {
     }
 
     #[On('map:marker-drag-end')]
-    public function onMarkerDragEnd($id, $lat, $lng)
+    public function onMarkerDragEnd(string $id, float|string $lat, float|string $lng): void
     {
         if ($id === 'main-marker' && $this->locationMode === 'main') {
             $this->latitude = round((float) $lat, 6);
@@ -240,7 +256,7 @@ class extends Component {
     }
 
     #[On('map:marker-clicked')]
-    public function onMarkerClicked($id, $lat, $lng)
+    public function onMarkerClicked(string $id, float|string $lat, float|string $lng): void
     {
         if (str_starts_with($id, 'sub-marker-')) {
             $index = (int) substr($id, strlen('sub-marker-'));
@@ -255,10 +271,11 @@ class extends Component {
     }
 
     #[On('map:center-changed')]
-    public function onMapCenterChanged($lat, $lng)
+    public function onMapCenterChanged(float|string $lat, float|string $lng): void
     {
         $this->mapView['lat'] = round((float) $lat, 6);
         $this->mapView['lng'] = round((float) $lng, 6);
+
         if ($this->locationMode === 'main') {
             $this->latitude = $this->mapView['lat'];
             $this->longitude = $this->mapView['lng'];
@@ -266,24 +283,24 @@ class extends Component {
     }
 
     #[On('map:zoom-changed')]
-    public function onMapZoomChanged($zoom)
+    public function onMapZoomChanged(int|string $zoom): void
     {
         $this->mapView['zoom'] = (int) $zoom;
     }
 
-    public function toggleSatellite()
+    public function toggleSatellite(): void
     {
         $this->satellite = !$this->satellite;
         $this->mapVersion++;
     }
 
-    public function useMyLocation()
+    public function useMyLocation(): void
     {
         $this->dispatch('request-geolocation');
     }
 
     #[On('geolocation-result')]
-    public function onGeolocationResult($lat, $lng)
+    public function onGeolocationResult(float|string $lat, float|string $lng): void
     {
         if ($this->locationMode === 'main') {
             $this->latitude = round((float) $lat, 6);
@@ -295,7 +312,7 @@ class extends Component {
         }
     }
 
-    protected function addMarkerAt($lat, $lng)
+    protected function addMarkerAt(float|string $lat, float|string $lng): void
     {
         if (count($this->markers) >= 20) {
             $this->dispatch('toast', message: 'You can add up to 20 nearby places.', type: 'error');
@@ -309,57 +326,61 @@ class extends Component {
             'lng'  => round((float) $lng, 6),
             'type' => '',
         ];
+
         $this->selectedMarkerIndex = count($this->markers) - 1;
         $this->mapVersion++;
-        $this->mapView = ['lat' => round((float) $lat, 6), 'lng' => round((float) $lng, 6), 'zoom' => 15];
+        $this->mapView = [
+            'lat' => round((float) $lat, 6),
+            'lng' => round((float) $lng, 6),
+            'zoom' => 15,
+        ];
         $this->dispatch('toast', message: 'Nearby place added. Please set its category.', type: 'info');
     }
 
     public function update()
     {
         $this->validate([
-            'name' => ['required','min:3','max:255', Rule::unique('tenants','name')->ignore($this->tenantRecord->id)],
-            'slug' => ['required','string','max:255','regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/', Rule::unique('tenants','slug')->ignore($this->tenantRecord->id)],
+            'name'              => ['required', 'min:3', 'max:255', Rule::unique('tenants', 'name')->ignore($this->tenantRecord->id)],
+            'slug'              => ['required', 'string', 'max:255', 'regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/', Rule::unique('tenants', 'slug')->ignore($this->tenantRecord->id)],
             'type_of_tenant_id' => 'required|integer|exists:type_of_tenants,id',
-            'address' => 'nullable|string|max:255',
-            'barangay' => 'nullable|string|max:255',
-            'city' => 'nullable|string|max:255',
-            'province' => 'nullable|string|max:255',
-            'public_email' => ['required','email','max:255', Rule::unique('tenants','email')->ignore($this->tenantRecord->id)],
-            'contact_number' => ['nullable', 'string', 'max:11', 'regex:/^[0-9]{10,11}$/'],
-            'latitude' => 'required|numeric|min:-90|max:90',
-            'longitude' => 'required|numeric|min:-180|max:180',
-            'markers' => 'array',
-            'markers.*.name' => 'required|string|max:100',
-            'markers.*.lat' => 'required|numeric|min:-90|max:90',
-            'markers.*.lng' => 'required|numeric|min:-180|max:180',
-            'markers.*.type' => 'required|string|max:255',
-            'description' => 'nullable|string|max:500',
-            'opening_time' => 'nullable|date_format:H:i',
-            'closing_time' => 'nullable|date_format:H:i',
-            'logo' => ['nullable','image','mimes:jpeg,png,jpg,gif,webp','max:10240'], // ★ 10MB
-            'is_active' => 'boolean',
-            'is_recommended' => 'boolean',
-            'admin_name' => 'required|string|min:3|max:255',
-            'admin_email' => ['required','email','max:255',
-                Rule::unique('users','email')->ignore($this->adminUserRecord->id ?? null),
+            'address'           => 'nullable|string|max:255',
+            'barangay'          => 'nullable|string|max:255',
+            'city'              => 'nullable|string|max:255',
+            'province'          => 'nullable|string|max:255',
+            'public_email'      => ['required', 'email', 'max:255', Rule::unique('tenants', 'email')->ignore($this->tenantRecord->id)],
+            'contact_number'    => ['nullable', 'string', 'max:11', 'regex:/^[0-9]{10,11}$/'],
+            'latitude'          => 'required|numeric|min:-90|max:90',
+            'longitude'         => 'required|numeric|min:-180|max:180',
+            'markers'           => 'array',
+            'markers.*.name'    => 'required|string|max:100',
+            'markers.*.lat'     => 'required|numeric|min:-90|max:90',
+            'markers.*.lng'     => 'required|numeric|min:-180|max:180',
+            'markers.*.type'    => 'required|string|max:255',
+            'description'       => 'nullable|string|max:500',
+            'opening_time'      => 'nullable|date_format:H:i',
+            'closing_time'      => 'nullable|date_format:H:i',
+            'logo'              => ['nullable', 'image', 'mimes:jpeg,png,jpg,gif,webp', 'max:10240'],
+            'is_active'         => 'boolean',
+            'is_recommended'    => 'boolean',
+            'admin_name'        => 'required|string|min:3|max:255',
+            'admin_email'       => [
+                'required', 'email', 'max:255',
+                Rule::unique('users', 'email')->ignore($this->adminUserRecordId),
             ],
-            'admin_password' => 'nullable|min:8|confirmed',
+            'admin_password'    => 'nullable|min:8|confirmed',
         ], [
-            'slug.regex' => 'Slug may only contain lowercase letters, numbers, and hyphens.',
-            'contact_number.regex' => 'Contact number must be 10-11 digits only.',
-            'contact_number.max' => 'Contact number cannot exceed 11 digits.',
-            'logo.max' => 'Logo must not exceed 10MB.', // ★ added
+            'slug.regex'            => 'Slug may only contain lowercase letters, numbers, and hyphens.',
+            'contact_number.regex'  => 'Contact number must be 10-11 digits only.',
+            'contact_number.max'    => 'Contact number cannot exceed 11 digits.',
+            'logo.max'              => 'Logo must not exceed 10MB.',
         ]);
 
         DB::transaction(function () {
+            $logoPath = $this->tenantRecord->logo;
+            $oldLogoPath = $this->tenantRecord->logo;
+
             if ($this->logo) {
                 $logoPath = $this->logo->store('tenant-logos', 'public');
-                if ($this->tenantRecord->logo && Storage::disk('public')->exists($this->tenantRecord->logo)) {
-                    Storage::disk('public')->delete($this->tenantRecord->logo);
-                }
-            } else {
-                $logoPath = $this->tenantRecord->logo;
             }
 
             $coordinates = [[
@@ -396,26 +417,46 @@ class extends Component {
 
             TenantSetting::updateOrCreate(
                 ['tenant_id' => $this->tenantRecord->id, 'key' => 'business_info'],
-                ['value' => $businessInfo]
+                ['value' => $businessInfo],
             );
 
-            if ($this->adminUserRecord) {
-                $this->adminUserRecord->update([
-                    'name'  => $this->admin_name,
-                    'email' => $this->admin_email,
-                ]);
-                if ($this->admin_password) {
-                    $this->adminUserRecord->update(['password' => Hash::make($this->admin_password)]);
+            if ($this->adminUserRecordId) {
+                // Existing admin — update fields.
+                $admin = User::find($this->adminUserRecordId);
+
+                if ($admin) {
+                    $admin->update([
+                        'name'  => $this->admin_name,
+                        'email' => $this->admin_email,
+                    ]);
+
+                    if ($this->admin_password) {
+                        $admin->update(['password' => Hash::make($this->admin_password)]);
+                    }
+
+                    // Ensure dual-role consistency on edit.
+                    if (!$admin->hasRole('tourist')) {
+                        $admin->assignRole('tourist');
+                    }
                 }
             } else {
-                $user = User::create([
-                    'name'      => $this->admin_name,
-                    'email'     => $this->admin_email,
-                    'password'  => Hash::make($this->admin_password ?: Str::password(16)),
-                    'tenant_id' => $this->tenantRecord->id,
-                    'is_active' => true,
+                // No admin on file — create one now (dual-role, business mode).
+                $newAdmin = User::create([
+                    'name'        => $this->admin_name,
+                    'email'       => $this->admin_email,
+                    'password'    => Hash::make($this->admin_password ?: Str::password(16)),
+                    'tenant_id'   => $this->tenantRecord->id,
+                    'active_mode' => User::MODE_BUSINESS,
+                    'is_active'   => true,
                 ]);
-                $user->assignRole('admin');
+
+                $newAdmin->syncRoles(['tourist', 'admin']);
+                $this->adminUserRecordId = $newAdmin->id;
+            }
+
+            // Delete old logo only after successful update.
+            if ($this->logo && $oldLogoPath && Storage::disk('public')->exists($oldLogoPath)) {
+                Storage::disk('public')->delete($oldLogoPath);
             }
         });
 
@@ -454,6 +495,7 @@ class extends Component {
 
         $iconPath = null;
         $iconSvg = null;
+
         if ($this->newCategoryIcon) {
             $iconPath = $this->newCategoryIcon->store('marker-icons', 'public');
             $iconSvg = file_get_contents($this->newCategoryIcon->getRealPath());
@@ -473,9 +515,60 @@ class extends Component {
         $this->dispatch('toast', message: 'Category added successfully.', type: 'success');
     }
 
+    // ─── Business Type CRUD (inline) ────────────────────
+
+    public function openNewTenantTypeModal(): void
+    {
+        $this->reset(['newTenantTypeName', 'newTenantTypeDescription']);
+        $this->resetErrorBag(['newTenantTypeName', 'newTenantTypeDescription']);
+        $this->showNewTenantTypeModal = true;
+    }
+
+    public function closeNewTenantTypeModal(): void
+    {
+        $this->showNewTenantTypeModal = false;
+        $this->reset(['newTenantTypeName', 'newTenantTypeDescription']);
+        $this->resetErrorBag(['newTenantTypeName', 'newTenantTypeDescription']);
+    }
+
+    public function createTenantType(): void
+    {
+        $this->validate([
+            'newTenantTypeName'        => 'required|string|min:2|max:255',
+            'newTenantTypeDescription' => 'nullable|string|max:1000',
+        ], [], [
+            'newTenantTypeName'        => 'type name',
+            'newTenantTypeDescription' => 'description',
+        ]);
+
+        $exists = TypeOfTenant::whereRaw('LOWER(type) = ?', [Str::lower($this->newTenantTypeName)])->exists();
+
+        if ($exists) {
+            $this->addError('newTenantTypeName', 'A business type with this name already exists.');
+            return;
+        }
+
+        try {
+            $type = TypeOfTenant::create([
+                'type'        => $this->newTenantTypeName,
+                'description' => $this->newTenantTypeDescription ?: null,
+            ]);
+
+            $this->type_of_tenant_id = (string) $type->id;
+            unset($this->tenantTypes);
+            $this->closeNewTenantTypeModal();
+
+            $this->dispatch('toast', message: "Business type '{$type->type}' created and selected.", type: 'success');
+        } catch (\Throwable $e) {
+            Log::error('Business type creation failed: ' . $e->getMessage(), [
+                'name' => $this->newTenantTypeName,
+            ]);
+            $this->addError('newTenantTypeName', 'Failed to create type. Please try again.');
+        }
+    }
+
     /**
      * Generate a temporary preview URL for the uploaded logo.
-     * Used in the Blade template to show a preview before saving.
      */
     public function logoPreviewUrl(): ?string
     {
@@ -485,7 +578,7 @@ class extends Component {
 
         try {
             return $this->logo->temporaryUrl();
-        } catch (\Exception $e) {
+        } catch (\Throwable) {
             return null;
         }
     }
@@ -566,11 +659,18 @@ class extends Component {
 
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Business type <span class="text-red-500">*</span></label>
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Business type <span class="text-red-500">*</span></label>
+                        <button type="button" wire:click="openNewTenantTypeModal"
+                                class="inline-flex items-center gap-1 text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded active:scale-95 transition-transform">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/></svg>
+                            Add New Type
+                        </button>
+                    </div>
                     <select wire:model="type_of_tenant_id" class="select">
                         <option value="">— Select type —</option>
                         @foreach($this->tenantTypes as $type)
-                            <option value="{{ $type->id }}">{{ $type->type }}</option>
+                            <option wire:key="type-{{ $type->id }}" value="{{ $type->id }}">{{ $type->type }}</option>
                         @endforeach
                     </select>
                     @error('type_of_tenant_id') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
@@ -627,7 +727,7 @@ class extends Component {
                 </div>
             </div>
 
-            {{-- Business logo with drag & drop and 10MB limit --}}
+            {{-- Business logo with drag & drop --}}
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="field-logo">Business logo</label>
                 <div
@@ -638,7 +738,6 @@ class extends Component {
                     :class="dragging ? 'border-primary-600 bg-blue-50 dark:bg-blue-500/10' : 'border-gray-300 dark:border-gray-600'"
                     class="relative flex items-center gap-4 rounded-xl border-2 border-dashed p-4 transition-colors"
                 >
-                    @php $logoPreview = $this->logoPreviewUrl(); @endphp
                     <template x-if="previewUrl">
                         <img :src="previewUrl" class="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-700 shrink-0">
                     </template>
@@ -694,7 +793,6 @@ class extends Component {
         <div class="card p-6 space-y-6">
             <h2 class="font-display text-xl font-semibold text-gray-900 dark:text-white mb-4">Location & Nearby Places</h2>
 
-            {{-- Mode selector --}}
             <div class="flex flex-wrap gap-2 mb-4">
                 <button type="button"
                         wire:click="setLocationMode('main')"
@@ -879,7 +977,7 @@ class extends Component {
                     @if(count($markers) > 0)
                         <div class="flex flex-wrap items-center gap-3 mb-3 text-[11px] text-gray-500 dark:text-gray-400">
                             @foreach($this->markerCategories as $cat)
-                                <span class="inline-flex items-center gap-1">
+                                <span wire:key="legend-{{ $cat['key'] }}" class="inline-flex items-center gap-1">
                                     <span class="w-2.5 h-2.5 rounded-full" style="background:{{ $cat['color'] }}"></span>
                                     {{ $cat['label'] }}
                                 </span>
@@ -900,7 +998,7 @@ class extends Component {
                                     <select wire:model.live="markers.{{ $index }}.type" class="select !py-2 !w-40 {{ empty($marker['type']) ? 'border-red-300 dark:border-red-500' : '' }}">
                                         <option value="">Select category *</option>
                                         @foreach($this->markerCategories as $cat)
-                                            <option value="{{ $cat['key'] }}">{{ $cat['label'] }}</option>
+                                            <option wire:key="cat-{{ $cat['key'] }}" value="{{ $cat['key'] }}">{{ $cat['label'] }}</option>
                                         @endforeach
                                     </select>
                                     <button type="button" wire:click="removeMarker({{ $index }})" class="text-red-500 hover:text-red-700 active:scale-95 transition-transform" aria-label="Remove nearby place">
@@ -1000,31 +1098,102 @@ class extends Component {
         </div>
     @endif
 
-    @script
-    <script>
-        function notify(message, type = 'info') {
-            window.dispatchEvent(new CustomEvent('toast', { detail: { message, type } }));
-        }
+    {{-- Add Business Type Modal --}}
+    @if($showNewTenantTypeModal)
+        <div class="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+             x-on:keydown.escape.window="$wire.closeNewTenantTypeModal()"
+             @click.self="$wire.closeNewTenantTypeModal()">
+            <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md p-6 border border-gray-200 dark:border-gray-700"
+                 x-transition:enter="transition ease-out duration-200"
+                 x-transition:enter-start="opacity-0 scale-95"
+                 x-transition:enter-end="opacity-100 scale-100"
+                 x-transition:leave="transition ease-in duration-150"
+                 x-transition:leave-start="opacity-100 scale-100"
+                 x-transition:leave-end="opacity-0 scale-95">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center gap-2">
+                        <div class="p-2 bg-primary-50 dark:bg-primary-500/10 rounded-lg text-primary-600 dark:text-primary-400">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
+                        </div>
+                        <h3 class="text-lg font-bold text-gray-900 dark:text-white">Add Business Type</h3>
+                    </div>
+                    <button type="button" wire:click="closeNewTenantTypeModal"
+                            class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition active:scale-95 rounded-lg p-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
+                </div>
 
-        window.addEventListener('request-geolocation', () => {
-            if (!navigator.geolocation) {
-                notify('Geolocation is not supported by your browser.', 'error');
-                return;
-            }
-            navigator.geolocation.getCurrentPosition(
-                (position) => {
-                    Livewire.dispatch('geolocation-result', {
-                        lat: position.coords.latitude,
-                        lng: position.coords.longitude,
-                    });
-                },
-                () => {
-                    notify('Unable to retrieve your location. Check browser permissions.', 'error');
-                },
-                { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
-            );
-        });
-    </script>
-    @endscript
+                <p class="text-xs text-gray-500 dark:text-gray-400 mb-4">
+                    Create a new business type. It will be available platform-wide for all tenants.
+                </p>
+
+                <div class="space-y-4">
+                    <div>
+                        <label for="field-new-tenant-type" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Type Name *</label>
+                        <input type="text"
+                               id="field-new-tenant-type"
+                               wire:model="newTenantTypeName"
+                               wire:keydown.enter.prevent="createTenantType"
+                               class="input"
+                               placeholder="e.g. Beach Resort"
+                               autofocus>
+                        @error('newTenantTypeName') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    </div>
+
+                    <div>
+                        <label for="field-new-tenant-type-desc" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            Description <span class="text-gray-400 dark:text-gray-500 font-normal">(Optional)</span>
+                        </label>
+                        <textarea id="field-new-tenant-type-desc"
+                                  wire:model="newTenantTypeDescription"
+                                  rows="3"
+                                  class="textarea"
+                                  placeholder="Briefly describe this type"></textarea>
+                        @error('newTenantTypeDescription') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    </div>
+                </div>
+
+                <div class="flex justify-end gap-3 mt-6">
+                    <button type="button" wire:click="closeNewTenantTypeModal"
+                            class="btn-secondary active:scale-95 transition-transform">
+                        Cancel
+                    </button>
+                    <button type="button" wire:click="createTenantType" wire:loading.attr="disabled" wire:target="createTenantType"
+                            class="btn-primary active:scale-95 transition-transform inline-flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed">
+                        <span wire:loading.remove wire:target="createTenantType">Create Type</span>
+                        <span wire:loading wire:target="createTenantType" class="inline-flex items-center gap-2">
+                            <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                            Creating…
+                        </span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    @endif
 
 </div>
+
+<script>
+    function notify(message, type = 'info') {
+        window.dispatchEvent(new CustomEvent('toast', { detail: { message, type } }));
+    }
+
+    window.addEventListener('request-geolocation', () => {
+        if (!navigator.geolocation) {
+            notify('Geolocation is not supported by your browser.', 'error');
+            return;
+        }
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                Livewire.dispatch('geolocation-result', {
+                    lat: position.coords.latitude,
+                    lng: position.coords.longitude,
+                });
+            },
+            () => {
+                notify('Unable to retrieve your location. Check browser permissions.', 'error');
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+        );
+    });
+</script>

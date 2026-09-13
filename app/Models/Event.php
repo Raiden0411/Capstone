@@ -2,12 +2,15 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Builder;
 use App\Traits\BelongsToTenant;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class Event extends Model
 {
+    use HasFactory;
     use BelongsToTenant;
 
     protected $fillable = [
@@ -24,22 +27,28 @@ class Event extends Model
         'featured',
     ];
 
-    protected $casts = [
-        'start_date'  => 'datetime',
-        'end_date'    => 'datetime',
-        'coordinates' => 'array',
-        'is_active'   => 'boolean',
-        'featured'    => 'boolean',
-    ];
+    protected function casts(): array
+    {
+        return [
+            'start_date'  => 'datetime',
+            'end_date'    => 'datetime',
+            'coordinates' => 'array',
+            'is_active'   => 'boolean',
+            'featured'    => 'boolean',
+        ];
+    }
 
-    public function tenant()
+    public function tenant(): BelongsTo
     {
         return $this->belongsTo(Tenant::class);
     }
 
-    public function scopeActive(Builder $query)
+    public function scopeActive(Builder $query): Builder
     {
         return $query->where('is_active', true)
-                     ->where('start_date', '>=', now()->subDay());
+            ->where(fn (Builder $q) => $q
+                ->whereNull('end_date')
+                ->orWhere('end_date', '>=', now()))
+            ->where('start_date', '>=', now()->subDay());
     }
 }

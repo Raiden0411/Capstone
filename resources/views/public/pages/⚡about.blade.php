@@ -1,4 +1,4 @@
-{{-- resources/views/public/pages/about.blade.php --}}
+{{-- resources/views/public/pages/⚡about.blade.php --}}
 <?php
 
 use Livewire\Component;
@@ -7,6 +7,7 @@ use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
 use App\Models\SiteSetting;
 use App\Models\Tenant;
+use App\Scopes\TenantScope;
 
 new
 #[Layout('layouts.app')]
@@ -153,7 +154,6 @@ class extends Component
     #[Computed]
     public function highlights(): array
     {
-        // Gather tenant IDs from settings to fetch all required tenants in one query
         $tenantIds = collect([1, 2, 3])
             ->map(fn($n) => $this->setting("about_highlight{$n}_tenant_id"))
             ->filter()
@@ -161,9 +161,12 @@ class extends Component
             ->unique()
             ->values();
 
+        // NOTE: The `settings` eager load MUST bypass TenantScope.
         $tenants = $tenantIds->isNotEmpty()
             ? Tenant::query()
-                ->with('settings')
+                ->with([
+                    'settings' => fn($q) => $q->withoutGlobalScope(TenantScope::class),
+                ])
                 ->whereIn('id', $tenantIds)
                 ->get()
                 ->keyBy('id')
@@ -188,8 +191,8 @@ class extends Component
 
             if ($tenantId && ($tenant = $tenants->get((int) $tenantId))) {
                 $title = $overrideTitle ?: $tenant->name;
-                $text  = $overrideText ?: ($tenant->settings?->where('key', 'spot_description')->first()?->value ?? '');
-                $image = $overrideImage ?: ($tenant->settings?->where('key', 'spot_cover')->first()?->value ?? null);
+                $text  = $overrideText ?: ($tenant->settings->where('key', 'spot_description')->first()?->value ?? '');
+                $image = $overrideImage ?: ($tenant->settings->where('key', 'spot_cover')->first()?->value ?? null);
                 $slug  = $tenant->slug;
             }
 
@@ -329,23 +332,91 @@ class extends Component
                      }
                      this.startAutoPlay();
                  },
+
+                 // ─────────────────────────────────────────────────────────
+                 //  Adaptive slot layout — matches the homepage carousel.
+                 //
+                 //  Instead of a fixed 0..4 index table (which broke when the
+                 //  item count wasn't exactly 5), we compute each card's
+                 //  *signed shortest offset* from the active card and place
+                 //  it into a left/right slot. This guarantees the same
+                 //  number of cards appear on each side regardless of how
+                 //  many items exist — 3, 4, 5, or 20 all look balanced.
+                 //
+                 //    offset  0        → center (large, on top)
+                 //    offset +1 / -1   → inner slot (right / left)
+                 //    offset +2 / -2   → outer slot (right / left)
+                 //    |offset| > 2     → hidden
+                 // ─────────────────────────────────────────────────────────
                  getPositionStyle(index) {
                      const length = this.items.length;
-                     const rel = (index - this.active + length) % length;
-                     const styles = {
-                         0: { left: '50%', width: '55%', height: '100%', transform: 'translate(-50%, -50%)', zIndex: 30, opacity: 1 },
-                         1: { right: '12%', width: '32%', height: '80%', transform: 'translateY(-50%)', zIndex: 20, opacity: 0.85 },
-                         2: { right: '0%', width: '22%', height: '60%', transform: 'translate(20%, -50%)', zIndex: 10, opacity: 0.5 },
-                         3: { left: '12%', width: '32%', height: '80%', transform: 'translateY(-50%)', zIndex: 20, opacity: 0.85 },
-                         4: { left: '0%', width: '22%', height: '60%', transform: 'translate(-20%, -50%)', zIndex: 10, opacity: 0.5 },
-                     };
-                     const style = styles[rel] || { left: '50%', width: '0%', height: '0%', transform: 'translate(-50%, -50%)', zIndex: 0, opacity: 0 };
-                     return {
+                     if (length === 0) return { display: 'none' };
+
+                     // Signed shortest distance from active card to this card.
+                     let offset = (index - this.active + length) % length;
+                     if (offset > length / 2) offset -= length;
+
+                     const absOffset = Math.abs(offset);
+                     const maxSlots  = Math.min(Math.floor((length - 1) / 2), 2);
+
+                     const base = {
                          position: 'absolute',
                          top: '50%',
-                         transition: 'all 0.5s ease',
+                         transition: 'all 0.55s cubic-bezier(0.4, 0, 0.2, 1)',
                          overflow: 'hidden',
-                         ...style,
+                         willChange: 'width, height, transform, opacity',
+                     };
+
+                     // ── CENTER ───────────────────────────────────────
+                     if (offset === 0) {
+                         return {
+                             ...base,
+                             left: '50%',
+                             width: '55%',
+                             height: '100%',
+                             transform: 'translate(-50%, -50%)',
+                             zIndex: 30,
+                             opacity: 1,
+                         };
+                     }
+
+                     // ── HIDDEN ───────────────────────────────────────
+                     if (absOffset > maxSlots) {
+                         return {
+                             ...base,
+                             left: '50%',
+                             width: '0%',
+                             height: '0%',
+                             transform: 'translate(-50%, -50%)',
+                             zIndex: 0,
+                             opacity: 0,
+                         };
+                     }
+
+                     // ── SIDE CARD ────────────────────────────────────
+                     const isRight = offset > 0;
+                     const isInner = absOffset === 1;
+
+                     const innerWidth  = maxSlots >= 2 ? 32 : 38;
+                     const outerWidth  = 22;
+                     const innerHeight = maxSlots >= 2 ? 80 : 86;
+                     const outerHeight = 60;
+
+                     const width   = isInner ? innerWidth  : outerWidth;
+                     const height  = isInner ? innerHeight : outerHeight;
+                     const edgePct = isInner ? (maxSlots >= 2 ? 12 : 6) : 0;
+                     const pushX   = isInner ? '0%' : (isRight ? '20%' : '-20%');
+                     const opacity = isInner ? 0.85 : 0.5;
+                     const z       = isInner ? 20 : 10;
+
+                     return {
+                         ...base,
+                         ...(isRight ? { right: edgePct + '%' } : { left: edgePct + '%' }),
+                         width: width + '%',
+                         height: height + '%',
+                         transform: `translate(${pushX}, -50%)`,
+                         zIndex: z,
+                         opacity: opacity,
                      };
                  }
              }"
@@ -356,7 +427,7 @@ class extends Component
 
         <div class="relative flex items-center justify-center max-w-6xl mx-auto h-[280px] sm:h-[350px] md:h-[450px] px-4 sm:px-6 lg:px-8">
             <template x-for="(item, index) in items" :key="index">
-                <div class="absolute rounded-3xl overflow-hidden shadow-xl transition-all duration-500"
+                <div class="absolute rounded-3xl overflow-hidden shadow-xl"
                      :style="getPositionStyle(index)">
                     <img :src="item" alt="Gallery" class="object-cover w-full h-full" loading="lazy">
                 </div>

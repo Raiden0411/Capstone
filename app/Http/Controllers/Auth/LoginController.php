@@ -38,13 +38,12 @@ class LoginController extends Controller
 
             session()->regenerate();
 
-            // If a redirect target was provided, send the user back there.
             $redirect = $request->input('redirect');
-            if ($redirect) {
+            if ($redirect && $this->isSafeRedirect($redirect)) {
                 return redirect()->to($redirect);
             }
 
-            // Role-based redirect
+            // Role-based redirect fallback
             if ($user->hasRole('super-admin')) {
                 return redirect()->route('superadmin.dashboard');
             }
@@ -60,5 +59,10 @@ class LoginController extends Controller
         return back()->withErrors([
             'email' => 'The provided credentials do not match our records.',
         ])->onlyInput('email');
+    }
+
+    private function isSafeRedirect(string $url): bool
+    {
+        return str_starts_with($url, '/') || parse_url($url, PHP_URL_HOST) === request()->getHost();
     }
 }

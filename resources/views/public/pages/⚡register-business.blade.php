@@ -1,101 +1,66 @@
-{{-- resources/views/public/pages/register-business.blade.php --}}
 <?php
 
-use Livewire\Component;
+use App\Models\BusinessApplication;
+use Illuminate\Support\Facades\Auth;
+use Livewire\Attributes\Computed;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Validation\Rule;
-use App\Models\Tenant;
-use App\Models\TypeOfTenant;
-use App\Models\User;
-use Illuminate\Support\Str;
+use Livewire\Component;
 
-new 
+new
 #[Layout('layouts.auth')]
 #[Title('Register Your Business')]
-class extends Component {
-    
-    // Business details
-    public $business_name = '';
-    public $type_of_tenant_id = '';
-    public $address = '';
-    public $contact_number = '';
-    public $business_email = '';
-    
-    // Owner account details
-    public $owner_name = '';
-    public $owner_email = '';
-    public $password = '';
-    public $password_confirmation = '';
-
-    public function getTenantTypesProperty()
+class extends Component
+{
+    /**
+     * The user's most recent KYB application, if any.
+     */
+    #[Computed]
+    public function application(): ?BusinessApplication
     {
-        return TypeOfTenant::all();
+        return Auth::user()
+            ?->businessApplications()
+            ->latest('updated_at')
+            ->first();
     }
 
-    protected function rules()
+    /**
+     * Current state key for the panel switch.
+     */
+    #[Computed]
+    public function state(): string
     {
-        return [
-            'business_name' => [
-                'required', 'string', 'max:255',
-                Rule::unique('tenants', 'name'),
-            ],
-            'type_of_tenant_id' => ['required', 'integer', 'exists:type_of_tenants,id'],
-            'address' => ['required', 'string', 'max:255'],
-            'contact_number' => [
-                'required', 'string', 'max:20',
-                'regex:/^(09|\+639)\d{9}$/',
-            ],
-            'business_email' => [
-                'required', 'string', 'email', 'max:255',
-                Rule::unique('tenants', 'email'),
-            ],
-            'owner_name' => ['required', 'string', 'min:3', 'max:255'],
-            'owner_email' => [
-                'required', 'string', 'email', 'max:255',
-                Rule::unique('users', 'email'),
-            ],
-            'password' => ['required', 'string', 'min:8', 'confirmed'],
-        ];
+        return $this->application?->status ?? 'none';
     }
 
-    public function messages()
+    #[Computed]
+    public function isEditable(): bool
     {
-        return [
-            'business_name.unique' => 'This business name is already registered.',
-            'contact_number.regex' => 'Use a valid PH number: 09xxxxxxxxx or +639xxxxxxxxx.',
-            'business_email.unique' => 'This business email is already registered.',
-            'owner_email.unique' => 'This email is already in use.',
-        ];
+        return in_array($this->state, [
+            BusinessApplication::STATUS_DRAFT,
+            BusinessApplication::STATUS_NEEDS_REVISION,
+        ], true);
     }
 
-    public function register()
+    #[Computed]
+    public function isSubmitted(): bool
     {
-        $this->validate();
+        return in_array($this->state, [
+            BusinessApplication::STATUS_PENDING,
+            BusinessApplication::STATUS_UNDER_REVIEW,
+        ], true);
+    }
 
-        // Create tenant (pending approval)
-        $tenant = Tenant::create([
-            'name'              => $this->business_name,
-            'slug'              => Str::slug($this->business_name),
-            'type_of_tenant_id' => $this->type_of_tenant_id,
-            'address'           => $this->address,
-            'contact_number'    => $this->contact_number,
-            'email'             => $this->business_email,
-            'is_active'         => false,
-        ]);
+    #[Computed]
+    public function isApproved(): bool
+    {
+        return $this->state === BusinessApplication::STATUS_APPROVED;
+    }
 
-        // Create owner user (inactive until approval)
-        $user = User::create([
-            'name'      => $this->owner_name,
-            'email'     => $this->owner_email,
-            'password'  => Hash::make($this->password),
-            'tenant_id' => $tenant->id,
-            'is_active' => false,
-        ]);
-
-        session()->flash('message', 'Your business has been submitted for approval. You will be notified once it is activated.');
-        return redirect()->route('login');
+    #[Computed]
+    public function isRejected(): bool
+    {
+        return $this->state === BusinessApplication::STATUS_REJECTED;
     }
 };
 ?>
@@ -103,17 +68,17 @@ class extends Component {
 @php
     $siteName = \App\Models\SiteSetting::getValue('site_name', config('app.name'));
     $logoPath = \App\Models\SiteSetting::getValue('site_logo');
-    $logoUrl = $logoPath ? asset('storage/' . $logoPath) : null;
+    $logoUrl  = $logoPath ? asset('storage/' . $logoPath) : null;
 
     $heroPath = \App\Models\SiteSetting::getValue('hero_background_image');
-    $heroUrl = $heroPath
+    $heroUrl  = $heroPath
         ? asset('storage/' . $heroPath)
         : 'https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1600&q=80';
 @endphp
 
 <main class="flex flex-col md:flex-row w-full min-h-screen">
 
-    {{-- Left Side: Hero Image & Text --}}
+    {{-- Left: Hero --}}
     <div class="relative w-full md:w-3/5 min-h-[220px] md:min-h-screen order-1 md:order-1">
         <img src="{{ $heroUrl }}"
              alt="{{ $siteName }}"
@@ -132,203 +97,269 @@ class extends Component {
             </h1>
 
             <p class="max-w-2xl mt-4 text-sm font-medium leading-relaxed text-gray-200 md:text-base">
-                Put your resort, inn, eco‑park, or restaurant on the map.
+                Put your resort, inn, eco-park, or restaurant on the map.
                 Reach more visitors and share the best of Victorias City.
             </p>
         </div>
     </div>
 
-    {{-- Right Side: Registration Form --}}
+    {{-- Right: State-aware panel --}}
     <div class="flex items-center justify-center w-full px-4 sm:px-6 py-10 md:py-12 bg-white dark:bg-gray-900 md:w-2/5 lg:px-16 order-2 md:order-2 overflow-y-auto">
         <div class="w-full max-w-md">
 
             {{-- Back to Home --}}
             <a href="{{ route('home') }}" wire:navigate
-               class="inline-flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors mb-6 focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+               class="inline-flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors mb-6 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+                </svg>
                 Back to Home
             </a>
 
-            {{-- Brand / Logo --}}
+            {{-- Brand --}}
             <div class="flex items-center gap-3 mb-6">
                 @if($logoUrl)
                     <img src="{{ $logoUrl }}" alt="{{ $siteName }} logo"
                          class="w-10 h-10 object-contain rounded-lg shrink-0">
                 @else
-                    <div class="w-10 h-10 rounded-xl bg-primary-600 flex items-center justify-center text-white shrink-0">
+                    <div class="w-10 h-10 rounded-xl bg-primary-600 flex items-center justify-center text-white shrink-0 font-semibold">
                         {{ strtoupper(substr($siteName, 0, 1)) }}
                     </div>
                 @endif
                 <span class="text-lg font-semibold text-gray-900 dark:text-white">{{ $siteName }}</span>
             </div>
 
-            <h2 class="text-3xl font-bold text-gray-900 dark:text-white mb-6">
+            <h2 class="text-3xl font-bold tracking-tight text-gray-900 dark:text-white mb-2">
                 Register Your Business
             </h2>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
+                Complete our verification process to list your business on {{ $siteName }}.
+            </p>
 
+            {{-- Flash messages --}}
             @if (session()->has('message'))
-                <div class="mb-5 bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 rounded-xl p-3 text-sm text-green-700 dark:text-green-300">
-                    {{ session('message') }}
+                <div class="mb-5 flex items-center gap-2.5 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 border-l-4 border-l-emerald-500 p-4 rounded-xl text-xs sm:text-sm text-emerald-800 dark:text-emerald-300 font-medium shadow-sm">
+                    <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    <span>{{ session('message') }}</span>
                 </div>
             @endif
 
-            @if ($errors->any())
-                <div class="mb-5 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 rounded-xl p-3 text-sm text-red-600 dark:text-red-400">
-                    Please fix the errors below.
+            @if (session()->has('error'))
+                <div class="mb-5 flex items-center gap-2.5 bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 border-l-4 border-l-rose-500 p-4 rounded-xl text-xs sm:text-sm text-rose-800 dark:text-rose-300 font-medium shadow-sm">
+                    <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/>
+                    </svg>
+                    <span>{{ session('error') }}</span>
                 </div>
             @endif
 
-            <form wire:submit="register" class="space-y-5"
-                  x-data="{ showPassword: false, showConfirmPassword: false }">
+            {{-- ──────────────────────────────────────────────────────────
+                 STATE-AWARE PANEL
+                 ────────────────────────────────────────────────────────── --}}
 
-                {{-- Business Information --}}
-                <div>
-                    <h3 class="text-base font-semibold text-gray-900 dark:text-white mb-4">Business Information</h3>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                            <label for="business_name" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                Business Name *
-                            </label>
-                            <div class="mt-1.5">
-                                <input type="text" id="business_name" wire:model="business_name" placeholder="Your resort or inn name" autocomplete="organization"
-                                       class="block w-full px-4 py-3 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
-                            </div>
-                            @error('business_name') <p class="mt-1 text-xs text-red-500">{{ $message }}</p> @enderror
+            @if ($this->isApproved)
+                {{-- ✅ Already approved --}}
+                <div class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl p-6 shadow-sm">
+                    <div class="flex items-start gap-3">
+                        <div class="p-2 bg-emerald-50 dark:bg-emerald-500/10 rounded-xl text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-900/50 shrink-0">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
                         </div>
-                        <div>
-                            <label for="type_of_tenant_id" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                Business Type *
-                            </label>
-                            <div class="mt-1.5">
-                                <select wire:model="type_of_tenant_id" id="type_of_tenant_id"
-                                        class="block w-full px-4 py-3 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none">
-                                    <option value="">-- Select Type --</option>
-                                    @foreach($this->tenantTypes as $type)
-                                        <option value="{{ $type->id }}">{{ $type->type }}</option>
-                                    @endforeach
-                                </select>
-                            </div>
-                            @error('type_of_tenant_id') <p class="mt-1 text-xs text-red-500">{{ $message }}</p> @enderror
+                        <div class="min-w-0">
+                            <h3 class="text-base font-semibold text-gray-900 dark:text-white">
+                                Your business is approved
+                            </h3>
+                            <p class="mt-1 text-xs sm:text-sm text-gray-500 dark:text-gray-400">
+                                Your business account is live on the platform. Head to your dashboard to manage properties, services, bookings, and payments.
+                            </p>
                         </div>
-                        <div class="md:col-span-2">
-                            <label for="address" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                Full Address *
-                            </label>
-                            <div class="mt-1.5">
-                                <input type="text" id="address" wire:model="address" placeholder="Complete street address" autocomplete="street-address"
-                                       class="block w-full px-4 py-3 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
-                            </div>
-                            @error('address') <p class="mt-1 text-xs text-red-500">{{ $message }}</p> @enderror
+                    </div>
+
+                    <a href="{{ route('tenant.dashboard') }}" wire:navigate
+                       class="mt-5 inline-flex w-full items-center justify-center gap-2 px-4 py-3 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                        Go to Business Dashboard
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                        </svg>
+                    </a>
+                </div>
+
+            @elseif ($this->isSubmitted)
+                {{-- ⏳ Under review --}}
+                <div class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl p-6 shadow-sm">
+                    <div class="flex items-start gap-3">
+                        <div class="p-2 bg-amber-50 dark:bg-amber-500/10 rounded-xl text-amber-600 dark:text-amber-400 border border-amber-100 dark:border-amber-900/50 shrink-0">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
                         </div>
-                        <div>
-                            <label for="contact_number" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                Contact Number *
-                            </label>
-                            <div class="mt-1.5">
-                                <input type="text" id="contact_number" wire:model="contact_number" placeholder="09xxxxxxxxx" autocomplete="tel"
-                                       class="block w-full px-4 py-3 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
-                            </div>
-                            @error('contact_number') <p class="mt-1 text-xs text-red-500">{{ $message }}</p> @enderror
-                        </div>
-                        <div>
-                            <label for="business_email" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                Business Email *
-                            </label>
-                            <div class="mt-1.5">
-                                <input type="email" id="business_email" wire:model="business_email" placeholder="hello@yourbusiness.com" autocomplete="email"
-                                       class="block w-full px-4 py-3 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
-                            </div>
-                            @error('business_email') <p class="mt-1 text-xs text-red-500">{{ $message }}</p> @enderror
+                        <div class="min-w-0">
+                            <h3 class="text-base font-semibold text-gray-900 dark:text-white">
+                                Application under review
+                            </h3>
+                            <p class="mt-1 text-xs sm:text-sm text-gray-500 dark:text-gray-400">
+                                Our team is reviewing your submission. We'll notify you as soon as a decision is made.
+                            </p>
+                            @if ($this->application?->submitted_at)
+                                <p class="mt-3 text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                                    Submitted {{ $this->application->submitted_at->diffForHumans() }}
+                                </p>
+                            @endif
                         </div>
                     </div>
                 </div>
 
-                {{-- Owner Account --}}
-                <div>
-                    <h3 class="text-base font-semibold text-gray-900 dark:text-white mb-4">Your Account (Owner)</h3>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                            <label for="owner_name" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                Full Name *
-                            </label>
-                            <div class="mt-1.5">
-                                <input type="text" id="owner_name" wire:model="owner_name" placeholder="Juan dela Cruz" autocomplete="name"
-                                       class="block w-full px-4 py-3 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
-                            </div>
-                            @error('owner_name') <p class="mt-1 text-xs text-red-500">{{ $message }}</p> @enderror
+            @elseif ($this->isRejected)
+                {{-- ❌ Rejected --}}
+                <div class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl p-6 shadow-sm">
+                    <div class="flex items-start gap-3">
+                        <div class="p-2 bg-rose-50 dark:bg-rose-500/10 rounded-xl text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/50 shrink-0">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
                         </div>
-                        <div>
-                            <label for="owner_email" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                Email *
-                            </label>
-                            <div class="mt-1.5">
-                                <input type="email" id="owner_email" wire:model="owner_email" placeholder="you@example.com" autocomplete="email"
-                                       class="block w-full px-4 py-3 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
-                            </div>
-                            @error('owner_email') <p class="mt-1 text-xs text-red-500">{{ $message }}</p> @enderror
-                        </div>
-                        <div>
-                            <label for="password" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                Password *
-                            </label>
-                            <div class="relative mt-1.5">
-                                <input :type="showPassword ? 'text' : 'password'"
-                                       id="password" wire:model="password" placeholder="Min. 8 characters" autocomplete="new-password" minlength="8"
-                                       class="block w-full px-4 py-3 pr-11 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
-                                <button type="button" @click="showPassword = !showPassword"
-                                        class="absolute inset-y-0 flex items-center right-4 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-                                        tabindex="-1" aria-label="Toggle password visibility">
-                                    <svg x-show="!showPassword" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
-                                        <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                    </svg>
-                                    <svg x-show="showPassword" x-cloak class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88" />
-                                    </svg>
-                                </button>
-                            </div>
-                            @error('password') <p class="mt-1 text-xs text-red-500">{{ $message }}</p> @enderror
-                        </div>
-                        <div>
-                            <label for="password_confirmation" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                Confirm Password *
-                            </label>
-                            <div class="relative mt-1.5">
-                                <input :type="showConfirmPassword ? 'text' : 'password'"
-                                       id="password_confirmation" wire:model="password_confirmation" placeholder="Re-enter password" autocomplete="new-password" minlength="8"
-                                       class="block w-full px-4 py-3 pr-11 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500">
-                                <button type="button" @click="showConfirmPassword = !showConfirmPassword"
-                                        class="absolute inset-y-0 flex items-center right-4 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-                                        tabindex="-1" aria-label="Toggle confirm password visibility">
-                                    <svg x-show="!showConfirmPassword" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
-                                        <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                    </svg>
-                                    <svg x-show="showConfirmPassword" x-cloak class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88" />
-                                    </svg>
-                                </button>
-                            </div>
-                            @error('password_confirmation') <p class="mt-1 text-xs text-red-500">{{ $message }}</p> @enderror
+                        <div class="min-w-0">
+                            <h3 class="text-base font-semibold text-gray-900 dark:text-white">
+                                Application not approved
+                            </h3>
+                            <p class="mt-1 text-xs sm:text-sm text-gray-500 dark:text-gray-400">
+                                Unfortunately, your previous application was rejected. You may start a new one with corrected information.
+                            </p>
+
+                            @if ($this->application?->rejection_reason)
+                                <div class="mt-4 rounded-xl bg-rose-50/60 dark:bg-rose-500/5 border border-rose-100 dark:border-rose-500/20 p-3">
+                                    <p class="text-[10px] font-bold uppercase tracking-wider text-rose-600 dark:text-rose-400 mb-1">
+                                        Reason from reviewer
+                                    </p>
+                                    <p class="text-xs text-rose-800 dark:text-rose-300 leading-relaxed">
+                                        {{ $this->application->rejection_reason }}
+                                    </p>
+                                </div>
+                            @endif
                         </div>
                     </div>
+
+                    <form method="POST" action="{{ route('register_business.start') }}" class="mt-5">
+                        @csrf
+                        <button type="submit"
+                                class="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                            Start New Application
+                        </button>
+                    </form>
                 </div>
 
-                {{-- Submit --}}
-                <button type="submit"
-                        wire:loading.attr="disabled"
-                        class="w-full py-3.5 mt-2 text-[15px] font-semibold text-white transition-colors bg-primary-600 hover:bg-primary-700 rounded-xl shadow-sm disabled:opacity-50 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                    <span wire:loading.remove>Submit for Approval</span>
-                    <span wire:loading class="inline-flex items-center gap-2">
-                        <svg class="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
-                        Submitting...
-                    </span>
-                </button>
-            </form>
+            @elseif ($this->isEditable)
+                {{-- ✏️ Draft or needs-revision --}}
+                <div class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl p-6 shadow-sm">
+                    <div class="flex items-start gap-3">
+                        <div class="p-2 bg-primary-50 dark:bg-primary-950/50 rounded-xl text-primary-600 dark:text-primary-400 border border-primary-100 dark:border-primary-900/50 shrink-0">
+                            @if ($this->state === BusinessApplication::STATUS_NEEDS_REVISION)
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/>
+                                </svg>
+                            @else
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                                </svg>
+                            @endif
+                        </div>
+                        <div class="min-w-0">
+                            <h3 class="text-base font-semibold text-gray-900 dark:text-white">
+                                @if ($this->state === BusinessApplication::STATUS_NEEDS_REVISION)
+                                    Revision requested
+                                @else
+                                    Application in progress
+                                @endif
+                            </h3>
+                            <p class="mt-1 text-xs sm:text-sm text-gray-500 dark:text-gray-400">
+                                @if ($this->state === BusinessApplication::STATUS_NEEDS_REVISION)
+                                    Our reviewer requested changes to your application. Review the notes, update your details, and resubmit.
+                                @else
+                                    You have an unfinished KYB application. Pick up right where you left off.
+                                @endif
+                            </p>
 
-            <p class="mt-6 text-center text-sm text-gray-500 dark:text-gray-400">
-                By registering, you agree to the platform's terms.
-                Your business will require admin approval.
+                            @if ($this->state === BusinessApplication::STATUS_NEEDS_REVISION && $this->application?->revision_notes)
+                                <div class="mt-4 rounded-xl bg-amber-50/60 dark:bg-amber-500/5 border border-amber-100 dark:border-amber-500/20 p-3">
+                                    <p class="text-[10px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400 mb-1">
+                                        Reviewer notes
+                                    </p>
+                                    <p class="text-xs text-amber-900 dark:text-amber-300 leading-relaxed">
+                                        {{ $this->application->revision_notes }}
+                                    </p>
+                                </div>
+                            @endif
+                        </div>
+                    </div>
+
+                    <form method="POST" action="{{ route('register_business.start') }}" class="mt-5">
+                        @csrf
+                        <button type="submit"
+                                class="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                            @if ($this->state === BusinessApplication::STATUS_NEEDS_REVISION)
+                                Review &amp; Update Application
+                            @else
+                                Continue Application
+                            @endif
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                            </svg>
+                        </button>
+                    </form>
+                </div>
+
+            @else
+                {{-- 🆕 No application yet --}}
+                <div class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl p-6 shadow-sm">
+                    <div class="flex items-center gap-3 mb-5">
+                        <span class="w-5 h-px bg-primary-600"></span>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                            What to expect
+                        </span>
+                    </div>
+
+                    <ol class="space-y-4">
+                        <li class="flex items-start gap-3">
+                            <span class="shrink-0 w-6 h-6 rounded-full bg-primary-50 dark:bg-primary-950/50 text-primary-600 dark:text-primary-400 text-[11px] font-bold flex items-center justify-center border border-primary-100 dark:border-primary-900/50">1</span>
+                            <div class="min-w-0">
+                                <p class="text-sm font-semibold text-gray-900 dark:text-white">Business details</p>
+                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Name, type, address, and ownership information.</p>
+                            </div>
+                        </li>
+                        <li class="flex items-start gap-3">
+                            <span class="shrink-0 w-6 h-6 rounded-full bg-primary-50 dark:bg-primary-950/50 text-primary-600 dark:text-primary-400 text-[11px] font-bold flex items-center justify-center border border-primary-100 dark:border-primary-900/50">2</span>
+                            <div class="min-w-0">
+                                <p class="text-sm font-semibold text-gray-900 dark:text-white">Upload documents</p>
+                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">DTI/SEC/CDA, BIR 2303, Mayor's Permit, and valid owner ID.</p>
+                            </div>
+                        </li>
+                        <li class="flex items-start gap-3">
+                            <span class="shrink-0 w-6 h-6 rounded-full bg-primary-50 dark:bg-primary-950/50 text-primary-600 dark:text-primary-400 text-[11px] font-bold flex items-center justify-center border border-primary-100 dark:border-primary-900/50">3</span>
+                            <div class="min-w-0">
+                                <p class="text-sm font-semibold text-gray-900 dark:text-white">Get verified</p>
+                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Our team reviews your submission and activates your business.</p>
+                            </div>
+                        </li>
+                    </ol>
+
+                    <form method="POST" action="{{ route('register_business.start') }}" class="mt-6">
+                        @csrf
+                        <button type="submit"
+                                class="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                            Start Application
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
+                            </svg>
+                        </button>
+                    </form>
+                </div>
+            @endif
+
+            <p class="mt-6 text-center text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+                By continuing, you agree to {{ $siteName }}'s terms and privacy policy.
             </p>
         </div>
     </div>

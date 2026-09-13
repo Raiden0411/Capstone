@@ -53,8 +53,8 @@ class extends Component
 
     public function mount()
     {
-        $this->heroSubheading = SiteSetting::getValue('about_hero_subheading', 'Welcome to Victorias City');
-        $this->heroHeading    = SiteSetting::getValue('about_hero_heading', 'KADALAG-AN');
+        $this->heroSubheading  = SiteSetting::getValue('about_hero_subheading', 'Welcome to Victorias City');
+        $this->heroHeading     = SiteSetting::getValue('about_hero_heading', 'KADALAG-AN');
         $this->heroDescription = SiteSetting::getValue('about_hero_description', '');
 
         $this->storyHeading = SiteSetting::getValue('about_story_heading', 'The Story of the City');
@@ -86,13 +86,13 @@ class extends Component
     public function save()
     {
         $this->validate([
-            'heroImage'       => 'nullable|image|max:10240',
-            'storyImage1'     => 'nullable|image|max:10240',
-            'storyImage2'     => 'nullable|image|max:10240',
-            'storyImage3'     => 'nullable|image|max:10240',
-            'highlight1Image' => 'nullable|image|max:10240',
-            'highlight2Image' => 'nullable|image|max:10240',
-            'highlight3Image' => 'nullable|image|max:10240',
+            'heroImage'          => 'nullable|image|max:10240',
+            'storyImage1'        => 'nullable|image|max:10240',
+            'storyImage2'        => 'nullable|image|max:10240',
+            'storyImage3'        => 'nullable|image|max:10240',
+            'highlight1Image'    => 'nullable|image|max:10240',
+            'highlight2Image'    => 'nullable|image|max:10240',
+            'highlight3Image'    => 'nullable|image|max:10240',
             'ctaBackgroundImage' => 'nullable|image|max:10240',
         ]);
 
@@ -134,6 +134,10 @@ class extends Component
             'highlight1Image', 'highlight2Image', 'highlight3Image', 'ctaBackgroundImage',
         ]);
 
+        // Clear client-side file previews so the DOM falls back to
+        // the freshly-saved server thumbnails.
+        $this->dispatch('preview-reset');
+
         session()->flash('message', 'About page updated successfully.');
     }
 
@@ -156,7 +160,30 @@ class extends Component
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-8 max-w-[1440px] mx-auto space-y-6">
+{{--
+    Root element carries the initial live-preview state via a data-* attribute
+    encoded with JSON_HEX_* flags, so quotes inside the values can never break
+    the HTML attribute.
+--}}
+<div
+    x-data="aboutEditor()"
+    data-preview="{{ json_encode([
+        'heroSubheading'   => $heroSubheading,
+        'heroHeading'      => $heroHeading,
+        'heroDescription'  => $heroDescription,
+        'storyHeading'     => $storyHeading,
+        'storyText1'       => $storyText1,
+        'storyText2'       => $storyText2,
+        'highlight1Title'  => $highlight1Title,
+        'highlight1Text'   => $highlight1Text,
+        'highlight2Title'  => $highlight2Title,
+        'highlight2Text'   => $highlight2Text,
+        'highlight3Title'  => $highlight3Title,
+        'highlight3Text'   => $highlight3Text,
+        'ctaHeading'       => $ctaHeading,
+        'ctaText'          => $ctaText,
+    ], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
+    class="p-4 sm:p-6 lg:p-8 max-w-[1440px] mx-auto space-y-6">
 
     @if (session()->has('message'))
         <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium">
@@ -164,198 +191,522 @@ class extends Component
         </div>
     @endif
 
+    {{-- Header --}}
     <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
         <div>
             <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">About Page Editor</h1>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                Edit each section below. Previews mirror the live About page layout.
+            </p>
         </div>
         <a href="{{ route('superadmin.dashboard') }}" wire:navigate
-           class="text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
-            &larr; Back to Dashboard
+           class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+            Back to Dashboard
         </a>
     </div>
 
     <form wire:submit="save" class="space-y-6">
 
-        {{-- Hero --}}
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm space-y-4">
-            <h2 class="text-xl font-semibold text-gray-900 dark:text-white">Hero Section</h2>
+        {{-- ═══════════════════════════════════════════════════════════
+             SECTION 1 — HERO  (mirrors the About hero banner)
+             ═══════════════════════════════════════════════════════════ --}}
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm space-y-5">
 
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Hero Subheading</label>
-                    <input type="text" wire:model="heroSubheading"
-                           class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Hero Heading</label>
-                    <input type="text" wire:model="heroHeading"
-                           class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
-                </div>
-                <div class="md:col-span-2">
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Hero Description</label>
-                    <textarea wire:model="heroDescription" rows="3"
-                              class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"></textarea>
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Hero Image</label>
-
-                    {{-- Alpine instant preview --}}
-                    <div x-data="{ preview: null }">
-                        <template x-if="preview">
-                            <img :src="preview" class="w-full h-40 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
-                        </template>
-                        <template x-if="!preview">
-                            @if($stored = $this->getStoredImageUrl('about_hero_image', 'https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1920&q=80'))
-                                <img src="{{ $stored }}" class="w-full h-40 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
-                            @endif
-                        </template>
-
-                        <input type="file" wire:model="heroImage" accept="image/*"
-                               @change="preview = URL.createObjectURL($event.target.files[0])"
-                               class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-
-                        <button type="button" x-show="preview" @click="preview = null; $wire.set('heroImage', null)" class="mt-2 text-xs text-red-500">Remove new image</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        {{-- Story --}}
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm space-y-4">
-            <h2 class="text-xl font-semibold text-gray-900 dark:text-white">Story Section</h2>
-
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Heading</label>
-                    <input type="text" wire:model="storyHeading"
-                           class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
-                </div>
-
-                @foreach(['storyImage1' => 'about_story_image1', 'storyImage2' => 'about_story_image2', 'storyImage3' => 'about_story_image3'] as $prop => $key)
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Image {{ $loop->iteration }}</label>
-                    <div x-data="{ preview: null }">
-                        <template x-if="preview">
-                            <img :src="preview" class="w-full h-32 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
-                        </template>
-                        <template x-if="!preview">
-                            @if($stored = $this->getStoredImageUrl($key))
-                                <img src="{{ $stored }}" class="w-full h-32 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
-                            @endif
-                        </template>
-                        <input type="file" wire:model="{{ $prop }}" accept="image/*"
-                               @change="preview = URL.createObjectURL($event.target.files[0])"
-                               class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                        <button type="button" x-show="preview" @click="preview = null; $wire.set('{{ $prop }}', null)" class="mt-2 text-xs text-red-500">Remove new image</button>
-                    </div>
-                </div>
-                @endforeach
-
-                <div class="md:col-span-2">
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Paragraph 1</label>
-                    <textarea wire:model="storyText1" rows="3"
-                              class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"></textarea>
-                </div>
-                <div class="md:col-span-2">
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Paragraph 2</label>
-                    <textarea wire:model="storyText2" rows="3"
-                              class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"></textarea>
-                </div>
-            </div>
-        </div>
-
-        {{-- Highlights --}}
-        @foreach([1, 2, 3] as $n)
-            <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm space-y-4">
-                <h2 class="text-xl font-semibold text-gray-900 dark:text-white">Highlight {{ $n }}</h2>
-
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+                <div class="flex items-center gap-3">
+                    <span class="inline-flex items-center justify-center w-7 h-7 rounded-full bg-primary-100 dark:bg-primary-500/20 text-primary-700 dark:text-primary-300 text-xs font-bold">1</span>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Link Tenant (optional)</label>
-                        <select wire:model="highlight{{ $n }}TenantId"
-                                class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
-                            <option value="">None</option>
-                            @foreach($this->tenants as $tenant)
-                                <option value="{{ $tenant->id }}">{{ $tenant->name }}</option>
+                        <h2 class="text-lg font-semibold text-gray-900 dark:text-white leading-tight">Hero Section</h2>
+                        <p class="text-xs text-gray-500 dark:text-gray-400">The banner at the top of the About page.</p>
+                    </div>
+                </div>
+                <span class="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse motion-reduce:animate-none"></span>
+                    Live preview
+                </span>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+
+                {{-- PREVIEW --}}
+                <div class="relative rounded-2xl overflow-hidden bg-gray-900 min-h-[320px] flex items-center justify-center">
+                    <template x-if="filePreviews.heroImage">
+                        <img :src="filePreviews.heroImage" alt="" class="absolute inset-0 w-full h-full object-cover">
+                    </template>
+                    <template x-if="!filePreviews.heroImage && @js((bool) $this->getStoredImageUrl('about_hero_image'))">
+                        <img src="{{ $this->getStoredImageUrl('about_hero_image') }}" alt="" class="absolute inset-0 w-full h-full object-cover">
+                    </template>
+                    <template x-if="!filePreviews.heroImage && !@js((bool) $this->getStoredImageUrl('about_hero_image'))">
+                        <img src="https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1920&q=80" alt="" class="absolute inset-0 w-full h-full object-cover">
+                    </template>
+                    <div class="absolute inset-0 bg-gradient-to-b from-black/60 via-black/40 to-black/70"></div>
+
+                    <div class="relative z-10 text-center px-6 py-8">
+                        <h1 class="text-lg sm:text-xl font-bold tracking-widest text-white uppercase break-words"
+                            x-text="preview.heroSubheading || 'Hero Subheading'"></h1>
+                        <h2 class="mt-3 text-3xl sm:text-4xl md:text-5xl font-display font-bold tracking-wide text-amber-300 break-words"
+                            x-text="preview.heroHeading || 'HEADING'"></h2>
+                        <p class="mt-4 max-w-sm mx-auto text-xs sm:text-sm text-white/90 leading-relaxed line-clamp-3"
+                           x-text="preview.heroDescription || 'Hero description appears here.'"></p>
+                        <span class="mt-6 inline-flex items-center gap-2 px-5 py-2.5 text-xs sm:text-sm font-semibold text-white bg-primary-600 rounded-full shadow-lg">
+                            Plan your Visit Now
+                        </span>
+                    </div>
+
+                    <div class="absolute bottom-3 left-3 inline-flex items-center gap-1.5 rounded-full bg-white/10 backdrop-blur-md px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-white/80">
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                        About page preview
+                    </div>
+                </div>
+
+                {{-- FIELDS --}}
+                <div class="space-y-5">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Hero Subheading</label>
+                        <input type="text" wire:model="heroSubheading"
+                               class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
+                               x-on:input="bindField($event, 'heroSubheading')">
+                        @error('heroSubheading') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Hero Heading</label>
+                        <input type="text" wire:model="heroHeading"
+                               class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
+                               x-on:input="bindField($event, 'heroHeading')">
+                        @error('heroHeading') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Hero Description</label>
+                        <textarea wire:model="heroDescription" rows="3"
+                                  class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
+                                  x-on:input="bindField($event, 'heroDescription')"></textarea>
+                        @error('heroDescription') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                            Background Image
+                            <span class="text-xs text-gray-400 font-normal ml-1">— 10 MB max</span>
+                        </label>
+
+                        @include('superadmin.pages.homepage.partials.image-uploader', [
+                            'key'      => 'heroImage',
+                            'existing' => $this->getStoredImageUrl('about_hero_image'),
+                        ])
+                        @error('heroImage') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {{-- ═══════════════════════════════════════════════════════════
+             SECTION 2 — STORY  (mirrors the "Story of the City" block)
+             ═══════════════════════════════════════════════════════════ --}}
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm space-y-5">
+
+            <div class="flex flex-wrap items-center justify-between gap-3">
+                <div class="flex items-center gap-3">
+                    <span class="inline-flex items-center justify-center w-7 h-7 rounded-full bg-primary-100 dark:bg-primary-500/20 text-primary-700 dark:text-primary-300 text-xs font-bold">2</span>
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-900 dark:text-white leading-tight">Story Section</h2>
+                        <p class="text-xs text-gray-500 dark:text-gray-400">The "Story of the City" block with a lead image.</p>
+                    </div>
+                </div>
+                <span class="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse motion-reduce:animate-none"></span>
+                    Live preview
+                </span>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+
+                {{-- PREVIEW --}}
+                <div class="rounded-2xl overflow-hidden bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 p-5 sm:p-6">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
+                        <div>
+                            <div class="flex items-center gap-2 mb-3">
+                                <span class="w-4 h-4 bg-amber-400 rounded-full shadow-sm shrink-0"></span>
+                                <h3 class="text-base font-bold tracking-wider text-gray-900 dark:text-white uppercase break-words"
+                                    x-text="preview.storyHeading || 'Story Heading'"></h3>
+                            </div>
+                            <div class="space-y-2 text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+                                <p x-text="preview.storyText1 || 'First paragraph appears here.'"></p>
+                                <p x-show="preview.storyText2" x-text="preview.storyText2"></p>
+                            </div>
+                        </div>
+
+                        <div class="aspect-[4/3] rounded-xl overflow-hidden bg-gray-200 dark:bg-gray-800">
+                            <template x-if="filePreviews.storyImage1">
+                                <img :src="filePreviews.storyImage1" alt="" class="w-full h-full object-cover">
+                            </template>
+                            <template x-if="!filePreviews.storyImage1 && @js((bool) $this->getStoredImageUrl('about_story_image1'))">
+                                <img src="{{ $this->getStoredImageUrl('about_story_image1') }}" alt="" class="w-full h-full object-cover">
+                            </template>
+                            <template x-if="!filePreviews.storyImage1 && !@js((bool) $this->getStoredImageUrl('about_story_image1'))">
+                                <div class="w-full h-full flex items-center justify-center">
+                                    <svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M4 8h.01M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z"/></svg>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+
+                {{-- FIELDS --}}
+                <div class="space-y-5">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Heading</label>
+                        <input type="text" wire:model="storyHeading"
+                               class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
+                               x-on:input="bindField($event, 'storyHeading')">
+                        @error('storyHeading') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Paragraph 1</label>
+                        <textarea wire:model="storyText1" rows="3"
+                                  class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
+                                  x-on:input="bindField($event, 'storyText1')"></textarea>
+                        @error('storyText1') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Paragraph 2 <span class="text-xs text-gray-400 font-normal">(optional)</span></label>
+                        <textarea wire:model="storyText2" rows="3"
+                                  class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
+                                  x-on:input="bindField($event, 'storyText2')"></textarea>
+                        @error('storyText2') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                            Story Images
+                            <span class="text-xs text-gray-400 font-normal ml-1">— the first is the lead; all three appear in the gallery</span>
+                        </label>
+
+                        <div class="grid grid-cols-3 gap-3">
+                            @foreach([
+                                ['prop' => 'storyImage1', 'key' => 'about_story_image1', 'label' => 'Lead'],
+                                ['prop' => 'storyImage2', 'key' => 'about_story_image2', 'label' => 'Gallery'],
+                                ['prop' => 'storyImage3', 'key' => 'about_story_image3', 'label' => 'Gallery'],
+                            ] as $i)
+                                <div>
+                                    @include('superadmin.pages.homepage.partials.image-uploader', [
+                                        'key'      => $i['prop'],
+                                        'existing' => $this->getStoredImageUrl($i['key']),
+                                        'label'    => $i['label'],
+                                        'compact'  => true,
+                                    ])
+                                    @error($i['prop']) <span class="text-red-500 dark:text-red-400 text-[11px] mt-1 block">{{ $message }}</span> @enderror
+                                </div>
                             @endforeach
-                        </select>
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Title</label>
-                        <input type="text" wire:model="highlight{{ $n }}Title"
-                               class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
-                    </div>
-                    <div class="md:col-span-2">
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Text</label>
-                        <textarea wire:model="highlight{{ $n }}Text" rows="3"
-                                  class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"></textarea>
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Image</label>
-                        <div x-data="{ preview: null }">
-                            <template x-if="preview">
-                                <img :src="preview" class="w-full h-32 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
-                            </template>
-                            <template x-if="!preview">
-                                @if($stored = $this->getStoredImageUrl("about_highlight{$n}_image"))
-                                    <img src="{{ $stored }}" class="w-full h-32 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
-                                @endif
-                            </template>
-                            <input type="file" wire:model="highlight{{ $n }}Image" accept="image/*"
-                                   @change="preview = URL.createObjectURL($event.target.files[0])"
-                                   class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                            <button type="button" x-show="preview" @click="preview = null; $wire.set('highlight{{ $n }}Image', null)" class="mt-2 text-xs text-red-500">Remove new image</button>
                         </div>
                     </div>
                 </div>
             </div>
-        @endforeach
+        </div>
 
-        {{-- CTA --}}
-        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm space-y-4">
-            <h2 class="text-xl font-semibold text-gray-900 dark:text-white">Call to Action</h2>
-
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Heading</label>
-                    <input type="text" wire:model="ctaHeading"
-                           class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
+        {{-- ═══════════════════════════════════════════════════════════
+             SECTION 3 — GALLERY CAROUSEL (auto-derived — informational only)
+             ═══════════════════════════════════════════════════════════ --}}
+        <div class="rounded-2xl border border-dashed border-gray-300 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-800/40 p-5">
+            <div class="flex items-start gap-3">
+                <div class="shrink-0 rounded-xl bg-gray-200 dark:bg-gray-700 p-2 text-gray-500 dark:text-gray-400">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                 </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Background Image</label>
-                    <div x-data="{ preview: null }">
-                        <template x-if="preview">
-                            <img :src="preview" class="w-full h-32 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
-                        </template>
-                        <template x-if="!preview">
-                            @if($stored = $this->getStoredImageUrl('about_cta_background_image'))
-                                <img src="{{ $stored }}" class="w-full h-32 object-cover rounded-lg mb-2 border border-gray-200 dark:border-gray-700">
-                            @endif
-                        </template>
-                        <input type="file" wire:model="ctaBackgroundImage" accept="image/*"
-                               @change="preview = URL.createObjectURL($event.target.files[0])"
-                               class="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                        <button type="button" x-show="preview" @click="preview = null; $wire.set('ctaBackgroundImage', null)" class="mt-2 text-xs text-red-500">Remove new image</button>
-                    </div>
-                </div>
-                <div class="md:col-span-2">
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Text</label>
-                    <textarea wire:model="ctaText" rows="3"
-                              class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"></textarea>
+                <div class="min-w-0">
+                    <h3 class="text-sm font-semibold text-gray-800 dark:text-gray-200">Gallery carousel is auto-generated</h3>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">
+                        The image carousel section shows every uploaded image from this page in this order:
+                        <span class="font-semibold">Story Lead</span>,
+                        <span class="font-semibold">Story Gallery 1</span>,
+                        <span class="font-semibold">Story Gallery 2</span>,
+                        <span class="font-semibold">Highlight 1</span>,
+                        <span class="font-semibold">Highlight 2</span>,
+                        <span class="font-semibold">Highlight 3</span>.
+                        Upload images in any of the sections below to populate it.
+                    </p>
                 </div>
             </div>
         </div>
 
-        <div class="flex justify-end">
-            <button type="submit"
-                    wire:loading.attr="disabled"
-                    class="inline-flex items-center gap-2 bg-primary-600 hover:bg-primary-700 text-white font-medium py-2.5 px-6 rounded-full shadow-lg shadow-primary-500/20 transition hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                <span wire:loading.remove>Save Changes</span>
-                <span wire:loading class="inline-flex items-center gap-2">
-                    <svg class="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
-                    Saving…
+        {{-- ═══════════════════════════════════════════════════════════
+             SECTION 4 — HIGHLIGHTS (3 cards, alternating layout)
+             ═══════════════════════════════════════════════════════════ --}}
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm space-y-5">
+
+            <div class="flex flex-wrap items-center justify-between gap-3">
+                <div class="flex items-center gap-3">
+                    <span class="inline-flex items-center justify-center w-7 h-7 rounded-full bg-primary-100 dark:bg-primary-500/20 text-primary-700 dark:text-primary-300 text-xs font-bold">4</span>
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-900 dark:text-white leading-tight">Highlights</h2>
+                        <p class="text-xs text-gray-500 dark:text-gray-400">Three alternating feature cards. Link each to a tenant to pull in a "Visit" button.</p>
+                    </div>
+                </div>
+                <span class="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse motion-reduce:animate-none"></span>
+                    Live preview
                 </span>
-            </button>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+
+                {{-- PREVIEW — stacked alternating cards --}}
+                <div class="rounded-2xl overflow-hidden bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 p-5 space-y-5">
+                    @foreach([1, 2, 3] as $n)
+                        @php $reverse = ($n + 1) % 2 === 0; @endphp
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
+                            <div class="aspect-[4/3] rounded-xl overflow-hidden bg-gray-200 dark:bg-gray-800 {{ $reverse ? 'sm:order-2' : '' }}">
+                                <template x-if="filePreviews.highlight{{ $n }}Image">
+                                    <img :src="filePreviews.highlight{{ $n }}Image" alt="" class="w-full h-full object-cover">
+                                </template>
+                                <template x-if="!filePreviews.highlight{{ $n }}Image && @js((bool) $this->getStoredImageUrl('about_highlight' . $n . '_image'))">
+                                    <img src="{{ $this->getStoredImageUrl('about_highlight' . $n . '_image') }}" alt="" class="w-full h-full object-cover">
+                                </template>
+                                <template x-if="!filePreviews.highlight{{ $n }}Image && !@js((bool) $this->getStoredImageUrl('about_highlight' . $n . '_image'))">
+                                    <div class="w-full h-full flex items-center justify-center">
+                                        <svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M4 8h.01M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z"/></svg>
+                                    </div>
+                                </template>
+                            </div>
+                            <div class="{{ $reverse ? 'sm:order-1' : '' }}">
+                                <span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-primary-100 dark:bg-primary-500/20 text-primary-700 dark:text-primary-300 text-[10px] font-bold mb-2">{{ $n }}</span>
+                                <h3 class="text-base font-bold text-primary-600 dark:text-blue-400 mb-2 break-words"
+                                    x-text="preview.highlight{{ $n }}Title || 'Highlight title'"></h3>
+                                <p class="text-xs text-gray-600 dark:text-gray-300 leading-relaxed line-clamp-3"
+                                   x-text="preview.highlight{{ $n }}Text || 'Highlight description appears here.'"></p>
+                            </div>
+                        </div>
+                        @if($n < 3)
+                            <div class="h-px bg-gray-200 dark:bg-gray-700"></div>
+                        @endif
+                    @endforeach
+                </div>
+
+                {{-- FIELDS — 3 sub-groups --}}
+                <div class="space-y-6">
+                    @foreach([1, 2, 3] as $n)
+                        <div class="rounded-xl border border-gray-200 dark:border-gray-700 p-4 space-y-4 bg-gray-50/50 dark:bg-gray-900/40">
+                            <div class="flex items-center gap-2">
+                                <span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-primary-600 text-white text-[11px] font-bold">{{ $n }}</span>
+                                <h3 class="text-sm font-bold text-gray-900 dark:text-white">Highlight {{ $n }}</h3>
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Link Tenant (optional)</label>
+                                <select wire:model="highlight{{ $n }}TenantId"
+                                        class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg py-2 px-3 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
+                                    <option value="">None — use the title and text below as-is</option>
+                                    @foreach($this->tenants as $tenant)
+                                        <option value="{{ $tenant->id }}">{{ $tenant->name }}</option>
+                                    @endforeach
+                                </select>
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Title</label>
+                                <input type="text" wire:model="highlight{{ $n }}Title"
+                                       class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg py-2 px-3 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
+                                       x-on:input="bindField($event, 'highlight{{ $n }}Title')">
+                                @error("highlight{$n}Title") <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Text</label>
+                                <textarea wire:model="highlight{{ $n }}Text" rows="3"
+                                          class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg py-2 px-3 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
+                                          x-on:input="bindField($event, 'highlight{{ $n }}Text')"></textarea>
+                                @error("highlight{$n}Text") <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Image</label>
+                                @include('superadmin.pages.homepage.partials.image-uploader', [
+                                    'key'      => 'highlight' . $n . 'Image',
+                                    'existing' => $this->getStoredImageUrl('about_highlight' . $n . '_image'),
+                                ])
+                                @error("highlight{$n}Image") <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                            </div>
+                        </div>
+                    @endforeach
+                </div>
+            </div>
+        </div>
+
+        {{-- ═══════════════════════════════════════════════════════════
+             SECTION 5 — CTA (Plan Your Visit)
+             ═══════════════════════════════════════════════════════════ --}}
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm space-y-5">
+
+            <div class="flex flex-wrap items-center justify-between gap-3">
+                <div class="flex items-center gap-3">
+                    <span class="inline-flex items-center justify-center w-7 h-7 rounded-full bg-primary-100 dark:bg-primary-500/20 text-primary-700 dark:text-primary-300 text-xs font-bold">5</span>
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-900 dark:text-white leading-tight">Plan Your Visit CTA</h2>
+                        <p class="text-xs text-gray-500 dark:text-gray-400">The closing call-to-action at the bottom of the page.</p>
+                    </div>
+                </div>
+                <span class="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse motion-reduce:animate-none"></span>
+                    Live preview
+                </span>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+
+                {{-- PREVIEW --}}
+                <div class="relative rounded-2xl overflow-hidden min-h-[280px] flex items-center justify-center bg-gray-900">
+                    <template x-if="filePreviews.ctaBackgroundImage">
+                        <img :src="filePreviews.ctaBackgroundImage" alt="" class="absolute inset-0 w-full h-full object-cover">
+                    </template>
+                    <template x-if="!filePreviews.ctaBackgroundImage && @js((bool) $this->getStoredImageUrl('about_cta_background_image'))">
+                        <img src="{{ $this->getStoredImageUrl('about_cta_background_image') }}" alt="" class="absolute inset-0 w-full h-full object-cover">
+                    </template>
+                    <template x-if="!filePreviews.ctaBackgroundImage && !@js((bool) $this->getStoredImageUrl('about_cta_background_image'))">
+                        <img src="https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1920&q=80" alt="" class="absolute inset-0 w-full h-full object-cover">
+                    </template>
+                    <div class="absolute inset-0 bg-gradient-to-t from-black/70 to-black/50"></div>
+
+                    <div class="relative z-10 text-center px-6 py-8 max-w-sm">
+                        <h2 class="text-2xl sm:text-3xl font-bold text-white mb-3 break-words"
+                            x-text="preview.ctaHeading || 'CTA Heading'"></h2>
+                        <p class="text-xs sm:text-sm text-gray-200 mb-5 line-clamp-3"
+                           x-text="preview.ctaText || 'CTA description appears here.'"></p>
+                        <span class="inline-flex items-center gap-2 px-6 py-3 text-xs sm:text-sm font-semibold text-white bg-primary-600 rounded-full shadow-lg">
+                            Plan your Visit Now
+                        </span>
+                    </div>
+
+                    <div class="absolute bottom-3 left-3 inline-flex items-center gap-1.5 rounded-full bg-white/10 backdrop-blur-md px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-white/80">
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                        About page preview
+                    </div>
+                </div>
+
+                {{-- FIELDS --}}
+                <div class="space-y-5">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Heading</label>
+                        <input type="text" wire:model="ctaHeading"
+                               class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
+                               x-on:input="bindField($event, 'ctaHeading')">
+                        @error('ctaHeading') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Text</label>
+                        <textarea wire:model="ctaText" rows="3"
+                                  class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
+                                  x-on:input="bindField($event, 'ctaText')"></textarea>
+                        @error('ctaText') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                            Background Image
+                            <span class="text-xs text-gray-400 font-normal ml-1">— 10 MB max</span>
+                        </label>
+
+                        @include('superadmin.pages.homepage.partials.image-uploader', [
+                            'key'      => 'ctaBackgroundImage',
+                            'existing' => $this->getStoredImageUrl('about_cta_background_image'),
+                        ])
+                        @error('ctaBackgroundImage') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {{-- Sticky save bar --}}
+        <div class="sticky bottom-4 z-10 flex justify-end">
+            <div class="rounded-2xl border border-gray-200 dark:border-gray-700 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md shadow-lg p-2 flex items-center gap-3">
+                <div class="hidden sm:flex items-center gap-2 px-3 text-xs text-gray-500 dark:text-gray-400">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    Changes are applied to the About page after saving.
+                </div>
+                <button type="submit"
+                        wire:loading.attr="disabled"
+                        class="btn-primary active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50 disabled:opacity-60 disabled:cursor-not-allowed">
+                    <span wire:loading.remove>Save Changes</span>
+                    <span wire:loading class="inline-flex items-center gap-2">
+                        <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+                        Saving…
+                    </span>
+                </button>
+            </div>
         </div>
     </form>
 </div>
+
+{{--
+    Alpine component factory.
+    Runs before Alpine boots (Livewire v4 `@script` semantics) so
+    `x-data="aboutEditor()"` resolves at init.
+--}}
+@script
+<script>
+    window.aboutEditor = function () {
+        return {
+            preview: {},
+            filePreviews: {
+                heroImage:          null,
+                storyImage1:        null,
+                storyImage2:        null,
+                storyImage3:        null,
+                highlight1Image:    null,
+                highlight2Image:    null,
+                highlight3Image:    null,
+                ctaBackgroundImage: null,
+            },
+            draggingKey: null,
+
+            init() {
+                try {
+                    this.preview = JSON.parse(this.$el.dataset.preview || '{}');
+                } catch (e) {
+                    this.preview = {};
+                }
+
+                window.addEventListener('preview-reset', () => {
+                    this.filePreviews = {
+                        heroImage:          null,
+                        storyImage1:        null,
+                        storyImage2:        null,
+                        storyImage3:        null,
+                        highlight1Image:    null,
+                        highlight2Image:    null,
+                        highlight3Image:    null,
+                        ctaBackgroundImage: null,
+                    };
+                });
+            },
+
+            handleDrop(event, key) {
+                this.draggingKey = null;
+                const input = this.$refs['file-' + key];
+                if (!input || !event.dataTransfer.files.length) return;
+                input.files = event.dataTransfer.files;
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+            },
+
+            previewFile(event, key) {
+                const file = event.target.files?.[0];
+                this.filePreviews[key] = file ? URL.createObjectURL(file) : null;
+            },
+
+            clearFile(key) {
+                this.filePreviews[key] = null;
+                // Reset the underlying Livewire property so the pending
+                // upload is discarded on save.
+                try { this.$wire.set(key, null); } catch (e) { /* noop */ }
+            },
+
+            bindField(event, field) {
+                this.preview[field] = event.target.value;
+            },
+        };
+    };
+</script>
+@endscript
