@@ -19,8 +19,9 @@
         "spatie/laravel-permission": "^7.2"
     },
     "require-dev": {
+        "barryvdh/laravel-ide-helper": "^3.7",
         "fakerphp/faker": "^1.23",
-        "larastan/larastan": "^3.10",
+        "larastan/larastan": "^3.12",
         "laravel/dusk": "^8.6",
         "laravel/pail": "^1.2.5",
         "laravel/pint": "^1.27",
@@ -58,6 +59,12 @@
         "test": [
             "@php artisan config:clear --ansi",
             "@php artisan test"
+        ],
+        "phpstan": "phpstan analyse --memory-limit=1G",
+        "pint": "pint",
+        "ide-helper": [
+            "@php artisan ide-helper:generate",
+            "@php artisan ide-helper:models --write --reset"
         ],
         "post-autoload-dump": [
             "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
