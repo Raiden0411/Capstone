@@ -17,13 +17,16 @@
      :class="draggingKey === '{{ $key }}'
          ? 'border-primary-500 bg-primary-50 dark:bg-primary-500/10'
          : 'border-gray-300 dark:border-gray-600'"
-     class="relative flex items-center justify-center rounded-xl border-2 border-dashed p-3 transition-colors {{ $minHeight }} cursor-pointer overflow-hidden">
+     class="relative flex items-center justify-center rounded-xl border-2 border-dashed p-3 transition-colors
+            {{ $minHeight }} cursor-pointer overflow-hidden
+            focus-within:ring-2 focus-within:ring-primary-500/50">
 
     {{-- 1. New file preview --}}
     <template x-if="filePreviews.{{ $key }}">
         <div class="w-full">
             <img :src="filePreviews.{{ $key }}" alt=""
-                 class="w-full {{ $imgHeight }} object-cover rounded-lg border border-gray-200 dark:border-gray-700">
+                 class="w-full {{ $imgHeight }} object-cover rounded-lg border border-gray-200 dark:border-gray-700"
+                 decoding="async">
             <p class="mt-2 text-[11px] text-primary-600 dark:text-primary-400 font-semibold text-center">
                 New — uploads on save
             </p>
@@ -34,7 +37,8 @@
     <template x-if="!filePreviews.{{ $key }} && @js((bool) $existing)">
         <div class="w-full">
             <img src="{{ $existing }}" alt=""
-                 class="w-full {{ $imgHeight }} object-cover rounded-lg border border-gray-200 dark:border-gray-700">
+                 class="w-full {{ $imgHeight }} object-cover rounded-lg border border-gray-200 dark:border-gray-700"
+                 decoding="async">
             <p class="mt-2 text-[11px] text-gray-500 dark:text-gray-400 font-semibold text-center">
                 Current — click to replace
             </p>
@@ -44,7 +48,7 @@
     {{-- 3. Empty --}}
     <template x-if="!filePreviews.{{ $key }} && !@js((bool) $existing)">
         <div class="flex flex-col items-center text-gray-400 dark:text-gray-500">
-            <svg class="w-7 h-7 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg class="w-7 h-7 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
                       d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M4 8h.01M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z"/>
             </svg>
@@ -62,20 +66,25 @@
     {{-- Clear button when a new file is pending --}}
     <button type="button"
             x-show="filePreviews.{{ $key }}"
+            x-cloak
             @click.stop="clearFile('{{ $key }}')"
-            class="absolute top-1.5 right-1.5 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full bg-red-500 text-white shadow-md hover:bg-red-600 active:scale-95 transition"
+            class="absolute top-1.5 right-1.5 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full
+                   bg-rose-500 text-white shadow-md hover:bg-rose-600
+                   active:scale-95 transition
+                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:ring-offset-2
+                   dark:focus-visible:ring-offset-gray-900"
             aria-label="Clear new image"
             title="Discard pending upload">
-        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
         </svg>
     </button>
 
-    {{-- Real file input --}}
+    {{-- Real file input — raster only, matches the server-side mimes rule --}}
     <input x-ref="file-{{ $key }}"
            type="file"
            wire:model="{{ $key }}"
-           accept="image/*"
+           accept="image/jpeg,image/png,image/webp"
            class="absolute inset-0 opacity-0 cursor-pointer"
            x-on:change="previewFile($event, '{{ $key }}')">
 </div>

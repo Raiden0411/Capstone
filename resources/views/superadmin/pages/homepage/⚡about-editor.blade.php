@@ -6,8 +6,12 @@ use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
 use Livewire\WithFileUploads;
+use App\Traits\HandlesImageUploads;
 use App\Models\SiteSetting;
 use App\Models\Tenant;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 new
 #[Layout('superadmin.layouts.app')]
@@ -15,6 +19,19 @@ new
 class extends Component
 {
     use WithFileUploads;
+    use HandlesImageUploads;
+
+    /** Image contexts that this editor manages. */
+    private const IMAGE_KEYS = [
+        'about_hero_image',
+        'about_story_image1',
+        'about_story_image2',
+        'about_story_image3',
+        'about_highlight1_image',
+        'about_highlight2_image',
+        'about_highlight3_image',
+        'about_cta_background_image',
+    ];
 
     // Hero
     public $heroImage;
@@ -53,6 +70,8 @@ class extends Component
 
     public function mount()
     {
+        abort_unless(Auth::user()?->hasRole('super-admin'), 403, 'Super-admin access only.');
+
         $this->heroSubheading  = SiteSetting::getValue('about_hero_subheading', 'Welcome to Victorias City');
         $this->heroHeading     = SiteSetting::getValue('about_hero_heading', 'KADALAG-AN');
         $this->heroDescription = SiteSetting::getValue('about_hero_description', '');
@@ -83,27 +102,65 @@ class extends Component
         return Tenant::orderBy('name')->get();
     }
 
+    /**
+     * Batched, cached read of every image URL this page manages. One
+     * cache entry instead of ~30 individual reads spread across the
+     * view (each `getStoredImageUrl()` call used to hit the cache layer
+     * twice: once for the version token, once for the value).
+     *
+     * @return array<string, string|null>
+     */
+    #[Computed]
+    public function imageUrls(): array
+    {
+        $stored = SiteSetting::getBatch(self::IMAGE_KEYS, 'about_editor_images');
+
+        $urls = [];
+        foreach (self::IMAGE_KEYS as $key) {
+            $path = $stored[$key] ?? null;
+            $urls[$key] = (is_string($path) && $path !== '') ? asset('storage/' . $path) : null;
+        }
+
+        return $urls;
+    }
+
     public function save()
     {
+        // Livewire update requests bypass route middleware — re-check
+        // per action. Rule 16 (four-layer authorization).
+        abort_unless(Auth::user()?->hasRole('super-admin'), 403, 'Super-admin access only.');
+
         $this->validate([
-            'heroImage'          => 'nullable|image|max:10240',
-            'storyImage1'        => 'nullable|image|max:10240',
-            'storyImage2'        => 'nullable|image|max:10240',
-            'storyImage3'        => 'nullable|image|max:10240',
-            'highlight1Image'    => 'nullable|image|max:10240',
-            'highlight2Image'    => 'nullable|image|max:10240',
-            'highlight3Image'    => 'nullable|image|max:10240',
-            'ctaBackgroundImage' => 'nullable|image|max:10240',
+            // 5 MB ceiling, raster only. Output compressed to ≤2 MB via
+            // the 'site' context.
+            'heroImage'          => 'nullable|image|mimes:jpg,jpeg,png,webp|max:5120',
+            'storyImage1'        => 'nullable|image|mimes:jpg,jpeg,png,webp|max:5120',
+            'storyImage2'        => 'nullable|image|mimes:jpg,jpeg,png,webp|max:5120',
+            'storyImage3'        => 'nullable|image|mimes:jpg,jpeg,png,webp|max:5120',
+            'highlight1Image'    => 'nullable|image|mimes:jpg,jpeg,png,webp|max:5120',
+            'highlight2Image'    => 'nullable|image|mimes:jpg,jpeg,png,webp|max:5120',
+            'highlight3Image'    => 'nullable|image|mimes:jpg,jpeg,png,webp|max:5120',
+            'ctaBackgroundImage' => 'nullable|image|mimes:jpg,jpeg,png,webp|max:5120',
         ]);
 
-        $this->updateImage('about_hero_image', $this->heroImage);
-        $this->updateImage('about_story_image1', $this->storyImage1);
-        $this->updateImage('about_story_image2', $this->storyImage2);
-        $this->updateImage('about_story_image3', $this->storyImage3);
-        $this->updateImage('about_highlight1_image', $this->highlight1Image);
-        $this->updateImage('about_highlight2_image', $this->highlight2Image);
-        $this->updateImage('about_highlight3_image', $this->highlight3Image);
-        $this->updateImage('about_cta_background_image', $this->ctaBackgroundImage);
+        try {
+            $this->updateImage('about_hero_image', $this->heroImage);
+            $this->updateImage('about_story_image1', $this->storyImage1);
+            $this->updateImage('about_story_image2', $this->storyImage2);
+            $this->updateImage('about_story_image3', $this->storyImage3);
+            $this->updateImage('about_highlight1_image', $this->highlight1Image);
+            $this->updateImage('about_highlight2_image', $this->highlight2Image);
+            $this->updateImage('about_highlight3_image', $this->highlight3Image);
+            $this->updateImage('about_cta_background_image', $this->ctaBackgroundImage);
+        } catch (\Throwable $e) {
+            Log::error('About page image save failed', [
+                'actor_id' => Auth::id(),
+                'error'    => $e->getMessage(),
+            ]);
+
+            session()->flash('error', 'Failed to upload one or more images. Please try again.');
+            return null;
+        }
 
         $textFields = [
             'about_hero_subheading'      => 'heroSubheading',
@@ -134,6 +191,10 @@ class extends Component
             'highlight1Image', 'highlight2Image', 'highlight3Image', 'ctaBackgroundImage',
         ]);
 
+        // Cache was bumped by the writes above — clear the memoized
+        // image URLs so the next render fetches fresh values.
+        unset($this->imageUrls);
+
         // Clear client-side file previews so the DOM falls back to
         // the freshly-saved server thumbnails.
         $this->dispatch('preview-reset');
@@ -141,21 +202,55 @@ class extends Component
         session()->flash('message', 'About page updated successfully.');
     }
 
+    /**
+     * Golden sequence: store + compress the new file FIRST, then write
+     * the DB row, then delete the old file AFTER success. If anything
+     * fails, the new file is cleaned up and the old file is preserved.
+     */
     private function updateImage(string $key, $file): void
     {
-        if ($file instanceof \Livewire\Features\SupportFileUploads\TemporaryUploadedFile) {
-            $path = $file->store('about', 'public');
-            SiteSetting::setValue($key, $path);
+        if (! $file instanceof \Livewire\Features\SupportFileUploads\TemporaryUploadedFile) {
+            return;
+        }
+
+        $oldPath = SiteSetting::getValue($key);
+        $newPath = null;
+
+        try {
+            // Compresses against the 'site' context (≤2 MB / 2560×1440).
+            $newPath = $this->storeImage($file, 'about', 'public', 'site');
+
+            if (! $newPath) {
+                throw new \RuntimeException('Failed to store the uploaded image.');
+            }
+
+            SiteSetting::setValue($key, $newPath);
+        } catch (\Throwable $e) {
+            // Clean up the newly stored file — the DB write rolled back
+            // or was never attempted.
+            if ($newPath && Storage::disk('public')->exists($newPath)) {
+                Storage::disk('public')->delete($newPath);
+            }
+
+            throw $e;
+        }
+
+        // Delete the old file AFTER the DB write succeeded — only if a
+        // new file actually replaced it. This closes the disk-leak that
+        // existed before: replacing an image never removed the old one.
+        // Guard against the (theoretical) case where the storage layer
+        // returns the same path twice — otherwise we'd delete the file
+        // we just wrote.
+        if ($oldPath
+            && $oldPath !== $newPath
+            && Storage::disk('public')->exists($oldPath)) {
+            Storage::disk('public')->delete($oldPath);
         }
     }
 
     public function getStoredImageUrl(string $key, ?string $default = null): ?string
     {
-        $stored = SiteSetting::getValue($key);
-        if ($stored) {
-            return asset('storage/' . $stored);
-        }
-        return $default;
+        return $this->imageUrls[$key] ?? $default;
     }
 };
 ?>
@@ -186,8 +281,13 @@ class extends Component
     class="p-4 sm:p-6 lg:p-8 max-w-[1440px] mx-auto space-y-6">
 
     @if (session()->has('message'))
-        <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium">
+        <div class="bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 border-l-4 border-l-emerald-500 p-4 rounded-md text-sm text-emerald-700 dark:text-emerald-300 font-medium">
             {{ session('message') }}
+        </div>
+    @endif
+    @if (session()->has('error'))
+        <div class="bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 border-l-4 border-l-rose-500 p-4 rounded-md text-sm text-rose-700 dark:text-rose-300 font-medium">
+            {{ session('error') }}
         </div>
     @endif
 
@@ -201,7 +301,7 @@ class extends Component
         </div>
         <a href="{{ route('superadmin.dashboard') }}" wire:navigate
            class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
             Back to Dashboard
         </a>
     </div>
@@ -255,7 +355,7 @@ class extends Component
                     </div>
 
                     <div class="absolute bottom-3 left-3 inline-flex items-center gap-1.5 rounded-full bg-white/10 backdrop-blur-md px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-white/80">
-                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                         About page preview
                     </div>
                 </div>
@@ -267,7 +367,7 @@ class extends Component
                         <input type="text" wire:model="heroSubheading"
                                class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
                                x-on:input="bindField($event, 'heroSubheading')">
-                        @error('heroSubheading') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('heroSubheading') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
 
                     <div>
@@ -275,7 +375,7 @@ class extends Component
                         <input type="text" wire:model="heroHeading"
                                class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
                                x-on:input="bindField($event, 'heroHeading')">
-                        @error('heroHeading') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('heroHeading') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
 
                     <div>
@@ -283,20 +383,20 @@ class extends Component
                         <textarea wire:model="heroDescription" rows="3"
                                   class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
                                   x-on:input="bindField($event, 'heroDescription')"></textarea>
-                        @error('heroDescription') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('heroDescription') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
 
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                             Background Image
-                            <span class="text-xs text-gray-400 font-normal ml-1">— 10 MB max</span>
+                            <span class="text-xs text-gray-400 font-normal ml-1">— 5 MB max, auto-compressed</span>
                         </label>
 
                         @include('superadmin.pages.homepage.partials.image-uploader', [
                             'key'      => 'heroImage',
                             'existing' => $this->getStoredImageUrl('about_hero_image'),
                         ])
-                        @error('heroImage') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('heroImage') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
                 </div>
             </div>
@@ -347,7 +447,7 @@ class extends Component
                             </template>
                             <template x-if="!filePreviews.storyImage1 && !@js((bool) $this->getStoredImageUrl('about_story_image1'))">
                                 <div class="w-full h-full flex items-center justify-center">
-                                    <svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M4 8h.01M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z"/></svg>
+                                    <svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M4 8h.01M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z"/></svg>
                                 </div>
                             </template>
                         </div>
@@ -361,7 +461,7 @@ class extends Component
                         <input type="text" wire:model="storyHeading"
                                class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
                                x-on:input="bindField($event, 'storyHeading')">
-                        @error('storyHeading') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('storyHeading') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
 
                     <div>
@@ -369,7 +469,7 @@ class extends Component
                         <textarea wire:model="storyText1" rows="3"
                                   class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
                                   x-on:input="bindField($event, 'storyText1')"></textarea>
-                        @error('storyText1') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('storyText1') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
 
                     <div>
@@ -377,7 +477,7 @@ class extends Component
                         <textarea wire:model="storyText2" rows="3"
                                   class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
                                   x-on:input="bindField($event, 'storyText2')"></textarea>
-                        @error('storyText2') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('storyText2') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
 
                     <div>
@@ -392,14 +492,14 @@ class extends Component
                                 ['prop' => 'storyImage2', 'key' => 'about_story_image2', 'label' => 'Gallery'],
                                 ['prop' => 'storyImage3', 'key' => 'about_story_image3', 'label' => 'Gallery'],
                             ] as $i)
-                                <div>
+                                <div wire:key="story-image-{{ $i['prop'] }}">
                                     @include('superadmin.pages.homepage.partials.image-uploader', [
                                         'key'      => $i['prop'],
                                         'existing' => $this->getStoredImageUrl($i['key']),
                                         'label'    => $i['label'],
                                         'compact'  => true,
                                     ])
-                                    @error($i['prop']) <span class="text-red-500 dark:text-red-400 text-[11px] mt-1 block">{{ $message }}</span> @enderror
+                                    @error($i['prop']) <span class="text-rose-500 dark:text-rose-400 text-[11px] mt-1 block">{{ $message }}</span> @enderror
                                 </div>
                             @endforeach
                         </div>
@@ -414,7 +514,7 @@ class extends Component
         <div class="rounded-2xl border border-dashed border-gray-300 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-800/40 p-5">
             <div class="flex items-start gap-3">
                 <div class="shrink-0 rounded-xl bg-gray-200 dark:bg-gray-700 p-2 text-gray-500 dark:text-gray-400">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                 </div>
                 <div class="min-w-0">
                     <h3 class="text-sm font-semibold text-gray-800 dark:text-gray-200">Gallery carousel is auto-generated</h3>
@@ -457,7 +557,7 @@ class extends Component
                 <div class="rounded-2xl overflow-hidden bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 p-5 space-y-5">
                     @foreach([1, 2, 3] as $n)
                         @php $reverse = ($n + 1) % 2 === 0; @endphp
-                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
+                        <div wire:key="highlight-preview-{{ $n }}" class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
                             <div class="aspect-[4/3] rounded-xl overflow-hidden bg-gray-200 dark:bg-gray-800 {{ $reverse ? 'sm:order-2' : '' }}">
                                 <template x-if="filePreviews.highlight{{ $n }}Image">
                                     <img :src="filePreviews.highlight{{ $n }}Image" alt="" class="w-full h-full object-cover">
@@ -467,7 +567,7 @@ class extends Component
                                 </template>
                                 <template x-if="!filePreviews.highlight{{ $n }}Image && !@js((bool) $this->getStoredImageUrl('about_highlight' . $n . '_image'))">
                                     <div class="w-full h-full flex items-center justify-center">
-                                        <svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M4 8h.01M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z"/></svg>
+                                        <svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M4 8h.01M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z"/></svg>
                                     </div>
                                 </template>
                             </div>
@@ -488,7 +588,7 @@ class extends Component
                 {{-- FIELDS — 3 sub-groups --}}
                 <div class="space-y-6">
                     @foreach([1, 2, 3] as $n)
-                        <div class="rounded-xl border border-gray-200 dark:border-gray-700 p-4 space-y-4 bg-gray-50/50 dark:bg-gray-900/40">
+                        <div wire:key="highlight-fields-{{ $n }}" class="rounded-xl border border-gray-200 dark:border-gray-700 p-4 space-y-4 bg-gray-50/50 dark:bg-gray-900/40">
                             <div class="flex items-center gap-2">
                                 <span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-primary-600 text-white text-[11px] font-bold">{{ $n }}</span>
                                 <h3 class="text-sm font-bold text-gray-900 dark:text-white">Highlight {{ $n }}</h3>
@@ -510,7 +610,7 @@ class extends Component
                                 <input type="text" wire:model="highlight{{ $n }}Title"
                                        class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg py-2 px-3 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
                                        x-on:input="bindField($event, 'highlight{{ $n }}Title')">
-                                @error("highlight{$n}Title") <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                                @error("highlight{$n}Title") <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                             </div>
 
                             <div>
@@ -518,7 +618,7 @@ class extends Component
                                 <textarea wire:model="highlight{{ $n }}Text" rows="3"
                                           class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg py-2 px-3 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
                                           x-on:input="bindField($event, 'highlight{{ $n }}Text')"></textarea>
-                                @error("highlight{$n}Text") <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                                @error("highlight{$n}Text") <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                             </div>
 
                             <div>
@@ -527,7 +627,7 @@ class extends Component
                                     'key'      => 'highlight' . $n . 'Image',
                                     'existing' => $this->getStoredImageUrl('about_highlight' . $n . '_image'),
                                 ])
-                                @error("highlight{$n}Image") <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                                @error("highlight{$n}Image") <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                             </div>
                         </div>
                     @endforeach
@@ -580,7 +680,7 @@ class extends Component
                     </div>
 
                     <div class="absolute bottom-3 left-3 inline-flex items-center gap-1.5 rounded-full bg-white/10 backdrop-blur-md px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-white/80">
-                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                         About page preview
                     </div>
                 </div>
@@ -592,7 +692,7 @@ class extends Component
                         <input type="text" wire:model="ctaHeading"
                                class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
                                x-on:input="bindField($event, 'ctaHeading')">
-                        @error('ctaHeading') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('ctaHeading') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
 
                     <div>
@@ -600,20 +700,20 @@ class extends Component
                         <textarea wire:model="ctaText" rows="3"
                                   class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
                                   x-on:input="bindField($event, 'ctaText')"></textarea>
-                        @error('ctaText') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('ctaText') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
 
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                             Background Image
-                            <span class="text-xs text-gray-400 font-normal ml-1">— 10 MB max</span>
+                            <span class="text-xs text-gray-400 font-normal ml-1">— 5 MB max, auto-compressed</span>
                         </label>
 
                         @include('superadmin.pages.homepage.partials.image-uploader', [
                             'key'      => 'ctaBackgroundImage',
                             'existing' => $this->getStoredImageUrl('about_cta_background_image'),
                         ])
-                        @error('ctaBackgroundImage') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('ctaBackgroundImage') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
                 </div>
             </div>
@@ -623,7 +723,7 @@ class extends Component
         <div class="sticky bottom-4 z-10 flex justify-end">
             <div class="rounded-2xl border border-gray-200 dark:border-gray-700 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md shadow-lg p-2 flex items-center gap-3">
                 <div class="hidden sm:flex items-center gap-2 px-3 text-xs text-gray-500 dark:text-gray-400">
-                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                     Changes are applied to the About page after saving.
                 </div>
                 <button type="submit"
@@ -631,7 +731,7 @@ class extends Component
                         class="btn-primary active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50 disabled:opacity-60 disabled:cursor-not-allowed">
                     <span wire:loading.remove>Save Changes</span>
                     <span wire:loading class="inline-flex items-center gap-2">
-                        <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+                        <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24" aria-hidden="true"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
                         Saving…
                     </span>
                 </button>

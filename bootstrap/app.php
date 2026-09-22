@@ -12,6 +12,9 @@
             health: '/up',
         )
         ->withMiddleware(function (Middleware $middleware): void {
+        // Added by EnvKit so shared (public) URLs keep the https scheme and
+        // public host. Safe locally; remove to opt out.
+        $middleware->trustProxies(at: '*');
             
             // Spatie Permission Middleware Aliases
             $middleware->alias([

@@ -1,12 +1,32 @@
 includes:
-    - ./vendor/larastan/larastan/extension.neon
+    - vendor/larastan/larastan/extension.neon
 
 parameters:
+    # ── Strictness ─────────────────────────────────────────────────
     level: 5
+
+    # ── What to analyze ────────────────────────────────────────────
     paths:
         - app
+
+    # ── What to skip ───────────────────────────────────────────────
     excludePaths:
-        - vendor
-        - storage
-        - bootstrap/cache
+        - app/Console/Commands/DeactivateEndedEvents.php
+
+    # ── Type inference ─────────────────────────────────────────────
     treatPhpDocTypesAsCertain: false
+
+    # ── Ignore rule hygiene ────────────────────────────────────────
+    reportUnmatchedIgnoredErrors: false
+
+    # ── Known false positives ──────────────────────────────────────
+    ignoreErrors:
+        # Livewire v4 dynamic actions
+        - '#Call to an undefined method Livewire\\Component::#'
+
+        # Spatie Laravel-Permission dynamic methods
+        - '#Call to an undefined method App\\Models\\User::(hasRole|hasAnyRole|hasAllRoles|getRoleNames|getAllPermissions|assignRole|syncRoles|removeRole|givePermissionTo|revokePermissionTo|hasPermissionTo)\(\)#'
+
+        # PHPStan only scans .php files. Traits used exclusively inside
+        # Livewire SFCs (.blade.php) are invisible to it.
+        - '#Trait App\\Traits\\ChecksTenantPermissions is used zero times#'

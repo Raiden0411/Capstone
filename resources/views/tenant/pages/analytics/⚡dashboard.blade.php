@@ -9,6 +9,7 @@ use App\Models\Booking;
 use App\Models\Payment;
 use App\Models\Property;
 use App\Scopes\TenantScope;
+use App\Traits\ChecksTenantPermissions;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
@@ -18,16 +19,38 @@ new
 #[Title('Analytics')]
 class extends Component
 {
+    use ChecksTenantPermissions;
+
     public string $dateRange   = 'this-month';
     public string $customStart = '';
     public string $customEnd   = '';
 
+    // ─────────────────────────────────────────────────────────
+    //  Lifecycle
+    // ─────────────────────────────────────────────────────────
+
     public function mount(): void
     {
-        abort_unless(Auth::user()?->tenant_id, 403);
+        $this->authorizeViewAnalytics();
 
         $this->customStart = now()->startOfMonth()->format('Y-m-d');
         $this->customEnd   = now()->endOfMonth()->format('Y-m-d');
+    }
+
+    public function hydrate(): void
+    {
+        $this->authorizeViewAnalytics();
+    }
+
+    protected function authorizeViewAnalytics(): void
+    {
+        abort_unless(
+            Auth::user()?->tenant_id,
+            403,
+            'No business is linked to your account.'
+        );
+
+        $this->requirePermission('view analytics');
     }
 
     /**
@@ -70,14 +93,12 @@ class extends Component
         [$start, $end] = $this->dateBounds;
         $tenantId      = Auth::user()->tenant_id;
 
-        // Revenue for the period — single query.
         $revenue = (float) Payment::query()
             ->where('tenant_id', $tenantId)
             ->where('payment_status', 'paid')
             ->whereBetween('paid_at', [$start, $end])
             ->sum('amount');
 
-        // Booking-related aggregates — one query.
         $bookingAgg = Booking::withoutGlobalScope(TenantScope::class)
             ->where('tenant_id', $tenantId)
             ->selectRaw('
@@ -95,7 +116,6 @@ class extends Component
             ->where('tenant_id', $tenantId)
             ->count();
 
-        // Outstanding balance across non-terminal bookings.
         $outstandingBalance = Booking::withoutGlobalScope(TenantScope::class)
             ->where('tenant_id', $tenantId)
             ->whereNotIn('status', [Booking::STATUS_CANCELLED, Booking::STATUS_COMPLETED])
@@ -117,6 +137,8 @@ class extends Component
             'avg_booking_value'   => $avgBookingValue,
             'outstanding_balance' => (float) $outstandingBalance,
             'repeat_guest_rate'   => $this->repeatGuestRate,
+            'total_properties'    => $totalProperties,
+            'active_bookings'     => $activeBookings,
         ];
     }
 
@@ -204,8 +226,6 @@ class extends Component
     }
 
     /**
-     * Occupancy per day — one query, computed in memory.
-     *
      * @return array<string, float>
      */
     #[Computed]
@@ -242,6 +262,95 @@ class extends Component
         }
 
         return $trend;
+    }
+
+    /**
+     * Top 5 properties by revenue for the selected period.
+     *
+     * @return array<int, array{name: string, bookings: int, revenue: float}>
+     */
+    #[Computed]
+    public function propertyPerformance(): array
+    {
+        [$start, $end] = $this->dateBounds;
+        $tenantId = Auth::user()->tenant_id;
+
+        return DB::table('booking_items')
+            ->join('properties', 'booking_items.property_id', '=', 'properties.id')
+            ->join('bookings', 'booking_items.booking_id', '=', 'bookings.id')
+            ->where('booking_items.tenant_id', $tenantId)
+            ->whereBetween('bookings.created_at', [$start, $end])
+            ->whereNotIn('bookings.status', [Booking::STATUS_CANCELLED])
+            ->select(
+                'properties.name',
+                DB::raw('COUNT(DISTINCT bookings.id) as bookings'),
+                DB::raw('SUM(booking_items.subtotal) as revenue'),
+            )
+            ->groupBy('properties.id', 'properties.name')
+            ->orderByDesc('revenue')
+            ->limit(5)
+            ->get()
+            ->map(fn ($row) => [
+                'name'     => (string) $row->name,
+                'bookings' => (int) $row->bookings,
+                'revenue'  => (float) $row->revenue,
+            ])
+            ->all();
+    }
+
+    /**
+     * Booking status counts for the selected period.
+     *
+     * @return array<string, int>
+     */
+    #[Computed]
+    public function bookingStatusDistribution(): array
+    {
+        [$start, $end] = $this->dateBounds;
+
+        $rows = Booking::withoutGlobalScope(TenantScope::class)
+            ->where('tenant_id', Auth::user()->tenant_id)
+            ->whereBetween('created_at', [$start, $end])
+            ->select('status', DB::raw('COUNT(*) as total'))
+            ->groupBy('status')
+            ->pluck('total', 'status')
+            ->all();
+
+        return [
+            'pending'    => (int) ($rows['pending']    ?? 0),
+            'confirmed'  => (int) ($rows['confirmed']  ?? 0),
+            'reserved'   => (int) ($rows['reserved']   ?? 0),
+            'checked_in' => (int) ($rows['checked_in'] ?? 0),
+            'completed'  => (int) ($rows['completed']  ?? 0),
+            'cancelled'  => (int) ($rows['cancelled']  ?? 0),
+        ];
+    }
+
+    /**
+     * Guest composition — new vs repeat guests across all-time bookings.
+     *
+     * @return array{new: int, repeat: int, total: int}
+     */
+    #[Computed]
+    public function guestComposition(): array
+    {
+        $tenantId = Auth::user()->tenant_id;
+
+        $userCounts = Booking::withoutGlobalScope(TenantScope::class)
+            ->where('tenant_id', $tenantId)
+            ->select('user_id', DB::raw('COUNT(*) as bookings'))
+            ->groupBy('user_id')
+            ->pluck('bookings', 'user_id');
+
+        $total  = $userCounts->count();
+        $repeat = $userCounts->filter(fn ($c) => (int) $c > 1)->count();
+        $new    = max(0, $total - $repeat);
+
+        return [
+            'new'    => $new,
+            'repeat' => $repeat,
+            'total'  => $total,
+        ];
     }
 
     // ─────────────────────────────────────────────────────────
@@ -321,107 +430,92 @@ class extends Component
     }
 
     // ─────────────────────────────────────────────────────────
-    //  Export
+    //  Actions
     // ─────────────────────────────────────────────────────────
 
-    public function exportCsv()
+    public function clearCustomRange(): void
     {
-        abort_unless(Auth::user()?->tenant_id, 403);
+        $this->authorizeViewAnalytics();
 
-        [$start, $end] = $this->dateBounds;
-
-        $bookings = Booking::withoutGlobalScope(TenantScope::class)
-            ->where('tenant_id', Auth::user()->tenant_id)
-            ->whereBetween('created_at', [$start, $end])
-            ->with('user:id,name,email')
-            ->select('id', 'user_id', 'booking_reference', 'check_in', 'check_out', 'total_amount', 'status')
-            ->get();
-
-        $filename = 'analytics_bookings_' . now()->format('Y-m-d_H-i-s') . '.csv';
-
-        return response()->streamDownload(function () use ($bookings): void {
-            $file = fopen('php://output', 'w');
-            fputcsv($file, ['Reference', 'Guest', 'Email', 'Check-in', 'Check-out', 'Total', 'Status']);
-
-            foreach ($bookings as $b) {
-                fputcsv($file, [
-                    $b->booking_reference,
-                    $b->user->name  ?? 'N/A',
-                    $b->user->email ?? '',
-                    $b->check_in?->format('Y-m-d'),
-                    $b->check_out?->format('Y-m-d'),
-                    number_format((float) $b->total_amount, 2),
-                    $b->status,
-                ]);
-            }
-
-            fclose($file);
-        }, $filename, ['Content-Type' => 'text/csv']);
+        $this->customStart = now()->startOfMonth()->format('Y-m-d');
+        $this->customEnd   = now()->endOfMonth()->format('Y-m-d');
     }
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-8" wire:poll.60s>
+@push('scripts')
+    @once
+        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
+    @endonce
+@endpush
 
-    {{-- Hidden data holder — inside root (Livewire v4 single-root rule) --}}
+@php
+    $s             = $this->stats;
+    $propPerf      = $this->propertyPerformance;
+    $statusDist    = $this->bookingStatusDistribution;
+    $guestComp     = $this->guestComposition;
+    $breakdowns    = $this->revenueBreakdown;
+    $paymentBreak  = $this->paymentMethodBreakdown;
+
+    $statusHasData  = array_sum($statusDist) > 0;
+    $guestHasData   = ($guestComp['total'] ?? 0) > 0;
+    $propHasData    = !empty($propPerf);
+    $paymentHasData = !empty($paymentBreak);
+@endphp
+
+<div class="analytics-page p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-4 sm:space-y-6" wire:poll.60s>
+
+    {{-- ═══ Hidden data bridge ═══ --}}
     <div id="analytics-chart-data"
          data-revenue="{{ json_encode($this->revenueTrend, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
          data-bookings="{{ json_encode($this->bookingTrend, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
-         data-payment="{{ json_encode($this->paymentMethodBreakdown, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
+         data-payment="{{ json_encode($paymentBreak, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
          data-occupancy="{{ json_encode($this->occupancyTrend, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
+         data-property-performance="{{ json_encode($propPerf, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
+         data-status="{{ json_encode($statusDist, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
+         data-guests="{{ json_encode($guestComp, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
          hidden
          aria-hidden="true"></div>
 
-    {{-- ═══════════════ HEADER ═══════════════ --}}
-    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
+    {{-- ═══ Page header ═══ --}}
+    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700 no-print">
         <div>
-            <p class="text-xs font-semibold uppercase tracking-wider text-primary-600 dark:text-primary-400">
-                Analytics
-            </p>
-            <h1 class="mt-1 text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">
-                Performance Overview
-            </h1>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                Track your property metrics and revenue.
+            <div class="flex items-center gap-2 mb-2">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Analytics</span>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+                <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
+                    Performance Overview
+                </h1>
+                <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider
+                             bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300
+                             border border-emerald-200 dark:border-emerald-500/30">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse motion-reduce:animate-none"></span>
+                    Live · 60s
+                </span>
+            </div>
+            <p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1">
+                Track your property metrics, revenue, and guest insights.
             </p>
         </div>
 
-        <div class="flex flex-col sm:flex-row gap-2">
-            <button type="button"
-                    wire:click="exportCsv"
-                    wire:loading.attr="disabled"
-                    wire:target="exportCsv"
-                    class="btn-secondary active:scale-95 transition-transform
-                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                           inline-flex items-center justify-center gap-2 disabled:opacity-60">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-                </svg>
-                <span wire:loading.remove wire:target="exportCsv">Export CSV</span>
-                <span wire:loading wire:target="exportCsv" class="inline-flex items-center gap-1">
-                    <svg class="animate-spin h-4 w-4 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
-                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-                    </svg>
-                    Exporting…
-                </span>
-            </button>
-
+        <div class="flex flex-wrap items-center gap-2">
             <button type="button" onclick="window.print()"
-                    class="btn-secondary active:scale-95 transition-transform
-                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                           inline-flex items-center justify-center gap-2">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                           transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2m-6-4h.01M6 18v4h12v-4"/>
                 </svg>
-                Print
+                <span>Print Report</span>
             </button>
         </div>
     </div>
 
-    {{-- ═══════════════ DATE RANGE ═══════════════ --}}
-    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-2 flex flex-col xl:flex-row xl:items-center justify-between gap-4">
-        <div class="inline-flex flex-wrap items-center p-1 bg-gray-100 dark:bg-gray-900/50 rounded-lg w-full xl:w-auto">
+    {{-- ═══ Date range ═══ --}}
+    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4 space-y-3 no-print">
+        <div class="flex flex-wrap gap-2 items-center">
             @foreach([
                 'today'      => 'Today',
                 'yesterday'  => 'Yesterday',
@@ -431,589 +525,888 @@ class extends Component
                 'last-month' => 'Last Month',
                 'custom'     => 'Custom',
             ] as $val => $label)
+                @php $isActive = $dateRange === $val; @endphp
                 <button type="button"
                         wire:key="range-{{ $val }}"
                         wire:click="$set('dateRange', '{{ $val }}')"
-                        class="px-3 py-1.5 text-sm font-medium rounded-md transition-all duration-200 active:scale-95
+                        aria-pressed="{{ $isActive ? 'true' : 'false' }}"
+                        class="inline-flex items-center gap-2 h-9 px-3.5 rounded-full text-xs font-semibold uppercase tracking-wide border
+                               transition-all duration-200 active:scale-95 shrink-0
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                               {{ $dateRange === $val
-                                  ? 'bg-white text-gray-900 shadow dark:bg-gray-700 dark:text-white'
-                                  : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white' }}">
+                               {{ $isActive
+                                  ? 'bg-primary-600 border-primary-600 text-white shadow-sm'
+                                  : 'border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:border-primary-400 hover:text-primary-600 dark:hover:text-primary-400' }}">
                     {{ $label }}
                 </button>
             @endforeach
         </div>
 
         @if($dateRange === 'custom')
-            <div class="flex flex-col sm:flex-row items-start sm:items-center gap-2 px-2 pb-2 xl:pb-0">
-                <input type="date" wire:model.live="customStart" class="input !py-2 !w-full sm:!w-auto">
-                <span class="text-gray-400 text-sm">to</span>
-                <input type="date" wire:model.live="customEnd" class="input !py-2 !w-full sm:!w-auto">
+            <div class="flex flex-wrap items-center gap-2 pt-2 border-t border-gray-100 dark:border-gray-700/60">
+                <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Custom range</span>
+                <input type="date" wire:model.live="customStart"
+                       aria-label="Start date"
+                       class="h-11 px-3 text-sm font-medium bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded-xl
+                              focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:border-primary-500">
+                <span class="text-gray-400 dark:text-gray-500 text-xs font-medium">to</span>
+                <input type="date" wire:model.live="customEnd"
+                       aria-label="End date"
+                       class="h-11 px-3 text-sm font-medium bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded-xl
+                              focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:border-primary-500">
             </div>
         @endif
     </div>
 
-    {{-- ═══════════════ KPI CARDS ═══════════════ --}}
-    @php $s = $this->stats; @endphp
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 xl:gap-6">
+    {{-- ═══ KPI strip — 4 hero cards ═══ --}}
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+
         {{-- Revenue --}}
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6 flex items-center justify-between">
-            <div>
-                <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Total Revenue</p>
-                <p class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white mt-1 tabular-nums">
-                    ₱{{ number_format($s['revenue'], 2) }}
-                </p>
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4 sm:p-5">
+            <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" aria-hidden="true"></span>
+                <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Total Revenue</p>
             </div>
-            <div class="p-3 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 rounded-xl shrink-0">
-                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                </svg>
-            </div>
+            <p class="mt-2 text-xl sm:text-2xl font-bold text-gray-900 dark:text-white tabular-nums leading-tight truncate">
+                ₱{{ number_format($s['revenue'], 2) }}
+            </p>
+            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+                Paid this period
+            </p>
         </div>
 
         {{-- Bookings --}}
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6 flex items-center justify-between">
-            <div>
-                <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Total Bookings</p>
-                <p class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white mt-1 tabular-nums">
-                    {{ number_format($s['total_bookings']) }}
-                </p>
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4 sm:p-5">
+            <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" aria-hidden="true"></span>
+                <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Total Bookings</p>
             </div>
-            <div class="p-3 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-xl shrink-0">
-                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
-                </svg>
-            </div>
-        </div>
-
-        {{-- Unique guests --}}
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6 flex items-center justify-between">
-            <div>
-                <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Unique Guests</p>
-                <p class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white mt-1 tabular-nums">
-                    {{ number_format($s['total_guests']) }}
-                </p>
-            </div>
-            <div class="p-3 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 rounded-xl shrink-0">
-                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/>
-                </svg>
-            </div>
+            <p class="mt-2 text-xl sm:text-2xl font-bold text-gray-900 dark:text-white tabular-nums leading-tight truncate">
+                {{ number_format($s['total_bookings']) }}
+            </p>
+            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+                Created this period
+            </p>
         </div>
 
         {{-- Occupancy --}}
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6 flex items-center justify-between">
-            <div>
-                <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Occupancy Rate</p>
-                <p class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white mt-1 tabular-nums">
-                    {{ $s['occupancy_rate'] }}%
-                </p>
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4 sm:p-5">
+            <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" aria-hidden="true"></span>
+                <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Occupancy</p>
             </div>
-            <div class="p-3 bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 rounded-xl shrink-0">
-                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
-                </svg>
+            <p class="mt-2 text-xl sm:text-2xl font-bold text-gray-900 dark:text-white tabular-nums leading-tight truncate">
+                {{ $s['occupancy_rate'] }}%
+            </p>
+            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+                {{ $s['active_bookings'] }} of {{ $s['total_properties'] }} active
+            </p>
+        </div>
+
+        {{-- Outstanding --}}
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border {{ $s['outstanding_balance'] > 0 ? 'border-amber-300 dark:border-amber-500/40 bg-amber-50/50 dark:bg-amber-500/[0.05]' : 'border-gray-200/80 dark:border-gray-700/80' }} shadow-sm p-4 sm:p-5">
+            <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full {{ $s['outstanding_balance'] > 0 ? 'bg-amber-500' : 'bg-emerald-500' }} shrink-0" aria-hidden="true"></span>
+                <p class="text-[10px] font-bold uppercase tracking-wider {{ $s['outstanding_balance'] > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-gray-500 dark:text-gray-400' }}">Outstanding</p>
+            </div>
+            <p class="mt-2 text-xl sm:text-2xl font-bold tabular-nums leading-tight truncate {{ $s['outstanding_balance'] > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-gray-900 dark:text-white' }}">
+                ₱{{ number_format($s['outstanding_balance'], 2) }}
+            </p>
+            <p class="text-[11px] mt-1 {{ $s['outstanding_balance'] > 0 ? 'text-amber-700/80 dark:text-amber-400/80' : 'text-gray-500 dark:text-gray-400' }}">
+                {{ $s['outstanding_balance'] > 0 ? 'Awaiting collection' : 'All settled' }}
+            </p>
+        </div>
+    </div>
+
+    {{-- ═══ Secondary metrics row ═══ --}}
+    <div class="grid grid-cols-3 gap-3 sm:gap-4">
+        <div class="bg-white dark:bg-gray-800/90 rounded-xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-3.5">
+            <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Avg Booking</p>
+            <p class="mt-1.5 text-lg font-bold text-gray-900 dark:text-white tabular-nums truncate">
+                ₱{{ number_format($s['avg_booking_value'], 2) }}
+            </p>
+        </div>
+        <div class="bg-white dark:bg-gray-800/90 rounded-xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-3.5">
+            <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Repeat Guests</p>
+            <p class="mt-1.5 text-lg font-bold text-gray-900 dark:text-white tabular-nums truncate">
+                {{ $s['repeat_guest_rate'] }}%
+            </p>
+        </div>
+        <div class="bg-white dark:bg-gray-800/90 rounded-xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-3.5">
+            <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Unique Guests</p>
+            <p class="mt-1.5 text-lg font-bold text-gray-900 dark:text-white tabular-nums truncate">
+                {{ number_format($s['total_guests']) }}
+            </p>
+        </div>
+    </div>
+
+    {{-- ═══ Row 1: Revenue Trend + Payment Methods ═══ --}}
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+        <div class="lg:col-span-2 bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6">
+            <div class="flex items-center justify-between gap-3 mb-4">
+                <div class="min-w-0">
+                    <div class="flex items-center gap-2">
+                        <span class="w-4 h-px bg-primary-600"></span>
+                        <h2 class="text-base font-bold text-gray-900 dark:text-white">Revenue Trend</h2>
+                    </div>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Daily paid revenue across the selected period.</p>
+                </div>
+                <span class="text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400 shrink-0 tabular-nums">
+                    ₱{{ number_format($s['revenue'], 0) }}
+                </span>
+            </div>
+            <div class="w-full h-56 sm:h-64 relative" wire:ignore>
+                <canvas id="revenueChart" role="img" aria-label="Bar chart: daily paid revenue"></canvas>
+            </div>
+        </div>
+
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 flex flex-col">
+            <div class="mb-4">
+                <div class="flex items-center gap-2">
+                    <span class="w-4 h-px bg-primary-600"></span>
+                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Payment Methods</h2>
+                </div>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Revenue split by method.</p>
+            </div>
+
+            @if($paymentHasData)
+                <div class="flex-1 min-h-[200px] relative flex items-center justify-center" wire:ignore>
+                    <canvas id="paymentChart" role="img" aria-label="Doughnut chart: revenue by payment method"></canvas>
+                </div>
+            @else
+                <div class="flex-1 min-h-[200px] flex flex-col items-center justify-center text-center rounded-xl border border-dashed border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40">
+                    <div class="p-3 rounded-2xl bg-white dark:bg-gray-800 text-gray-400 dark:text-gray-500 shadow-sm">
+                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+                        </svg>
+                    </div>
+                    <p class="mt-3 text-sm font-semibold text-gray-900 dark:text-white">No payments yet</p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Method breakdown appears once payments are collected.</p>
+                </div>
+            @endif
+        </div>
+    </div>
+
+    {{-- ═══ Row 2: Booking Activity + Occupancy History ═══ --}}
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6">
+            <div class="mb-4">
+                <div class="flex items-center gap-2">
+                    <span class="w-4 h-px bg-primary-600"></span>
+                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Booking Activity</h2>
+                </div>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">New bookings created per day.</p>
+            </div>
+            <div class="w-full h-56 relative" wire:ignore>
+                <canvas id="bookingChart" role="img" aria-label="Line chart: bookings per day"></canvas>
+            </div>
+        </div>
+
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6">
+            <div class="mb-4">
+                <div class="flex items-center gap-2">
+                    <span class="w-4 h-px bg-primary-600"></span>
+                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Occupancy History</h2>
+                </div>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Percentage of properties booked per day.</p>
+            </div>
+            <div class="w-full h-56 relative" wire:ignore>
+                <canvas id="occupancyChart" role="img" aria-label="Line chart: occupancy percentage"></canvas>
             </div>
         </div>
     </div>
 
-    {{-- ═══════════════ SECONDARY METRICS ═══════════════ --}}
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 xl:gap-6">
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 flex items-center justify-between">
-            <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Avg Booking Value</p>
-            <p class="text-lg font-bold text-gray-900 dark:text-white tabular-nums">₱{{ number_format($s['avg_booking_value'], 2) }}</p>
+    {{-- ═══ Row 3: Property Performance + Booking Status ═══ --}}
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+        <div class="lg:col-span-2 bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6">
+            <div class="flex items-center justify-between gap-3 mb-4">
+                <div class="min-w-0">
+                    <div class="flex items-center gap-2">
+                        <span class="w-4 h-px bg-primary-600"></span>
+                        <h2 class="text-base font-bold text-gray-900 dark:text-white">Property Performance</h2>
+                    </div>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Top 5 properties by revenue in this period.</p>
+                </div>
+                <span class="text-[10px] font-bold uppercase tracking-wider text-primary-600 dark:text-primary-400 shrink-0">
+                    Top 5
+                </span>
+            </div>
+
+            @if($propHasData)
+                <div class="w-full h-56 sm:h-64 relative" wire:ignore>
+                    <canvas id="propertyPerformanceChart" role="img" aria-label="Horizontal bar chart: top performing properties"></canvas>
+                </div>
+            @else
+                <div class="w-full h-56 sm:h-64 flex flex-col items-center justify-center text-center rounded-xl border border-dashed border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40">
+                    <div class="p-3 rounded-2xl bg-white dark:bg-gray-800 text-gray-400 dark:text-gray-500 shadow-sm">
+                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+                        </svg>
+                    </div>
+                    <p class="mt-3 text-sm font-semibold text-gray-900 dark:text-white">No property bookings yet</p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Rankings populate once properties receive bookings.</p>
+                </div>
+            @endif
         </div>
 
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-rose-200 dark:border-rose-900/30 shadow-sm p-5 flex items-center justify-between">
-            <p class="text-xs font-semibold uppercase tracking-wider text-rose-600 dark:text-rose-400">Outstanding Balance</p>
-            <p class="text-lg font-bold text-rose-600 dark:text-rose-400 tabular-nums">₱{{ number_format($s['outstanding_balance'], 2) }}</p>
-        </div>
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 flex flex-col">
+            <div class="mb-4">
+                <div class="flex items-center gap-2">
+                    <span class="w-4 h-px bg-primary-600"></span>
+                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Booking Status</h2>
+                </div>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Operations snapshot for this period.</p>
+            </div>
 
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 flex items-center justify-between">
-            <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Repeat Guest Rate</p>
-            <p class="text-lg font-bold text-gray-900 dark:text-white tabular-nums">{{ $s['repeat_guest_rate'] }}%</p>
+            @if($statusHasData)
+                <div class="flex-1 min-h-[200px] relative flex items-center justify-center" wire:ignore>
+                    <canvas id="statusChart" role="img" aria-label="Doughnut chart: booking status distribution"></canvas>
+                </div>
+            @else
+                <div class="flex-1 min-h-[200px] flex flex-col items-center justify-center text-center rounded-xl border border-dashed border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40">
+                    <div class="p-3 rounded-2xl bg-white dark:bg-gray-800 text-gray-400 dark:text-gray-500 shadow-sm">
+                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+                        </svg>
+                    </div>
+                    <p class="mt-3 text-sm font-semibold text-gray-900 dark:text-white">No bookings yet</p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Status breakdown appears once bookings are created.</p>
+                </div>
+            @endif
         </div>
     </div>
 
-    {{-- ═══════════════ CHARTS ROW 1 ═══════════════ --}}
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div class="lg:col-span-2 bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6">
-            <h2 class="text-lg font-bold text-gray-900 dark:text-white mb-4">Revenue Trend</h2>
-            <div class="w-full h-[300px]" wire:ignore>
-                <canvas id="revenueChart"></canvas>
+    {{-- ═══ Row 4: Guest Composition + Top Services Breakdown ═══ --}}
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 flex flex-col">
+            <div class="mb-4">
+                <div class="flex items-center gap-2">
+                    <span class="w-4 h-px bg-primary-600"></span>
+                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Guest Composition</h2>
+                </div>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Repeat vs first-time guests.</p>
             </div>
+
+            @if($guestHasData)
+                <div class="flex-1 min-h-[200px] relative flex items-center justify-center" wire:ignore>
+                    <canvas id="guestChart" role="img" aria-label="Doughnut chart: repeat versus new guests"></canvas>
+                </div>
+            @else
+                <div class="flex-1 min-h-[200px] flex flex-col items-center justify-center text-center rounded-xl border border-dashed border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40">
+                    <div class="p-3 rounded-2xl bg-white dark:bg-gray-800 text-gray-400 dark:text-gray-500 shadow-sm">
+                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+                        </svg>
+                    </div>
+                    <p class="mt-3 text-sm font-semibold text-gray-900 dark:text-white">No guests yet</p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Composition appears once bookings are recorded.</p>
+                </div>
+            @endif
         </div>
 
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6 flex flex-col">
-            <h2 class="text-lg font-bold text-gray-900 dark:text-white mb-4">Payment Methods</h2>
-            <div class="w-full h-[300px] flex-1 relative flex items-center justify-center" wire:ignore>
-                <canvas id="paymentChart"></canvas>
+        <div class="lg:col-span-2 bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6">
+            <div class="mb-5">
+                <div class="flex items-center gap-2">
+                    <span class="w-4 h-px bg-primary-600"></span>
+                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Top Services Breakdown</h2>
+                </div>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Revenue contribution by add-on service.</p>
             </div>
-        </div>
-    </div>
 
-    {{-- ═══════════════ CHARTS ROW 2 ═══════════════ --}}
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6">
-            <h2 class="text-lg font-bold text-gray-900 dark:text-white mb-4">Booking Activity</h2>
-            <div class="w-full h-[280px]" wire:ignore>
-                <canvas id="bookingChart"></canvas>
-            </div>
-        </div>
-
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6">
-            <h2 class="text-lg font-bold text-gray-900 dark:text-white mb-4">Occupancy History</h2>
-            <div class="w-full h-[280px]" wire:ignore>
-                <canvas id="occupancyChart"></canvas>
-            </div>
-        </div>
-    </div>
-
-    {{-- ═══════════════ BREAKDOWN & ACTIVITY ═══════════════ --}}
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-        {{-- Top services breakdown --}}
-        <div class="lg:col-span-1 bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6">
-            <h2 class="text-lg font-bold text-gray-900 dark:text-white mb-6">Top Services Breakdown</h2>
-
-            @php $breakdowns = $this->revenueBreakdown; @endphp
             @if(!empty($breakdowns))
-                <div class="space-y-5">
+                <div class="space-y-4">
                     @foreach($breakdowns as $b)
                         <div wire:key="svc-{{ md5($b['name']) }}">
                             <div class="flex justify-between text-sm mb-1.5">
                                 <span class="font-medium text-gray-700 dark:text-gray-300 truncate pr-2">{{ $b['name'] }}</span>
                                 <span class="text-gray-900 dark:text-white font-semibold tabular-nums shrink-0">₱{{ number_format($b['total'], 2) }}</span>
                             </div>
-                            <div class="w-full h-2.5 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
+                            <div class="w-full h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
                                 <div class="h-full bg-primary-500 rounded-full transition-all duration-500" style="width: {{ $b['share'] }}%"></div>
                             </div>
-                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 text-right tabular-nums">{{ $b['share'] }}% of total</p>
+                            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-1 text-right tabular-nums">{{ $b['share'] }}% of total</p>
                         </div>
                     @endforeach
                 </div>
             @else
-                <div class="flex flex-col items-center justify-center h-40 text-center">
-                    <svg class="w-8 h-8 text-gray-300 dark:text-gray-600 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
-                    </svg>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">No service data for this period.</p>
+                <div class="flex flex-col items-center justify-center h-40 text-center rounded-xl border border-dashed border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40">
+                    <div class="p-3 rounded-2xl bg-white dark:bg-gray-800 text-gray-400 dark:text-gray-500 shadow-sm">
+                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+                        </svg>
+                    </div>
+                    <p class="mt-3 text-sm font-semibold text-gray-900 dark:text-white">No service data</p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Service revenue breakdown appears once services are booked.</p>
                 </div>
             @endif
         </div>
+    </div>
 
-        {{-- Arrivals + Departures --}}
-        <div class="lg:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-6">
+    {{-- ═══ Row 5: Arrivals + Departures ═══ --}}
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
-            {{-- Arrivals --}}
-            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6 flex flex-col">
-                <div class="flex items-center justify-between mb-4">
-                    <h2 class="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
-                        <span class="relative flex h-3 w-3">
-                            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75 motion-reduce:animate-none"></span>
-                            <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
-                        </span>
-                        Arrivals Today
-                    </h2>
-                    <span class="text-xs font-medium bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400 px-2 py-1 rounded-full tabular-nums">
-                        {{ count($this->upcomingActivity['arrivals']) }}
-                    </span>
+        {{-- Arrivals --}}
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 flex flex-col">
+            <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center gap-2">
+                    <span class="w-4 h-px bg-emerald-500"></span>
+                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Arrivals Today</h2>
                 </div>
-                <div class="flex-1 overflow-y-auto pr-2">
-                    <div class="divide-y divide-gray-100 dark:divide-gray-700/50">
-                        @forelse($this->upcomingActivity['arrivals'] as $b)
-                            <div wire:key="arrival-{{ $b->id }}" class="py-3 flex justify-between items-center">
-                                <div class="flex items-center gap-3 min-w-0">
-                                    <div class="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-gray-500 dark:text-gray-400 font-medium text-xs shrink-0">
-                                        {{ strtoupper(substr($b->user->name ?? 'G', 0, 1)) }}
-                                    </div>
-                                    <div class="min-w-0">
-                                        <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ $b->user->name ?? 'Guest' }}</p>
-                                        <p class="text-xs text-gray-500 dark:text-gray-400 font-mono">#{{ $b->booking_reference }}</p>
-                                    </div>
+                <span class="inline-flex items-center gap-1.5 h-6 px-2.5 rounded-full text-[10px] font-bold uppercase tracking-wider
+                             bg-emerald-100 dark:bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 tabular-nums">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden="true"></span>
+                    {{ count($this->upcomingActivity['arrivals']) }}
+                </span>
+            </div>
+            <div class="flex-1 overflow-y-auto pr-1 max-h-72">
+                <div class="divide-y divide-gray-100 dark:divide-gray-700/60">
+                    @forelse($this->upcomingActivity['arrivals'] as $b)
+                        <div wire:key="arrival-{{ $b->id }}" class="py-3 flex justify-between items-center">
+                            <div class="flex items-center gap-3 min-w-0">
+                                <div class="w-8 h-8 rounded-full bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 flex items-center justify-center text-xs font-bold shrink-0">
+                                    {{ strtoupper(substr($b->user->name ?? 'G', 0, 1)) }}
                                 </div>
-                                <span class="text-xs text-emerald-600 dark:text-emerald-400 font-medium bg-emerald-50 dark:bg-emerald-900/20 px-2 py-1 rounded-md flex items-center gap-1 shrink-0">
-                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-                                    </svg>
-                                    Check-in
-                                </span>
+                                <div class="min-w-0">
+                                    <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ $b->user->name ?? 'Guest' }}</p>
+                                    <p class="text-xs text-gray-500 dark:text-gray-400 font-mono truncate">#{{ $b->booking_reference }}</p>
+                                </div>
                             </div>
-                        @empty
-                            <div class="flex flex-col items-center justify-center h-32 text-center">
-                                <svg class="w-8 h-8 text-gray-300 dark:text-gray-600 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
-                                </svg>
-                                <p class="text-sm text-gray-500 dark:text-gray-400">No arrivals scheduled today.</p>
-                            </div>
-                        @endforelse
-                    </div>
+                            <span class="text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400 shrink-0">
+                                Check-in
+                            </span>
+                        </div>
+                    @empty
+                        <div class="py-10 text-center">
+                            <svg class="w-8 h-8 mx-auto text-gray-300 dark:text-gray-600 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                            </svg>
+                            <p class="text-sm text-gray-500 dark:text-gray-400">No arrivals scheduled today.</p>
+                        </div>
+                    @endforelse
                 </div>
             </div>
+        </div>
 
-            {{-- Departures --}}
-            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6 flex flex-col">
-                <div class="flex items-center justify-between mb-4">
-                    <h2 class="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
-                        <span class="w-3 h-3 rounded-full bg-rose-500"></span>
-                        Departures Today
-                    </h2>
-                    <span class="text-xs font-medium bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-400 px-2 py-1 rounded-full tabular-nums">
-                        {{ count($this->upcomingActivity['departures']) }}
-                    </span>
+        {{-- Departures --}}
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 flex flex-col">
+            <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center gap-2">
+                    <span class="w-4 h-px bg-rose-500"></span>
+                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Departures Today</h2>
                 </div>
-                <div class="flex-1 overflow-y-auto pr-2">
-                    <div class="divide-y divide-gray-100 dark:divide-gray-700/50">
-                        @forelse($this->upcomingActivity['departures'] as $b)
-                            <div wire:key="departure-{{ $b->id }}" class="py-3 flex justify-between items-center">
-                                <div class="flex items-center gap-3 min-w-0">
-                                    <div class="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-gray-500 dark:text-gray-400 font-medium text-xs shrink-0">
-                                        {{ strtoupper(substr($b->user->name ?? 'G', 0, 1)) }}
-                                    </div>
-                                    <div class="min-w-0">
-                                        <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ $b->user->name ?? 'Guest' }}</p>
-                                        <p class="text-xs text-gray-500 dark:text-gray-400 font-mono">#{{ $b->booking_reference }}</p>
-                                    </div>
+                <span class="inline-flex items-center gap-1.5 h-6 px-2.5 rounded-full text-[10px] font-bold uppercase tracking-wider
+                             bg-rose-100 dark:bg-rose-500/15 text-rose-800 dark:text-rose-300 tabular-nums">
+                    <span class="w-1.5 h-1.5 rounded-full bg-rose-500" aria-hidden="true"></span>
+                    {{ count($this->upcomingActivity['departures']) }}
+                </span>
+            </div>
+            <div class="flex-1 overflow-y-auto pr-1 max-h-72">
+                <div class="divide-y divide-gray-100 dark:divide-gray-700/60">
+                    @forelse($this->upcomingActivity['departures'] as $b)
+                        <div wire:key="departure-{{ $b->id }}" class="py-3 flex justify-between items-center">
+                            <div class="flex items-center gap-3 min-w-0">
+                                <div class="w-8 h-8 rounded-full bg-rose-50 dark:bg-rose-500/15 text-rose-700 dark:text-rose-400 flex items-center justify-center text-xs font-bold shrink-0">
+                                    {{ strtoupper(substr($b->user->name ?? 'G', 0, 1)) }}
                                 </div>
-                                <span class="text-xs text-rose-500 dark:text-rose-400 font-medium bg-rose-50 dark:bg-rose-900/20 px-2 py-1 rounded-md flex items-center gap-1 shrink-0">
-                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                                    </svg>
-                                    Check-out
-                                </span>
+                                <div class="min-w-0">
+                                    <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ $b->user->name ?? 'Guest' }}</p>
+                                    <p class="text-xs text-gray-500 dark:text-gray-400 font-mono truncate">#{{ $b->booking_reference }}</p>
+                                </div>
                             </div>
-                        @empty
-                            <div class="flex flex-col items-center justify-center h-32 text-center">
-                                <svg class="w-8 h-8 text-gray-300 dark:text-gray-600 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
-                                </svg>
-                                <p class="text-sm text-gray-500 dark:text-gray-400">No departures scheduled today.</p>
-                            </div>
-                        @endforelse
-                    </div>
+                            <span class="text-[10px] font-bold uppercase tracking-wider text-rose-600 dark:text-rose-400 shrink-0">
+                                Check-out
+                            </span>
+                        </div>
+                    @empty
+                        <div class="py-10 text-center">
+                            <svg class="w-8 h-8 mx-auto text-gray-300 dark:text-gray-600 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                            </svg>
+                            <p class="text-sm text-gray-500 dark:text-gray-400">No departures scheduled today.</p>
+                        </div>
+                    @endforelse
                 </div>
             </div>
         </div>
     </div>
 </div>
 
+{{-- ═══════════════════════════════════════════════════════════════════════
+     CHART.JS WIRING
+     ─────────────────────────────────────────────────────────────────────
+     Slimmer bars: maxBarThickness 24, barPercentage 0.4.
+     Three new charts: propertyPerformance (h-bar), status (doughnut),
+     guest (doughnut). Empty state handled by Blade — if the canvas
+     isn't in the DOM the build function returns null and no chart renders.
+     ═══════════════════════════════════════════════════════════════════════ --}}
+@script
 <script>
-(function () {
-    'use strict';
+    if (! window.__tenantAnalyticsRegistered) {
+        window.__tenantAnalyticsRegistered = true;
 
-    const state = window.__tenantAnalytics = window.__tenantAnalytics || {
-        revenue: null,
-        booking: null,
-        payment: null,
-        occupancy: null,
-        hooked: false,
-        lastDark: document.documentElement.classList.contains('dark'),
-    };
+        (function () {
+            'use strict';
 
-    function getChartData() {
-        const el = document.getElementById('analytics-chart-data');
-        if (!el) return null;
-
-        try {
-            return {
-                revenue:   JSON.parse(el.dataset.revenue   || '{}'),
-                bookings:  JSON.parse(el.dataset.bookings  || '{}'),
-                payment:   JSON.parse(el.dataset.payment   || '[]'),
-                occupancy: JSON.parse(el.dataset.occupancy || '{}'),
+            const state = window.__tenantAnalytics = window.__tenantAnalytics || {
+                revenue: null,
+                booking: null,
+                payment: null,
+                occupancy: null,
+                propPerf: null,
+                status: null,
+                guest: null,
+                hooked: false,
+                lastDark: document.documentElement.classList.contains('dark'),
+                retries: 0,
             };
-        } catch (e) {
-            console.error('Failed to parse analytics chart data', e);
-            return null;
-        }
-    }
 
-    function isDark() {
-        return document.documentElement.classList.contains('dark');
-    }
+            const MAX_CHART_RETRIES = 30;
 
-    function getTheme() {
-        return isDark() ? {
-            textColor:     '#9ca3af',
-            gridColor:     'rgba(255,255,255,0.05)',
-            barColor:      '#10b981',
-            lineBooking:   '#3b82f6',
-            lineOccupancy: '#f59e0b',
-            fillOpacity:   '0.15',
-        } : {
-            textColor:     '#6b7280',
-            gridColor:     'rgba(0,0,0,0.05)',
-            barColor:      '#059669',
-            lineBooking:   '#2563eb',
-            lineOccupancy: '#d97706',
-            fillOpacity:   '0.1',
-        };
-    }
+            function getChartData() {
+                const el = document.getElementById('analytics-chart-data');
+                if (!el) return null;
 
-    function destroyAll() {
-        ['revenue', 'booking', 'payment', 'occupancy'].forEach(key => {
-            if (state[key]) {
-                try { state[key].destroy(); } catch (e) { /* noop */ }
-                state[key] = null;
-            }
-        });
-    }
-
-    function gradient(ctx, rgb, opacity) {
-        const g = ctx.createLinearGradient(0, 0, 0, 300);
-        g.addColorStop(0, `rgba(${rgb}, ${opacity})`);
-        g.addColorStop(1, 'rgba(255,255,255,0)');
-        return g;
-    }
-
-    function tooltipBase() {
-        return {
-            backgroundColor: isDark() ? '#374151' : '#fff',
-            titleColor:      isDark() ? '#fff'    : '#111827',
-            bodyColor:       isDark() ? '#d1d5db' : '#4b5563',
-            borderColor:     isDark() ? '#4b5563' : '#e5e7eb',
-            borderWidth:     1,
-            padding:         12,
-            displayColors:   false,
-            cornerRadius:    10,
-        };
-    }
-
-    function barChart(canvasId, labels, values, label, color) {
-        const canvas = document.getElementById(canvasId);
-        if (!canvas) return null;
-        const theme = getTheme();
-
-        return new Chart(canvas.getContext('2d'), {
-            type: 'bar',
-            data: {
-                labels,
-                datasets: [{
-                    label,
-                    data: values,
-                    backgroundColor: color,
-                    borderRadius: 6,
-                    borderSkipped: false,
-                    barPercentage: 0.6,
-                }],
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false },
-                    tooltip: {
-                        ...tooltipBase(),
-                        callbacks: {
-                            label: (ctx) => '₱' + (ctx.parsed.y || 0).toLocaleString(),
-                        },
-                    },
-                },
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        ticks: { color: theme.textColor },
-                        grid:  { color: theme.gridColor, drawBorder: false },
-                        border: { display: false },
-                    },
-                    x: {
-                        ticks: { color: theme.textColor },
-                        grid:  { display: false },
-                        border: { display: false },
-                    },
-                },
-            },
-        });
-    }
-
-    function lineChart(canvasId, labels, values, label, color, rgb) {
-        const canvas = document.getElementById(canvasId);
-        if (!canvas) return null;
-        const theme = getTheme();
-        const ctx = canvas.getContext('2d');
-
-        return new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels,
-                datasets: [{
-                    label,
-                    data: values,
-                    borderColor: color,
-                    backgroundColor: gradient(ctx, rgb, theme.fillOpacity),
-                    tension: 0.4,
-                    fill: true,
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    pointHoverRadius: 6,
-                    pointBackgroundColor: '#fff',
-                    pointBorderColor: color,
-                    pointBorderWidth: 2,
-                }],
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                interaction: { intersect: false, mode: 'index' },
-                plugins: {
-                    legend: { display: false },
-                    tooltip: tooltipBase(),
-                },
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        ticks: { color: theme.textColor, maxTicksLimit: 6 },
-                        grid:  { color: theme.gridColor, drawBorder: false, borderDash: [5, 5] },
-                        border: { display: false },
-                    },
-                    x: {
-                        ticks: { color: theme.textColor, maxTicksLimit: 8 },
-                        grid:  { display: false },
-                        border: { display: false },
-                    },
-                },
-            },
-        });
-    }
-
-    function doughnutChart(canvasId, labels, values) {
-        const canvas = document.getElementById(canvasId);
-        if (!canvas) return null;
-        const theme = getTheme();
-
-        return new Chart(canvas.getContext('2d'), {
-            type: 'doughnut',
-            data: {
-                labels,
-                datasets: [{
-                    data: values,
-                    backgroundColor: ['#059669', '#3b82f6', '#f59e0b', '#8b5cf6', '#ef4444'],
-                    borderWidth: isDark() ? 2 : 0,
-                    borderColor: isDark() ? '#1f2937' : '#ffffff',
-                    hoverOffset: 4,
-                }],
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                cutout: '75%',
-                plugins: {
-                    legend: {
-                        position: 'right',
-                        labels: {
-                            color: theme.textColor,
-                            padding: 20,
-                            usePointStyle: true,
-                            pointStyle: 'circle',
-                        },
-                    },
-                    tooltip: {
-                        callbacks: {
-                            label: (ctx) => ' ₱' + (ctx.parsed || 0).toLocaleString(),
-                        },
-                    },
-                },
-            },
-        });
-    }
-
-    window.renderTenantAnalytics = function (force) {
-        if (typeof Chart === 'undefined') {
-            setTimeout(() => window.renderTenantAnalytics(force), 100);
-            return;
-        }
-
-        const data = getChartData();
-        if (!data) return;
-
-        if (force) destroyAll();
-
-        const theme = getTheme();
-
-        if (!state.revenue && document.getElementById('revenueChart')) {
-            state.revenue = barChart(
-                'revenueChart',
-                Object.keys(data.revenue),
-                Object.values(data.revenue),
-                'Revenue',
-                theme.barColor,
-            );
-        }
-
-        if (!state.booking && document.getElementById('bookingChart')) {
-            state.booking = lineChart(
-                'bookingChart',
-                Object.keys(data.bookings),
-                Object.values(data.bookings),
-                'Bookings',
-                theme.lineBooking,
-                isDark() ? '59, 130, 246' : '37, 99, 235',
-            );
-        }
-
-        if (!state.payment && document.getElementById('paymentChart')) {
-            state.payment = doughnutChart(
-                'paymentChart',
-                data.payment.map(p => p.method.charAt(0).toUpperCase() + p.method.slice(1)),
-                data.payment.map(p => p.total),
-            );
-        }
-
-        if (!state.occupancy && document.getElementById('occupancyChart')) {
-            state.occupancy = lineChart(
-                'occupancyChart',
-                Object.keys(data.occupancy),
-                Object.values(data.occupancy),
-                'Occupancy %',
-                theme.lineOccupancy,
-                isDark() ? '245, 158, 11' : '217, 119, 6',
-            );
-        }
-
-        // Update-in-place for subsequent renders.
-        if (state.revenue && data.revenue) {
-            state.revenue.data.labels = Object.keys(data.revenue);
-            state.revenue.data.datasets[0].data = Object.values(data.revenue);
-            state.revenue.update('none');
-        }
-        if (state.booking && data.bookings) {
-            state.booking.data.labels = Object.keys(data.bookings);
-            state.booking.data.datasets[0].data = Object.values(data.bookings);
-            state.booking.update('none');
-        }
-        if (state.payment && data.payment) {
-            state.payment.data.labels = data.payment.map(p => p.method.charAt(0).toUpperCase() + p.method.slice(1));
-            state.payment.data.datasets[0].data = data.payment.map(p => p.total);
-            state.payment.update('none');
-        }
-        if (state.occupancy && data.occupancy) {
-            state.occupancy.data.labels = Object.keys(data.occupancy);
-            state.occupancy.data.datasets[0].data = Object.values(data.occupancy);
-            state.occupancy.update('none');
-        }
-    };
-
-    // First render.
-    window.renderTenantAnalytics(false);
-
-    // One-time hooks (survive wire:navigate).
-    if (!state.hooked) {
-        state.hooked = true;
-
-        document.addEventListener('livewire:init', () => {
-            Livewire.hook('morph.updated', ({ el }) => {
-                if (el && el.id === 'analytics-chart-data') {
-                    setTimeout(() => window.renderTenantAnalytics(false), 30);
+                try {
+                    return {
+                        revenue:    JSON.parse(el.dataset.revenue    || '{}'),
+                        bookings:   JSON.parse(el.dataset.bookings   || '{}'),
+                        payment:    JSON.parse(el.dataset.payment    || '[]'),
+                        occupancy:  JSON.parse(el.dataset.occupancy  || '{}'),
+                        propPerf:   JSON.parse(el.dataset.propertyPerformance || '[]'),
+                        status:     JSON.parse(el.dataset.status     || '{}'),
+                        guests:     JSON.parse(el.dataset.guests     || '{}'),
+                    };
+                } catch (e) {
+                    console.error('Failed to parse analytics chart data', e);
+                    return null;
                 }
-            });
-        });
-
-        new MutationObserver(() => {
-            const dark = isDark();
-            if (dark !== state.lastDark) {
-                state.lastDark = dark;
-                window.renderTenantAnalytics(true);
             }
-        }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+
+            function isDark() {
+                return document.documentElement.classList.contains('dark');
+            }
+
+            function getTheme() {
+                return isDark() ? {
+                    textColor:     '#9ca3af',
+                    gridColor:     'rgba(255,255,255,0.05)',
+                    barColor:      '#10b981',
+                    lineBooking:   '#3b82f6',
+                    lineOccupancy: '#f59e0b',
+                    fillOpacity:   '0.15',
+                    doughnutBorder: '#1f2937',
+                } : {
+                    textColor:     '#6b7280',
+                    gridColor:     'rgba(0,0,0,0.05)',
+                    barColor:      '#059669',
+                    lineBooking:   '#2563eb',
+                    lineOccupancy: '#d97706',
+                    fillOpacity:   '0.1',
+                    doughnutBorder: '#ffffff',
+                };
+            }
+
+            function destroyAll() {
+                ['revenue', 'booking', 'payment', 'occupancy', 'propPerf', 'status', 'guest'].forEach(key => {
+                    if (state[key]) { try { state[key].destroy(); } catch (e) {} state[key] = null; }
+                });
+            }
+
+            function gradient(ctx, rgb, opacity) {
+                const g = ctx.createLinearGradient(0, 0, 0, 300);
+                g.addColorStop(0, `rgba(${rgb}, ${opacity})`);
+                g.addColorStop(1, 'rgba(255,255,255,0)');
+                return g;
+            }
+
+            function tooltipBase() {
+                return {
+                    backgroundColor: isDark() ? '#374151' : '#fff',
+                    titleColor:      isDark() ? '#fff'    : '#111827',
+                    bodyColor:       isDark() ? '#d1d5db' : '#4b5563',
+                    borderColor:     isDark() ? '#4b5563' : '#e5e7eb',
+                    borderWidth:     1,
+                    padding:         12,
+                    displayColors:   false,
+                    cornerRadius:    10,
+                };
+            }
+
+            // Slim vertical bar chart — used for Revenue Trend
+            function barChart(canvasId, labels, values, label, color) {
+                const canvas = document.getElementById(canvasId);
+                if (!canvas) return null;
+                const theme = getTheme();
+
+                return new Chart(canvas.getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels,
+                        datasets: [{
+                            label,
+                            data: values,
+                            backgroundColor: color,
+                            borderRadius: 6,
+                            borderSkipped: false,
+                            barPercentage: 0.4,
+                            categoryPercentage: 0.75,
+                            maxBarThickness: 24,
+                        }],
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                ...tooltipBase(),
+                                callbacks: {
+                                    label: (ctx) => '₱' + (ctx.parsed.y || 0).toLocaleString(),
+                                },
+                            },
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                ticks: { color: theme.textColor },
+                                grid:  { color: theme.gridColor, drawBorder: false },
+                                border: { display: false },
+                            },
+                            x: {
+                                ticks: { color: theme.textColor },
+                                grid:  { display: false },
+                                border: { display: false },
+                            },
+                        },
+                    },
+                });
+            }
+
+            // Horizontal bar chart — used for Property Performance
+            function horizontalBarChart(canvasId, labels, values, colors) {
+                const canvas = document.getElementById(canvasId);
+                if (!canvas) return null;
+                const theme = getTheme();
+
+                return new Chart(canvas.getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels,
+                        datasets: [{
+                            data: values,
+                            backgroundColor: colors,
+                            borderRadius: 6,
+                            borderSkipped: false,
+                            barPercentage: 0.7,
+                            categoryPercentage: 0.75,
+                            maxBarThickness: 20,
+                        }],
+                    },
+                    options: {
+                        indexAxis: 'y',
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        layout: { padding: { right: 32 } },
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                ...tooltipBase(),
+                                callbacks: {
+                                    label: (ctx) => '₱' + Number(ctx.parsed.x || 0).toLocaleString(),
+                                },
+                            },
+                        },
+                        scales: {
+                            y: {
+                                grid:   { display: false },
+                                border: { display: false },
+                                ticks: {
+                                    color: theme.textColor,
+                                    font: { size: 11, weight: '600' },
+                                    autoSkip: false,
+                                    padding: 4,
+                                    callback: function (v) {
+                                        const label = this.getLabelForValue(v);
+                                        return label.length > 24 ? label.slice(0, 22) + '…' : label;
+                                    },
+                                },
+                            },
+                            x: {
+                                beginAtZero: true,
+                                grid:  { color: theme.gridColor, drawBorder: false },
+                                border: { display: false },
+                                ticks: { color: theme.textColor, precision: 0 },
+                            },
+                        },
+                    },
+                });
+            }
+
+            // Line chart — Booking Activity + Occupancy History
+            function lineChart(canvasId, labels, values, label, color, rgb) {
+                const canvas = document.getElementById(canvasId);
+                if (!canvas) return null;
+                const theme = getTheme();
+                const ctx = canvas.getContext('2d');
+
+                return new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels,
+                        datasets: [{
+                            label,
+                            data: values,
+                            borderColor: color,
+                            backgroundColor: gradient(ctx, rgb, theme.fillOpacity),
+                            tension: 0.4,
+                            fill: true,
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            pointHoverRadius: 6,
+                            pointBackgroundColor: '#fff',
+                            pointBorderColor: color,
+                            pointBorderWidth: 2,
+                        }],
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { intersect: false, mode: 'index' },
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: tooltipBase(),
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                ticks: { color: theme.textColor, maxTicksLimit: 6 },
+                                grid:  { color: theme.gridColor, drawBorder: false, borderDash: [5, 5] },
+                                border: { display: false },
+                            },
+                            x: {
+                                ticks: { color: theme.textColor, maxTicksLimit: 8 },
+                                grid:  { display: false },
+                                border: { display: false },
+                            },
+                        },
+                    },
+                });
+            }
+
+            // Doughnut chart
+            function doughnutChart(canvasId, labels, values, colors, legendPosition) {
+                const canvas = document.getElementById(canvasId);
+                if (!canvas) return null;
+                const theme = getTheme();
+
+                return new Chart(canvas.getContext('2d'), {
+                    type: 'doughnut',
+                    data: {
+                        labels,
+                        datasets: [{
+                            data: values,
+                            backgroundColor: colors || ['#059669', '#3b82f6', '#f59e0b', '#8b5cf6', '#ef4444', '#94a3b8'],
+                            borderWidth: isDark() ? 2 : 1,
+                            borderColor: theme.doughnutBorder,
+                            hoverOffset: 4,
+                            spacing: 2,
+                        }],
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        cutout: '72%',
+                        plugins: {
+                            legend: {
+                                position: legendPosition || 'bottom',
+                                labels: {
+                                    color: theme.textColor,
+                                    padding: 10,
+                                    usePointStyle: true,
+                                    pointStyle: 'circle',
+                                    boxWidth: 8,
+                                    boxHeight: 8,
+                                    font: { size: 10, weight: '600' },
+                                },
+                            },
+                            tooltip: {
+                                ...tooltipBase(),
+                                callbacks: {
+                                    label: (ctx) => ' ' + ctx.label + ': ' + Number(ctx.parsed || 0).toLocaleString(),
+                                },
+                            },
+                        },
+                    },
+                });
+            }
+
+            window.renderTenantAnalytics = function (force) {
+                if (typeof Chart === 'undefined') {
+                    if (state.retries >= MAX_CHART_RETRIES) {
+                        console.warn('Chart.js failed to load — giving up after ' + MAX_CHART_RETRIES + ' retries.');
+                        return;
+                    }
+                    state.retries++;
+                    setTimeout(() => window.renderTenantAnalytics(force), 100);
+                    return;
+                }
+
+                state.retries = 0;
+
+                const data = getChartData();
+                if (!data) return;
+
+                if (force) destroyAll();
+
+                const theme = getTheme();
+
+                // ── Revenue Trend ──
+                if (!state.revenue && document.getElementById('revenueChart')) {
+                    state.revenue = barChart(
+                        'revenueChart',
+                        Object.keys(data.revenue),
+                        Object.values(data.revenue),
+                        'Revenue',
+                        theme.barColor,
+                    );
+                }
+
+                // ── Payment Methods ──
+                if (!state.payment && document.getElementById('paymentChart')) {
+                    state.payment = doughnutChart(
+                        'paymentChart',
+                        data.payment.map(p => p.method.charAt(0).toUpperCase() + p.method.slice(1)),
+                        data.payment.map(p => p.total),
+                        null,
+                        'bottom',
+                    );
+                }
+
+                // ── Booking Activity ──
+                if (!state.booking && document.getElementById('bookingChart')) {
+                    state.booking = lineChart(
+                        'bookingChart',
+                        Object.keys(data.bookings),
+                        Object.values(data.bookings),
+                        'Bookings',
+                        theme.lineBooking,
+                        isDark() ? '59, 130, 246' : '37, 99, 235',
+                    );
+                }
+
+                // ── Occupancy History ──
+                if (!state.occupancy && document.getElementById('occupancyChart')) {
+                    state.occupancy = lineChart(
+                        'occupancyChart',
+                        Object.keys(data.occupancy),
+                        Object.values(data.occupancy),
+                        'Occupancy %',
+                        theme.lineOccupancy,
+                        isDark() ? '245, 158, 11' : '217, 119, 6',
+                    );
+                }
+
+                // ── Property Performance ──
+                if (!state.propPerf && document.getElementById('propertyPerformanceChart')) {
+                    const ramp = ['#1e3a8a', '#2563eb', '#3b82f6', '#60a5fa', '#93c5fd'];
+                    state.propPerf = horizontalBarChart(
+                        'propertyPerformanceChart',
+                        data.propPerf.map(p => p.name),
+                        data.propPerf.map(p => p.revenue),
+                        ramp.slice(0, data.propPerf.length),
+                    );
+                }
+
+                // ── Booking Status ──
+                if (!state.status && document.getElementById('statusChart')) {
+                    const statusOrder = ['pending', 'confirmed', 'reserved', 'checked_in', 'completed', 'cancelled'];
+                    const statusColors = {
+                        pending:    '#f59e0b',
+                        confirmed:  '#6366f1',
+                        reserved:   '#3b82f6',
+                        checked_in: '#8b5cf6',
+                        completed:  '#10b981',
+                        cancelled:  '#ef4444',
+                    };
+                    const present = statusOrder.filter(k => (data.status[k] || 0) > 0);
+
+                    state.status = doughnutChart(
+                        'statusChart',
+                        present.map(k => k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())),
+                        present.map(k => data.status[k]),
+                        present.map(k => statusColors[k]),
+                        'bottom',
+                    );
+                }
+
+                // ── Guest Composition ──
+                if (!state.guest && document.getElementById('guestChart')) {
+                    state.guest = doughnutChart(
+                        'guestChart',
+                        ['New Guests', 'Repeat Guests'],
+                        [data.guests.new || 0, data.guests.repeat || 0],
+                        ['#3b82f6', '#8b5cf6'],
+                        'bottom',
+                    );
+                }
+
+                // ── Update-in-place ──
+                if (state.revenue && data.revenue) {
+                    state.revenue.data.labels = Object.keys(data.revenue);
+                    state.revenue.data.datasets[0].data = Object.values(data.revenue);
+                    state.revenue.update('none');
+                }
+                if (state.payment && data.payment) {
+                    state.payment.data.labels = data.payment.map(p => p.method.charAt(0).toUpperCase() + p.method.slice(1));
+                    state.payment.data.datasets[0].data = data.payment.map(p => p.total);
+                    state.payment.update('none');
+                }
+                if (state.booking && data.bookings) {
+                    state.booking.data.labels = Object.keys(data.bookings);
+                    state.booking.data.datasets[0].data = Object.values(data.bookings);
+                    state.booking.update('none');
+                }
+                if (state.occupancy && data.occupancy) {
+                    state.occupancy.data.labels = Object.keys(data.occupancy);
+                    state.occupancy.data.datasets[0].data = Object.values(data.occupancy);
+                    state.occupancy.update('none');
+                }
+                if (state.propPerf && data.propPerf) {
+                    state.propPerf.data.labels = data.propPerf.map(p => p.name);
+                    state.propPerf.data.datasets[0].data = data.propPerf.map(p => p.revenue);
+                    state.propPerf.update('none');
+                }
+                if (state.guest && data.guests) {
+                    state.guest.data.datasets[0].data = [data.guests.new || 0, data.guests.repeat || 0];
+                    state.guest.update('none');
+                }
+            };
+
+            window.renderTenantAnalytics(false);
+
+            if (!state.hooked) {
+                state.hooked = true;
+
+                document.addEventListener('livewire:init', () => {
+                    Livewire.hook('morph.updated', ({ el }) => {
+                        if (el && el.id === 'analytics-chart-data') {
+                            setTimeout(() => window.renderTenantAnalytics(false), 30);
+                        }
+                    });
+                });
+
+                new MutationObserver(() => {
+                    const dark = isDark();
+                    if (dark !== state.lastDark) {
+                        state.lastDark = dark;
+                        window.renderTenantAnalytics(true);
+                    }
+                }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+            }
+        })();
     }
-})();
 </script>
+@endscript

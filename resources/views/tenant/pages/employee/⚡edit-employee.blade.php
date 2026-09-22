@@ -11,6 +11,7 @@ use App\Models\Employee;
 use App\Models\User;
 use App\Models\TenantSetting;
 use App\Scopes\TenantScope;
+use App\Traits\HandlesImageUploads;
 use Spatie\Permission\Models\Role;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\PermissionRegistrar;
@@ -20,16 +21,17 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
-use Illuminate\Support\Str;
 
-new 
+new
 #[Layout('tenant.layouts.app')]
 #[Title('Edit Employee')]
 class extends Component {
     use WithFileUploads;
+    use HandlesImageUploads;
 
     public Employee $employee;
 
+    // ═══ Identity ═══
     #[Validate('required|string|max:255')]
     public $name = '';
 
@@ -44,45 +46,40 @@ class extends Component {
     #[Validate('nullable|string|max:20')]
     public $code = '';
 
-    #[Validate('nullable|image|max:2048')]
+    #[Validate('nullable|image|mimes:jpg,jpeg,png,webp|max:5120')]
     public $avatar;
 
+    // ═══ Roles ═══
     public array $selectedRoles = [];
 
     public string $roleSearch = '';
     public string $roleTypeFilter = 'all';
 
+    // ═══ Quick role ═══
     public bool $showNewRoleForm = false;
     public string $newRoleName = '';
     public array $newRolePermissions = [];
     public string $newRolePermissionSearch = '';
 
-    public function mount($employee)
+    // ─────────────────────────────────────────────────────────
+    //  Lifecycle
+    // ─────────────────────────────────────────────────────────
+
+    public function mount($employee): void
     {
+        $this->authorizeManageEmployees();
+
         $user = Auth::user();
-        if (!$user || !$user->tenant_id) {
-            abort(403);
-        }
 
-        $canManage = $user->hasAnyRole(['admin', 'super-admin'])
-            || $user->getAllPermissions()->contains('name', 'manage employees');
-
-        if (!$canManage) {
-            abort(403, 'You are not authorized to edit employees.');
-        }
-
-        // Relationship loader — reused for both the "already a model" and "string ID" cases
         $userRelation = fn ($q) => $q
             ->select('id', 'tenant_id', 'name', 'email', 'phone', 'avatar')
             ->with('roles:id,name');
 
-        if (!$employee instanceof Employee) {
+        if (! $employee instanceof Employee) {
             $employee = Employee::withoutGlobalScope(TenantScope::class)
                 ->with(['user' => $userRelation])
                 ->findOrFail($employee);
         } else {
-            // When Livewire v4 route-model-binding passes the model directly,
-            // relationships aren't eager-loaded yet — load them here.
             $employee->load(['user' => $userRelation]);
         }
 
@@ -90,13 +87,13 @@ class extends Component {
             abort(403, 'Unauthorized.');
         }
 
-        $this->employee = $employee;
-        $this->name = $employee->name;
+        $this->employee     = $employee;
+        $this->name         = $employee->name;
         $this->employeeRole = $employee->role ?? '';
-        $this->phone = $employee->phone ?? '';
-        $this->is_active = (bool) $employee->is_active;
-        $this->code = $employee->code ?? '';
-        $this->avatar = null;
+        $this->phone        = $employee->phone ?? '';
+        $this->is_active    = (bool) $employee->is_active;
+        $this->code         = $employee->code ?? '';
+        $this->avatar       = null;
 
         if ($employee->user_id && $employee->user) {
             $this->selectedRoles = $employee->user->roles
@@ -107,13 +104,51 @@ class extends Component {
         }
     }
 
-    public function updated($field)
+    /**
+     * Four-layer pattern, Layer 3 — re-verify on every Livewire update
+     * request. Route middleware only runs on the initial GET.
+     *
+     * Two concerns:
+     *   1. Permission — the `manage employees` gate must re-fire on every
+     *      request, not just mount().
+     *   2. Route-model tampering — Livewire re-hydrates the bound Employee
+     *      by ID on every request. If the caller mutates that ID, they can
+     *      load a *different tenant's* employee. The tenant_id re-check
+     *      closes that hole.
+     */
+    public function hydrate(): void
+    {
+        $this->authorizeManageEmployees();
+
+        $user = Auth::user();
+        abort_unless($user && $user->tenant_id, 403);
+
+        abort_unless($this->employee->tenant_id === $user->tenant_id, 403);
+    }
+
+    protected function authorizeManageEmployees(): void
+    {
+        $user = Auth::user();
+
+        abort_unless($user && $user->tenant_id, 403);
+
+        $canManage = $user->hasAnyRole(['admin', 'super-admin'])
+            || $user->getAllPermissions()->contains('name', 'manage employees');
+
+        abort_unless($canManage, 403, 'You are not authorized to edit employees.');
+    }
+
+    public function updated($field): void
     {
         $trims = ['name', 'employeeRole', 'phone', 'code', 'roleSearch', 'newRoleName'];
-        if (in_array($field, $trims)) {
-            $this->$field = trim($this->$field);
+        if (in_array($field, $trims, true)) {
+            $this->$field = trim((string) $this->$field);
         }
     }
+
+    // ─────────────────────────────────────────────────────────
+    //  Computed — roles
+    // ─────────────────────────────────────────────────────────
 
     /**
      * @return Collection<int, array{
@@ -262,26 +297,30 @@ class extends Component {
         })->filter(fn ($permissions) => $permissions->isNotEmpty());
     }
 
-    public function selectAllQuickRolePermissions()
+    public function selectAllQuickRolePermissions(): void
     {
         $this->newRolePermissions = $this->allPermissions->pluck('name')->all();
     }
 
-    public function deselectAllQuickRolePermissions()
+    public function deselectAllQuickRolePermissions(): void
     {
         $this->newRolePermissions = [];
     }
 
-    public function toggleNewRoleForm()
+    // ─────────────────────────────────────────────────────────
+    //  Quick role
+    // ─────────────────────────────────────────────────────────
+
+    public function toggleNewRoleForm(): void
     {
-        $this->showNewRoleForm = !$this->showNewRoleForm;
-        $this->newRoleName = '';
-        $this->newRolePermissions = [];
+        $this->showNewRoleForm         = ! $this->showNewRoleForm;
+        $this->newRoleName             = '';
+        $this->newRolePermissions      = [];
         $this->newRolePermissionSearch = '';
         $this->resetErrorBag(['newRoleName', 'newRolePermissions']);
     }
 
-    public function createQuickRole()
+    public function createQuickRole(): void
     {
         $this->validate([
             'newRoleName' => ['required', 'string', 'min:3', 'max:50', function ($attr, $value, $fail) {
@@ -327,9 +366,11 @@ class extends Component {
                 app(PermissionRegistrar::class)->forgetCachedPermissions();
             });
 
-            $this->showNewRoleForm = false;
-            $this->newRoleName = '';
-            $this->newRolePermissions = [];
+            unset($this->availableRoles);
+
+            $this->showNewRoleForm         = false;
+            $this->newRoleName             = '';
+            $this->newRolePermissions      = [];
             $this->newRolePermissionSearch = '';
             session()->flash('message', 'Custom role created and selected.');
         } catch (\Spatie\Permission\Exceptions\RoleAlreadyExists $e) {
@@ -340,7 +381,11 @@ class extends Component {
         }
     }
 
-    public function rules()
+    // ─────────────────────────────────────────────────────────
+    //  Validation
+    // ─────────────────────────────────────────────────────────
+
+    public function rules(): array
     {
         return [
             'name'          => 'required|string|max:255',
@@ -352,35 +397,106 @@ class extends Component {
                     ->where('tenant_id', Auth::user()->tenant_id)
                     ->ignore($this->employee->id),
             ],
-            'avatar'        => 'nullable|image|max:2048',
+            'avatar'        => 'nullable|image|mimes:jpg,jpeg,png,webp|max:5120',
             'selectedRoles' => $this->employee->user_id ? 'required|array|min:1' : 'array',
         ];
     }
 
+    // ─────────────────────────────────────────────────────────
+    //  Update
+    // ─────────────────────────────────────────────────────────
+
     public function update()
     {
+        $this->authorizeManageEmployees();
+
         $this->name = trim($this->name);
         $this->validate();
 
         // Prevent user from deactivating their own linked account
         if (
             $this->employee->user_id === Auth::id()
-            && !$this->is_active
+            && ! $this->is_active
             && $this->employee->is_active
         ) {
             session()->flash('error', 'You cannot deactivate your own account.');
             return;
         }
 
+        /*
+         * SECURITY: build an allow-list of role ids from the same tenant-
+         * scoped source the UI renders from (`availableRoles`). Any selected
+         * role id not on this list causes the ENTIRE update to abort.
+         *
+         * Why abort rather than silently filter:
+         *
+         *   If we silently dropped a foreign role and continued, a payload
+         *   of just `['role_3']` (a foreign role) would reduce `$roleIds`
+         *   to `[]` and `syncRoles([])` would wipe the user's legitimate
+         *   roles. Aborting preserves the existing state and surfaces the
+         *   tamper attempt as an explicit error.
+         *
+         * Without this check at all, `Role::whereIn('id', $roleIds)` on a
+         * platform where `permission.teams` is FALSE (no tenant column on
+         * `roles`) resolves ANY role id in the platform — cross-tenant
+         * privilege escalation.
+         */
+        $allowedRoleIds = $this->availableRoles
+            ->pluck('value')
+            ->map(fn ($v) => (int) substr($v, strlen('role_')))
+            ->filter()
+            ->values()
+            ->all();
+
+        $roleIds    = [];
+        $foreignIds = [];
+        foreach ($this->selectedRoles as $roleValue) {
+            if (! is_string($roleValue) || ! str_starts_with($roleValue, 'role_')) {
+                continue;
+            }
+            $id = (int) substr($roleValue, strlen('role_'));
+
+            if (! in_array($id, $allowedRoleIds, true)) {
+                $foreignIds[] = $id;
+                continue;
+            }
+
+            $roleIds[] = $id;
+        }
+
+        if (! empty($foreignIds)) {
+            Log::warning('Employee update rejected foreign role ids', [
+                'tenant_id'          => Auth::user()->tenant_id,
+                'employee_id'        => $this->employee->id,
+                'attempted_role_ids' => $foreignIds,
+            ]);
+
+            session()->flash('error', 'One or more selected roles are not available for your business. Please refresh the page and try again.');
+            return;
+        }
+
+        $roleIds = array_values(array_unique($roleIds));
+
         $newAvatarPath = null;
         $oldAvatarPath = $this->employee->avatar;
 
         try {
+            /*
+             * storeImage() routes the file through ImageCompressionService
+             * (context: employees — 512 KB / 800×800). It returns null on
+             * storage failure (never throws); that null is promoted to a
+             * RuntimeException so the catch block cleans up and the user
+             * sees an error — never an Employee row with avatar => null.
+             */
             if ($this->avatar) {
-                $newAvatarPath = $this->avatar->store('employee-avatars', 'public');
+                $newAvatarPath = $this->storeImage($this->avatar, 'employee-avatars', 'public', 'employees');
+
+                if (! $newAvatarPath) {
+                    throw new \RuntimeException('Failed to store the employee avatar.');
+                }
             }
 
-            DB::transaction(function () use ($newAvatarPath) {
+            DB::transaction(function () use ($newAvatarPath, $roleIds) {
                 $this->employee->update([
                     'code'      => $this->code ?: $this->employee->code,
                     'name'      => $this->name,
@@ -399,16 +515,15 @@ class extends Component {
                             'phone' => $this->phone,
                         ]);
 
-                        $roleIds = [];
-                        foreach ($this->selectedRoles as $roleValue) {
-                            if (!is_string($roleValue) || !str_starts_with($roleValue, 'role_')) {
-                                continue;
-                            }
-                            $roleIds[] = (int) substr($roleValue, strlen('role_'));
+                        // Sync User.is_active unless the user has an admin role.
+                        // Admin-linked accounts must remain able to log in so
+                        // the tenant can always be recovered.
+                        $isAdminUser = $user->hasAnyRole(['admin', 'super-admin']);
+                        if (! $isAdminUser) {
+                            $user->update(['is_active' => $this->is_active]);
                         }
-                        $roleIds = array_values(array_unique(array_filter($roleIds)));
 
-                        $roleNames = !empty($roleIds)
+                        $roleNames = ! empty($roleIds)
                             ? Role::whereIn('id', $roleIds)->pluck('name')->all()
                             : [];
 
@@ -442,6 +557,7 @@ class extends Component {
         }
 
         $this->reset('avatar');
+        $this->dispatch('employee-avatar-cleared');
 
         session()->flash('message', 'Employee updated successfully.');
         return $this->redirectRoute('tenant.employees.index', navigate: true);
@@ -449,210 +565,405 @@ class extends Component {
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto space-y-6">
+<div class="p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto space-y-6">
 
-    {{-- Flash Messages --}}
+    {{-- ═══ Flash messages ═══ --}}
     @if (session()->has('message'))
-        <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium flex items-center gap-2">
-            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-            {{ session('message') }}
-        </div>
-    @endif
-    @if (session()->has('error'))
-        <div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 border-l-4 border-l-red-500 p-4 rounded-md text-sm text-red-700 dark:text-red-300 font-medium flex items-center gap-2">
-            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-            {{ session('error') }}
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 4000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-center justify-between bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 border-l-4 border-l-emerald-500 p-4 rounded-xl text-xs sm:text-sm text-emerald-800 dark:text-emerald-300 font-medium shadow-sm">
+            <div class="flex items-center gap-2.5">
+                <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <span>{{ session('message') }}</span>
+            </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
         </div>
     @endif
 
-    {{-- Header --}}
-    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
+    @if (session()->has('error'))
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 5000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-center justify-between bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 border-l-4 border-l-rose-500 p-4 rounded-xl text-xs sm:text-sm text-rose-800 dark:text-rose-300 font-medium shadow-sm">
+            <div class="flex items-center gap-2.5">
+                <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                </svg>
+                <span>{{ session('error') }}</span>
+            </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+    @endif
+
+    {{-- ═══ Page header ═══ --}}
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-800">
         <div>
             <div class="flex items-center gap-2 mb-2">
                 <span class="w-5 h-px bg-primary-600"></span>
                 <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Employees</span>
             </div>
-            <h1 class="font-display text-3xl md:text-4xl font-semibold text-gray-900 dark:text-white">
-                Edit <em class="italic text-primary-600 dark:text-primary-400">{{ $employee->name }}</em>
+            <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
+                Edit {{ $employee->name }}
             </h1>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mt-2">Update details, roles, and access.</p>
+            <p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1">
+                Update details, roles, and access.
+            </p>
         </div>
         <a href="{{ route('tenant.employees.index') }}" wire:navigate
-           class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
-            Back to Employees
+           class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                  transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+            </svg>
+            <span>Back to Employees</span>
         </a>
     </div>
 
-    <form wire:submit="update" class="card p-5 sm:p-6 space-y-5"
-          x-data="{ avatarPreview: null }">
+    {{-- ═══ Form ═══ --}}
+    <form wire:submit="update" class="space-y-6">
 
-        {{-- Employee Code --}}
-        <div>
-            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Employee Code</label>
-            <input type="text" wire:model="code" class="input font-mono">
-            @error('code') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-        </div>
+        {{-- ─────────── Employee Details ─────────── --}}
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
+            <div class="flex items-center gap-3">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    Employee Details
+                </h2>
+            </div>
 
-        {{-- Avatar — Drag & Drop with Preview --}}
-        <div>
-            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Profile Picture</label>
+            {{--
+                ═══ Profile Picture ═══
+                Single-file crop pipeline. Preview fills the dashed box.
+
+                State priority:
+                  • previewUrl (fresh pick) — object URL from the cropper
+                  • serverUrl (existing avatar) — from the DB, Blade-injected
+                showPreview = previewUrl || serverUrl
+            --}}
             <div
-                x-data="{ dragging: false }"
-                x-on:dragover.prevent="dragging = true"
-                x-on:dragleave.prevent="dragging = false"
-                x-on:drop.prevent="dragging = false; $refs.avatarInput.files = $event.dataTransfer.files; $refs.avatarInput.dispatchEvent(new Event('change'))"
-                :class="dragging ? 'border-primary-600 bg-primary-50 dark:bg-primary-500/10' : 'border-gray-300 dark:border-gray-600'"
-                class="relative flex items-center gap-4 rounded-xl border-2 border-dashed p-4 transition-colors"
+                x-data="{
+                    ...imageCropper({
+                        wireProperty: 'avatar',
+                        aspect: 1,
+                        title: 'Crop profile picture',
+                        description: 'Square crop works best',
+                        previewEvent: 'employee-avatar-preview',
+                    }),
+                    ...avatarPreview(),
+                    dragging: false,
+                    serverUrl: '{{ $employee->avatar ? asset('storage/' . $employee->avatar) : '' }}',
+                    get showPreview() {
+                        return !!this.previewUrl || !!this.serverUrl;
+                    },
+                }"
+                x-init="init()"
+                x-on:employee-avatar-preview.window="setUrl($event.detail.url)"
+                x-on:employee-avatar-cleared.window="clear()"
+                class="space-y-3"
             >
-                {{-- Preview --}}
-                <template x-if="avatarPreview">
-                    <img :src="avatarPreview" class="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-700 shrink-0">
-                </template>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Profile Picture <span class="text-gray-400 font-normal">(optional)</span>
+                </label>
 
-                <template x-if="!avatarPreview">
-                    <div class="shrink-0">
-                        @if($employee->avatar)
-                            <img src="{{ asset('storage/' . $employee->avatar) }}"
-                                 class="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-700"
-                                 alt="{{ $employee->name }}">
-                        @else
-                            <div class="h-16 w-16 rounded-lg bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-gray-400">
-                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 11c2.209 0 4-1.791 4-4s-1.791-4-4-4-4 1.791-4 4 1.791 4 4 4zm0 2c-2.67 0-8 1.34-8 4v3h16v-3c0-2.66-5.33-4-8-4z"/></svg>
-                            </div>
-                        @endif
+                <div class="flex flex-col sm:flex-row sm:items-start gap-5">
+                    {{-- Dashed box: preview + drop target --}}
+                    <div
+                        x-on:dragover.prevent="dragging = true"
+                        x-on:dragleave.prevent="dragging = false"
+                        x-on:drop.prevent="
+                            dragging = false;
+                            const dt = new DataTransfer();
+                            for (const f of $event.dataTransfer.files) dt.items.add(f);
+                            $refs.input.files = dt.files;
+                            $refs.input.dispatchEvent(new Event('change'));
+                        "
+                        :class="dragging
+                            ? 'border-primary-600 bg-primary-50 dark:bg-primary-500/10'
+                            : 'border-gray-300 dark:border-gray-600'"
+                        class="relative w-40 h-40 shrink-0 border-2 border-dashed rounded-xl overflow-hidden transition-colors"
+                    >
+                        <input
+                            x-ref="input"
+                            id="employee-avatar-input"
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp"
+                            class="sr-only"
+                            x-on:change="pick($event)"
+                        >
+
+                        {{-- Preview: fresh pick OR existing server avatar --}}
+                        <img
+                            :src="previewUrl || serverUrl"
+                            :class="showPreview ? 'block' : 'hidden'"
+                            alt="{{ $employee->name }}"
+                            class="absolute inset-0 w-full h-full object-cover"
+                            loading="lazy"
+                            decoding="async"
+                        >
+
+                        {{-- Placeholder --}}
+                        <label
+                            for="employee-avatar-input"
+                            :class="showPreview ? 'hidden' : 'flex'"
+                            class="absolute inset-0 flex-col items-center justify-center p-3 text-center cursor-pointer"
+                        >
+                            <svg class="h-8 w-8 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 11c2.209 0 4-1.791 4-4s-1.791-4-4-4-4 1.791-4 4 1.791 4 4 4zm0 2c-2.67 0-8 1.34-8 4v3h16v-3c0-2.66-5.33-4-8-4z"/>
+                            </svg>
+                            <p class="mt-2 text-xs font-medium text-gray-700 dark:text-gray-300 leading-tight">
+                                Click or drop a photo
+                            </p>
+                        </label>
+
+                        {{-- Upload spinner overlay --}}
+                        <div
+                            wire:loading.flex
+                            wire:target="avatar"
+                            class="absolute inset-0 bg-black/45 backdrop-blur-[2px] items-center justify-center pointer-events-none"
+                            aria-hidden="true"
+                        >
+                            <svg class="animate-spin h-5 w-5 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                            </svg>
+                        </div>
                     </div>
-                </template>
 
-                <div class="flex-1 min-w-0">
-                    <span class="inline-flex items-center gap-1.5 text-sm font-semibold text-primary-600 dark:text-primary-400">
-                        {{ $avatar ? 'Change photo' : 'Upload a photo' }}
-                    </span>
-                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Drag & drop, or click to browse. PNG/JPG up to 2MB.</p>
-                    <div wire:loading wire:target="avatar" class="text-xs text-primary-600 dark:text-primary-400 mt-1 flex items-center gap-1">
-                        <svg class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-                        Uploading…
+                    {{-- Helper text + actions column --}}
+                    <div class="flex-1 min-w-0 space-y-3">
+                        <p class="text-xs text-gray-500 dark:text-gray-400">
+                            PNG, JPG, or WebP · max 5 MB · auto-cropped to a square and compressed to ≤512 KB.
+                        </p>
+
+                        <div :class="showPreview ? 'flex' : 'hidden'" class="flex-wrap items-center gap-2">
+                            <label for="employee-avatar-input"
+                                   class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg
+                                          border border-gray-300 dark:border-gray-600
+                                          bg-white dark:bg-gray-800
+                                          text-gray-700 dark:text-gray-200
+                                          text-xs font-semibold cursor-pointer
+                                          transition-all duration-200 active:scale-95
+                                          hover:bg-gray-50 dark:hover:bg-gray-700
+                                          focus-within:outline-none focus-within:ring-2 focus-within:ring-primary-500/50">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                                </svg>
+                                <span>Replace</span>
+                            </label>
+
+                            {{-- Remove button only shows when there's a fresh pick to cancel.
+                                 If only the server avatar is present, changing to "none" isn't
+                                 a feature of this page — the user must pick a replacement or
+                                 leave the avatar as-is. --}}
+                            <button type="button"
+                                    :class="previewUrl ? 'inline-flex' : 'hidden'"
+                                    wire:click="$set('avatar', null)"
+                                    x-on:click="clear()"
+                                    class="items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg
+                                           border border-rose-300 dark:border-rose-500/40
+                                           bg-white dark:bg-gray-800
+                                           text-rose-700 dark:text-rose-300
+                                           text-xs font-semibold
+                                           transition-all duration-200 active:scale-95
+                                           hover:bg-rose-50 dark:hover:bg-rose-500/10
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                </svg>
+                                <span>Remove new photo</span>
+                            </button>
+                        </div>
                     </div>
                 </div>
 
-                @if ($avatar)
-                    <button type="button" wire:click="$set('avatar', null)" @click="avatarPreview = null"
-                            class="relative z-10 shrink-0 text-xs font-semibold text-rose-500 hover:text-rose-700 active:scale-95 transition-transform">
-                        Remove
-                    </button>
-                @endif
+                @error('avatar') <span class="text-rose-500 dark:text-rose-400 text-xs block">{{ $message }}</span> @enderror
+            </div>
 
-                <input x-ref="avatarInput" type="file" wire:model="avatar" accept="image/*"
-                       @change="avatarPreview = $refs.avatarInput.files[0] ? URL.createObjectURL($refs.avatarInput.files[0]) : null"
-                       class="absolute inset-0 opacity-0 cursor-pointer">
-            </div>
-            @error('avatar') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-        </div>
-
-        {{-- Name & Job Title --}}
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {{-- Code --}}
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Full Name *</label>
-                <input type="text" wire:model="name" class="input">
-                @error('name') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-            </div>
-            <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Job Title / Role *</label>
-                <input type="text" wire:model="employeeRole" placeholder="e.g. Receptionist, Guide" class="input">
-                @error('employeeRole') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-            </div>
-        </div>
-
-        {{-- Phone & Active --}}
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Phone *</label>
-                <input type="text" wire:model="phone" placeholder="09123456789" class="input">
-                @error('phone') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-            </div>
-            <div class="flex items-center sm:pt-6">
-                @php $isSelf = $employee->user_id === Auth::id(); @endphp
-                <label class="relative inline-flex items-center cursor-pointer focus-within:ring-2 focus-within:ring-primary-500/50 rounded-full {{ $isSelf ? 'opacity-60 cursor-not-allowed' : '' }}">
-                    <input type="checkbox" wire:model="is_active" class="sr-only peer" @if($isSelf) disabled @endif>
-                    <div class="w-11 h-6 bg-gray-200 dark:bg-gray-600 rounded-full peer peer-checked:bg-primary-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-full peer-disabled:opacity-50"></div>
-                    <span class="ml-2 text-sm text-gray-700 dark:text-gray-300">Active</span>
+                <label for="field-code" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Employee Code
                 </label>
-                @if($isSelf)
-                    <span class="ml-2 text-xs text-gray-400 dark:text-gray-500">(You)</span>
-                @endif
+                <input type="text" id="field-code" wire:model="code" class="input w-full font-mono">
+                @error('code') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+            </div>
+
+            {{-- Name + Job title --}}
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                    <label for="field-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Full Name <span class="text-rose-500">*</span>
+                    </label>
+                    <input type="text" id="field-name" wire:model="name" class="input" placeholder="e.g. Jane Dela Cruz">
+                    @error('name') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                </div>
+                <div>
+                    <label for="field-role" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Job Title <span class="text-rose-500">*</span>
+                    </label>
+                    <input type="text" id="field-role" wire:model="employeeRole" class="input" placeholder="e.g. Receptionist, Guide">
+                    @error('employeeRole') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                </div>
+            </div>
+
+            {{-- Phone + Active --}}
+            @php $isSelf = $employee->user_id === Auth::id(); @endphp
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                    <label for="field-phone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Phone <span class="text-rose-500">*</span>
+                    </label>
+                    <input type="text" id="field-phone" wire:model="phone" inputmode="tel" class="input" placeholder="09123456789">
+                    @error('phone') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                </div>
+                <div class="sm:pt-7">
+                    <label class="inline-flex items-center gap-3 cursor-pointer select-none {{ $isSelf ? 'opacity-60 cursor-not-allowed' : '' }}">
+                        <span class="relative inline-flex items-center shrink-0">
+                            <input type="checkbox" wire:model="is_active" class="sr-only peer" @if($isSelf) disabled @endif>
+                            <span class="w-11 h-6 bg-gray-200 dark:bg-gray-600 rounded-full
+                                         peer peer-checked:bg-primary-600
+                                         after:content-[''] after:absolute after:top-[2px] after:left-[2px]
+                                         after:bg-white after:rounded-full after:h-5 after:w-5
+                                         after:transition-all peer-checked:after:translate-x-full
+                                         peer-disabled:opacity-50"></span>
+                        </span>
+                        <span class="text-sm text-gray-700 dark:text-gray-300">
+                            Active
+                            @if($isSelf)
+                                <span class="text-gray-400 dark:text-gray-500">(You)</span>
+                            @endif
+                        </span>
+                    </label>
+                </div>
             </div>
         </div>
 
-        {{-- Linked User / Roles & Permissions --}}
-        <div class="border-t border-gray-200 dark:border-gray-700 pt-5">
-            <h2 class="font-display text-lg font-semibold text-gray-900 dark:text-white mb-4">User Account & Roles</h2>
+        {{-- ─────────── User Account & Roles ─────────── --}}
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
+            <div class="flex items-center gap-3">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    User Account &amp; Roles
+                </h2>
+            </div>
 
             @if($employee->user_id && $employee->user)
-                <div class="mb-4 p-4 rounded-xl bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-700">
+                {{-- Linked user card --}}
+                <div class="p-4 rounded-xl bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700">
                     <div class="flex items-start gap-3">
-                        <div class="w-9 h-9 rounded-full bg-primary-600/10 border border-primary-600/20 flex items-center justify-center text-primary-600 dark:text-primary-400 font-bold text-sm shrink-0">
+                        <div class="w-10 h-10 rounded-xl bg-primary-50 dark:bg-primary-500/10 border border-primary-200/50 dark:border-primary-500/20 flex items-center justify-center text-primary-700 dark:text-primary-300 font-bold text-sm shrink-0">
                             {{ strtoupper(substr($employee->user->name, 0, 1)) }}
                         </div>
                         <div class="min-w-0 flex-1">
-                            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-semibold">Linked User</p>
-                            <p class="text-gray-900 dark:text-white font-medium truncate">{{ $employee->user->name }}</p>
-                            <p class="text-sm text-gray-600 dark:text-gray-400 truncate">{{ $employee->user->email }}</p>
-                            <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">The linked user cannot be changed from this page.</p>
+                            <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Linked User</p>
+                            <p class="text-sm font-semibold text-gray-900 dark:text-white mt-0.5 truncate">{{ $employee->user->name }}</p>
+                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{{ $employee->user->email }}</p>
+                            <p class="text-[11px] text-gray-400 dark:text-gray-500 mt-1">The linked user cannot be changed from this page.</p>
                         </div>
                     </div>
                 </div>
 
-                <div class="flex items-center justify-between mb-2">
-                    <label class="text-sm font-medium text-gray-700 dark:text-gray-300">Assign System Roles *</label>
-                    <button type="button" wire:click="toggleNewRoleForm"
-                            class="text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
-                        + New Role
+                {{-- Section header for role assignment --}}
+                <div class="flex items-center justify-between gap-3 flex-wrap">
+                    <div class="flex items-center gap-3">
+                        <span class="w-5 h-px bg-primary-600"></span>
+                        <h3 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                            System Roles <span class="text-rose-500">*</span>
+                        </h3>
+                    </div>
+
+                    <button type="button"
+                            wire:click="toggleNewRoleForm"
+                            class="inline-flex items-center gap-1 text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded active:scale-95 transition-transform">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
+                        </svg>
+                        <span>{{ $showNewRoleForm ? 'Cancel new role' : 'New Role' }}</span>
                     </button>
                 </div>
 
+                {{-- Quick role form --}}
                 @if($showNewRoleForm)
-                    <div class="mb-4 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-200 dark:border-gray-700 space-y-4">
-
-                        {{-- Role Name --}}
+                    <div class="p-4 bg-gray-50 dark:bg-gray-700/30 rounded-xl border border-gray-200 dark:border-gray-700 space-y-4">
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Role Name</label>
-                            <input type="text" wire:model="newRoleName" class="input" placeholder="e.g. Front Desk">
-                            @error('newRoleName') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                            <label for="field-new-role-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                Role Name <span class="text-rose-500">*</span>
+                            </label>
+                            <input type="text" id="field-new-role-name" wire:model="newRoleName" class="input" placeholder="e.g. Front Desk">
+                            @error('newRoleName') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                         </div>
 
-                        {{-- Permissions Toolbar --}}
-                        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                        <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                    Permissions *
+                                    Permissions <span class="text-rose-500">*</span>
                                 </label>
-                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 tabular-nums">
                                     {{ count($newRolePermissions) }} of {{ $this->allPermissions->count() }} selected
                                 </p>
                             </div>
 
                             <div class="flex flex-wrap items-center gap-2">
-                                <button type="button" wire:click="selectAllQuickRolePermissions"
-                                        class="btn-secondary text-xs active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                    Select All
+                                <button type="button"
+                                        wire:click="selectAllQuickRolePermissions"
+                                        class="inline-flex items-center justify-center h-9 px-3.5 rounded-lg
+                                               border border-gray-300 dark:border-gray-600
+                                               bg-white dark:bg-gray-800
+                                               text-gray-700 dark:text-gray-200
+                                               text-xs font-semibold
+                                               transition-all duration-200 active:scale-95
+                                               hover:bg-gray-50 dark:hover:bg-gray-700
+                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                    <span>Select All</span>
                                 </button>
-                                <button type="button" wire:click="deselectAllQuickRolePermissions"
-                                        class="btn-secondary text-xs active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                    Clear All
+                                <button type="button"
+                                        wire:click="deselectAllQuickRolePermissions"
+                                        class="inline-flex items-center justify-center h-9 px-3.5 rounded-lg
+                                               border border-gray-300 dark:border-gray-600
+                                               bg-white dark:bg-gray-800
+                                               text-gray-700 dark:text-gray-200
+                                               text-xs font-semibold
+                                               transition-all duration-200 active:scale-95
+                                               hover:bg-gray-50 dark:hover:bg-gray-700
+                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                    <span>Clear All</span>
                                 </button>
 
-                                <div class="relative w-full sm:w-40">
-                                    <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <div class="relative w-40">
+                                    <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 dark:text-gray-500 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
                                     </svg>
-                                    <input type="text" wire:model.live.debounce.200ms="newRolePermissionSearch"
+                                    <input type="text"
+                                           wire:model.live.debounce.200ms="newRolePermissionSearch"
                                            placeholder="Filter…"
-                                           class="pl-9 pr-3 py-2 text-sm bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition w-full">
+                                           aria-label="Filter permissions"
+                                           class="w-full h-9 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg pl-9 pr-3 text-xs text-gray-900 dark:text-white placeholder-gray-400
+                                                  focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                                 </div>
                             </div>
                         </div>
 
-                        {{-- Grouped Permission Grid --}}
                         @if($this->filteredGroupedPermissions->isEmpty())
                             <div class="text-center py-6 text-xs text-gray-500 dark:text-gray-400">
                                 No permissions match your search.
@@ -665,7 +976,7 @@ class extends Component {
                                         <h4 class="font-semibold text-xs text-gray-900 dark:text-white mb-2 flex items-center gap-2">
                                             <span class="w-1 h-4 bg-primary-600 rounded-full"></span>
                                             {{ $module }}
-                                            <span class="text-[10px] font-normal text-gray-500 dark:text-gray-400">({{ $permissions->count() }})</span>
+                                            <span class="text-[10px] font-normal text-gray-500 dark:text-gray-400 tabular-nums">({{ $permissions->count() }})</span>
                                         </h4>
                                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-1">
                                             @foreach($permissions as $perm)
@@ -674,7 +985,7 @@ class extends Component {
                                                     <input type="checkbox"
                                                            wire:model.live="newRolePermissions"
                                                            value="{{ $perm->name }}"
-                                                           class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary-600 focus:ring-primary-500">
+                                                           class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary-600 focus:ring-primary-500 cursor-pointer">
                                                     <span class="text-xs text-gray-700 dark:text-gray-300">
                                                         {{ ucwords(str_replace(['-', '_'], ' ', $perm->name)) }}
                                                     </span>
@@ -686,79 +997,149 @@ class extends Component {
                             </div>
                         @endif
 
-                        @error('newRolePermissions') <span class="text-red-500 dark:text-red-400 text-xs block">{{ $message }}</span> @enderror
+                        @error('newRolePermissions') <span class="text-rose-500 dark:text-rose-400 text-xs block">{{ $message }}</span> @enderror
 
-                        <div class="flex flex-col sm:flex-row gap-2 pt-2">
-                            <button type="button" wire:click="createQuickRole"
-                                    class="btn-primary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                Create Role
+                        <div class="flex flex-col sm:flex-row sm:justify-end gap-2 pt-2">
+                            <button type="button"
+                                    wire:click="toggleNewRoleForm"
+                                    class="inline-flex items-center justify-center h-11 px-5 rounded-xl
+                                           border border-gray-300 dark:border-gray-600
+                                           bg-white dark:bg-gray-800
+                                           text-gray-700 dark:text-gray-200
+                                           text-sm font-semibold
+                                           transition-all duration-200 active:scale-95
+                                           hover:bg-gray-50 dark:hover:bg-gray-700
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                                <span>Cancel</span>
                             </button>
-                            <button type="button" wire:click="toggleNewRoleForm"
-                                    class="btn-secondary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                Cancel
-                            </button>
+                            <button type="button"
+                                    wire:click="createQuickRole"
+                                    wire:loading.attr="disabled"
+                                    wire:target="createQuickRole"
+                                    class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl
+                                           bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                           transition-all duration-200 active:scale-95
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                                           disabled:opacity-60 disabled:cursor-not-allowed">
+                                    <span wire:loading.remove wire:target="createQuickRole">Create Role</span>
+                                    <span wire:loading wire:target="createQuickRole" class="inline-flex items-center gap-2">
+                                        <svg class="animate-spin h-4 w-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                        </svg>
+                                        Creating…
+                                    </span>
+                                </button>
+                            </div>
+                        </div>
+                    @endif
+
+                    {{-- Role filters --}}
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div class="relative">
+                            <svg class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                            </svg>
+                            <input type="text"
+                                   wire:model.live.debounce.300ms="roleSearch"
+                                   placeholder="Search roles…"
+                                   aria-label="Search roles"
+                                   class="input pl-10 w-full">
+                        </div>
+                        <select wire:model.live="roleTypeFilter" aria-label="Filter roles by type" class="select w-full">
+                            <option value="all">All Roles</option>
+                            <option value="global">Global Only</option>
+                            <option value="custom">Custom Only</option>
+                        </select>
+                    </div>
+
+                    {{-- Role cards --}}
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-80 overflow-y-auto">
+                        @forelse($this->availableRoles as $role)
+                            <label class="cursor-pointer" wire:key="role-{{ $role['value'] }}">
+                                <input type="checkbox" wire:model.live="selectedRoles" value="{{ $role['value'] }}" class="sr-only peer">
+                                <div class="rounded-xl border-2 p-3 transition-all duration-200 active:scale-[0.98]
+                                            {{ in_array($role['value'], $selectedRoles)
+                                               ? 'border-primary-600 bg-primary-50 dark:bg-primary-500/10 shadow-sm'
+                                               : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600' }}">
+                                    <div class="flex items-center justify-between gap-2">
+                                        <p class="font-semibold text-sm text-gray-900 dark:text-white">{{ $role['label'] }}</p>
+                                        <span class="text-[9px] font-bold uppercase tracking-wider
+                                                     {{ $role['type'] === 'global'
+                                                        ? 'text-gray-500 dark:text-gray-400'
+                                                        : 'text-primary-600 dark:text-primary-400' }}">
+                                            {{ $role['type'] }}
+                                        </span>
+                                    </div>
+                                    <div class="flex flex-wrap gap-1 mt-2">
+                                        @forelse(array_slice($role['permissions'], 0, 3) as $perm)
+                                            <span class="inline-flex items-center px-2 py-0.5 rounded-md bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 text-[10px] font-medium">
+                                                {{ $perm }}
+                                            </span>
+                                        @empty
+                                            <span class="text-[10px] text-gray-400 italic">No permissions</span>
+                                        @endforelse
+                                        @if(count($role['permissions']) > 3)
+                                            <span class="text-[10px] text-gray-400 dark:text-gray-500 tabular-nums">+{{ count($role['permissions']) - 3 }} more</span>
+                                        @endif
+                                    </div>
+                                </div>
+                            </label>
+                        @empty
+                            <p class="col-span-2 text-sm text-gray-400 dark:text-gray-500 text-center py-6">No roles match your filters.</p>
+                        @endforelse
+                    </div>
+
+                    @error('selectedRoles') <span class="text-rose-500 dark:text-rose-400 text-xs block">{{ $message }}</span> @enderror
+                @else
+                    <div class="p-4 rounded-xl bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700">
+                        <div class="flex items-start gap-3">
+                            <div class="p-2 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 shrink-0">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                </svg>
+                            </div>
+                            <div class="min-w-0 flex-1">
+                                <p class="text-sm font-semibold text-gray-900 dark:text-white">No user account linked</p>
+                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                    This employee doesn't have a login. To grant system access, create a linked user from the
+                                    <a href="{{ route('tenant.employees.create') }}" wire:navigate class="font-semibold text-primary-600 dark:text-primary-400 hover:underline">Create Employee</a>
+                                    page.
+                                </p>
+                            </div>
                         </div>
                     </div>
                 @endif
-
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
-                    <input type="text" wire:model.live.debounce.300ms="roleSearch" placeholder="Search roles…" class="input">
-                    <select wire:model.live="roleTypeFilter" class="select">
-                        <option value="all">All Roles</option>
-                        <option value="global">Global Only</option>
-                        <option value="custom">Custom Only</option>
-                    </select>
-                </div>
-
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto">
-                    @forelse($this->availableRoles as $role)
-                        <label class="cursor-pointer" wire:key="role-{{ $role['value'] }}">
-                            <input type="checkbox" wire:model.live="selectedRoles" value="{{ $role['value'] }}" class="sr-only peer">
-                            <div class="border-2 border-gray-200 dark:border-gray-700 rounded-xl p-3 transition-all duration-200 active:scale-[0.98]
-                                        {{ in_array($role['value'], $selectedRoles) ? 'border-primary-600 bg-primary-50 dark:bg-primary-500/10' : 'hover:border-gray-300 dark:hover:border-gray-600' }}">
-                                <p class="font-semibold text-gray-900 dark:text-white">{{ $role['label'] }}</p>
-                                <div class="flex flex-wrap gap-1 mt-2">
-                                    @forelse(array_slice($role['permissions'], 0, 4) as $perm)
-                                        <span class="inline-flex items-center px-2 py-0.5 rounded-md bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 text-[10px] font-medium">
-                                            {{ $perm }}
-                                        </span>
-                                    @empty
-                                        <span class="text-[10px] text-gray-400 italic">No permissions</span>
-                                    @endforelse
-                                    @if(count($role['permissions']) > 4)
-                                        <span class="text-[10px] text-gray-400">+{{ count($role['permissions']) - 4 }} more</span>
-                                    @endif
-                                </div>
-                            </div>
-                        </label>
-                    @empty
-                        <p class="col-span-2 text-sm text-gray-400 dark:text-gray-500 text-center py-6">No roles match your filters.</p>
-                    @endforelse
-                </div>
-                @error('selectedRoles') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-            @else
-                <div class="p-4 rounded-xl bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400">
-                    No user account linked. Link a user from the Create Employee page.
-                </div>
-            @endif
         </div>
 
-        {{-- Actions --}}
-        <div class="flex flex-col sm:flex-row gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
+        {{-- ─────────── Actions ─────────── --}}
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-3 pt-5 border-t border-gray-200 dark:border-gray-700">
+            <a href="{{ route('tenant.employees.index') }}" wire:navigate
+               class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                      transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                <span>Cancel</span>
+            </a>
+
             <button type="submit"
                     wire:loading.attr="disabled"
                     wire:target="update"
-                    class="btn-primary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50 disabled:opacity-60 disabled:cursor-not-allowed">
+                    class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                           disabled:opacity-60 disabled:cursor-not-allowed">
                 <span wire:loading.remove wire:target="update">Update Employee</span>
                 <span wire:loading wire:target="update" class="inline-flex items-center gap-2">
-                    <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                    <svg class="animate-spin h-4 w-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                    </svg>
                     Saving…
                 </span>
             </button>
-            <a href="{{ route('tenant.employees.index') }}" wire:navigate
-               class="btn-secondary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                Cancel
-            </a>
         </div>
     </form>
+
+    {{-- Image crop modal — singleton for this page (Rule 87) --}}
+    <x-image-crop-modal />
 </div>

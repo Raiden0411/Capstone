@@ -4,24 +4,32 @@
 use Livewire\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
-use Livewire\Attributes\Validate;
 use App\Models\PropertyType;
+use App\Traits\ChecksTenantPermissions;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\Rule;
 
-new 
+new
 #[Layout('tenant.layouts.app')]
 #[Title('Edit Property Type')]
 class extends Component {
+    use ChecksTenantPermissions;
 
     public PropertyType $type;
 
-    #[Validate]
     public string $name = '';
 
-    public function mount(PropertyType $type)
+    public function mount(PropertyType $type): void
     {
-        if ($type->tenant_id !== Auth::user()->tenant_id) {
+        /** @var \App\Models\User $user */
+        $user = Auth::user();
+
+        abort_unless($user && $user->tenant_id, 403);
+
+        // Route-model binding already applies TenantScope, so a global or
+        // another tenant's type would 404 before this runs. This check is
+        // defense-in-depth in case the scope is ever bypassed.
+        if ($type->tenant_id === null || $type->tenant_id !== $user->tenant_id) {
             abort(403, 'You can only edit your own custom property types.');
         }
 
@@ -29,37 +37,59 @@ class extends Component {
         $this->name = $type->name;
     }
 
-    public function rules()
+    public function hydrate(): void
     {
+        /** @var \App\Models\User $user */
+        $user = Auth::user();
+
+        abort_unless($user && $user->tenant_id, 403);
+
+        // Re-verify on every Livewire update request. The typed $type
+        // property is re-fetched from the DB by Livewire on hydrate.
+        if ($this->type->tenant_id === null
+            || $this->type->tenant_id !== $user->tenant_id) {
+            abort(403, 'You can only edit your own custom property types.');
+        }
+    }
+
+    public function rules(): array
+    {
+        /** @var \App\Models\User $user */
+        $user     = Auth::user();
+        $tenantId = $user->tenant_id;
+
         return [
             'name' => [
                 'required',
+                'string',
                 'min:2',
                 'max:255',
+                // Nested closure is REQUIRED for correct OR grouping —
+                // same as create-type. Do not flatten.
                 Rule::unique('property_types', 'name')
-                    ->where(function ($query) {
-                        $query->whereNull('tenant_id')
-                              ->orWhere('tenant_id', Auth::user()->tenant_id);
-                    })
+                    ->where(
+                        fn ($query) => $query->where(
+                            fn ($q) => $q->whereNull('tenant_id')
+                                         ->orWhere('tenant_id', $tenantId)
+                        )
+                    )
                     ->ignore($this->type->id),
             ],
         ];
     }
 
-    public function updated($property)
-    {
-        if ($property === 'name') {
-            $this->name = trim($this->name);
-        }
-    }
-
     public function update()
     {
+        $this->requirePermission('manage properties');
+
+        $this->name = trim($this->name);
+
         $this->validate();
 
         $this->type->update(['name' => $this->name]);
 
         session()->flash('success', 'Property type updated successfully.');
+
         return $this->redirectRoute('tenant.property-types.index', navigate: true);
     }
 };
@@ -67,49 +97,135 @@ class extends Component {
 
 <div class="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto space-y-6">
 
-    {{-- Flash Message --}}
-    @if (session()->has('success'))
-        <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium flex items-center gap-3">
-            <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-            {{ session('success') }}
+    {{-- ═══ Page header ═══ --}}
+    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
+        <div>
+            <div class="flex items-center gap-2 mb-2">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Property Management</span>
+            </div>
+            <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
+                Edit Property Type
+            </h1>
+            <p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1 font-mono">
+                #{{ str_pad((string) $type->id, 2, '0', STR_PAD_LEFT) }}
+            </p>
         </div>
-    @endif
-
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
-        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Edit Property Type</h1>
         <a href="{{ route('tenant.property-types.index') }}" wire:navigate
-           class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
-            Back to Property Types
+           class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                  transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+            </svg>
+            <span>Back to Property Types</span>
         </a>
     </div>
 
-    <form wire:submit="update" class="card p-5 sm:p-6 space-y-5">
+    {{-- ═══ Flash: success ═══ --}}
+    @if(session()->has('success'))
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 4000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-center justify-between bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 border-l-4 border-l-emerald-500 p-4 rounded-xl text-xs sm:text-sm text-emerald-800 dark:text-emerald-300 font-medium shadow-sm">
+            <div class="flex items-center gap-2.5">
+                <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <span>{{ session('success') }}</span>
+            </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+    @endif
 
+    {{-- ═══ Validation errors ═══ --}}
+    @if($errors->any())
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 6000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-start justify-between gap-3 bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 border-l-4 border-l-rose-500 p-4 rounded-xl">
+            <div class="flex items-start gap-2.5 min-w-0">
+                <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                </svg>
+                <div class="text-xs sm:text-sm text-rose-800 dark:text-rose-300 min-w-0">
+                    <p class="font-semibold mb-1">Please fix the following:</p>
+                    <ul class="list-disc list-inside space-y-0.5">
+                        @foreach($errors->all() as $err)
+                            <li wire:key="err-{{ $loop->index }}">{{ $err }}</li>
+                        @endforeach
+                    </ul>
+                </div>
+            </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 shrink-0 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+    @endif
+
+    <form wire:submit="update" class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
+
+        {{-- Type name --}}
         <div>
-            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Type Name</label>
-            <input type="text" wire:model="name" class="input" placeholder="e.g. Executive Suite">
-            @error('name') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Changing the name will not affect existing properties.</p>
+            <label for="type-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Type Name <span class="text-rose-500">*</span>
+            </label>
+            <input id="type-name"
+                   type="text"
+                   wire:model="name"
+                   maxlength="255"
+                   autocomplete="off"
+                   class="input w-full"
+                   placeholder="e.g. Executive Suite">
+            @error('name') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1.5">
+                Changing the name will not affect existing properties.
+            </p>
         </div>
 
-        <div class="flex flex-col sm:flex-row gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
+        {{-- Actions --}}
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-3 pt-5 mt-6 border-t border-gray-100 dark:border-gray-700/60">
+            <a href="{{ route('tenant.property-types.index') }}" wire:navigate
+               class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                      transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                Cancel
+            </a>
             <button type="submit"
                     wire:loading.attr="disabled"
-                    class="btn-primary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                <span wire:loading.remove>Update Type</span>
-                <span wire:loading class="inline-flex items-center gap-2">
-                    <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                    wire:target="update"
+                    class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                           disabled:opacity-60 disabled:cursor-not-allowed">
+                <span wire:loading.remove wire:target="update" class="inline-flex items-center gap-2">
+                    <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                    </svg>
+                    Update Type
+                </span>
+                <span wire:loading wire:target="update" class="inline-flex items-center gap-2">
+                    <svg class="animate-spin h-4 w-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                     </svg>
-                    Saving...
+                    Saving…
                 </span>
             </button>
-            <a href="{{ route('tenant.property-types.index') }}" wire:navigate
-               class="btn-secondary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                Cancel
-            </a>
         </div>
     </form>
 </div>

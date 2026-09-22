@@ -7,17 +7,21 @@ use App\Models\Tenant;
 use App\Models\User;
 use App\Models\Booking;
 use Livewire\Livewire;
+use Spatie\Permission\Models\Role;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Carbon\Carbon;
 
 uses(RefreshDatabase::class);
 
 it('creates a walk-in booking with property and service, then redirects', function () {
+    Role::firstOrCreate(['name' => 'admin', 'guard_name' => 'web']);
+
     /** @var Tenant $tenant */
     $tenant = Tenant::factory()->create();
 
     /** @var User $adminUser */
     $adminUser = User::factory()->create(['tenant_id' => $tenant->id]);
+    $adminUser->assignRole('admin');
 
     /** @var PropertyType $propertyType */
     $propertyType = PropertyType::factory()->create([
@@ -45,6 +49,22 @@ it('creates a walk-in booking with property and service, then redirects', functi
         'is_active' => true,
     ]);
 
+    /*
+     * Pre-create the guest at the email the SFC is expected to link to.
+     * The SFC's resolveGuestUser() reuses an existing safe guest rather
+     * than creating a new one, so the booking is linked to this user.
+     * (If no user existed at that email, the SFC would create a
+     * walkin_<random>@walkin.local placeholder instead — the deliberate
+     * safe design.)
+     */
+    /** @var User $guestUser */
+    $guestUser = User::factory()->create([
+        'tenant_id' => null,
+        'name'      => 'Juan Dela Cruz',
+        'email'     => 'juan@example.com',
+        'phone'     => '09171234567',
+    ]);
+
     $this->actingAs($adminUser);
 
     $component = Livewire::test('tenant::pages.booking.create-booking');
@@ -68,37 +88,34 @@ it('creates a walk-in booking with property and service, then redirects', functi
     // Submit
     $component->call('submit')->assertHasNoErrors();
 
-    // Fetch the guest user created by the component
-    /** @var User $guestUser */
-    $guestUser = User::query()->firstWhere('email', 'juan@example.com');
-    $this->assertNotNull($guestUser);
+    // The booking must be linked to the pre-created guest, not a new one.
+    $refreshedGuest = User::query()->firstWhere('email', 'juan@example.com');
+    $this->assertNotNull($refreshedGuest);
+    $this->assertEquals($guestUser->id, $refreshedGuest->id);
 
-    // Verify booking created (asserting reference and totals only)
+    // Verify booking created
     $this->assertDatabaseHas('bookings', [
         'tenant_id'         => $tenant->id,
         'booking_reference' => $component->get('booking_reference'),
         'total_amount'      => 2250,
         'status'            => 'confirmed',
         'booking_type'      => 'full',
+        'user_id'           => $guestUser->id,
     ]);
 
     /** @var Booking $booking */
     $booking = Booking::query()->firstWhere('booking_reference', $component->get('booking_reference'));
     $this->assertNotNull($booking);
 
-    // Check dates separately
     $this->assertEquals($checkIn, $booking->check_in->format('Y-m-d'));
     $this->assertEquals($checkOut, $booking->check_out->format('Y-m-d'));
-
-    // Verify the booking user is the guest user, not the admin
-    $this->assertEquals($guestUser->id, $booking->user_id);
 
     // Verify booking item
     $this->assertDatabaseHas('booking_items', [
         'booking_id'  => $booking->id,
         'property_id' => $property->id,
         'quantity'    => 1,
-        'subtotal'    => 2000, // 1000 * 2 days
+        'subtotal'    => 2000,
     ]);
 
     // Verify booking service

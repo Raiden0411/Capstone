@@ -15,6 +15,7 @@ use App\Models\BookingService;
 use App\Models\Payment;
 use App\Scopes\TenantScope;
 use App\Services\PayMongoService;
+use App\Traits\ChecksTenantPermissions;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -27,13 +28,15 @@ new
 #[Title('Walk-In Booking')]
 class extends Component {
 
+    use ChecksTenantPermissions;
+
     // ── Guest ──
     public string $customerName    = '';
     public string $customerPhone   = '';
     public string $customerEmail   = '';
     public string $customerAddress = '';
 
-    // ── Stay ──
+    // ── Dates ──
     public string $check_in      = '';
     public string $check_out     = '';
     public string $check_in_time = '';
@@ -64,10 +67,6 @@ class extends Component {
     public bool    $showQrModal = false;
     public ?string $qrError     = null;
 
-    // ─────────────────────────────────────────────────────────
-    //  Lifecycle
-    // ─────────────────────────────────────────────────────────
-
     public function mount(): void
     {
         abort_unless(Auth::user()?->tenant_id, 403);
@@ -77,6 +76,11 @@ class extends Component {
         $this->check_in_time = now()->format('H:i');
 
         $this->generateBookingReference();
+    }
+
+    public function hydrate(): void
+    {
+        abort_unless(Auth::user()?->tenant_id, 403);
     }
 
     public function updated(string $field): void
@@ -92,10 +96,6 @@ class extends Component {
         }
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Validation
-    // ─────────────────────────────────────────────────────────
-
     protected function rules(): array
     {
         $tenantId = Auth::user()?->tenant_id;
@@ -110,8 +110,6 @@ class extends Component {
             'check_in_time'   => ['required', 'date_format:H:i'],
             'payment_method'  => ['required', 'in:cash,qr'],
 
-            // Keys of the arrays are the IDs — validate them with a closure
-            // because Rule::exists() on `.*` walks the *values* (quantities).
             'selectedProperties' => [
                 'required', 'array', 'min:1',
                 function ($attribute, $value, $fail) use ($tenantId): void {
@@ -151,10 +149,6 @@ class extends Component {
         ];
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Booking reference
-    // ─────────────────────────────────────────────────────────
-
     public function generateBookingReference(): void
     {
         $this->booking_reference = 'BK-' . strtoupper(Str::random(8));
@@ -162,18 +156,22 @@ class extends Component {
 
     protected function ensureUniqueReference(): void
     {
-        $exists = Booking::withoutGlobalScope(TenantScope::class)
-            ->where('booking_reference', $this->booking_reference)
-            ->exists();
+        $attempts = 0;
 
-        if ($exists) {
+        while ($attempts++ < 10) {
+            $exists = Booking::withoutGlobalScope(TenantScope::class)
+                ->where('booking_reference', $this->booking_reference)
+                ->exists();
+
+            if (! $exists) {
+                return;
+            }
+
             $this->generateBookingReference();
         }
-    }
 
-    // ─────────────────────────────────────────────────────────
-    //  Date updates
-    // ─────────────────────────────────────────────────────────
+        throw new \RuntimeException('Could not generate a unique booking reference.');
+    }
 
     public function updatedCheckIn(): void
     {
@@ -208,10 +206,6 @@ class extends Component {
         $this->calculateTotal();
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Calendar modal
-    // ─────────────────────────────────────────────────────────
-
     public function openCalendar(int $propertyId): void
     {
         $this->calendarPropertyId = $propertyId;
@@ -222,10 +216,6 @@ class extends Component {
         $this->calendarPropertyId = null;
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Selection toggles
-    // ─────────────────────────────────────────────────────────
-
     public function toggleProperty(int $propertyId): void
     {
         $tenantId = Auth::user()->tenant_id;
@@ -234,11 +224,11 @@ class extends Component {
             ->where('tenant_id', $tenantId)
             ->find($propertyId);
 
-        if (!$property) {
+        if (! $property) {
             return;
         }
 
-        if (!isset($this->selectedProperties[$propertyId])) {
+        if (! isset($this->selectedProperties[$propertyId])) {
             $checkInDateTime  = $this->check_in . ' ' . $this->check_in_time . ':00';
             $checkOutDateTime = $this->check_out . ' ' . $this->check_in_time . ':00';
 
@@ -266,7 +256,7 @@ class extends Component {
             ->whereKey($serviceId)
             ->exists();
 
-        if (!$exists) {
+        if (! $exists) {
             return;
         }
 
@@ -278,10 +268,6 @@ class extends Component {
 
         $this->calculateTotal();
     }
-
-    // ─────────────────────────────────────────────────────────
-    //  Total calculation
-    // ─────────────────────────────────────────────────────────
 
     public function calculateTotal(): void
     {
@@ -312,10 +298,6 @@ class extends Component {
 
         return 1;
     }
-
-    // ─────────────────────────────────────────────────────────
-    //  Computed
-    // ─────────────────────────────────────────────────────────
 
     #[Computed]
     public function selectedPropertyModels()
@@ -410,12 +392,10 @@ class extends Component {
             ->get(['id', 'name', 'price']);
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Submit
-    // ─────────────────────────────────────────────────────────
-
     public function submit()
     {
+        $this->requirePermission('create bookings');
+
         $this->validate();
 
         if (empty($this->selectedProperties)) {
@@ -522,17 +502,13 @@ class extends Component {
 
         $this->createdBookingId = $booking->id;
 
-        if (!$isCash) {
+        if (! $isCash) {
             return $this->startQrPayment($booking);
         }
 
         session()->flash('message', 'Booking created and confirmed successfully.');
         return $this->redirectRoute('tenant.bookings.show', ['booking' => $booking->id], navigate: true);
     }
-
-    // ─────────────────────────────────────────────────────────
-    //  Guest resolution
-    // ─────────────────────────────────────────────────────────
 
     protected function resolveGuestUser(): User
     {
@@ -568,10 +544,6 @@ class extends Component {
         return true;
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  QR Ph (PayMongo)
-    // ─────────────────────────────────────────────────────────
-
     protected function startQrPayment(Booking $booking)
     {
         $this->qrError = null;
@@ -589,7 +561,7 @@ class extends Component {
             ],
         );
 
-        if (!$intent) {
+        if (! $intent) {
             Log::error('[walkin] QR payment failed: intent creation returned null', [
                 'booking_id' => $booking->id,
             ]);
@@ -600,7 +572,7 @@ class extends Component {
 
         $qr = $payMongo->attachQrPhPaymentMethod($intent['id'], $intent['client_key']);
 
-        if (!$qr) {
+        if (! $qr) {
             Log::error('[walkin] QR payment failed: attach returned null', [
                 'booking_id' => $booking->id,
                 'intent_id'  => $intent['id'],
@@ -661,14 +633,14 @@ class extends Component {
 
     public function checkQrPayment(): void
     {
-        if (!$this->qrPaymentIntentId || !$this->pendingBookingId) {
+        if (! $this->qrPaymentIntentId || ! $this->pendingBookingId) {
             return;
         }
 
         /** @var PayMongoService $payMongo */
         $payMongo = app(PayMongoService::class);
 
-        if (!$payMongo->finalizeQrPayment($this->qrPaymentIntentId)) {
+        if (! $payMongo->finalizeQrPayment($this->qrPaymentIntentId)) {
             return;
         }
 
@@ -703,10 +675,6 @@ class extends Component {
         }
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Conflict detection
-    // ─────────────────────────────────────────────────────────
-
     protected function hasConflict(int $propertyId, string $checkInDateTime, string $checkOutDateTime): bool
     {
         return BookingItem::withoutGlobalScope(TenantScope::class)
@@ -723,65 +691,120 @@ class extends Component {
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto space-y-6"
-     x-data="{ qrPolling: false }"
-     x-init="$watch('$wire.showQrModal', v => { qrPolling = v; })"
-     x-effect="if (qrPolling) { const t = setInterval(() => $wire.checkQrPayment(), 5000); return () => clearInterval(t); }">
+<div class="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6"
+     x-data="{
+         qrPolling: false,
+         qrPollTimer: null,
+         init() {
+             this.$watch('$wire.showQrModal', (v) => {
+                 this.qrPolling = v;
+                 if (v) {
+                     this.qrPollTimer = setInterval(() => this.$wire.checkQrPayment(), 5000);
+                 } else if (this.qrPollTimer) {
+                     clearInterval(this.qrPollTimer);
+                     this.qrPollTimer = null;
+                 }
+             });
+         },
+         destroy() {
+             if (this.qrPollTimer) clearInterval(this.qrPollTimer);
+         }
+     }">
 
-    {{-- Header --}}
-    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
+    {{-- ═══ Page header ═══ --}}
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-800">
         <div>
-            <p class="text-xs font-semibold uppercase tracking-wider text-primary-600 dark:text-primary-400">
-                Bookings
-            </p>
-            <h1 class="mt-1 text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">
+            <div class="flex items-center gap-2 mb-2">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Bookings</span>
+            </div>
+            <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
                 Walk-In Booking
             </h1>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+            <p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1">
                 Create a manual reservation with instant confirmation.
             </p>
         </div>
         <a href="{{ route('tenant.bookings.index') }}" wire:navigate
-           class="btn-secondary active:scale-95 transition-transform
-                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                  inline-flex items-center gap-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+           class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                  transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
             </svg>
-            Back to Bookings
+            <span>Back to Bookings</span>
         </a>
     </div>
 
+    {{-- ═══ Flash messages ═══ --}}
+    @if (session()->has('message'))
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 4000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-center justify-between bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 border-l-4 border-l-emerald-500 p-4 rounded-xl text-xs sm:text-sm text-emerald-800 dark:text-emerald-300 font-medium shadow-sm">
+            <div class="flex items-center gap-2.5">
+                <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <span>{{ session('message') }}</span>
+            </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+    @endif
+
     @if (session()->has('error'))
-        <div class="flex items-start gap-3 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 border-l-4 border-l-red-500 p-4 rounded-md">
-            <svg class="w-5 h-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-            </svg>
-            <p class="text-sm text-red-700 dark:text-red-300 font-medium">{{ session('error') }}</p>
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 5000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-center justify-between bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 border-l-4 border-l-rose-500 p-4 rounded-xl text-xs sm:text-sm text-rose-800 dark:text-rose-300 font-medium shadow-sm">
+            <div class="flex items-center gap-2.5">
+                <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                </svg>
+                <span>{{ session('error') }}</span>
+            </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
         </div>
     @endif
 
     @if ($qrError)
-        <div class="flex items-start gap-3 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 border-l-4 border-l-red-500 p-4 rounded-md">
-            <svg class="w-5 h-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-            </svg>
-            <p class="text-sm text-red-700 dark:text-red-300 font-medium">{{ $qrError }}</p>
+        <div class="bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 border-l-4 border-l-rose-500 p-4 rounded-xl">
+            <div class="flex items-start gap-2.5">
+                <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                </svg>
+                <p class="text-xs sm:text-sm text-rose-800 dark:text-rose-300 font-medium">{{ $qrError }}</p>
+            </div>
         </div>
     @endif
 
-    {{-- Global validation errors (catches wildcard keys the per-field @error misses) --}}
     @if($errors->any())
-        <div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 border-l-4 border-l-red-500 p-4 rounded-md">
-            <div class="flex items-start gap-3">
-                <svg class="w-5 h-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        <div class="bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 border-l-4 border-l-rose-500 p-4 rounded-xl">
+            <div class="flex items-start gap-2.5">
+                <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
                 </svg>
-                <div class="text-sm text-red-700 dark:text-red-300">
+                <div class="text-xs sm:text-sm text-rose-800 dark:text-rose-300">
                     <p class="font-semibold mb-1">Please fix the following:</p>
                     <ul class="list-disc list-inside space-y-0.5">
                         @foreach($errors->all() as $err)
-                            <li>{{ $err }}</li>
+                            <li wire:key="err-{{ $loop->index }}">{{ $err }}</li>
                         @endforeach
                     </ul>
                 </div>
@@ -789,23 +812,35 @@ class extends Component {
         </div>
     @endif
 
-    <form wire:submit="submit" class="relative grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6 items-start">
+    {{-- ═══ Two-column layout ═══ --}}
+    <form wire:submit="submit" class="relative grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6 items-start">
 
+        {{-- ═══════════ LEFT COLUMN ═══════════ --}}
         <div class="space-y-6">
 
-            {{-- Guest & Stay Details --}}
-            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6">
-                <h2 class="text-lg font-bold text-gray-900 dark:text-white mb-5">Guest &amp; Stay Details</h2>
+            {{-- ─── Guest & Booking Details ─── --}}
+            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
+                <div class="flex items-center gap-3">
+                    <span class="w-5 h-px bg-primary-600"></span>
+                    <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                        Guest &amp; Booking Details
+                    </h2>
+                </div>
 
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Full Name *</label>
-                        <input type="text" wire:model="customerName" class="input w-full" placeholder="Guest name">
-                        @error('customerName') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        <label for="field-customer-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            Full Name <span class="text-rose-500">*</span>
+                        </label>
+                        <input type="text" id="field-customer-name" wire:model="customerName" class="input" placeholder="Guest name">
+                        @error('customerName') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Phone *</label>
-                        <input type="tel" inputmode="numeric" pattern="[0-9+]*" maxlength="13"
+                        <label for="field-customer-phone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            Phone <span class="text-rose-500">*</span>
+                        </label>
+                        <input type="tel" id="field-customer-phone"
+                               inputmode="numeric" pattern="[0-9+]*" maxlength="13"
                                wire:model.live.debounce.500ms="customerPhone"
                                x-on:input="
                                    const cleaned = $event.target.value.replace(/[^0-9+]/g, '');
@@ -814,43 +849,52 @@ class extends Component {
                                        $event.target.dispatchEvent(new Event('input', { bubbles: true }));
                                    }
                                "
-                               class="input w-full" placeholder="09xxxxxxxxx" autocomplete="tel">
-                        @error('customerPhone') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-                        <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">Format: 09xxxxxxxxx or +639xxxxxxxxx</p>
+                               class="input" placeholder="09xxxxxxxxx" autocomplete="tel">
+                        @error('customerPhone') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        <p class="mt-1 text-[11px] text-gray-500 dark:text-gray-400">Format: 09xxxxxxxxx or +639xxxxxxxxx</p>
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email (Optional)</label>
-                        <input type="email" wire:model="customerEmail" class="input w-full" placeholder="guest@example.com">
-                        @error('customerEmail') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        <label for="field-customer-email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            Email <span class="text-gray-400 dark:text-gray-500 font-normal">(optional)</span>
+                        </label>
+                        <input type="email" id="field-customer-email" wire:model="customerEmail" class="input" placeholder="guest@example.com">
+                        @error('customerEmail') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Address (Optional)</label>
-                        <input type="text" wire:model="customerAddress" class="input w-full" placeholder="Complete address">
-                        @error('customerAddress') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        <label for="field-customer-address" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            Address <span class="text-gray-400 dark:text-gray-500 font-normal">(optional)</span>
+                        </label>
+                        <input type="text" id="field-customer-address" wire:model="customerAddress" class="input" placeholder="Complete address">
+                        @error('customerAddress') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
                 </div>
 
-                <div class="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div class="pt-5 border-t border-gray-100 dark:border-gray-700/60 grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Check‑in Date</label>
-                        <input type="date" wire:model.live.debounce.300ms="check_in"
+                        <label for="field-check-in" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            Start Date <span class="text-rose-500">*</span>
+                        </label>
+                        <input type="date" id="field-check-in" wire:model.live.debounce.300ms="check_in"
                                min="{{ now()->format('Y-m-d') }}"
                                max="{{ now()->addDays(30)->format('Y-m-d') }}"
-                               class="input w-full">
+                               class="input">
+                        @error('check_in') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
 
                     <div wire:ignore>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            Check‑in Time
-                            <span class="text-[10px] font-normal text-gray-400 dark:text-gray-500 ml-1">
-                                (live — set automatically)
-                            </span>
+                            Start Time
+                            <span class="text-[10px] font-normal text-gray-400 dark:text-gray-500 ml-1">(live — set automatically)</span>
                         </label>
                         <div x-data="{
                                 time: '{{ $check_in_time }}',
+                                timer: null,
                                 init() {
                                     this.tick();
-                                    setInterval(() => this.tick(), 10000);
+                                    this.timer = setInterval(() => this.tick(), 10000);
+                                },
+                                destroy() {
+                                    if (this.timer) clearInterval(this.timer);
                                 },
                                 tick() {
                                     const now = new Date();
@@ -863,7 +907,7 @@ class extends Component {
                                     }
                                 }
                              }"
-                             class="w-full flex items-center justify-between px-3 py-2 rounded-xl
+                             class="w-full flex items-center justify-between px-3 h-11 rounded-xl
                                     bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-600">
                             <span x-text="time" class="font-mono tabular-nums text-sm text-gray-900 dark:text-white">--:--</span>
                             <span class="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
@@ -874,32 +918,55 @@ class extends Component {
                                 Live
                             </span>
                         </div>
-                        @error('check_in_time') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('check_in_time') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
 
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Check‑out Date</label>
-                        <input type="date" wire:model.live.debounce.300ms="check_out"
+                        <label for="field-check-out" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            End Date <span class="text-rose-500">*</span>
+                        </label>
+                        <input type="date" id="field-check-out" wire:model.live.debounce.300ms="check_out"
                                min="{{ now()->addDay()->format('Y-m-d') }}"
                                max="{{ now()->addDays(30)->format('Y-m-d') }}"
-                               class="input w-full">
+                               class="input">
+                        @error('check_out') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
+
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Booking Reference</label>
+                        <label for="field-booking-reference" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            Booking Reference
+                        </label>
                         <div class="flex gap-2">
-                            <input type="text" wire:model="booking_reference" class="input flex-1 bg-gray-100 dark:bg-gray-900 cursor-not-allowed" readonly>
-                            <button type="button" wire:click="generateBookingReference"
-                                    class="shrink-0 px-4 py-2 rounded-xl bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-sm font-semibold text-primary-600 dark:text-primary-400 hover:bg-gray-50 dark:hover:bg-gray-700 transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                Generate
+                            <input type="text" id="field-booking-reference" wire:model="booking_reference"
+                                   class="input flex-1 bg-gray-100 dark:bg-gray-900 cursor-not-allowed font-mono" readonly>
+                            <button type="button"
+                                    wire:click="generateBookingReference"
+                                    aria-label="Regenerate booking reference"
+                                    title="Regenerate"
+                                    class="inline-flex items-center justify-center h-11 w-11 shrink-0 rounded-xl
+                                           border border-gray-300 dark:border-gray-600
+                                           bg-white dark:bg-gray-800
+                                           text-gray-700 dark:text-gray-200
+                                           transition-all duration-200 active:scale-95
+                                           hover:bg-gray-50 dark:hover:bg-gray-700
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                                </svg>
                             </button>
                         </div>
                     </div>
                 </div>
             </div>
 
-            {{-- Property Selection --}}
-            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6">
-                <h2 class="text-lg font-bold text-gray-900 dark:text-white mb-5">Select Property</h2>
+            {{-- ─── Select Property ─── --}}
+            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
+                <div class="flex items-center gap-3">
+                    <span class="w-5 h-px bg-primary-600"></span>
+                    <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                        Select Property <span class="text-rose-500">*</span>
+                    </h2>
+                </div>
 
                 @if($this->properties->isNotEmpty())
                     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -917,38 +984,43 @@ class extends Component {
                                      x-on:keydown.space.prevent="$wire.toggleProperty({{ $property->id }})"
                                      wire:click="toggleProperty({{ $property->id }})"
                                  @endif
-                                 class="relative rounded-xl border-2 transition-all duration-200
+                                 class="relative rounded-xl border-2 transition-all duration-200 overflow-hidden
                                         focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                                        {{ $isSelected ? 'border-primary-600 ring-2 ring-primary-500/30' : '' }}
-                                        {{ $isAvailable ? 'cursor-pointer' : 'cursor-not-allowed opacity-70' }}">
+                                        {{ $isSelected ? 'border-primary-600 ring-2 ring-primary-500/30' : 'border-gray-200 dark:border-gray-700' }}
+                                        {{ $isAvailable ? 'cursor-pointer hover:border-primary-400 dark:hover:border-primary-500/60' : 'cursor-not-allowed opacity-70' }}">
 
-                                <div class="aspect-[4/3] overflow-hidden relative rounded-t-xl">
+                                <div class="aspect-[4/3] overflow-hidden relative">
                                     <img class="w-full h-full object-cover"
                                          src="{{ $firstImg ? asset('storage/'. $firstImg->image_path) : asset('images/placeholder-room.jpg') }}"
-                                         alt="{{ $property->name }}">
+                                         alt="{{ $property->name }}"
+                                         loading="lazy"
+                                         decoding="async">
                                     @if(!$isAvailable)
                                         <div class="absolute inset-0 bg-black/50 flex items-center justify-center">
-                                            <span class="bg-red-600 text-white px-3 py-1 rounded-full text-xs font-bold uppercase">Booked</span>
+                                            <span class="bg-rose-600 text-white px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider">Booked</span>
                                         </div>
                                     @elseif($isSelected)
-                                        <div class="absolute top-2 right-2 bg-primary-600 text-white rounded-full p-1">
+                                        <div class="absolute top-2 right-2 bg-primary-600 text-white rounded-full p-1.5 shadow">
                                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
                                             </svg>
                                         </div>
                                     @endif
                                 </div>
 
-                                <div class="p-3 flex justify-between items-center">
+                                <div class="p-3 flex justify-between items-center gap-2">
                                     <div class="min-w-0">
-                                        <h3 class="font-medium text-gray-900 dark:text-white truncate">{{ $property->name }}</h3>
-                                        <p class="text-sm text-primary-600 dark:text-primary-400 font-semibold">₱{{ number_format($property->price, 2) }} / day</p>
+                                        <h3 class="font-medium text-gray-900 dark:text-white truncate text-sm">{{ $property->name }}</h3>
+                                        <p class="text-xs text-primary-600 dark:text-primary-400 font-semibold mt-0.5 tabular-nums">₱{{ number_format($property->price, 2) }} / day</p>
                                     </div>
                                     @if(!$isAvailable)
                                         <button type="button"
                                                 wire:click.stop="openCalendar({{ $property->id }})"
-                                                class="text-xs text-primary-600 dark:text-primary-400 hover:underline rounded transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                            View Calendar
+                                                class="inline-flex items-center justify-center h-7 px-2.5 rounded-lg text-[11px] font-semibold shrink-0
+                                                       border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200
+                                                       transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                            Calendar
                                         </button>
                                     @endif
                                 </div>
@@ -960,23 +1032,31 @@ class extends Component {
                         <p class="text-sm text-gray-500 dark:text-gray-400">No properties available.</p>
                     </div>
                 @endif
+
+                @error('selectedProperties') <span class="text-rose-500 dark:text-rose-400 text-xs block">{{ $message }}</span> @enderror
             </div>
 
-            {{-- Add-On Services --}}
-            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6">
-                <h2 class="text-lg font-bold text-gray-900 dark:text-white mb-5">Add-On Services</h2>
+            {{-- ─── Add-On Services ─── --}}
+            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
+                <div class="flex items-center gap-3">
+                    <span class="w-5 h-px bg-primary-600"></span>
+                    <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                        Add-On Services <span class="text-gray-400 dark:text-gray-500 font-medium normal-case tracking-normal">(optional)</span>
+                    </h2>
+                </div>
+
                 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                     @forelse($this->availableServices as $service)
                         @php $isSelected = isset($selectedServices[$service->id]); @endphp
                         <button type="button" wire:click="toggleService({{ $service->id }})"
                                 wire:key="service-{{ $service->id }}"
-                                class="group relative flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-sm font-medium transition-all duration-200 active:scale-95
+                                class="group relative flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-sm font-medium transition-all duration-200 active:scale-[0.98]
                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
                                        {{ $isSelected
                                           ? 'bg-primary-50 border-primary-300 text-primary-700 dark:bg-primary-900/30 dark:border-primary-500/50 dark:text-primary-200 shadow-sm'
                                           : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50 dark:bg-gray-800 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700/50' }}">
                             <span class="truncate">{{ $service->name }}</span>
-                            <span class="text-sm font-semibold shrink-0 {{ $isSelected ? 'text-primary-600 dark:text-primary-300' : 'text-gray-500 dark:text-gray-400' }}">
+                            <span class="text-sm font-semibold shrink-0 tabular-nums {{ $isSelected ? 'text-primary-600 dark:text-primary-300' : 'text-gray-500 dark:text-gray-400' }}">
                                 {{ $isSelected ? 'Added ✓' : '+₱' . number_format($service->price, 2) }}
                             </span>
                         </button>
@@ -988,14 +1068,15 @@ class extends Component {
                 </div>
 
                 @if(count($selectedServices) > 0)
-                    <div class="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700 space-y-2">
+                    <div class="pt-4 border-t border-gray-100 dark:border-gray-700/60 space-y-2">
+                        <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Selected</p>
                         @foreach($selectedServices as $id => $qty)
                             @php $service = $this->selectedServiceModels->get($id); @endphp
                             @if($service)
-                                <div class="flex items-center justify-between gap-3 p-3 bg-gray-50 dark:bg-gray-800/70 rounded-lg"
+                                <div class="flex items-center justify-between gap-3 p-3 bg-gray-50 dark:bg-gray-800/70 rounded-lg border border-gray-200 dark:border-gray-700"
                                      wire:key="selected-service-{{ $id }}">
-                                    <span class="text-sm text-gray-700 dark:text-gray-200">{{ $service->name }}</span>
-                                    <span class="text-sm font-semibold text-gray-900 dark:text-white">₱{{ number_format($service->price * $qty, 2) }}</span>
+                                    <span class="text-sm text-gray-700 dark:text-gray-200 truncate">{{ $service->name }}</span>
+                                    <span class="text-sm font-semibold text-gray-900 dark:text-white tabular-nums">₱{{ number_format($service->price * $qty, 2) }}</span>
                                 </div>
                             @endif
                         @endforeach
@@ -1003,53 +1084,61 @@ class extends Component {
                 @endif
             </div>
 
-            {{-- Payment Method --}}
-            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6">
-                <h2 class="text-lg font-bold text-gray-900 dark:text-white mb-5">Payment Method</h2>
+            {{-- ─── Payment Method ─── --}}
+            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
+                <div class="flex items-center gap-3">
+                    <span class="w-5 h-px bg-primary-600"></span>
+                    <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                        Payment Method <span class="text-rose-500">*</span>
+                    </h2>
+                </div>
+
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <label class="relative cursor-pointer group">
+                    {{-- Cash --}}
+                    <label class="relative cursor-pointer">
                         <input type="radio" wire:model.live="payment_method" value="cash" class="sr-only peer">
                         <div class="flex items-center gap-4 p-4 rounded-xl border-2 transition-all duration-200
                                     bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600
                                     peer-checked:border-primary-600 peer-checked:bg-primary-50 dark:peer-checked:bg-primary-900/30 dark:peer-checked:border-primary-500/50
                                     hover:border-primary-400 dark:hover:border-primary-500/50
                                     peer-focus-visible:ring-2 peer-focus-visible:ring-primary-500/50">
-                            <div class="p-3 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
-                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <div class="p-2.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 shrink-0">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                 </svg>
                             </div>
-                            <div>
+                            <div class="min-w-0">
                                 <p class="font-semibold text-gray-900 dark:text-white">Cash</p>
                                 <p class="text-xs text-gray-500 dark:text-gray-400">Instant confirm</p>
                             </div>
-                            <div class="ml-auto opacity-0 peer-checked:opacity-100 transition-opacity">
+                            <div class="ml-auto opacity-0 peer-checked:opacity-100 transition-opacity shrink-0">
                                 <svg class="w-5 h-5 text-primary-600 dark:text-primary-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
                                 </svg>
                             </div>
                         </div>
                     </label>
 
-                    <label class="relative cursor-pointer group">
+                    {{-- QR --}}
+                    <label class="relative cursor-pointer">
                         <input type="radio" wire:model.live="payment_method" value="qr" class="sr-only peer">
                         <div class="flex items-center gap-4 p-4 rounded-xl border-2 transition-all duration-200
                                     bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600
                                     peer-checked:border-primary-600 peer-checked:bg-primary-50 dark:peer-checked:bg-primary-900/30 dark:peer-checked:border-primary-500/50
                                     hover:border-primary-400 dark:hover:border-primary-500/50
                                     peer-focus-visible:ring-2 peer-focus-visible:ring-primary-500/50">
-                            <div class="p-3 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
-                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <div class="p-2.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 shrink-0">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v1m6 11h2m-6 0h-2m4 0v-1M5 7h6m6 0h2M5 11h6m6 0h2M5 15h6m6 0h2M5 19h6m6 0h2"/>
                                 </svg>
                             </div>
-                            <div>
-                                <p class="font-semibold text-gray-900 dark:text-white">QR Code (PayMongo)</p>
-                                <p class="text-xs text-gray-500 dark:text-gray-400">Scan with any e-wallet or bank</p>
+                            <div class="min-w-0">
+                                <p class="font-semibold text-gray-900 dark:text-white">QR Code</p>
+                                <p class="text-xs text-gray-500 dark:text-gray-400">Scan via PayMongo</p>
                             </div>
-                            <div class="ml-auto opacity-0 peer-checked:opacity-100 transition-opacity">
+                            <div class="ml-auto opacity-0 peer-checked:opacity-100 transition-opacity shrink-0">
                                 <svg class="w-5 h-5 text-primary-600 dark:text-primary-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
                                 </svg>
                             </div>
                         </div>
@@ -1057,72 +1146,117 @@ class extends Component {
                 </div>
 
                 @if($payment_method === 'qr')
-                    <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
-                        A dynamic QR code will be generated via PayMongo. The booking stays
-                        <strong>pending</strong> until the customer scans and pays.
-                    </p>
+                    <div class="flex items-start gap-2.5 p-3 rounded-xl border border-blue-200/70 dark:border-blue-500/30 bg-blue-50/60 dark:bg-blue-500/[0.06] text-xs text-blue-800 dark:text-blue-300">
+                        <svg class="w-3.5 h-3.5 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                        <span class="leading-relaxed">
+                            A dynamic QR code will be generated via PayMongo. The booking stays <strong>pending</strong> until the customer scans and pays.
+                        </span>
+                    </div>
                 @endif
             </div>
         </div>
 
-        {{-- Summary --}}
+        {{-- ═══════════ RIGHT COLUMN — Summary ═══════════ --}}
         <div class="space-y-4 lg:sticky lg:top-24">
-            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5">
-                <h3 class="font-bold text-gray-900 dark:text-white mb-3">Selected Items</h3>
-                <div class="space-y-2 max-h-64 overflow-y-auto">
+            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 space-y-4">
+
+                <div class="flex items-center gap-3">
+                    <span class="w-5 h-px bg-primary-600"></span>
+                    <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                        Booking Summary
+                    </h2>
+                </div>
+
+                {{-- Guest line --}}
+                @if($customerName)
+                    <div class="text-xs">
+                        <p class="text-gray-500 dark:text-gray-400">Guest</p>
+                        <p class="font-medium text-gray-900 dark:text-white mt-0.5 truncate">{{ $customerName }}</p>
+                    </div>
+                @endif
+
+                {{-- Duration line --}}
+                @if($check_in && $check_out)
+                    <div class="text-xs">
+                        <p class="text-gray-500 dark:text-gray-400">Duration</p>
+                        <p class="font-medium text-gray-900 dark:text-white mt-0.5 tabular-nums">
+                            {{ \Carbon\Carbon::parse($check_in)->format('M j') }}
+                            →
+                            {{ \Carbon\Carbon::parse($check_out)->format('M j, Y') }}
+                            <span class="text-gray-400 dark:text-gray-500 font-normal">({{ $this->numberOfDays }} {{ $this->numberOfDays === 1 ? 'day' : 'days' }})</span>
+                        </p>
+                    </div>
+                @endif
+
+                {{-- Selected items --}}
+                <div class="pt-3 border-t border-gray-100 dark:border-gray-700/60 space-y-2 max-h-64 overflow-y-auto">
                     @forelse($selectedProperties as $id => $qty)
                         @php
                             $prop      = $this->selectedPropertyModels->get($id);
                             $days      = $this->numberOfDays;
                             $roomTotal = ($prop->price ?? 0) * $qty * $days;
                         @endphp
-                        <div class="flex justify-between items-center text-sm" wire:key="summary-property-{{ $id }}">
-                            <span class="text-gray-700 dark:text-gray-300 truncate">{{ $prop->name ?? 'Property' }} ×{{ $qty }}</span>
-                            <span class="font-semibold text-gray-900 dark:text-white">₱{{ number_format($roomTotal, 0) }}</span>
+                        <div class="flex justify-between items-center gap-3 text-xs" wire:key="summary-property-{{ $id }}">
+                            <span class="text-gray-700 dark:text-gray-300 truncate">{{ $prop->name ?? 'Property' }} ×{{ $qty }} · {{ $days }}d</span>
+                            <span class="font-semibold text-gray-900 dark:text-white tabular-nums shrink-0">₱{{ number_format($roomTotal, 0) }}</span>
                         </div>
                     @empty
-                        <p class="text-sm text-gray-500">No property selected.</p>
+                        <p class="text-xs text-gray-500 dark:text-gray-400">No property selected.</p>
                     @endforelse
 
                     @foreach($selectedServices as $id => $qty)
                         @php $service = $this->selectedServiceModels->get($id); @endphp
                         @if($service)
-                            <div class="flex justify-between items-center text-sm" wire:key="summary-service-{{ $id }}">
+                            <div class="flex justify-between items-center gap-3 text-xs" wire:key="summary-service-{{ $id }}">
                                 <span class="text-gray-700 dark:text-gray-300 truncate">{{ $service->name }}</span>
-                                <span class="font-semibold text-gray-900 dark:text-white">₱{{ number_format($service->price * $qty, 0) }}</span>
+                                <span class="font-semibold text-gray-900 dark:text-white tabular-nums shrink-0">₱{{ number_format($service->price * $qty, 0) }}</span>
                             </div>
                         @endif
                     @endforeach
                 </div>
 
-                <div class="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
-                    <div class="flex justify-between items-center">
-                        <span class="text-gray-500 dark:text-gray-400">Grand Total</span>
-                        <span class="text-2xl font-black text-primary-600 dark:text-primary-400">₱{{ number_format($totalAmount, 2) }}</span>
+                {{-- Grand total --}}
+                <div class="pt-4 border-t border-gray-200 dark:border-gray-700">
+                    <div class="flex items-baseline justify-between gap-3">
+                        <span class="text-sm text-gray-500 dark:text-gray-400">Grand Total</span>
+                        <span class="text-2xl font-black text-primary-600 dark:text-primary-400 tabular-nums">₱{{ number_format($totalAmount, 2) }}</span>
                     </div>
                 </div>
 
-                <button type="submit" wire:loading.attr="disabled" wire:target="submit"
-                        class="mt-4 w-full btn-primary py-3 disabled:opacity-50 disabled:cursor-not-allowed
-                               flex justify-center items-center active:scale-95 transition-transform
-                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                {{-- Submit --}}
+                <button type="submit"
+                        wire:loading.attr="disabled"
+                        wire:target="submit"
+                        class="w-full inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                               transition-all duration-200 active:scale-95
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                               disabled:opacity-60 disabled:cursor-not-allowed">
                     <span wire:loading.remove wire:target="submit">
-                        {{ $payment_method === 'qr' ? 'Generate QR & Create Booking' : 'Complete Checkout' }}
+                        {{ $payment_method === 'qr' ? 'Generate QR & Create Booking' : 'Complete Booking' }}
                     </span>
-                    <span wire:loading wire:target="submit" class="flex items-center gap-2">
-                        <svg class="animate-spin h-5 w-5 text-white motion-reduce:animate-none" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                    <span wire:loading wire:target="submit" class="inline-flex items-center gap-2">
+                        <svg class="animate-spin h-4 w-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                         </svg>
-                        Processing...
+                        Processing…
                     </span>
                 </button>
-                <a href="{{ route('tenant.bookings.index') }}" wire:navigate class="mt-2 w-full btn-secondary text-center py-2.5">Cancel</a>
+
+                {{-- Cancel --}}
+                <a href="{{ route('tenant.bookings.index') }}" wire:navigate
+                   class="w-full inline-flex items-center justify-center h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                          transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                    <span>Cancel</span>
+                </a>
             </div>
         </div>
     </form>
 
-    {{-- Calendar modal --}}
+    {{-- ═══ Calendar modal ═══ --}}
     @php
         $calendarProperty = $calendarPropertyId
             ? $this->properties->firstWhere('id', $calendarPropertyId)
@@ -1139,24 +1273,27 @@ class extends Component {
                  @click.outside="$wire.closeCalendar()">
 
                 <div class="flex items-center justify-between mb-3">
-                    <h3 class="text-lg font-bold text-gray-900 dark:text-white">
+                    <h3 class="text-base font-bold text-gray-900 dark:text-white truncate">
                         {{ $calendarProperty->name }} — Availability
                     </h3>
                     <button type="button" wire:click="closeCalendar"
-                            class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            aria-label="Close calendar"
+                            class="inline-flex items-center justify-center h-8 w-8 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700
+                                   transition-all duration-200 active:scale-95
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                         </svg>
                     </button>
                 </div>
 
                 <div class="mb-4">
-                    <p class="text-sm text-gray-600 dark:text-gray-300 mb-2">Booked dates:</p>
+                    <p class="text-xs text-gray-600 dark:text-gray-300 mb-2">Booked dates:</p>
                     @if(!empty($calendarProperty->booked_ranges))
                         <div class="flex flex-wrap gap-2">
                             @foreach($calendarProperty->booked_ranges as $range)
                                 <span wire:key="cal-range-{{ md5($range['display']) }}"
-                                      class="inline-block bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-300 rounded px-3 py-1 text-xs">
+                                      class="inline-block bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 rounded px-3 py-1 text-xs">
                                     {{ $range['display'] }}
                                 </span>
                             @endforeach
@@ -1169,7 +1306,10 @@ class extends Component {
                 <div class="space-y-4">
                     <div class="flex items-center justify-between">
                         <button type="button" @click="prevMonth()"
-                                class="w-8 h-8 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center justify-center text-gray-600 dark:text-gray-300 active:scale-95 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                aria-label="Previous month"
+                                class="inline-flex items-center justify-center h-9 w-9 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300
+                                       transition-all duration-200 active:scale-95
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                             </svg>
@@ -1177,7 +1317,10 @@ class extends Component {
                         <span class="text-sm font-semibold text-gray-900 dark:text-white"
                               x-text="currentMonthName + ' ' + currentYear"></span>
                         <button type="button" @click="nextMonth()"
-                                class="w-8 h-8 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center justify-center text-gray-600 dark:text-gray-300 active:scale-95 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                aria-label="Next month"
+                                class="inline-flex items-center justify-center h-9 w-9 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300
+                                       transition-all duration-200 active:scale-95
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                             </svg>
@@ -1192,7 +1335,7 @@ class extends Component {
                         <template x-for="day in daysInMonth" :key="day.date">
                             <div class="h-9 flex items-center justify-center text-sm font-medium rounded-lg"
                                  :class="{
-                                     'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300': day.isBooked,
+                                     'bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300': day.isBooked,
                                      'bg-gray-100 dark:bg-gray-700/50 text-gray-600 dark:text-gray-300': !day.isBooked
                                  }">
                                 <span x-text="day.dayNumber"></span>
@@ -1201,43 +1344,50 @@ class extends Component {
                     </div>
                 </div>
 
-                <button type="button" wire:click="closeCalendar"
-                        class="mt-4 w-full btn-primary py-2 rounded-lg active:scale-95 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                    Close
-                </button>
+                <div class="pt-4 mt-4 border-t border-gray-100 dark:border-gray-700/60 flex justify-end">
+                    <button type="button" wire:click="closeCalendar"
+                            class="inline-flex items-center justify-center h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                                   transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                        <span>Close</span>
+                    </button>
+                </div>
             </div>
         </div>
     @endif
 
-    {{-- QR Payment Modal --}}
+    {{-- ═══ QR Payment modal ═══ --}}
     @if($showQrModal && $qrImage)
         <div class="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
              x-on:keydown.escape.window="$wire.cancelQrPayment()">
             <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl max-w-md w-full p-6"
                  @click.outside="$wire.closeQrModal()">
 
-                <div class="flex items-center justify-between mb-4">
-                    <div>
-                        <h3 class="text-lg font-bold text-gray-900 dark:text-white">Scan to Pay</h3>
+                <div class="flex items-start justify-between mb-4 gap-3">
+                    <div class="min-w-0">
+                        <h3 class="text-base font-bold text-gray-900 dark:text-white">Scan to Pay</h3>
                         <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
                             Open any e-wallet or bank app to scan
                         </p>
                     </div>
                     <button type="button" wire:click="closeQrModal"
-                            class="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            aria-label="Close QR modal"
+                            class="inline-flex items-center justify-center h-8 w-8 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700
+                                   transition-all duration-200 active:scale-95
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                         </svg>
                     </button>
                 </div>
 
                 <div class="bg-white rounded-2xl p-4 flex items-center justify-center border-2 border-gray-200 dark:border-gray-700 mb-4">
-                    <img src="{{ $qrImage }}" alt="PayMongo QR Code" class="w-64 h-64 object-contain">
+                    <img src="{{ $qrImage }}" alt="PayMongo QR Code" class="w-64 h-64 object-contain" wire:key="qr-image">
                 </div>
 
                 <div class="text-center mb-5">
-                    <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Amount due</p>
-                    <p class="text-2xl font-black text-primary-600 dark:text-primary-400 mt-1">
+                    <p class="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wider">Amount due</p>
+                    <p class="text-2xl font-black text-primary-600 dark:text-primary-400 mt-1 tabular-nums">
                         ₱{{ number_format($totalAmount, 2) }}
                     </p>
                     @if($qrExpiresAt)
@@ -1260,13 +1410,24 @@ class extends Component {
                     <button type="button" wire:click="checkQrPayment"
                             wire:loading.attr="disabled"
                             wire:target="checkQrPayment"
-                            class="flex-1 btn-secondary py-2.5 text-sm active:scale-95 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 disabled:opacity-60">
+                            class="flex-1 inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                   transition-all duration-200 active:scale-95
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                                   disabled:opacity-60 disabled:cursor-not-allowed">
                         <span wire:loading.remove wire:target="checkQrPayment">Check Now</span>
-                        <span wire:loading wire:target="checkQrPayment">Checking…</span>
+                        <span wire:loading wire:target="checkQrPayment" class="inline-flex items-center gap-2">
+                            <svg class="animate-spin h-4 w-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                            </svg>
+                            Checking…
+                        </span>
                     </button>
                     <button type="button" wire:click="cancelQrPayment"
-                            class="flex-1 btn-secondary py-2.5 text-sm active:scale-95 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                        Pay Later
+                            class="flex-1 inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                                   transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                        <span>Pay later</span>
                     </button>
                 </div>
 
@@ -1276,61 +1437,66 @@ class extends Component {
             </div>
         </div>
     @endif
-
 </div>
 
+@script
 <script>
-    function propertyCalendar(bookedDates) {
-        return {
-            bookedDates: bookedDates || [],
-            currentMonth: new Date().getMonth(),
-            currentYear: new Date().getFullYear(),
+    if (! window.__bookingCalendarRegistered) {
+        window.__bookingCalendarRegistered = true;
 
-            get daysInMonth() {
-                const year = this.currentYear;
-                const month = this.currentMonth;
-                const days = [];
-                const totalDays = new Date(year, month + 1, 0).getDate();
+        window.propertyCalendar = function (bookedDates) {
+            return {
+                bookedDates: bookedDates || [],
+                currentMonth: new Date().getMonth(),
+                currentYear: new Date().getFullYear(),
 
-                for (let day = 1; day <= totalDays; day++) {
-                    const dateObj = new Date(year, month, day);
-                    const dateStr = dateObj.getFullYear() + '-'
-                        + String(dateObj.getMonth() + 1).padStart(2, '0') + '-'
-                        + String(dateObj.getDate()).padStart(2, '0');
+                get daysInMonth() {
+                    const year = this.currentYear;
+                    const month = this.currentMonth;
+                    const days = [];
+                    const totalDays = new Date(year, month + 1, 0).getDate();
 
-                    days.push({
-                        date: dateStr,
-                        dayNumber: day,
-                        isBooked: this.bookedDates.includes(dateStr),
-                    });
+                    for (let day = 1; day <= totalDays; day++) {
+                        const dateObj = new Date(year, month, day);
+                        const dateStr = dateObj.getFullYear() + '-'
+                            + String(dateObj.getMonth() + 1).padStart(2, '0') + '-'
+                            + String(dateObj.getDate()).padStart(2, '0');
+
+                        days.push({
+                            date: dateStr,
+                            dayNumber: day,
+                            isBooked: this.bookedDates.includes(dateStr),
+                        });
+                    }
+                    return days;
+                },
+
+                get firstDayOffset() {
+                    return new Date(this.currentYear, this.currentMonth, 1).getDay();
+                },
+
+                get currentMonthName() {
+                    return new Date(this.currentYear, this.currentMonth)
+                        .toLocaleDateString('en-US', { month: 'long' });
+                },
+
+                prevMonth() {
+                    this.currentMonth--;
+                    if (this.currentMonth < 0) {
+                        this.currentMonth = 11;
+                        this.currentYear--;
+                    }
+                },
+
+                nextMonth() {
+                    this.currentMonth++;
+                    if (this.currentMonth > 11) {
+                        this.currentMonth = 0;
+                        this.currentYear++;
+                    }
                 }
-                return days;
-            },
-
-            get firstDayOffset() {
-                return new Date(this.currentYear, this.currentMonth, 1).getDay();
-            },
-
-            get currentMonthName() {
-                return new Date(this.currentYear, this.currentMonth)
-                    .toLocaleDateString('en-US', { month: 'long' });
-            },
-
-            prevMonth() {
-                this.currentMonth--;
-                if (this.currentMonth < 0) {
-                    this.currentMonth = 11;
-                    this.currentYear--;
-                }
-            },
-
-            nextMonth() {
-                this.currentMonth++;
-                if (this.currentMonth > 11) {
-                    this.currentMonth = 0;
-                    this.currentYear++;
-                }
-            }
+            };
         };
     }
 </script>
+@endscript

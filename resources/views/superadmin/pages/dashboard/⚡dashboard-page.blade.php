@@ -26,9 +26,7 @@ class extends Component
     //  Stats — consolidated aggregates
     // ─────────────────────────────────────────────────────────
 
-    /**
-     * @return array<string, int>
-     */
+    /** @return array<string, int> */
     #[Computed]
     public function stats(): array
     {
@@ -36,7 +34,6 @@ class extends Component
         $weekAgo      = $now->copy()->subDays(7);
         $startOfMonth = $now->copy()->startOfMonth();
 
-        // Tenants — 1 aggregate query
         $tenantStats = Tenant::query()
             ->selectRaw('
                 COUNT(*) as total,
@@ -47,7 +44,6 @@ class extends Component
             ', [$weekAgo, $startOfMonth])
             ->first();
 
-        // Events — 1 aggregate query
         $eventStats = Event::query()
             ->selectRaw('
                 COUNT(*) as total,
@@ -91,9 +87,6 @@ class extends Component
             ->get();
     }
 
-    /**
-     * The next 3 upcoming active events (public visibility).
-     */
     #[Computed]
     public function upcomingEvents()
     {
@@ -106,13 +99,7 @@ class extends Component
             ->get();
     }
 
-    /**
-     * Tenant registration counts for the last 6 months.
-     *
-     * ONE grouped query instead of six per-month counts.
-     *
-     * @return array<int, array{label: string, value: int}>
-     */
+    /** @return array<int, array{label: string, value: int}> */
     #[Computed]
     public function tenantSparkline(): array
     {
@@ -137,9 +124,7 @@ class extends Component
         return $data;
     }
 
-    /**
-     * @return array<string, string>
-     */
+    /** @return array<string, string> */
     #[Computed]
     public function systemInfo(): array
     {
@@ -161,176 +146,190 @@ class extends Component
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto space-y-8" wire:poll.60s>
+@push('scripts')
+    @once
+        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
+    @endonce
+@endpush
 
-    {{-- ═══════════════ HEADER ═══════════════ --}}
-    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 pb-2 border-b border-gray-200/80 dark:border-gray-800">
+@php $s = $this->stats; @endphp
+
+<div class="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6" wire:poll.60s>
+
+    {{-- ═══ Page header ═══ --}}
+    <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
         <div>
-            <div class="flex items-center gap-2">
-                <h1 class="text-2xl sm:text-3xl font-extrabold tracking-tight text-gray-900 dark:text-white">
-                    Platform Dashboard
+            <div class="flex items-center gap-2 mb-2">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Platform</span>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+                <h1 class="font-display text-3xl md:text-4xl font-semibold text-gray-900 dark:text-white">
+                    Platform <em class="italic text-primary-600 dark:text-primary-400">Dashboard</em>
                 </h1>
-                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider
-                             bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-400
-                             border border-emerald-200 dark:border-emerald-800">
-                    <span class="w-1.5 h-1.5 mr-1.5 rounded-full bg-emerald-500 animate-pulse motion-reduce:animate-none"></span>
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider
+                             bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300
+                             border border-emerald-200 dark:border-emerald-500/30">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse motion-reduce:animate-none"></span>
                     Live · 60s
                 </span>
             </div>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                Super Admin Overview · {{ $this->serverTime->format('F j, Y') }}
+            <p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-2 tabular-nums">
+                {{ $this->serverTime->format('l, F j, Y · H:i') }}
+                · <span class="font-medium text-gray-700 dark:text-gray-300">{{ app()->environment() }}</span>
             </p>
         </div>
 
-        <div class="text-left md:text-right">
-            <div class="text-xs text-gray-500 dark:text-gray-400">
-                System time
-                <span class="text-gray-700 dark:text-gray-200 font-medium tabular-nums">
-                    {{ $this->serverTime->format('D, d M Y · H:i') }}
-                </span>
-            </div>
-            <div class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                Environment
-                <span class="text-gray-700 dark:text-gray-200 font-medium">{{ app()->environment() }}</span>
-            </div>
-        </div>
+        <a href="{{ route('superadmin.analytics') }}" wire:navigate
+           class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                  transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+            </svg>
+            <span>View Analytics</span>
+        </a>
     </div>
 
-    {{-- ═══════════════ QUICK ACTIONS ═══════════════ --}}
-    <div class="flex flex-wrap gap-2">
+    {{-- ═══ Quick actions toolbar ═══ --}}
+    <div class="flex flex-wrap items-center gap-2">
         <a href="{{ route('superadmin.tenants.create') }}" wire:navigate
-           class="btn-primary text-sm active:scale-95 transition-transform
-                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                  inline-flex items-center gap-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+           class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                  transition-all duration-200 active:scale-95
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
             </svg>
-            Add Tenant
+            <span>Add Tenant</span>
         </a>
         <a href="{{ route('superadmin.users.index') }}" wire:navigate
-           class="btn-secondary text-sm active:scale-95 transition-transform
-                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                  inline-flex items-center gap-2">
-            Manage Users
-        </a>
-        <a href="{{ route('superadmin.analytics') }}" wire:navigate
-           class="btn-secondary text-sm active:scale-95 transition-transform
-                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                  inline-flex items-center gap-2">
-            View Reports
-        </a>
-        <a href="{{ route('superadmin.homepage.editor') }}" wire:navigate
-           class="btn-secondary text-sm active:scale-95 transition-transform
-                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                  inline-flex items-center gap-2">
-            Edit Site Settings
+           class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                  transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+            </svg>
+            <span>Manage Users</span>
         </a>
         <a href="{{ route('superadmin.events.index') }}" wire:navigate
-           class="btn-secondary text-sm active:scale-95 transition-transform
-                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                  inline-flex items-center gap-2">
-            Manage Events
+           class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                  transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+            </svg>
+            <span>Manage Events</span>
+        </a>
+        <a href="{{ route('superadmin.homepage.editor') }}" wire:navigate
+           class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                  transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+            </svg>
+            <span>Site Settings</span>
         </a>
     </div>
 
-    {{-- ═══════════════ KPI CARDS ═══════════════ --}}
-    @php $s = $this->stats; @endphp
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {{-- Total Tenants --}}
-        <div class="bg-white dark:bg-gray-800/90 p-5 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm
-                    hover:shadow-md transition-shadow duration-200">
-            <div class="flex items-center justify-between">
-                <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total Tenants</p>
-                <div class="p-2 bg-primary-50 dark:bg-primary-950/50 rounded-xl text-primary-600 dark:text-primary-400">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
-                    </svg>
-                </div>
-            </div>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2 tabular-nums">{{ number_format($s['total_tenants']) }}</p>
-            <p class="text-xs font-medium text-emerald-600 dark:text-emerald-400 mt-2">{{ $s['active_tenants'] }} active</p>
-        </div>
+    {{-- ═══ Unified KPI strip — tenants + events in one row ═══ --}}
+    <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+        @php
+            $kpi = [
+                [
+                    'label' => 'Total Tenants',
+                    'value' => $s['total_tenants'],
+                    'sub'   => $s['active_tenants'] . ' active',
+                    'dot'   => 'bg-primary-500',
+                    'sub_color' => 'text-emerald-600 dark:text-emerald-400',
+                ],
+                [
+                    'label' => 'Active',
+                    'value' => $s['active_tenants'],
+                    'sub'   => 'Operational',
+                    'dot'   => 'bg-emerald-500',
+                    'sub_color' => 'text-gray-500 dark:text-gray-400',
+                ],
+                [
+                    'label' => 'Pending',
+                    'value' => $s['pending_tenants'],
+                    'sub'   => 'Awaiting action',
+                    'dot'   => 'bg-amber-500',
+                    'sub_color' => 'text-gray-500 dark:text-gray-400',
+                    'value_color' => 'text-amber-600 dark:text-amber-400',
+                ],
+                [
+                    'label' => 'New (Week)',
+                    'value' => $s['new_this_week'],
+                    'sub'   => 'Onboarded',
+                    'dot'   => 'bg-purple-500',
+                    'sub_color' => 'text-gray-500 dark:text-gray-400',
+                ],
+                [
+                    'label' => 'Events',
+                    'value' => $s['total_events'],
+                    'sub'   => $s['upcoming_events'] . ' upcoming',
+                    'dot'   => 'bg-sky-500',
+                    'sub_color' => 'text-gray-500 dark:text-gray-400',
+                ],
+                [
+                    'label' => 'Featured',
+                    'value' => $s['featured_events'],
+                    'sub'   => 'Highlighted',
+                    'dot'   => 'bg-amber-500',
+                    'sub_color' => 'text-gray-500 dark:text-gray-400',
+                ],
+                [
+                    'label' => 'Users',
+                    'value' => $s['total_users'],
+                    'sub'   => $s['total_roles'] . ' custom roles',
+                    'dot'   => 'bg-indigo-500',
+                    'sub_color' => 'text-gray-500 dark:text-gray-400',
+                ],
+            ];
+        @endphp
 
-        {{-- Active Tenants --}}
-        <div class="bg-white dark:bg-gray-800/90 p-5 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm
-                    hover:shadow-md transition-shadow duration-200">
-            <div class="flex items-center justify-between">
-                <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Active</p>
-                <div class="p-2 bg-emerald-50 dark:bg-emerald-950/50 rounded-xl text-emerald-600 dark:text-emerald-400">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                    </svg>
+        @foreach($kpi as $i => $card)
+            <div wire:key="kpi-{{ $i }}"
+                 class="bg-white dark:bg-gray-800/90 rounded-xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-3.5">
+                <div class="flex items-center gap-1.5">
+                    <span class="w-1.5 h-1.5 rounded-full {{ $card['dot'] }}"></span>
+                    <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 truncate">{{ $card['label'] }}</span>
                 </div>
+                <p class="mt-1.5 text-xl font-bold {{ $card['value_color'] ?? 'text-gray-900 dark:text-white' }} tabular-nums">
+                    {{ number_format($card['value']) }}
+                </p>
+                <p class="text-[10px] font-medium {{ $card['sub_color'] }} mt-0.5 uppercase tracking-wider truncate">{{ $card['sub'] }}</p>
             </div>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2 tabular-nums">{{ number_format($s['active_tenants']) }}</p>
-            <p class="text-xs font-medium text-gray-500 dark:text-gray-400 mt-2">Operational</p>
-        </div>
-
-        {{-- Pending --}}
-        <div class="bg-white dark:bg-gray-800/90 p-5 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm
-                    hover:shadow-md transition-shadow duration-200">
-            <div class="flex items-center justify-between">
-                <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Pending</p>
-                <div class="p-2 bg-amber-50 dark:bg-amber-950/50 rounded-xl text-amber-600 dark:text-amber-400">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                    </svg>
-                </div>
-            </div>
-            <p class="text-2xl font-bold text-amber-600 dark:text-amber-400 mt-2 tabular-nums">{{ number_format($s['pending_tenants']) }}</p>
-            <p class="text-xs font-medium text-gray-500 dark:text-gray-400 mt-2">Awaiting action</p>
-        </div>
-
-        {{-- New This Week --}}
-        <div class="bg-white dark:bg-gray-800/90 p-5 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm
-                    hover:shadow-md transition-shadow duration-200">
-            <div class="flex items-center justify-between">
-                <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">New (Week)</p>
-                <div class="p-2 bg-purple-50 dark:bg-purple-950/50 rounded-xl text-purple-600 dark:text-purple-400">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
-                    </svg>
-                </div>
-            </div>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2 tabular-nums">{{ number_format($s['new_this_week']) }}</p>
-            <p class="text-xs font-medium text-gray-500 dark:text-gray-400 mt-2">Onboarded</p>
-        </div>
+        @endforeach
     </div>
 
-    {{-- ═══════════════ EVENTS OVERVIEW ═══════════════ --}}
-    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div class="bg-white dark:bg-gray-800/90 p-4 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm">
-            <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total Events</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2 tabular-nums">{{ number_format($s['total_events']) }}</p>
-        </div>
-        <div class="bg-white dark:bg-gray-800/90 p-4 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm">
-            <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Upcoming</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2 tabular-nums">{{ number_format($s['upcoming_events']) }}</p>
-        </div>
-        <div class="bg-white dark:bg-gray-800/90 p-4 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm">
-            <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">Featured</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2 tabular-nums">{{ number_format($s['featured_events']) }}</p>
-        </div>
-    </div>
-
-    {{-- ═══════════════ PENDING APPROVAL CALLOUT ═══════════════ --}}
+    {{-- ═══ Pending approval callout ═══ --}}
     @if($s['pending_tenants'] > 0)
-        <div class="bg-amber-50 dark:bg-amber-900/20 border-l-4 border-amber-500 rounded-2xl p-5 shadow-sm">
+        <div class="bg-amber-50 dark:bg-amber-500/[0.06] border-l-4 border-amber-500 rounded-2xl p-4 sm:p-5 shadow-sm">
             <div class="flex flex-wrap items-center justify-between gap-4">
-                <div>
-                    <p class="font-semibold text-amber-700 dark:text-amber-400">Action Required: Pending Approvals</p>
-                    <p class="text-sm text-amber-600/80 dark:text-amber-300 mt-1">
-                        {{ $s['pending_tenants'] }} {{ \Illuminate\Support\Str::plural('business', $s['pending_tenants']) }} waiting for activation.
-                    </p>
+                <div class="flex items-start gap-3 min-w-0">
+                    <svg class="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    <div class="min-w-0">
+                        <p class="font-semibold text-amber-900 dark:text-amber-200">
+                            Pending Approvals
+                        </p>
+                        <p class="text-xs sm:text-sm text-amber-800/80 dark:text-amber-300/80 mt-0.5">
+                            {{ $s['pending_tenants'] }} {{ \Illuminate\Support\Str::plural('business', $s['pending_tenants']) }} waiting for activation.
+                        </p>
+                    </div>
                 </div>
                 <a href="{{ route('superadmin.tenants.index') }}" wire:navigate
-                   class="inline-flex items-center gap-1 px-4 py-2 rounded-full
-                          bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300
-                          text-sm font-semibold border border-amber-200 dark:border-amber-500/30
-                          hover:bg-amber-200 dark:hover:bg-amber-500/30 transition active:scale-95
+                   class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg
+                          border border-amber-300 dark:border-amber-500/40
+                          bg-white dark:bg-gray-800 text-amber-700 dark:text-amber-300
+                          text-xs font-semibold
+                          transition-all duration-200 active:scale-95
+                          hover:bg-amber-50 dark:hover:bg-amber-500/10
                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50">
-                    Review Tenants
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <span>Review Tenants</span>
+                    <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                     </svg>
                 </a>
@@ -338,65 +337,79 @@ class extends Component
         </div>
     @endif
 
-    {{-- ═══════════════ TENANT GROWTH SPARKLINE ═══════════════ --}}
-    <div class="bg-white dark:bg-gray-800/90 p-6 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm">
-        <div class="flex items-center justify-between mb-6">
-            <div>
-                <h2 class="text-lg font-bold text-gray-900 dark:text-white">Tenant Growth</h2>
-                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">New tenant registrations over the last 6 months.</p>
+    {{-- ═══ Tenant growth sparkline ═══ --}}
+    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6">
+        <div class="flex items-start justify-between gap-3 mb-4">
+            <div class="min-w-0">
+                <h2 class="text-sm font-semibold text-gray-900 dark:text-white truncate">Tenant Growth</h2>
+                <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 truncate">New registrations over the last 6 months.</p>
             </div>
-            <div class="hidden sm:flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-                <span class="w-3 h-3 rounded-full bg-cyan-500 inline-block"></span>
+            <span class="inline-flex items-center gap-1.5 text-[10px] text-gray-500 dark:text-gray-400 shrink-0">
+                <span class="w-2 h-2 rounded-full bg-cyan-500 inline-block" aria-hidden="true"></span>
                 New Tenants
-            </div>
+            </span>
         </div>
+
         <div id="chart-container"
              data-sparkline="{{ json_encode($this->tenantSparkline, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
-             class="w-full h-40 relative"
-             wire:ignore>
-            <canvas id="sparklineChart"></canvas>
+             class="w-full h-40 relative">
+            <div class="w-full h-full" wire:ignore>
+                <canvas id="sparklineChart"></canvas>
+            </div>
         </div>
     </div>
 
-    {{-- ═══════════════ RECENT ACTIVITY ═══════════════ --}}
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    {{-- ═══ Recent activity — tenants + users ═══ --}}
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
         {{-- Recent Tenants --}}
         <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm overflow-hidden flex flex-col">
-            <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
-                <h2 class="font-bold text-gray-900 dark:text-white">Recently Onboarded</h2>
+            <div class="px-5 py-3.5 border-b border-gray-100 dark:border-gray-700/60 flex justify-between items-center">
+                <div class="flex items-center gap-3">
+                    <span class="w-5 h-px bg-primary-600"></span>
+                    <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                        Recently Onboarded
+                    </h2>
+                </div>
                 <a href="{{ route('superadmin.tenants.index') }}" wire:navigate
-                   class="inline-flex items-center gap-1 text-sm font-semibold text-primary-600 dark:text-primary-400
+                   class="inline-flex items-center gap-1 text-xs font-semibold text-primary-600 dark:text-primary-400
                           hover:text-primary-700 dark:hover:text-primary-300
                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded
                           active:scale-95 transition">
-                    View all
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <span>View all</span>
+                    <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                     </svg>
                 </a>
             </div>
-            <div class="p-6 space-y-3 flex-1">
+            <div class="p-4 space-y-2 flex-1">
                 @forelse($this->recentTenants as $tenant)
                     <div wire:key="tenant-{{ $tenant->id }}"
                          class="flex items-center gap-3 p-3 rounded-xl
-                                bg-gray-50 dark:bg-gray-800/50 border border-gray-200/60 dark:border-gray-700
-                                hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-colors">
-                        <div class="w-10 h-10 rounded-lg bg-blue-100 dark:bg-blue-500/10
-                                    border border-blue-200 dark:border-blue-500/20
+                                bg-gray-50 dark:bg-gray-900/40 border border-gray-200/60 dark:border-gray-700/60
+                                hover:bg-gray-100 dark:hover:bg-gray-700/40 transition-colors">
+                        <div class="w-10 h-10 rounded-lg bg-primary-50 dark:bg-primary-500/15
+                                    border border-primary-200/50 dark:border-primary-500/20
                                     flex items-center justify-center font-bold text-sm
-                                    text-blue-700 dark:text-blue-400 shrink-0">
+                                    text-primary-700 dark:text-primary-300 shrink-0">
                             {{ strtoupper(substr($tenant->name, 0, 1)) }}
                         </div>
                         <div class="flex-1 min-w-0">
                             <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">{{ $tenant->name }}</p>
-                            <p class="text-xs text-gray-500 dark:text-gray-400">{{ $tenant->created_at->diffForHumans() }}</p>
+                            <p class="text-[11px] text-gray-500 dark:text-gray-400 truncate tabular-nums">
+                                {{ $tenant->created_at->diffForHumans() }}
+                            </p>
                         </div>
                         <a href="{{ route('superadmin.tenants.edit', $tenant->id) }}" wire:navigate
-                           class="text-xs font-semibold text-primary-600 dark:text-primary-400
-                                  hover:text-primary-700 dark:hover:text-primary-300 shrink-0 p-1 rounded
-                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition">
-                            Manage
+                           aria-label="Manage {{ $tenant->name }}"
+                           title="Manage"
+                           class="inline-flex items-center justify-center h-8 w-8 rounded-lg text-primary-600 dark:text-primary-400
+                                  hover:bg-primary-50 dark:hover:bg-primary-500/10
+                                  transition-all duration-200 active:scale-95
+                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 shrink-0">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                            </svg>
                         </a>
                     </div>
                 @empty
@@ -412,37 +425,42 @@ class extends Component
 
         {{-- Recent Users --}}
         <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm overflow-hidden flex flex-col">
-            <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
-                <h2 class="font-bold text-gray-900 dark:text-white">Recent User Registrations</h2>
+            <div class="px-5 py-3.5 border-b border-gray-100 dark:border-gray-700/60 flex justify-between items-center">
+                <div class="flex items-center gap-3">
+                    <span class="w-5 h-px bg-primary-600"></span>
+                    <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                        Recent Registrations
+                    </h2>
+                </div>
                 <a href="{{ route('superadmin.users.index') }}" wire:navigate
-                   class="inline-flex items-center gap-1 text-sm font-semibold text-primary-600 dark:text-primary-400
+                   class="inline-flex items-center gap-1 text-xs font-semibold text-primary-600 dark:text-primary-400
                           hover:text-primary-700 dark:hover:text-primary-300
                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded
                           active:scale-95 transition">
-                    View all
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <span>View all</span>
+                    <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                     </svg>
                 </a>
             </div>
-            <div class="p-6 space-y-3 flex-1">
+            <div class="p-4 space-y-2 flex-1">
                 @forelse($this->recentUsers as $user)
                     <div wire:key="user-{{ $user->id }}"
                          class="flex items-center gap-3 p-3 rounded-xl
-                                bg-gray-50 dark:bg-gray-800/50 border border-gray-200/60 dark:border-gray-700
-                                hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-colors">
-                        <div class="w-10 h-10 rounded-lg bg-purple-100 dark:bg-purple-500/10
-                                    border border-purple-200 dark:border-purple-500/20
+                                bg-gray-50 dark:bg-gray-900/40 border border-gray-200/60 dark:border-gray-700/60
+                                hover:bg-gray-100 dark:hover:bg-gray-700/40 transition-colors">
+                        <div class="w-10 h-10 rounded-lg bg-indigo-50 dark:bg-indigo-500/15
+                                    border border-indigo-200/50 dark:border-indigo-500/20
                                     flex items-center justify-center font-bold text-sm
-                                    text-purple-700 dark:text-purple-400 shrink-0">
+                                    text-indigo-700 dark:text-indigo-300 shrink-0">
                             {{ strtoupper(substr($user->name, 0, 1)) }}
                         </div>
                         <div class="flex-1 min-w-0">
                             <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">{{ $user->name }}</p>
-                            <p class="text-xs text-gray-500 dark:text-gray-400 truncate">{{ $user->email }}</p>
+                            <p class="text-[11px] text-gray-500 dark:text-gray-400 truncate">{{ $user->email }}</p>
                         </div>
                         <span class="text-[10px] text-gray-500 dark:text-gray-400 shrink-0
-                                     bg-white dark:bg-gray-900 px-2 py-1 rounded-md
+                                     bg-white dark:bg-gray-900 px-2 py-1 rounded-md tabular-nums
                                      border border-gray-200 dark:border-gray-700">
                             {{ $user->created_at->diffForHumans() }}
                         </span>
@@ -459,42 +477,49 @@ class extends Component
         </div>
     </div>
 
-    {{-- ═══════════════ UPCOMING EVENTS ═══════════════ --}}
+    {{-- ═══ Upcoming events ═══ --}}
     <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm overflow-hidden">
-        <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
-            <div>
-                <h2 class="font-bold text-gray-900 dark:text-white">Upcoming Events</h2>
-                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Next active events across the platform.</p>
+        <div class="px-5 py-3.5 border-b border-gray-100 dark:border-gray-700/60 flex justify-between items-center">
+            <div class="flex items-center gap-3">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <div>
+                    <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                        Upcoming Events
+                    </h2>
+                    <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">Next active events across the platform.</p>
+                </div>
             </div>
             <a href="{{ route('superadmin.events.index') }}" wire:navigate
-               class="inline-flex items-center gap-1 text-sm font-semibold text-primary-600 dark:text-primary-400
+               class="inline-flex items-center gap-1 text-xs font-semibold text-primary-600 dark:text-primary-400
                       hover:text-primary-700 dark:hover:text-primary-300
                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded
                       active:scale-95 transition">
-                View all
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <span>View all</span>
+                <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                 </svg>
             </a>
         </div>
 
         @if($this->upcomingEvents->isNotEmpty())
-            <div class="p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div class="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 @foreach($this->upcomingEvents as $event)
                     <a href="{{ route('superadmin.events.edit', $event) }}" wire:navigate
                        wire:key="upcoming-{{ $event->id }}"
                        class="group flex items-start gap-3 p-3 rounded-xl
-                              bg-gray-50 dark:bg-gray-800/50 border border-gray-200/60 dark:border-gray-700
-                              hover:bg-gray-100 dark:hover:bg-gray-700/60 hover:border-primary-200 dark:hover:border-primary-500/30
-                              transition-colors
+                              bg-gray-50 dark:bg-gray-900/40 border border-gray-200/60 dark:border-gray-700/60
+                              hover:bg-gray-100 dark:hover:bg-gray-700/40 hover:border-primary-200 dark:hover:border-primary-500/30
+                              transition-all duration-200 active:scale-[0.99]
                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                         <div class="w-14 h-14 rounded-lg overflow-hidden shrink-0
-                                    bg-gradient-to-br from-primary-100 to-primary-50 dark:from-primary-900/40 dark:to-primary-800/20
+                                    bg-gradient-to-br from-primary-100 to-primary-50 dark:from-primary-500/15 dark:to-primary-500/5
                                     border border-primary-200/60 dark:border-primary-500/20 flex items-center justify-center">
                             @if($event->image_path)
                                 <img src="{{ asset('storage/' . $event->image_path) }}"
                                      class="w-full h-full object-cover"
-                                     alt="{{ $event->name }}">
+                                     alt="{{ $event->name }}"
+                                     loading="lazy"
+                                     decoding="async">
                             @else
                                 <svg class="w-6 h-6 text-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
@@ -508,23 +533,22 @@ class extends Component
                             <p class="text-sm font-semibold text-gray-900 dark:text-white truncate mt-0.5">
                                 {{ $event->name }}
                             </p>
-                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 flex items-center gap-1">
+                            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-1 flex items-center gap-1 tabular-nums">
                                 <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                                 </svg>
                                 {{ $event->start_date?->format('M d, Y') ?? '—' }}
                             </p>
                             @if($event->barangay)
-                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{{ $event->barangay }}</p>
+                                <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 truncate">{{ $event->barangay }}</p>
                             @endif
                         </div>
                     </a>
                 @endforeach
             </div>
         @else
-            <div class="p-12 text-center">
-                <div class="w-14 h-14 mx-auto rounded-full bg-gray-100 dark:bg-gray-800
-                            flex items-center justify-center mb-3">
+            <div class="p-10 text-center">
+                <div class="w-14 h-14 mx-auto rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center mb-3">
                     <svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                     </svg>
@@ -535,11 +559,16 @@ class extends Component
         @endif
     </div>
 
-    {{-- ═══════════════ SYSTEM OVERVIEW ═══════════════ --}}
+    {{-- ═══ System overview ═══ --}}
     @php $sys = $this->systemInfo; @endphp
-    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6">
-        <h2 class="text-lg font-bold text-gray-900 dark:text-white mb-4">System Overview</h2>
-        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6">
+        <div class="flex items-center gap-3 mb-4">
+            <span class="w-5 h-px bg-primary-600"></span>
+            <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                System Overview
+            </h2>
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             @php
                 $infoCells = [
                     ['label' => 'PHP',         'value' => $sys['php']],
@@ -551,9 +580,9 @@ class extends Component
                 ];
             @endphp
             @foreach($infoCells as $cell)
-                <div class="bg-gray-50 dark:bg-gray-800/50 rounded-xl p-4 border border-gray-200/60 dark:border-gray-700/50">
-                    <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">{{ $cell['label'] }}</p>
-                    <p class="text-sm font-bold text-gray-900 dark:text-white mt-1.5 font-mono truncate" title="{{ $cell['value'] }}">
+                <div class="bg-gray-50 dark:bg-gray-900/40 rounded-xl p-3.5 border border-gray-200/60 dark:border-gray-700/60">
+                    <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ $cell['label'] }}</p>
+                    <p class="text-sm font-semibold text-gray-900 dark:text-white mt-1 font-mono truncate" title="{{ $cell['value'] }}">
                         {{ $cell['value'] }}
                     </p>
                 </div>
@@ -562,14 +591,13 @@ class extends Component
     </div>
 </div>
 
+{{-- ═══════════════════════════════════════════════════════════════════════
+     Sparkline wiring — UNCHANGED from the previous delivery.
+     ═══════════════════════════════════════════════════════════════════════ --}}
 <script>
 (function () {
     'use strict';
 
-    // ──────────────────────────────────────────────────────────
-    //  Module-level state on `window` so SPA re-registrations
-    //  can clean up the previous instance before rebuilding.
-    // ──────────────────────────────────────────────────────────
     if (window.__sparklineChart) {
         try { window.__sparklineChart.destroy(); } catch (e) { /* noop */ }
         window.__sparklineChart = null;
@@ -647,7 +675,6 @@ class extends Component
         const labels = data.map(d => d.label);
         const values = data.map(d => d.value);
 
-        // Update in place if the chart still points at the same canvas.
         if (window.__sparklineChart && window.__sparklineChart.canvas === canvas) {
             const chart = window.__sparklineChart;
             chart.data.labels = labels;
@@ -665,7 +692,6 @@ class extends Component
             return;
         }
 
-        // Otherwise destroy + create.
         if (window.__sparklineChart) {
             try { window.__sparklineChart.destroy(); } catch (e) { /* noop */ }
         }
@@ -692,10 +718,8 @@ class extends Component
         });
     };
 
-    // First render.
     window.renderDashboardSparkline();
 
-    // Hook into Livewire morphs + theme changes ONCE per page load.
     if (!window.__sparklineHooked) {
         window.__sparklineHooked = true;
 

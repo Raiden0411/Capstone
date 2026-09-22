@@ -24,7 +24,11 @@ class extends Component
     private const THROTTLE_KEY = 'paymongo_processing_throttle';
 
     public Booking $booking;
+
+    #[Locked]
     public bool $deadlinePassed = false;
+
+    #[Locked]
     public int $deadlineMinutes = Booking::PAYMENT_DEADLINE_MINUTES;
 
     #[Locked]
@@ -44,6 +48,18 @@ class extends Component
         abort_unless(Auth::id() === $booking->user_id, 403);
 
         $this->booking        = $booking;
+        $this->deadlinePassed = $this->computeDeadlinePassed();
+    }
+
+    /**
+     * Livewire re-hydrates the bound Booking by ID on every subsequent
+     * request. Re-verify ownership and recompute the deadline on every
+     * request — the client-dehydrated `deadlinePassed` cannot be trusted.
+     */
+    public function hydrate(): void
+    {
+        abort_unless(Auth::id() === $this->booking->user_id, 403);
+
         $this->deadlinePassed = $this->computeDeadlinePassed();
     }
 
@@ -98,8 +114,8 @@ class extends Component
 
             if ($snapshot['is_paid']) {
                 // Session has a successful payment — finalize via the service.
-                // Pass the session ID directly; the service does the DB work
-                // in a transaction with row locks (Golden Rule #4, #11).
+                // The service does the DB work in a transaction with row
+                // locks (Golden Rules #4, #11).
                 $payMongo->finalizeCheckoutSession($reference);
             }
         }
@@ -117,7 +133,9 @@ class extends Component
     public function forceCheck(PayMongoService $payMongo)
     {
         Cache::forget($this->throttleKey());
-        $this->lastGatewayStatus = null;
+        $this->lastGatewayStatus    = null;
+        $this->lastCheckedReference = null;
+        $this->lastPaymentCount     = null;
         return $this->checkStatus($payMongo);
     }
 
@@ -131,9 +149,9 @@ class extends Component
     protected function queryPayMongoCheckoutSnapshot(string $sessionId): array
     {
         $empty = [
-            'is_paid'         => false,
-            'status'          => null,
-            'payment_count'   => 0,
+            'is_paid'          => false,
+            'status'           => null,
+            'payment_count'    => 0,
             'payment_statuses' => [],
         ];
 
@@ -263,7 +281,7 @@ class extends Component
 
                 @if($deadlinePassed)
                     <div class="mx-auto flex items-center justify-center h-16 w-16 rounded-full bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
-                        <svg class="h-8 w-8 text-amber-600 dark:text-amber-400"
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-amber-600 dark:text-amber-400"
                              fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                   d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
@@ -281,7 +299,7 @@ class extends Component
                     </p>
                 @else
                     <div class="mx-auto flex items-center justify-center h-16 w-16 rounded-full bg-primary-50 dark:bg-primary-500/10 border border-primary-200 dark:border-primary-500/20">
-                        <svg class="h-8 w-8 text-primary-600 dark:text-primary-400 animate-spin motion-reduce:animate-none"
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-primary-600 dark:text-primary-400 animate-spin motion-reduce:animate-none"
                              fill="none" viewBox="0 0 24 24" aria-hidden="true">
                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                             <path class="opacity-75" fill="currentColor"
@@ -325,7 +343,7 @@ class extends Component
                                        disabled:opacity-60 disabled:pointer-events-none">
                             <span wire:loading.remove wire:target="forceCheck">Check Status Now</span>
                             <span wire:loading wire:target="forceCheck" class="inline-flex items-center gap-2">
-                                <svg class="animate-spin h-4 w-4 text-white motion-reduce:animate-none"
+                                <svg xmlns="http://www.w3.org/2000/svg" class="animate-spin h-4 w-4 text-white motion-reduce:animate-none"
                                      fill="none" viewBox="0 0 24 24" aria-hidden="true">
                                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                     <path class="opacity-75" fill="currentColor"
@@ -345,7 +363,7 @@ class extends Component
                               transition active:scale-95
                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
                         {{ $deadlinePassed ? 'Go to My Bookings' : 'Skip and go to My Bookings' }}
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                   d="M14 5l7 7m0 0l-7 7m7-7H3"/>
                         </svg>

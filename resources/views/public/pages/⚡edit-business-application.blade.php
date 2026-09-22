@@ -1,11 +1,17 @@
+{{-- resources/views/public/pages/⚡edit-business-application.blade.php --}}
 <?php
 
 use App\Models\BusinessApplication;
 use App\Models\BusinessDocument;
+use App\Models\SiteSetting;
 use App\Models\TypeOfTenant;
 use App\Services\BusinessApplicationService;
+use App\Services\ReverseGeocodeService;
+use App\Traits\HandlesImageUploads;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Layout;
@@ -20,6 +26,7 @@ new
 class extends Component
 {
     use WithFileUploads;
+    use HandlesImageUploads;
 
     public BusinessApplication $application;
 
@@ -29,44 +36,62 @@ class extends Component
     public const TOTAL_STEPS = 3;
 
     // ── Step 1: Business ──
-    public string $business_name                = '';
-    public string $business_type                = '';
-    public string $type_of_tenant_id            = '';
-    public string $business_registration_number = '';
-    public string $tin_number                   = '';
+    public string $business_name        = '';
+    public string $business_type        = '';
+    public string $type_of_tenant_id    = '';
+    public string $business_description = '';
 
-    // ── Step 2: Owner & Contact ──
-    public string $owner_full_name = '';
-    public string $owner_id_type   = '';
-    public string $owner_id_number = '';
-    public string $owner_birthdate = '';
-    public string $contact_email   = '';
-    public string $contact_phone   = '';
+    /** @var \Livewire\Features\SupportFileUploads\TemporaryUploadedFile|null */
+    public $logo = null;
+    public ?string $logo_path = null;
 
-    // ── Step 2: Location ──
+    /** @var \Livewire\Features\SupportFileUploads\TemporaryUploadedFile|null */
+    public $cover_photo = null;
+    public ?string $cover_photo_path = null;
+
+    // ── Step 1: Location ──
     public string $address  = '';
     public string $barangay = '';
     public string $city     = '';
     public string $province = '';
 
-    // ── Step 3: Document uploads ──
+    public ?float $businessLat = null;
+    public ?float $businessLng = null;
+
+    public int $locationVersion = 0;
+
+    // ── Step 2: Verification ──
+    public string $business_registration_number = '';
+    public string $tin_number                   = '';
+
     /** @var array<string, mixed> */
     public array $uploads = [];
 
-    public string $openMetaFor = '';
+    // ── Step 3: Owner ──
+    public string $owner_full_name = '';
+    public string $owner_id_type   = '';
+    public string $owner_id_number = '';
+    public string $owner_birthdate = '';
 
-    /** @var array<string, array<string, string>> */
-    public array $document_meta = [];
+    /** @var \Livewire\Features\SupportFileUploads\TemporaryUploadedFile|null */
+    public $owner_avatar = null;
+    public ?string $owner_avatar_path = null;
+
+    // ── Step 3: Contact ──
+    public string $contact_email = '';
+    public string $contact_phone = '';
 
     // ── Feedback ──
-    public ?string $saveMessage = null;
     public ?string $saveError   = null;
     public ?string $submitError = null;
 
+    // ─────────────────────────────────────────────────────────
+    //  Lifecycle
+    // ─────────────────────────────────────────────────────────
+
     public function mount(BusinessApplication $application): void
     {
-        abort_unless($application->user_id === Auth::id(), 403);
-        abort_unless($application->isEditable(), 403, 'This application is not editable.');
+        $this->assertOwnership($application);
 
         $this->application = $application;
 
@@ -75,11 +100,15 @@ class extends Component
         $this->type_of_tenant_id            = (string) ($application->type_of_tenant_id ?? '');
         $this->business_registration_number = (string) ($application->business_registration_number ?? '');
         $this->tin_number                   = (string) ($application->tin_number ?? '');
+        $this->business_description         = (string) ($application->metadata['description'] ?? '');
+        $this->logo_path                    = $application->logo_path;
+        $this->cover_photo_path             = $application->cover_photo_path;
 
-        $this->owner_full_name = (string) ($application->owner_full_name ?? '');
-        $this->owner_id_type   = (string) ($application->owner_id_type ?? '');
-        $this->owner_id_number = (string) ($application->owner_id_number ?? '');
-        $this->owner_birthdate = $application->owner_birthdate?->format('Y-m-d') ?? '';
+        $this->owner_full_name   = (string) ($application->owner_full_name ?? '');
+        $this->owner_id_type     = (string) ($application->owner_id_type ?? '');
+        $this->owner_id_number   = (string) ($application->owner_id_number ?? '');
+        $this->owner_birthdate   = $application->owner_birthdate?->format('Y-m-d') ?? '';
+        $this->owner_avatar_path = $application->owner_avatar_path;
 
         $this->contact_email = (string) ($application->contact_email ?? '');
         $this->contact_phone = (string) ($application->contact_phone ?? '');
@@ -89,12 +118,67 @@ class extends Component
         $this->city     = (string) ($application->city ?? '');
         $this->province = (string) ($application->province ?? '');
 
+        $coords = $application->coordinates ?? [];
+        if (isset($coords[0]['lat'], $coords[0]['lng'])) {
+            $this->businessLat = (float) $coords[0]['lat'];
+            $this->businessLng = (float) $coords[0]['lng'];
+        }
+
         $this->step = max(1, min(self::TOTAL_STEPS, $this->step));
+    }
+
+    public function hydrate(): void
+    {
+        $this->assertOwnership($this->application);
+    }
+
+    protected function assertOwnership(BusinessApplication $application): void
+    {
+        abort_unless(Auth::check(), 403, 'Your session has expired. Please sign in again.');
+        abort_unless($application->user_id === Auth::id(), 403);
+        abort_unless($application->isEditable(), 403, 'This application is not editable.');
+    }
+
+    protected function requireOwnership(): void
+    {
+        $this->assertOwnership($this->application);
     }
 
     // ─────────────────────────────────────────────────────────────
     //  Computed
     // ─────────────────────────────────────────────────────────────
+
+    #[Computed]
+    public function siteName(): string
+    {
+        return (string) SiteSetting::getValue('site_name', config('app.name'));
+    }
+
+    #[Computed]
+    public function logoUrl(): ?string
+    {
+        $path = SiteSetting::getValue('site_logo');
+
+        return $path ? asset('storage/' . $path) : null;
+    }
+
+    /** @return array<int, string> */
+    #[Computed]
+    public function stepLabels(): array
+    {
+        return [
+            1 => 'Business & Location',
+            2 => 'Documents & Verification',
+            3 => 'Owner & Review',
+        ];
+    }
+
+    #[Computed]
+    public function isRevision(): bool
+    {
+        return $this->application->status === BusinessApplication::STATUS_NEEDS_REVISION
+            && ! empty($this->application->revision_notes);
+    }
 
     #[Computed]
     public function tenantTypes()
@@ -125,17 +209,6 @@ class extends Component
 
         return BusinessApplication::REGISTRATION_NUMBER_PLACEHOLDERS[$this->business_type]
             ?? 'Enter your registration number';
-    }
-
-    #[Computed]
-    public function registrationNumberHint(): string
-    {
-        if ($this->business_type === '') {
-            return 'Found on your government registration certificate.';
-        }
-
-        return BusinessApplication::REGISTRATION_NUMBER_HINTS[$this->business_type]
-            ?? 'Found on your government registration certificate.';
     }
 
     #[Computed]
@@ -173,13 +246,17 @@ class extends Component
     #[Computed]
     public function completionPercent(): int
     {
-        return $this->application->fresh(['documents'])->completionPercent();
+        $this->application->loadMissing('documents');
+
+        return $this->application->completionPercent();
     }
 
     #[Computed]
     public function isReadyToSubmit(): bool
     {
-        return $this->application->fresh(['documents'])->isReadyForSubmission();
+        $this->application->loadMissing('documents');
+
+        return $this->application->isReadyForSubmission();
     }
 
     #[Computed]
@@ -214,6 +291,376 @@ class extends Component
         return BusinessApplication::OWNER_ID_TYPES[$this->owner_id_type] ?? null;
     }
 
+    #[Computed]
+    public function estimatedMinutesLeft(): int
+    {
+        $pct = $this->completionPercent;
+
+        return match (true) {
+            $pct >= 100 => 0,
+            $pct >= 80  => 2,
+            $pct >= 60  => 3,
+            $pct >= 40  => 5,
+            $pct >= 20  => 7,
+            default     => 10,
+        };
+    }
+
+    #[Computed]
+    public function mapCenter(): array
+    {
+        if ($this->businessLat !== null && $this->businessLng !== null) {
+            return [(float) $this->businessLng, (float) $this->businessLat];
+        }
+
+        return [123.07391289720677, 10.900736693923502];
+    }
+
+    #[Computed]
+    public function mapZoom(): int
+    {
+        return ($this->businessLat !== null && $this->businessLng !== null) ? 16 : 12;
+    }
+
+    #[Computed]
+    public function hasCoordinates(): bool
+    {
+        return $this->businessLat !== null && $this->businessLng !== null;
+    }
+
+    #[Computed]
+    public function applicantFirstName(): string
+    {
+        $name = trim((string) (Auth::user()?->name ?? 'there'));
+        $parts = preg_split('/\s+/', $name) ?: [];
+
+        return $parts[0] ?: 'there';
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  Map picker — fast path
+    // ─────────────────────────────────────────────────────────────
+
+    public function setBusinessLocation($lat, $lng): void
+    {
+        $this->requireOwnership();
+
+        $lat = (float) $lat;
+        $lng = (float) $lng;
+
+        if (!is_finite($lat) || !is_finite($lng)) {
+            return;
+        }
+        if (abs($lat) > 90 || abs($lng) > 180) {
+            return;
+        }
+
+        $this->businessLat = round($lat, 7);
+        $this->businessLng = round($lng, 7);
+
+        unset($this->hasCoordinates, $this->mapCenter, $this->mapZoom);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  Map picker — slow path (reverse-geocode)
+    // ─────────────────────────────────────────────────────────────
+
+    public function resolveAddress(float $lat, float $lng): void
+    {
+        $this->requireOwnership();
+
+        if (!is_finite($lat) || !is_finite($lng)) {
+            return;
+        }
+        if (abs($lat) > 90 || abs($lng) > 180) {
+            return;
+        }
+
+        try {
+            $result = app(ReverseGeocodeService::class)->reverse($lat, $lng);
+        } catch (\Throwable $e) {
+            Log::warning('Reverse geocode failed', [
+                'application_id' => $this->application->id,
+                'lat'            => $lat,
+                'lng'            => $lng,
+                'error'          => $e->getMessage(),
+            ]);
+            return;
+        }
+
+        if ($result === null) {
+            return;
+        }
+
+        if ($result['address'] !== '') {
+            $this->address = $result['address'];
+        }
+        if ($result['barangay'] !== '') {
+            $this->barangay = $result['barangay'];
+        }
+        if ($result['city'] !== '') {
+            $this->city = $result['city'];
+        }
+        if ($result['province'] !== '') {
+            $this->province = $result['province'];
+        }
+    }
+
+    public function refreshAddressFromPin(): void
+    {
+        $this->requireOwnership();
+
+        if ($this->businessLat === null || $this->businessLng === null) {
+            $this->dispatch('toast', message: 'Drop a pin first.', type: 'error');
+            return;
+        }
+
+        $this->address  = '';
+        $this->barangay = '';
+        $this->city     = '';
+        $this->province = '';
+
+        $this->resolveAddress((float) $this->businessLat, (float) $this->businessLng);
+
+        $this->dispatch('toast', message: 'Address refreshed from pin.', type: 'success');
+    }
+
+    public function clearLocation(): void
+    {
+        $this->requireOwnership();
+
+        $this->businessLat = null;
+        $this->businessLng = null;
+
+        $this->dispatch('map:pin-cleared');
+        $this->dispatch('toast', message: 'Location cleared.', type: 'info');
+    }
+
+    /**
+     * Request the user's current location from the browser.
+     *
+     * The location picker factory (resources/js/modules/location-picker.js)
+     * listens for a `request-geolocation` window event, calls
+     * navigator.geolocation.getCurrentPosition, and on success calls back
+     * into the SFC via `setBusinessLocation(lat, lng)`.
+     *
+     * The button on the map was previously dead — it referenced this
+     * method, which didn't exist. Added.
+     */
+    public function useMyLocation(): void
+    {
+        $this->requireOwnership();
+
+        $this->dispatch('request-geolocation');
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  Asset uploads — cropped client-side, then routed through
+    //  storeImage() → ImageCompressionService for server-side
+    //  downscaling against the per-context ceilings.
+    //
+    //    logo         → 'tenant-logo'  (512 KB / 1024×1024)
+    //    cover_photo  → 'tenant-cover' (2 MB  / 2560×1440)
+    //    owner_avatar → 'avatars'      (512 KB / 800×800)
+    // ─────────────────────────────────────────────────────────────
+
+    public function updatedLogo(): void
+    {
+        $this->requireOwnership();
+
+        if (!$this->logo) return;
+
+        try {
+            $this->validate([
+                'logo' => ['image', 'mimes:jpg,jpeg,png,webp', 'max:2048'],
+            ], [
+                'logo.max'   => 'Logo must be 2 MB or smaller.',
+                'logo.image' => 'Logo must be an image (JPG, PNG, or WEBP).',
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $this->logo = null;
+            $first = collect($e->errors())->flatten()->first();
+            $this->dispatch('toast', message: $first ?: 'Invalid logo.', type: 'error');
+            return;
+        }
+
+        $this->replaceAsset(
+            uploadedFile: $this->logo,
+            column: 'logo_path',
+            folder: "kyb-assets/{$this->application->id}/logo",
+            previousPath: $this->application->logo_path,
+            successMessage: 'Logo uploaded.',
+            context: 'tenant-logo',
+        );
+
+        $this->logo = null;
+    }
+
+    public function removeLogo(): void
+    {
+        $this->requireOwnership();
+        $this->removeAsset('logo_path', 'Logo removed.');
+    }
+
+    public function updatedCoverPhoto(): void
+    {
+        $this->requireOwnership();
+
+        if (!$this->cover_photo) return;
+
+        try {
+            $this->validate([
+                'cover_photo' => ['image', 'mimes:jpg,jpeg,png,webp', 'max:4096'],
+            ], [
+                'cover_photo.max'   => 'Cover photo must be 4 MB or smaller.',
+                'cover_photo.image' => 'Cover photo must be an image (JPG, PNG, or WEBP).',
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $this->cover_photo = null;
+            $first = collect($e->errors())->flatten()->first();
+            $this->dispatch('toast', message: $first ?: 'Invalid cover photo.', type: 'error');
+            return;
+        }
+
+        $this->replaceAsset(
+            uploadedFile: $this->cover_photo,
+            column: 'cover_photo_path',
+            folder: "kyb-assets/{$this->application->id}/cover",
+            previousPath: $this->application->cover_photo_path,
+            successMessage: 'Cover photo uploaded.',
+            context: 'tenant-cover',
+        );
+
+        $this->cover_photo = null;
+    }
+
+    public function removeCoverPhoto(): void
+    {
+        $this->requireOwnership();
+        $this->removeAsset('cover_photo_path', 'Cover photo removed.');
+    }
+
+    public function updatedOwnerAvatar(): void
+    {
+        $this->requireOwnership();
+
+        if (!$this->owner_avatar) return;
+
+        try {
+            $this->validate([
+                'owner_avatar' => ['image', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
+            ], [
+                'owner_avatar.max'   => 'Photo must be 5 MB or smaller.',
+                'owner_avatar.image' => 'Photo must be an image (JPG, PNG, or WEBP).',
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $this->owner_avatar = null;
+            $first = collect($e->errors())->flatten()->first();
+            $this->dispatch('toast', message: $first ?: 'Invalid photo.', type: 'error');
+            return;
+        }
+
+        $this->replaceAsset(
+            uploadedFile: $this->owner_avatar,
+            column: 'owner_avatar_path',
+            folder: "kyb-assets/{$this->application->id}/avatar",
+            previousPath: $this->application->owner_avatar_path,
+            successMessage: 'Photo uploaded.',
+            context: 'avatars',
+        );
+
+        $this->owner_avatar = null;
+    }
+
+    public function removeOwnerAvatar(): void
+    {
+        $this->requireOwnership();
+        $this->removeAsset('owner_avatar_path', 'Photo removed.');
+    }
+
+    protected function replaceAsset(
+        $uploadedFile,
+        string $column,
+        string $folder,
+        ?string $previousPath,
+        string $successMessage,
+        string $context,
+    ): void {
+        $newPath = null;
+
+        try {
+            $newPath = $this->storeImage($uploadedFile, $folder, 'public', $context);
+
+            if (!$newPath) {
+                throw new \RuntimeException('Storage returned no path.');
+            }
+
+            DB::transaction(function () use ($newPath, $column): void {
+                $this->application->update([$column => $newPath]);
+            });
+
+            if ($previousPath && Storage::disk('public')->exists($previousPath)) {
+                Storage::disk('public')->delete($previousPath);
+            }
+
+            $localProperty = match ($column) {
+                'logo_path'         => 'logo_path',
+                'cover_photo_path'  => 'cover_photo_path',
+                'owner_avatar_path' => 'owner_avatar_path',
+                default             => null,
+            };
+            if ($localProperty !== null) {
+                $this->$localProperty = $newPath;
+            }
+
+            $this->dispatch('toast', message: $successMessage, type: 'success');
+        } catch (\Throwable $e) {
+            if ($newPath && Storage::disk('public')->exists($newPath)) {
+                Storage::disk('public')->delete($newPath);
+            }
+
+            Log::error('KYB asset upload failed', [
+                'application_id' => $this->application->id,
+                'column'         => $column,
+                'error'          => $e->getMessage(),
+            ]);
+
+            $this->dispatch('toast', message: 'Upload failed. Try again.', type: 'error');
+        }
+    }
+
+    protected function removeAsset(string $column, string $successMessage): void
+    {
+        $old = $this->application->{$column};
+
+        try {
+            $this->application->update([$column => null]);
+
+            if ($old && Storage::disk('public')->exists($old)) {
+                Storage::disk('public')->delete($old);
+            }
+
+            $localProperty = match ($column) {
+                'logo_path'         => 'logo_path',
+                'cover_photo_path'  => 'cover_photo_path',
+                'owner_avatar_path' => 'owner_avatar_path',
+                default             => null,
+            };
+            if ($localProperty !== null) {
+                $this->$localProperty = null;
+            }
+
+            $this->dispatch('toast', message: $successMessage, type: 'info');
+        } catch (\Throwable $e) {
+            Log::error('KYB asset removal failed', [
+                'application_id' => $this->application->id,
+                'column'         => $column,
+                'error'          => $e->getMessage(),
+            ]);
+            $this->dispatch('toast', message: 'Could not remove the file.', type: 'error');
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────
     //  Validation
     // ─────────────────────────────────────────────────────────────
@@ -225,7 +672,17 @@ class extends Component
                 'business_name'     => ['required', 'string', 'min:3', 'max:255'],
                 'business_type'     => ['required', Rule::in(BusinessApplication::BUSINESS_TYPES)],
                 'type_of_tenant_id' => ['required', 'integer', 'exists:type_of_tenants,id'],
+                'business_description' => ['nullable', 'string', 'max:500'],
 
+                'address'  => ['nullable', 'string', 'max:255'],
+                'barangay' => ['nullable', 'string', 'max:255'],
+                'city'     => ['nullable', 'string', 'max:255'],
+                'province' => ['nullable', 'string', 'max:255'],
+
+                'businessLat' => ['nullable', 'numeric', 'between:-90,90'],
+                'businessLng' => ['nullable', 'numeric', 'between:-180,180'],
+            ],
+            2 => [
                 'business_registration_number' => [
                     'required',
                     'string',
@@ -233,24 +690,19 @@ class extends Component
                     'max:50',
                     'regex:/^[A-Za-z0-9\-]+$/',
                 ],
-
                 'tin_number' => [
                     'required',
                     'string',
                     'regex:/^\d{3}[-\s]?\d{3}[-\s]?\d{3}(?:[-\s]?\d{3})?$/',
                 ],
             ],
-            2 => [
+            3 => [
                 'owner_full_name' => ['required', 'string', 'min:3', 'max:255'],
                 'owner_id_type'   => ['required', Rule::in(array_keys(BusinessApplication::OWNER_ID_TYPES))],
                 'owner_id_number' => ['required', 'string', 'min:4', 'max:100'],
                 'owner_birthdate' => ['nullable', 'date', 'before:today'],
                 'contact_email'   => ['required', 'email', 'max:255'],
                 'contact_phone'   => ['required', 'string', 'max:20', 'regex:/^(09|\+639)\d{9}$/'],
-                'address'         => ['nullable', 'string', 'max:255'],
-                'barangay'        => ['nullable', 'string', 'max:255'],
-                'city'            => ['nullable', 'string', 'max:255'],
-                'province'        => ['nullable', 'string', 'max:255'],
             ],
             default => [],
         };
@@ -258,7 +710,11 @@ class extends Component
 
     protected function rules(): array
     {
-        return array_merge($this->stepRules(1), $this->stepRules(2));
+        return array_merge(
+            $this->stepRules(1),
+            $this->stepRules(2),
+            $this->stepRules(3),
+        );
     }
 
     protected function messages(): array
@@ -285,8 +741,9 @@ class extends Component
 
     public function gotoStep(int $step): void
     {
+        $this->requireOwnership();
+
         $this->step = max(1, min(self::TOTAL_STEPS, $step));
-        $this->saveMessage = null;
         $this->saveError   = null;
         $this->submitError = null;
 
@@ -295,8 +752,9 @@ class extends Component
 
     public function next(): void
     {
-        $this->saveMessage = null;
-        $this->saveError   = null;
+        $this->requireOwnership();
+
+        $this->saveError = null;
 
         $currentRules = $this->stepRules($this->step);
         if (!empty($currentRules)) {
@@ -323,8 +781,9 @@ class extends Component
 
     public function back(): void
     {
+        $this->requireOwnership();
+
         $this->step = max(1, $this->step - 1);
-        $this->saveMessage = null;
         $this->saveError   = null;
         $this->submitError = null;
         $this->dispatch('scroll-to-top');
@@ -334,23 +793,36 @@ class extends Component
     {
         return match ($step) {
             1 => [
-                'business_name'                => trim($this->business_name),
-                'business_type'                => $this->business_type,
-                'type_of_tenant_id'            => $this->type_of_tenant_id,
+                'business_name'        => trim($this->business_name),
+                'business_type'        => $this->business_type,
+                'type_of_tenant_id'    => $this->type_of_tenant_id,
+                'address'              => $this->address ?: null,
+                'barangay'             => $this->barangay ?: null,
+                'city'                 => $this->city ?: null,
+                'province'             => $this->province ?: null,
+                'metadata'             => array_merge(
+                    $this->application->metadata ?? [],
+                    ['description' => $this->business_description ?: null],
+                ),
+                'coordinates' => ($this->businessLat !== null && $this->businessLng !== null)
+                    ? [[
+                        'lat'  => $this->businessLat,
+                        'lng'  => $this->businessLng,
+                        'type' => 'parent',
+                    ]]
+                    : null,
+            ],
+            2 => [
                 'business_registration_number' => strtoupper(trim($this->business_registration_number)),
                 'tin_number'                   => trim($this->tin_number),
             ],
-            2 => [
+            3 => [
                 'owner_full_name' => trim($this->owner_full_name),
                 'owner_id_type'   => $this->owner_id_type ?: null,
                 'owner_id_number' => $this->owner_id_number ?: null,
                 'owner_birthdate' => $this->owner_birthdate ?: null,
                 'contact_email'   => $this->contact_email,
                 'contact_phone'   => $this->contact_phone,
-                'address'         => $this->address ?: null,
-                'barangay'        => $this->barangay ?: null,
-                'city'            => $this->city ?: null,
-                'province'        => $this->province ?: null,
             ],
             default => [],
         };
@@ -377,6 +849,8 @@ class extends Component
 
     public function attachDocument(string $documentType): void
     {
+        $this->requireOwnership();
+
         $allowed = array_merge($this->requiredDocuments, $this->optionalDocuments);
         if (!in_array($documentType, $allowed, true)) {
             unset($this->uploads[$documentType]);
@@ -417,22 +891,25 @@ class extends Component
         try {
             $service = app(BusinessApplicationService::class);
 
-            $this->application->documents()
-                ->ofType($documentType)
-                ->get()
-                ->each(fn ($doc) => $doc->delete());
+            DB::transaction(function () use ($service, $documentType, $file): void {
+                $service->attachDocument(
+                    $this->application,
+                    Auth::user(),
+                    $documentType,
+                    $file,
+                    [
+                        'document_number' => null,
+                        'issued_at'       => null,
+                        'expires_at'      => null,
+                    ],
+                );
 
-            $service->attachDocument(
-                $this->application,
-                Auth::user(),
-                $documentType,
-                $file,
-                [
-                    'document_number' => null,
-                    'issued_at'       => null,
-                    'expires_at'      => null,
-                ],
-            );
+                $this->application->documents()
+                    ->ofType($documentType)
+                    ->where('id', '!=', $this->application->documents()->ofType($documentType)->latest('id')->value('id'))
+                    ->get()
+                    ->each(fn ($doc) => $doc->delete());
+            });
 
             unset($this->uploads[$documentType]);
 
@@ -459,6 +936,8 @@ class extends Component
 
     public function deleteDocument(int $documentId): void
     {
+        $this->requireOwnership();
+
         $doc = $this->application->documents()->whereKey($documentId)->first();
         if (!$doc) {
             return;
@@ -486,47 +965,6 @@ class extends Component
         }
     }
 
-    public function toggleMetaPanel(string $documentType): void
-    {
-        $this->openMetaFor = $this->openMetaFor === $documentType ? '' : $documentType;
-    }
-
-    public function mountDocumentMeta(string $documentType): void
-    {
-        if (isset($this->document_meta[$documentType])) {
-            return;
-        }
-
-        $doc = $this->documentsByType[$documentType] ?? null;
-
-        $this->document_meta[$documentType] = [
-            'document_number' => $doc?->document_number ?? '',
-            'issued_at'       => $doc?->issued_at?->format('Y-m-d') ?? '',
-            'expires_at'      => $doc?->expires_at?->format('Y-m-d') ?? '',
-        ];
-    }
-
-    public function saveDocumentMeta(string $documentType): void
-    {
-        $doc = $this->application->documents()->ofType($documentType)->first();
-        if (!$doc) {
-            return;
-        }
-
-        $input = $this->document_meta[$documentType] ?? [];
-
-        $doc->update([
-            'document_number' => $input['document_number'] ?? null,
-            'issued_at'       => $input['issued_at']       ?? null,
-            'expires_at'      => $input['expires_at']      ?? null,
-        ]);
-
-        unset($this->documents, $this->documentsByType);
-
-        $this->openMetaFor = '';
-        $this->dispatch('toast', message: 'Details saved.', type: 'success');
-    }
-
     public function documentUrl(BusinessDocument $doc): ?string
     {
         $path = $doc->watermarked_path ?: $doc->stored_path;
@@ -544,6 +982,8 @@ class extends Component
 
     public function submit(BusinessApplicationService $service)
     {
+        $this->requireOwnership();
+
         $this->submitError = null;
 
         $this->validate();
@@ -558,7 +998,7 @@ class extends Component
                 : 'Please upload the following required document(s) before submitting: '
                     . implode(', ', $missing) . '.';
 
-            $this->step = 3;
+            $this->step = 2;
             $this->dispatch('scroll-to-top');
 
             return null;
@@ -568,6 +1008,7 @@ class extends Component
             $this->application->update(array_merge(
                 $this->payloadForStep(1),
                 $this->payloadForStep(2),
+                $this->payloadForStep(3),
             ));
         } catch (\Throwable $e) {
             Log::error('KYB save before submit failed', [
@@ -596,20 +1037,25 @@ class extends Component
 };
 ?>
 
-@php
-    $siteName = \App\Models\SiteSetting::getValue('site_name', config('app.name'));
-    $logoPath = \App\Models\SiteSetting::getValue('site_logo');
-    $logoUrl  = $logoPath ? asset('storage/' . $logoPath) : null;
-
-    $stepLabels = [
-        1 => 'Business',
-        2 => 'Owner',
-        3 => 'Documents',
-    ];
-
-    $isRevision = $application->status === BusinessApplication::STATUS_NEEDS_REVISION
-                  && !empty($application->revision_notes);
-@endphp
+@push('styles')
+    @once
+        <style>
+            /* Rule 69 replacement — CSS-based toast entry instead of
+               x-transition inside <template x-for>, which is a morph
+               crash class in Livewire v4 SFCs. */
+            .toast-item {
+                animation: toastIn .22s cubic-bezier(.16,1,.3,1);
+            }
+            @keyframes toastIn {
+                from { opacity: 0; transform: translateY(8px); }
+                to   { opacity: 1; transform: translateY(0); }
+            }
+            @media (prefers-reduced-motion: reduce) {
+                .toast-item { animation: none; }
+            }
+        </style>
+    @endonce
+@endpush
 
 <main
     x-data="{ toasts: [] }"
@@ -619,13 +1065,13 @@ class extends Component
         setTimeout(() => { toasts = toasts.filter(t => t.id !== id) }, 3500);
     "
     x-on:scroll-to-top.window="window.scrollTo({ top: 0, behavior: 'smooth' })"
-    class="min-h-screen bg-gray-50 dark:bg-gray-950">
+    class="min-h-screen">
 
-    {{-- Toast container --}}
+    {{-- Toast container — Rule 69: no x-transition, CSS animation carries
+         the entry. --}}
     <div class="fixed bottom-4 right-4 z-[2000] flex flex-col gap-2 w-full max-w-sm pointer-events-none">
         <template x-for="toast in toasts" :key="toast.id">
-            <div x-transition
-                 class="pointer-events-auto rounded-xl px-4 py-3 shadow-lg text-sm font-medium border"
+            <div class="toast-item pointer-events-auto rounded-xl px-4 py-3 shadow-lg text-sm font-medium border"
                  :class="{
                      'bg-emerald-50 border-emerald-200 text-emerald-800 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-300': toast.type === 'success',
                      'bg-rose-50 border-rose-200 text-rose-800 dark:bg-rose-500/10 dark:border-rose-500/30 dark:text-rose-300': toast.type === 'error',
@@ -637,61 +1083,85 @@ class extends Component
     </div>
 
     {{-- Sticky header --}}
-    <div class="sticky top-0 z-30 bg-white/90 dark:bg-gray-900/90 backdrop-blur border-b border-gray-200 dark:border-gray-800">
-        <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5">
+    <div class="sticky top-0 z-30 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md border-b border-gray-200 dark:border-gray-800">
+        <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
 
             <div class="flex items-center justify-between gap-4 mb-3">
                 <div class="flex items-center gap-2.5 min-w-0">
-                    @if($logoUrl)
-                        <img src="{{ $logoUrl }}" alt="{{ $siteName }}" class="w-7 h-7 object-contain rounded-lg shrink-0">
+                    @if($this->logoUrl)
+                        <img src="{{ $this->logoUrl }}" alt="{{ $this->siteName }}" loading="lazy" decoding="async" class="w-8 h-8 object-contain rounded-lg shrink-0">
                     @else
-                        <div class="w-7 h-7 rounded-lg bg-primary-600 flex items-center justify-center text-white shrink-0 font-semibold text-xs">
-                            {{ strtoupper(substr($siteName, 0, 1)) }}
+                        <div class="w-8 h-8 rounded-lg bg-primary-600 flex items-center justify-center text-white shrink-0 font-semibold text-sm">
+                            {{ strtoupper(substr($this->siteName, 0, 1)) }}
                         </div>
                     @endif
                     <div class="min-w-0">
-                        <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                            Step {{ $step }} of {{ count($stepLabels) }}
+                        <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-primary-600 dark:text-primary-400">
+                            Business Setup
                         </p>
-                        <h1 class="text-sm font-semibold text-gray-900 dark:text-white truncate">
-                            {{ $stepLabels[$step] ?? 'Application' }}
-                        </h1>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 truncate">
+                            {{ $this->siteName }}
+                        </p>
                     </div>
                 </div>
 
-                <a href="{{ route('register_business') }}" wire:navigate
-                   class="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium text-gray-500 dark:text-gray-400 hover:text-rose-600 dark:hover:text-rose-400 transition-colors rounded px-2 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                    </svg>
-                    Save &amp; exit
-                </a>
+                <div class="flex items-center gap-2">
+                    <span class="hidden sm:inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 rounded-full px-2.5 py-1">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
+                        </svg>
+                        Draft saved
+                    </span>
+                    <a href="{{ route('register_business') }}" wire:navigate
+                       class="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium text-gray-500 dark:text-gray-400 hover:text-rose-600 dark:hover:text-rose-400 transition-all duration-200 active:scale-95 rounded px-2 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                        <span class="hidden sm:inline">Save &amp; exit</span>
+                    </a>
+                </div>
             </div>
 
-            <div class="flex items-center gap-2">
-                @foreach ($stepLabels as $num => $label)
+            <div class="mb-4">
+                <h1 class="text-lg sm:text-xl font-bold text-gray-900 dark:text-white leading-tight">
+                    Welcome back, {{ $this->applicantFirstName }}!
+                </h1>
+                <p class="mt-0.5 text-xs sm:text-sm text-gray-500 dark:text-gray-400">
+                    @if($this->completionPercent >= 100)
+                        Everything's in place. You're ready to submit for review.
+                    @else
+                        You're <strong class="text-gray-700 dark:text-gray-300">{{ $this->completionPercent }}%</strong> through your application.
+                        @if($this->estimatedMinutesLeft > 0)
+                            About <strong class="text-gray-700 dark:text-gray-300">{{ $this->estimatedMinutesLeft }} minute{{ $this->estimatedMinutesLeft === 1 ? '' : 's' }}</strong> left.
+                        @endif
+                    @endif
+                </p>
+            </div>
+
+            <div class="flex items-center gap-2 mb-3">
+                @foreach ($this->stepLabels as $num => $label)
                     @php
-                        $isActive   = $step === $num;
-                        $isComplete = $step > $num;
+                        $isActive   = ($step === $num);
+                        $isComplete = ($step > $num);
                     @endphp
                     <button type="button"
                             wire:click="gotoStep({{ $num }})"
-                            class="flex-1 flex items-center gap-2 group text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-lg">
-                        <span class="shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold transition-all duration-200
+                            class="flex-1 flex items-center gap-2 group text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-lg active:scale-[0.98] transition-transform">
+                        <span class="shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold transition-all duration-200
                             {{ $isActive
                                 ? 'bg-primary-600 text-white ring-4 ring-primary-500/20'
                                 : ($isComplete
                                     ? 'bg-emerald-500 text-white'
                                     : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400 group-hover:bg-gray-300 dark:group-hover:bg-gray-600') }}">
                             @if ($isComplete)
-                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
                                 </svg>
                             @else
                                 {{ $num }}
                             @endif
                         </span>
-                        <span class="hidden sm:block text-xs font-medium truncate transition-colors
+                        <span class="hidden md:block text-xs font-medium truncate transition-colors
                             {{ $isActive ? 'text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400' }}">
                             {{ $label }}
                         </span>
@@ -703,8 +1173,8 @@ class extends Component
                 @endforeach
             </div>
 
-            <div class="mt-3 h-0.5 w-full rounded-full bg-gray-200 dark:bg-gray-800 overflow-hidden">
-                <div class="h-full bg-primary-600 transition-all duration-500"
+            <div class="h-1 w-full rounded-full bg-gray-200 dark:bg-gray-800 overflow-hidden">
+                <div class="h-full bg-gradient-to-r from-primary-500 to-primary-600 transition-all duration-500 ease-out"
                      style="width: {{ $this->completionPercent }}%"></div>
             </div>
         </div>
@@ -712,12 +1182,11 @@ class extends Component
 
     <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
 
-        {{-- Reviewer's note --}}
-        @if ($isRevision)
+        @if ($this->isRevision)
             <div class="mb-6 rounded-2xl border border-indigo-200/80 dark:border-indigo-500/30 bg-indigo-50/60 dark:bg-indigo-500/[0.06] p-4 shadow-sm">
                 <div class="flex items-start gap-3">
                     <div class="shrink-0 w-9 h-9 rounded-full bg-indigo-100 dark:bg-indigo-500/20 border border-indigo-200 dark:border-indigo-500/30 flex items-center justify-center text-indigo-700 dark:text-indigo-300">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
                         </svg>
                     </div>
@@ -726,7 +1195,7 @@ class extends Component
                             Note from your reviewer
                         </p>
                         <p class="text-sm text-indigo-950 dark:text-indigo-100 leading-relaxed italic">
-                            “{{ $application->revision_notes }}”
+                            "{{ $application->revision_notes }}"
                         </p>
                         <p class="mt-2 text-[11px] text-indigo-700/70 dark:text-indigo-300/70">
                             Fix the item(s) above, then resubmit. Your other information is saved.
@@ -736,18 +1205,169 @@ class extends Component
             </div>
         @endif
 
-        {{-- Save / submit errors --}}
         @if ($saveError || $submitError)
-            <div class="mb-5 flex items-center gap-2.5 rounded-xl border border-rose-200/80 dark:border-rose-500/30 bg-rose-50 dark:bg-rose-500/10 px-3.5 py-2.5 text-xs sm:text-sm text-rose-800 dark:text-rose-300 shadow-sm">
-                <svg class="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div role="alert" aria-live="polite"
+                 class="mb-5 flex items-center gap-2.5 rounded-xl border border-rose-200/80 dark:border-rose-500/30 bg-rose-50 dark:bg-rose-500/10 px-3.5 py-2.5 text-xs sm:text-sm text-rose-800 dark:text-rose-300 shadow-sm">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/>
                 </svg>
                 <span class="font-medium">{{ $saveError ?: $submitError }}</span>
             </div>
         @endif
 
-        {{-- STEP 1 — BUSINESS --}}
+        {{-- ═══════════════════════════════════════════════════════════
+             STEP 1 — BUSINESS & LOCATION
+             ═══════════════════════════════════════════════════════════ --}}
         @if ($step === 1)
+
+            {{-- Cover photo — cropper-wrapped --}}
+            <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm overflow-hidden mb-5">
+                <div class="px-6 pt-5 pb-3 flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                        <span class="w-5 h-px bg-primary-600"></span>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                            Cover Photo <span class="text-[10px] font-normal normal-case text-gray-400">(optional)</span>
+                        </span>
+                    </div>
+                    @if($cover_photo_path)
+                        <span class="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
+                            </svg>
+                            Uploaded
+                        </span>
+                    @endif
+                </div>
+
+                <div class="px-6 pb-5">
+                    <div class="relative aspect-[3/1] w-full rounded-xl overflow-hidden bg-gradient-to-br from-primary-500 via-primary-600 to-primary-700">
+                        @if($cover_photo_path)
+                            <img src="{{ asset('storage/' . $cover_photo_path) }}" alt="Cover photo" loading="lazy" decoding="async" class="w-full h-full object-cover">
+                        @else
+                            <div class="absolute inset-0 flex flex-col items-center justify-center text-white/85">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-10 h-10 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                                </svg>
+                                <p class="text-xs font-semibold uppercase tracking-wider">Cover photo</p>
+                            </div>
+                        @endif
+                    </div>
+
+                    {{-- Input wrapped in imageCropper: aspect 3:1, property 'cover_photo' --}}
+                    <div
+                        x-data="imageCropper({
+                            wireProperty: 'cover_photo',
+                            aspect: 3,
+                            title: 'Crop cover photo',
+                            description: 'Drag to reposition · Scroll to zoom · Pinch on mobile',
+                        })"
+                        x-init="init()"
+                        class="mt-3 flex items-center gap-2 flex-wrap"
+                    >
+                        <label for="cover-upload"
+                               class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold
+                                      transition-all duration-200 active:scale-95 cursor-pointer
+                                      focus-within:ring-2 focus-within:ring-primary-500/50 focus-within:ring-offset-2 dark:focus-within:ring-offset-gray-900">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                            </svg>
+                            {{ $cover_photo_path ? 'Replace cover' : 'Upload cover photo' }}
+                            <input type="file" id="cover-upload" x-ref="input" x-on:change="pick($event)" accept="image/jpeg,image/png,image/webp" class="sr-only">
+                        </label>
+
+                        @if($cover_photo_path)
+                            {{-- Rule 19: Alpine confirm() replaces wire:confirm. --}}
+                            <button type="button"
+                                    x-on:click="if (confirm('Remove the cover photo?')) $wire.removeCoverPhoto()"
+                                    wire:loading.attr="disabled"
+                                    wire:target="removeCoverPhoto"
+                                    class="inline-flex items-center justify-center h-9 px-3.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-xs font-semibold
+                                           transition-all duration-200 active:scale-95 hover:border-rose-400 hover:text-rose-600 dark:hover:text-rose-400
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
+                                           disabled:opacity-60 disabled:cursor-not-allowed">
+                                Remove
+                            </button>
+                        @endif
+
+                        <div wire:loading wire:target="cover_photo" class="flex items-center gap-2 text-xs text-primary-600 dark:text-primary-400">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="animate-spin w-3 h-3 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                            </svg>
+                            Uploading…
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            {{-- Business logo — cropper-wrapped, aspect 1:1 --}}
+            <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mb-5">
+                <div class="flex items-center gap-3 mb-5">
+                    <span class="w-5 h-px bg-primary-600"></span>
+                    <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                        Business Logo <span class="text-[10px] font-normal normal-case text-gray-400">(optional)</span>
+                    </span>
+                </div>
+
+                <div class="flex items-center gap-5">
+                    <div class="shrink-0 w-20 h-20 rounded-2xl border-2 border-dashed border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 flex items-center justify-center overflow-hidden">
+                        @if($logo_path)
+                            <img src="{{ asset('storage/' . $logo_path) }}" alt="Business logo" loading="lazy" decoding="async" class="w-full h-full object-cover">
+                        @else
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                            </svg>
+                        @endif
+                    </div>
+
+                    <div
+                        x-data="imageCropper({
+                            wireProperty: 'logo',
+                            aspect: 1,
+                            title: 'Crop logo',
+                            description: 'Square crop works best',
+                        })"
+                        x-init="init()"
+                        class="flex-1 min-w-0"
+                    >
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <label for="logo-upload"
+                                   class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold
+                                          transition-all duration-200 active:scale-95 cursor-pointer
+                                          focus-within:ring-2 focus-within:ring-primary-500/50 focus-within:ring-offset-2 dark:focus-within:ring-offset-gray-900">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                </svg>
+                                {{ $logo_path ? 'Replace logo' : 'Upload logo' }}
+                                <input type="file" id="logo-upload" x-ref="input" x-on:change="pick($event)" accept="image/jpeg,image/png,image/webp" class="sr-only">
+                            </label>
+
+                            @if($logo_path)
+                                <button type="button"
+                                        x-on:click="if (confirm('Remove the logo?')) $wire.removeLogo()"
+                                        wire:loading.attr="disabled"
+                                        wire:target="removeLogo"
+                                        class="inline-flex items-center justify-center h-9 px-3.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-xs font-semibold
+                                               transition-all duration-200 active:scale-95 hover:border-rose-400 hover:text-rose-600 dark:hover:text-rose-400
+                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
+                                               disabled:opacity-60 disabled:cursor-not-allowed">
+                                    Remove
+                                </button>
+                            @endif
+
+                            <div wire:loading wire:target="logo" class="flex items-center gap-2 text-xs text-primary-600 dark:text-primary-400">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="animate-spin w-3 h-3 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                </svg>
+                                Uploading…
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            {{-- Business information --}}
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6">
                 <div class="flex items-center gap-3 mb-5">
                     <span class="w-5 h-px bg-primary-600"></span>
@@ -766,9 +1386,6 @@ class extends Component
                                maxlength="255"
                                class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                         @error('business_name') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
-                        <p class="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400">
-                            This is how customers will see your business on the public site.
-                        </p>
                     </div>
 
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -784,9 +1401,6 @@ class extends Component
                                 @endforeach
                             </select>
                             @error('business_type') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
-                            <p class="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400">
-                                Not sure? Check the certificate you'll upload in Step 3.
-                            </p>
                         </div>
 
                         <div>
@@ -801,77 +1415,513 @@ class extends Component
                                 @endforeach
                             </select>
                             @error('type_of_tenant_id') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
-                            <p class="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400">
-                                The type of destination or service you offer.
-                            </p>
                         </div>
+                    </div>
 
-                        <div>
-                            <label for="business_registration_number" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                Registration No. <span class="text-rose-500">*</span>
-                            </label>
-                            <input type="text"
-                                   id="business_registration_number"
-                                   wire:model="business_registration_number"
-                                   placeholder="{{ $this->registrationNumberPlaceholder }}"
-                                   maxlength="50"
-                                   autocomplete="off"
-                                   x-on:input="
-                                       const up = $event.target.value.toUpperCase();
-                                       if (up !== $event.target.value) {
-                                           $event.target.value = up;
-                                           $event.target.dispatchEvent(new Event('input', { bubbles: true }));
-                                       }
-                                   "
-                                   class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition font-mono">
-                            @error('business_registration_number') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
-                            <p class="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400">
-                                {{ $this->registrationNumberHint }}
-                            </p>
-                        </div>
+                    <div>
+                        <label for="business_description" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            Short Description <span class="text-[10px] font-normal text-gray-400">(optional)</span>
+                        </label>
+                        <textarea id="business_description"
+                                  wire:model="business_description"
+                                  rows="3"
+                                  maxlength="500"
+                                  placeholder="A short introduction to your business"
+                                  class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition resize-none"></textarea>
+                        @error('business_description') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
+                    </div>
+                </div>
+            </section>
 
-                        <div>
-                            <label for="tin_number" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                TIN <span class="text-rose-500">*</span>
-                            </label>
-                            <input type="text"
-                                   id="tin_number"
-                                   wire:model="tin_number"
-                                   placeholder="123-456-789-000"
-                                   inputmode="numeric"
-                                   maxlength="15"
-                                   autocomplete="off"
-                                   x-on:blur="
-                                       const digits = ($event.target.value || '').replace(/\D/g, '').slice(0, 12);
-                                       let parts = [];
-                                       if (digits.length > 0) parts.push(digits.slice(0, 3));
-                                       if (digits.length > 3) parts.push(digits.slice(3, 6));
-                                       if (digits.length > 6) parts.push(digits.slice(6, 9));
-                                       if (digits.length > 9) parts.push(digits.slice(9, 12));
-                                       const formatted = parts.join('-');
-                                       if (formatted !== $event.target.value) {
-                                           $event.target.value = formatted;
-                                           $event.target.dispatchEvent(new Event('input', { bubbles: true }));
-                                       }
-                                   "
-                                   class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition font-mono">
-                            @error('tin_number') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
-                            <p class="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400">
-                                Format: <span class="font-mono">123-456-789</span> for individuals or <span class="font-mono">123-456-789-000</span> for businesses. Shown on your BIR Form 2303.
-                            </p>
+            {{-- Location --}}
+            <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mt-5">
+                <div class="flex items-center gap-3 mb-4">
+                    <span class="w-5 h-px bg-primary-600"></span>
+                    <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                        Location
+                    </span>
+                </div>
+
+                <div class="flex items-center justify-between gap-3 flex-wrap mb-3">
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <button type="button"
+                                wire:click="useMyLocation"
+                                wire:loading.attr="disabled"
+                                wire:target="useMyLocation"
+                                class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold
+                                       transition-all duration-200 active:scale-95
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                                       disabled:opacity-60 disabled:cursor-not-allowed">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
+                            </svg>
+                            Use my location
+                        </button>
+
+                        @if($this->hasCoordinates)
+                            <span class="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 rounded-full px-2 py-1">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
+                                </svg>
+                                Pinned
+                            </span>
+                            <button type="button"
+                                    wire:click="clearLocation"
+                                    class="inline-flex items-center justify-center h-9 px-3 rounded-lg text-[11px] font-semibold text-gray-500 hover:text-rose-600 dark:text-gray-400 dark:hover:text-rose-400
+                                           transition-all duration-200 active:scale-95
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
+                                Clear
+                            </button>
+                        @endif
+                    </div>
+
+                    @if($this->hasCoordinates)
+                        <button type="button"
+                                wire:click="refreshAddressFromPin"
+                                wire:loading.attr="disabled"
+                                wire:target="refreshAddressFromPin,resolveAddress"
+                                class="inline-flex items-center justify-center gap-1 h-9 px-3 rounded-lg text-[11px] font-semibold text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400
+                                       transition-all duration-200 active:scale-95
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                                       disabled:opacity-50 disabled:cursor-not-allowed">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                            </svg>
+                            Force refresh
+                        </button>
+                    @endif
+                </div>
+
+                <div class="relative">
+                    <div wire:ignore
+                         wire:key="business-location-map-stable"
+                         x-data="locationPicker({
+                             initialLat: {{ $businessLat ?? 'null' }},
+                             initialLng: {{ $businessLng ?? 'null' }},
+                         })"
+                         x-init="init()"
+                         x-on:map:pin-cleared.window="clearMarker()"
+                         class="relative h-72 sm:h-80 rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-900">
+                        <x-map
+                            id="business-location-map"
+                            :center="$this->mapCenter"
+                            :zoom="$this->mapZoom"
+                            height="100%"
+                            provider="carto-voyager"
+                            theme="auto"
+                            :max-zoom="22"
+                            class="h-full w-full"
+                        >
+                            <x-map-controls
+                                :zoom="true"
+                                :compass="true"
+                                :locate="false"
+                                :fullscreen="false"
+                                :scale="false"
+                                position="top-right"
+                            />
+                        </x-map>
+
+                        <div x-cloak
+                             :class="hasPin ? 'hidden' : ''"
+                             class="absolute inset-x-0 top-3 mx-auto w-max pointer-events-none
+                                    rounded-full bg-gray-900/80 backdrop-blur-sm text-white
+                                    text-[11px] font-semibold px-3 py-1.5">
+                            Click the map to drop a pin
                         </div>
+                    </div>
+
+                    <div wire:loading wire:target="resolveAddress"
+                         class="absolute bottom-3 left-3 z-10 pointer-events-none">
+                        <span class="inline-flex items-center gap-1.5 rounded-full bg-gray-900/85 backdrop-blur-sm text-white text-[11px] font-semibold px-3 py-1.5 shadow-lg">
+                            <svg class="animate-spin w-3 h-3 motion-reduce:animate-none" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                            </svg>
+                            Looking up address…
+                        </span>
+                    </div>
+                </div>
+
+                @if($this->hasCoordinates)
+                    <p class="mt-2 text-[10px] font-mono text-gray-400 dark:text-gray-500">
+                        {{ number_format($businessLat, 6) }}, {{ number_format($businessLng, 6) }}
+                    </p>
+                @endif
+
+                @error('businessLat') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
+                @error('businessLng') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
+
+                <div class="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div class="sm:col-span-2">
+                        <label for="address" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            Street Address
+                        </label>
+                        <input type="text" id="address" wire:model="address"
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                    </div>
+
+                    <div>
+                        <label for="barangay" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Barangay</label>
+                        <input type="text" id="barangay" wire:model="barangay"
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                    </div>
+
+                    <div>
+                        <label for="city" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">City / Municipality</label>
+                        <input type="text" id="city" wire:model="city"
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                    </div>
+
+                    <div class="sm:col-span-2">
+                        <label for="province" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Province</label>
+                        <input type="text" id="province" wire:model="province"
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                     </div>
                 </div>
             </section>
         @endif
 
-        {{-- STEP 2 — OWNER & CONTACT --}}
+        {{-- ═══════════════════════════════════════════════════════════
+             STEP 2 — DOCUMENTS & VERIFICATION
+             ═══════════════════════════════════════════════════════════ --}}
         @if ($step === 2)
+
+            <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mb-5">
+                <div class="flex items-center gap-3 mb-5">
+                    <span class="w-5 h-px bg-primary-600"></span>
+                    <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                        Registration Details
+                    </span>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label for="business_registration_number" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            Registration No. <span class="text-rose-500">*</span>
+                        </label>
+                        <input type="text"
+                               id="business_registration_number"
+                               wire:model="business_registration_number"
+                               placeholder="{{ $this->registrationNumberPlaceholder }}"
+                               maxlength="50"
+                               autocomplete="off"
+                               x-on:input="
+                                   const up = $event.target.value.toUpperCase();
+                                   if (up !== $event.target.value) {
+                                       $event.target.value = up;
+                                       $event.target.dispatchEvent(new Event('input', { bubbles: true }));
+                                   }
+                               "
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition font-mono">
+                        @error('business_registration_number') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
+                    </div>
+
+                    <div>
+                        <label for="tin_number" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            TIN <span class="text-rose-500">*</span>
+                        </label>
+                        <input type="text"
+                               id="tin_number"
+                               wire:model="tin_number"
+                               placeholder="123-456-789-000"
+                               inputmode="numeric"
+                               maxlength="15"
+                               autocomplete="off"
+                               x-on:blur="
+                                   const digits = ($event.target.value || '').replace(/\D/g, '').slice(0, 12);
+                                   let parts = [];
+                                   if (digits.length > 0) parts.push(digits.slice(0, 3));
+                                   if (digits.length > 3) parts.push(digits.slice(3, 6));
+                                   if (digits.length > 6) parts.push(digits.slice(6, 9));
+                                   if (digits.length > 9) parts.push(digits.slice(9, 12));
+                                   const formatted = parts.join('-');
+                                   if (formatted !== $event.target.value) {
+                                       $event.target.value = formatted;
+                                       $event.target.dispatchEvent(new Event('input', { bubbles: true }));
+                                   }
+                               "
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition font-mono">
+                        @error('tin_number') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
+                    </div>
+                </div>
+            </section>
+
+            <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center gap-3">
+                        <span class="w-5 h-px bg-primary-600"></span>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                            Required Documents
+                        </span>
+                    </div>
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider
+                        {{ $this->uploadedRequiredCount === count($this->requiredDocuments)
+                            ? 'bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30'
+                            : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 border border-gray-200 dark:border-gray-700' }}">
+                        {{ $this->uploadedRequiredCount }} / {{ count($this->requiredDocuments) }}
+                    </span>
+                </div>
+
+                <div class="space-y-2.5">
+                    @foreach ($this->requiredDocuments as $docType)
+                        @php
+                            $existing = $this->documentsByType[$docType] ?? null;
+                        @endphp
+                        <div wire:key="slot-{{ $docType }}"
+                             class="border rounded-xl p-3.5 transition
+                                {{ $existing
+                                    ? 'border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/40 dark:bg-emerald-500/[0.04]'
+                                    : 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900' }}">
+
+                            @if ($existing)
+                                <div class="flex items-start gap-3">
+                                    @php
+                                        $url     = $this->documentUrl($existing);
+                                        $isImage = $this->isImageDocument($existing);
+                                    @endphp
+
+                                    @if ($isImage && $url)
+                                        <a href="{{ $url }}" target="_blank" rel="noopener noreferrer"
+                                           class="block shrink-0 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 hover:border-primary-500 transition">
+                                            <img src="{{ $url }}" alt="" loading="lazy" decoding="async" class="w-12 h-12 object-cover">
+                                        </a>
+                                    @else
+                                        <a href="{{ $url }}" target="_blank" rel="noopener noreferrer"
+                                           class="shrink-0 w-12 h-12 rounded-lg bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 flex flex-col items-center justify-center text-rose-600 dark:text-rose-400 hover:border-rose-400 transition">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>
+                                            </svg>
+                                            <span class="text-[8px] font-bold uppercase mt-0.5">PDF</span>
+                                        </a>
+                                    @endif
+
+                                    <div class="flex-1 min-w-0">
+                                        <div class="flex items-center gap-1.5">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-emerald-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+                                            </svg>
+                                            <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">
+                                                {{ $this->documentLabels[$docType] ?? $docType }}
+                                            </p>
+                                        </div>
+                                        <p class="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                                            {{ $existing->original_filename }}
+                                        </p>
+                                        <div class="mt-1.5 flex items-center gap-3">
+                                            <a href="{{ $url }}" target="_blank" rel="noopener noreferrer"
+                                               class="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline
+                                                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded px-0.5 transition">
+                                                View
+                                            </a>
+                                            <span class="w-px h-3 bg-gray-300 dark:bg-gray-700"></span>
+                                            {{-- Rule 19: Alpine confirm() replaces wire:confirm. --}}
+                                            <button type="button"
+                                                    x-on:click="if (confirm('Remove this document? You can upload a new one after.')) $wire.deleteDocument({{ $existing->id }})"
+                                                    wire:loading.attr="disabled"
+                                                    wire:target="deleteDocument"
+                                                    class="text-[11px] font-semibold text-gray-500 dark:text-gray-400 hover:text-rose-600 dark:hover:text-rose-400 transition-all duration-200 active:scale-95
+                                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 rounded px-0.5
+                                                           disabled:opacity-60 disabled:cursor-not-allowed">
+                                                Replace
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            @else
+                                <label for="file-{{ $docType }}"
+                                       class="flex items-center gap-3 cursor-pointer group">
+                                    <div class="shrink-0 w-9 h-9 rounded-lg bg-white dark:bg-gray-800 border border-dashed border-gray-300 dark:border-gray-600 flex items-center justify-center text-gray-400 group-hover:border-primary-500 group-hover:text-primary-600 dark:group-hover:text-primary-400 transition">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                        </svg>
+                                    </div>
+                                    <div class="flex-1 min-w-0">
+                                        <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">
+                                            {{ $this->documentLabels[$docType] ?? $docType }}
+                                        </p>
+                                    </div>
+                                    <input type="file"
+                                           id="file-{{ $docType }}"
+                                           wire:model="uploads.{{ $docType }}"
+                                           accept=".pdf,.jpg,.jpeg,.png,.webp"
+                                           class="sr-only">
+                                </label>
+                            @endif
+
+                            <div wire:loading wire:target="uploads.{{ $docType }}"
+                                 class="mt-2 flex items-center gap-2 text-[11px] text-primary-600 dark:text-primary-400">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="animate-spin w-3 h-3 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                </svg>
+                                Uploading…
+                            </div>
+                        </div>
+                    @endforeach
+                </div>
+
+                <details class="mt-4 border-t border-gray-100 dark:border-gray-700/60 pt-4">
+                    <summary class="cursor-pointer list-none flex items-center justify-between py-1 group">
+                        <span class="text-[11px] font-semibold text-gray-600 dark:text-gray-300 group-hover:text-primary-600 dark:group-hover:text-primary-400 transition">
+                            Additional documents (optional)
+                        </span>
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-gray-400 group-open:rotate-180 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                    </summary>
+                    <div class="mt-3 space-y-2.5">
+                        @foreach ($this->optionalDocuments as $docType)
+                            @php
+                                $existing = $this->documentsByType[$docType] ?? null;
+                            @endphp
+                            <div wire:key="opt-{{ $docType }}"
+                                 class="border rounded-xl p-3 transition
+                                    {{ $existing
+                                        ? 'border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/40 dark:bg-emerald-500/[0.04]'
+                                        : 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900' }}">
+                                @if ($existing)
+                                    <div class="flex items-center gap-3">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-emerald-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+                                        </svg>
+                                        <p class="flex-1 text-sm font-medium text-gray-900 dark:text-white truncate">
+                                            {{ $this->documentLabels[$docType] ?? $docType }}
+                                        </p>
+                                        <button type="button"
+                                                x-on:click="if (confirm('Remove this document?')) $wire.deleteDocument({{ $existing->id }})"
+                                                wire:loading.attr="disabled"
+                                                wire:target="deleteDocument"
+                                                class="text-[11px] font-semibold text-gray-500 hover:text-rose-600 dark:hover:text-rose-400 transition-all duration-200 active:scale-95
+                                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 rounded px-1
+                                                       disabled:opacity-60 disabled:cursor-not-allowed">
+                                            Remove
+                                        </button>
+                                    </div>
+                                @else
+                                    <label for="file-opt-{{ $docType }}" class="flex items-center gap-3 cursor-pointer group">
+                                        <div class="shrink-0 w-8 h-8 rounded-lg bg-white dark:bg-gray-800 border border-dashed border-gray-300 dark:border-gray-600 flex items-center justify-center text-gray-400 group-hover:border-primary-500 group-hover:text-primary-600 transition">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                            </svg>
+                                        </div>
+                                        <p class="flex-1 text-sm font-medium text-gray-700 dark:text-gray-300">
+                                            {{ $this->documentLabels[$docType] ?? $docType }}
+                                        </p>
+                                        <input type="file"
+                                               id="file-opt-{{ $docType }}"
+                                               wire:model="uploads.{{ $docType }}"
+                                               accept=".pdf,.jpg,.jpeg,.png,.webp"
+                                               class="sr-only">
+                                    </label>
+                                @endif
+                            </div>
+                        @endforeach
+                    </div>
+                </details>
+            </section>
+
+            @if (!$this->isReadyToSubmit)
+                @php
+                    $missing = $this->missingRequiredDocuments;
+                    $missingCount = count($missing);
+                @endphp
+                <div class="mt-5 rounded-xl border border-amber-200/80 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/[0.06] px-3.5 py-3 shadow-sm">
+                    <div class="flex items-start gap-2.5">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/>
+                        </svg>
+                        <div class="min-w-0 text-xs sm:text-sm">
+                            <p class="font-semibold text-amber-900 dark:text-amber-200">
+                                {{ $missingCount }} required document{{ $missingCount === 1 ? '' : 's' }} still missing
+                            </p>
+                            <p class="mt-0.5 text-amber-800/80 dark:text-amber-300/80 leading-relaxed">
+                                {{ implode(' · ', $missing) }}
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            @endif
+        @endif
+
+        {{-- ═══════════════════════════════════════════════════════════
+             STEP 3 — OWNER, CONTACT & REVIEW
+             ═══════════════════════════════════════════════════════════ --}}
+        @if ($step === 3)
+
+            {{-- Owner photo — cropper-wrapped, aspect 1:1 --}}
+            <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mb-5">
+                <div class="flex items-center gap-3 mb-5">
+                    <span class="w-5 h-px bg-primary-600"></span>
+                    <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                        Owner Photo <span class="text-[10px] font-normal normal-case text-gray-400">(optional)</span>
+                    </span>
+                </div>
+
+                <div class="flex items-center gap-5">
+                    <div class="shrink-0 w-20 h-20 rounded-full border-2 border-dashed border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 flex items-center justify-center overflow-hidden">
+                        @if($owner_avatar_path)
+                            <img src="{{ asset('storage/' . $owner_avatar_path) }}" alt="Owner photo" loading="lazy" decoding="async" class="w-full h-full object-cover">
+                        @else
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+                            </svg>
+                        @endif
+                    </div>
+
+                    <div
+                        x-data="imageCropper({
+                            wireProperty: 'owner_avatar',
+                            aspect: 1,
+                            title: 'Crop owner photo',
+                            description: 'Square crop works best',
+                        })"
+                        x-init="init()"
+                        class="flex-1 min-w-0"
+                    >
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <label for="avatar-upload"
+                                   class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold
+                                          transition-all duration-200 active:scale-95 cursor-pointer
+                                          focus-within:ring-2 focus-within:ring-primary-500/50 focus-within:ring-offset-2 dark:focus-within:ring-offset-gray-900">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                </svg>
+                                {{ $owner_avatar_path ? 'Replace photo' : 'Upload photo' }}
+                                <input type="file" id="avatar-upload" x-ref="input" x-on:change="pick($event)" accept="image/jpeg,image/png,image/webp" class="sr-only">
+                            </label>
+
+                            @if($owner_avatar_path)
+                                <button type="button"
+                                        x-on:click="if (confirm('Remove the photo?')) $wire.removeOwnerAvatar()"
+                                        wire:loading.attr="disabled"
+                                        wire:target="removeOwnerAvatar"
+                                        class="inline-flex items-center justify-center h-9 px-3.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-xs font-semibold
+                                               transition-all duration-200 active:scale-95 hover:border-rose-400 hover:text-rose-600 dark:hover:text-rose-400
+                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
+                                               disabled:opacity-60 disabled:cursor-not-allowed">
+                                    Remove
+                                </button>
+                            @endif
+
+                            <div wire:loading wire:target="owner_avatar" class="flex items-center gap-2 text-xs text-primary-600 dark:text-primary-400">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="animate-spin w-3 h-3 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                </svg>
+                                Uploading…
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6">
                 <div class="flex items-center gap-3 mb-5">
                     <span class="w-5 h-px bg-primary-600"></span>
                     <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                        Owner
+                        Owner Information
                     </span>
                 </div>
 
@@ -899,10 +1949,6 @@ class extends Component
                                 @endforeach
                             </select>
                             @error('owner_id_type') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
-
-                            <p class="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400">
-                                You'll upload a photo of this ID on the next step.
-                            </p>
                         </div>
 
                         <div class="sm:col-span-2">
@@ -931,7 +1977,7 @@ class extends Component
                 <div class="flex items-center gap-3 mb-5">
                     <span class="w-5 h-px bg-primary-600"></span>
                     <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                        Contact
+                        Contact Information
                     </span>
                 </div>
 
@@ -957,277 +2003,129 @@ class extends Component
                 </div>
             </section>
 
-            <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mt-5">
-                <div class="flex items-center gap-3 mb-5">
-                    <span class="w-5 h-px bg-primary-600"></span>
-                    <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                        Location <span class="text-[10px] font-normal normal-case text-gray-400">(optional)</span>
-                    </span>
-                </div>
-
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div class="sm:col-span-2">
-                        <label for="address" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            Street Address
-                        </label>
-                        <input type="text" id="address" wire:model="address"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
-                    </div>
-
-                    <div>
-                        <label for="barangay" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            Barangay
-                        </label>
-                        <input type="text" id="barangay" wire:model="barangay"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
-                    </div>
-
-                    <div>
-                        <label for="city" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            City / Municipality
-                        </label>
-                        <input type="text" id="city" wire:model="city"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
-                    </div>
-
-                    <div class="sm:col-span-2">
-                        <label for="province" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            Province
-                        </label>
-                        <input type="text" id="province" wire:model="province"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
-                    </div>
-                </div>
-            </section>
-        @endif
-
-        {{-- STEP 3 — DOCUMENTS --}}
-        @if ($step === 3)
-
-            <div class="mb-5 flex items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
-                <svg class="w-3.5 h-3.5 text-emerald-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
-                </svg>
-                <span>
-                    Your uploads are encrypted, watermarked, and only visible to platform reviewers.&nbsp;
-                    <span class="text-gray-400 dark:text-gray-500">RA 10173 compliant.</span>
-                </span>
-            </div>
-
-            <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6">
-                <div class="flex items-center justify-between mb-4">
+            <section class="mt-5 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 bg-white dark:bg-gray-800/90 shadow-sm overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-gray-100 dark:border-gray-700/60 bg-gradient-to-r from-primary-50/60 to-transparent dark:from-primary-500/[0.06] dark:to-transparent">
                     <div class="flex items-center gap-3">
                         <span class="w-5 h-px bg-primary-600"></span>
-                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                            Required Documents
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-primary-700 dark:text-primary-400">
+                            Review &amp; Submit
                         </span>
                     </div>
-                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider
-                        {{ $this->uploadedRequiredCount === count($this->requiredDocuments)
-                            ? 'bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30'
-                            : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 border border-gray-200 dark:border-gray-700' }}">
-                        {{ $this->uploadedRequiredCount }} / {{ count($this->requiredDocuments) }}
-                    </span>
+                    <p class="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                        One last look. Everything below will be visible to our reviewers.
+                    </p>
                 </div>
 
-                <div class="space-y-2.5">
-                    @foreach ($this->requiredDocuments as $docType)
+                <div class="px-5 py-4 border-b border-gray-100 dark:border-gray-700/60">
+                    <p class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500 mb-3">
+                        Public Listing Preview
+                    </p>
+
+                    <div class="rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 max-w-sm">
                         @php
-                            $existing  = $this->documentsByType[$docType] ?? null;
-                            $isOwnerId = $docType === BusinessDocument::TYPE_OWNER_ID;
+                            $previewCover = $this->cover_photo_path
+                                ? asset('storage/' . $this->cover_photo_path)
+                                : null;
+                            $previewLogo = $this->logo_path
+                                ? asset('storage/' . $this->logo_path)
+                                : null;
                         @endphp
-                        <div wire:key="slot-{{ $docType }}"
-                             class="border rounded-xl p-3.5 transition
-                                {{ $existing
-                                    ? 'border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/40 dark:bg-emerald-500/[0.04]'
-                                    : 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900' }}">
 
-                            @if ($existing)
-                                <div class="flex items-start gap-3">
-                                    @php
-                                        $url     = $this->documentUrl($existing);
-                                        $isImage = $this->isImageDocument($existing);
-                                    @endphp
+                        @if($previewCover)
+                            <img src="{{ $previewCover }}" alt="" loading="lazy" decoding="async" class="w-full aspect-[3/1] object-cover">
+                        @else
+                            <div class="w-full aspect-[3/1] bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center text-white/70 text-xs font-semibold uppercase tracking-wider">
+                                No cover yet
+                            </div>
+                        @endif
 
-                                    @if ($isImage && $url)
-                                        <a href="{{ $url }}" target="_blank" rel="noopener noreferrer"
-                                           class="block shrink-0 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 hover:border-primary-500 transition">
-                                            <img src="{{ $url }}" alt="" loading="lazy" class="w-12 h-12 object-cover">
-                                        </a>
+                        <div class="p-4">
+                            <div class="flex items-start gap-3">
+                                <div class="shrink-0 w-12 h-12 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
+                                    @if($previewLogo)
+                                        <img src="{{ $previewLogo }}" alt="" loading="lazy" decoding="async" class="w-full h-full object-cover">
                                     @else
-                                        <a href="{{ $url }}" target="_blank" rel="noopener noreferrer"
-                                           class="shrink-0 w-12 h-12 rounded-lg bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 flex flex-col items-center justify-center text-rose-600 dark:text-rose-400 hover:border-rose-400 transition">
-                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>
-                                            </svg>
-                                            <span class="text-[8px] font-bold uppercase mt-0.5">PDF</span>
-                                        </a>
+                                        <span class="text-xs font-bold text-gray-500 dark:text-gray-400">
+                                            {{ strtoupper(substr($business_name ?: 'B', 0, 2)) }}
+                                        </span>
                                     @endif
-
-                                    <div class="flex-1 min-w-0">
-                                        <div class="flex items-center gap-1.5">
-                                            <svg class="w-3.5 h-3.5 text-emerald-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
-                                            </svg>
-                                            <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">
-                                                {{ $this->documentLabels[$docType] ?? $docType }}
-                                            </p>
-                                        </div>
-                                        <p class="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400 truncate">
-                                            {{ $existing->original_filename }}
-                                        </p>
-                                        <div class="mt-1.5 flex items-center gap-3">
-                                            <a href="{{ $url }}" target="_blank" rel="noopener noreferrer"
-                                               class="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline">
-                                                View
-                                            </a>
-                                            <span class="w-px h-3 bg-gray-300 dark:bg-gray-700"></span>
-                                            <button type="button"
-                                                    wire:click="deleteDocument({{ $existing->id }})"
-                                                    wire:confirm="Remove this document?"
-                                                    wire:loading.attr="disabled"
-                                                    class="text-[11px] font-semibold text-gray-500 dark:text-gray-400 hover:text-rose-600 dark:hover:text-rose-400 transition">
-                                                Replace
-                                            </button>
-                                        </div>
-                                    </div>
                                 </div>
-
-                            @else
-                                <label for="file-{{ $docType }}"
-                                       class="flex items-center gap-3 cursor-pointer group">
-                                    <div class="shrink-0 w-9 h-9 rounded-lg bg-white dark:bg-gray-800 border border-dashed border-gray-300 dark:border-gray-600 flex items-center justify-center text-gray-400 group-hover:border-primary-500 group-hover:text-primary-600 dark:group-hover:text-primary-400 transition">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                                        </svg>
-                                    </div>
-                                    <div class="flex-1 min-w-0">
-                                        <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">
-                                            {{ $this->documentLabels[$docType] ?? $docType }}
+                                <div class="min-w-0 flex-1">
+                                    <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">
+                                        {{ $business_name ?: 'Your Business Name' }}
+                                    </p>
+                                    <p class="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                                        {{ $city ?: 'Victorias City' }}{{ $province ? ', ' . $province : '' }}
+                                    </p>
+                                    @if($business_description)
+                                        <p class="mt-2 text-xs text-gray-600 dark:text-gray-400 leading-relaxed line-clamp-2">
+                                            {{ $business_description }}
                                         </p>
-                                        @if ($isOwnerId && $this->selectedOwnerIdLabel)
-                                            <p class="mt-0.5 inline-flex items-center gap-1 text-[10px] font-semibold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-200 dark:border-indigo-500/30 rounded px-1.5 py-0.5">
-                                                <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4"/>
-                                                </svg>
-                                                Should be your {{ $this->selectedOwnerIdLabel }}
-                                            </p>
-                                        @endif
-                                        <p class="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">
-                                            JPG, PNG, or PDF · max 10 MB
-                                        </p>
-                                    </div>
-                                    <input type="file"
-                                           id="file-{{ $docType }}"
-                                           wire:model="uploads.{{ $docType }}"
-                                           accept=".pdf,.jpg,.jpeg,.png,.webp"
-                                           class="sr-only">
-                                </label>
-                            @endif
-
-                            <div wire:loading wire:target="uploads.{{ $docType }}"
-                                 class="mt-2 flex items-center gap-2 text-[11px] text-primary-600 dark:text-primary-400">
-                                <svg class="animate-spin w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                                </svg>
-                                Uploading…
+                                    @endif
+                                </div>
                             </div>
                         </div>
-                    @endforeach
+                    </div>
+                </div>
+
+                <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 px-5 py-4">
+                    <div class="min-w-0">
+                        <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Business Name</dt>
+                        <dd class="mt-0.5 text-sm font-medium text-gray-900 dark:text-white truncate">{{ $business_name ?: '—' }}</dd>
+                    </div>
+                    <div class="min-w-0">
+                        <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Registration No.</dt>
+                        <dd class="mt-0.5 text-sm font-mono font-medium text-gray-900 dark:text-white truncate">{{ $business_registration_number ?: '—' }}</dd>
+                    </div>
+                    <div class="min-w-0">
+                        <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Owner Name</dt>
+                        <dd class="mt-0.5 text-sm font-medium text-gray-900 dark:text-white truncate">{{ $owner_full_name ?: '—' }}</dd>
+                    </div>
+                    <div class="min-w-0">
+                        <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">TIN</dt>
+                        <dd class="mt-0.5 text-sm font-mono font-medium text-gray-900 dark:text-white truncate">{{ $tin_number ?: '—' }}</dd>
+                    </div>
+                    <div class="min-w-0">
+                        <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Location Pinned</dt>
+                        <dd class="mt-0.5 text-sm font-medium {{ $this->hasCoordinates ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400' }}">
+                            {{ $this->hasCoordinates ? '✓ Yes' : '⚠ Not yet' }}
+                        </dd>
+                    </div>
+                    <div class="min-w-0">
+                        <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Documents</dt>
+                        <dd class="mt-0.5 text-sm font-medium {{ $this->isReadyToSubmit ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400' }}">
+                            {{ $this->uploadedRequiredCount }} / {{ count($this->requiredDocuments) }}
+                            {{ $this->isReadyToSubmit ? '✓' : '(incomplete)' }}
+                        </dd>
+                    </div>
+                </dl>
+
+                <div class="px-5 pb-5 flex items-center gap-3 flex-wrap">
+                    <button type="button" wire:click="gotoStep(1)"
+                            class="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline
+                                   transition-all duration-200 active:scale-95
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded px-0.5">
+                        ← Edit business &amp; location
+                    </button>
+                    <span class="text-gray-300 dark:text-gray-600">·</span>
+                    <button type="button" wire:click="gotoStep(2)"
+                            class="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline
+                                   transition-all duration-200 active:scale-95
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded px-0.5">
+                        Edit documents &amp; verification
+                    </button>
+                    <span class="text-gray-300 dark:text-gray-600">·</span>
+                    <button type="button" wire:click="gotoStep(3)"
+                            class="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline
+                                   transition-all duration-200 active:scale-95
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded px-0.5">
+                        Edit owner &amp; contact
+                    </button>
                 </div>
             </section>
-
-            <details class="mt-5 bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm overflow-hidden">
-                <summary class="cursor-pointer list-none px-5 py-3.5 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-800 transition">
-                    <div class="flex items-center gap-3">
-                        <span class="w-5 h-px bg-primary-600"></span>
-                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                            Additional Documents
-                        </span>
-                    </div>
-                    <span class="text-[11px] text-gray-500 dark:text-gray-400">Optional</span>
-                </summary>
-                <div class="px-5 pb-5 space-y-2.5">
-                    @foreach ($this->optionalDocuments as $docType)
-                        @php
-                            $existing = $this->documentsByType[$docType] ?? null;
-                        @endphp
-                        <div wire:key="opt-{{ $docType }}"
-                             class="border rounded-xl p-3 transition
-                                {{ $existing
-                                    ? 'border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/40 dark:bg-emerald-500/[0.04]'
-                                    : 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900' }}">
-                            @if ($existing)
-                                <div class="flex items-center gap-3">
-                                    <svg class="w-3.5 h-3.5 text-emerald-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
-                                    </svg>
-                                    <p class="flex-1 text-sm font-medium text-gray-900 dark:text-white truncate">
-                                        {{ $this->documentLabels[$docType] ?? $docType }}
-                                    </p>
-                                    <button type="button"
-                                            wire:click="deleteDocument({{ $existing->id }})"
-                                            wire:confirm="Remove this document?"
-                                            class="text-[11px] font-semibold text-gray-500 hover:text-rose-600 transition">
-                                        Remove
-                                    </button>
-                                </div>
-                            @else
-                                <label for="file-opt-{{ $docType }}" class="flex items-center gap-3 cursor-pointer group">
-                                    <div class="shrink-0 w-8 h-8 rounded-lg bg-white dark:bg-gray-800 border border-dashed border-gray-300 dark:border-gray-600 flex items-center justify-center text-gray-400 group-hover:border-primary-500 group-hover:text-primary-600 transition">
-                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                                        </svg>
-                                    </div>
-                                    <p class="flex-1 text-sm font-medium text-gray-700 dark:text-gray-300">
-                                        {{ $this->documentLabels[$docType] ?? $docType }}
-                                    </p>
-                                    <input type="file"
-                                           id="file-opt-{{ $docType }}"
-                                           wire:model="uploads.{{ $docType }}"
-                                           accept=".pdf,.jpg,.jpeg,.png,.webp"
-                                           class="sr-only">
-                                </label>
-                                <div wire:loading wire:target="uploads.{{ $docType }}"
-                                     class="mt-2 flex items-center gap-2 text-[11px] text-primary-600 dark:text-primary-400">
-                                    <svg class="animate-spin w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                                    </svg>
-                                    Uploading…
-                                </div>
-                            @endif
-                        </div>
-                    @endforeach
-                </div>
-            </details>
         @endif
 
-        {{-- Missing-documents notice --}}
-        @if ($step === 3 && !$this->isReadyToSubmit)
-            @php
-                $missing = $this->missingRequiredDocuments;
-                $missingCount = count($missing);
-            @endphp
-            <div class="mt-5 rounded-xl border border-amber-200/80 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/[0.06] px-3.5 py-3 shadow-sm">
-                <div class="flex items-start gap-2.5">
-                    <svg class="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/>
-                    </svg>
-                    <div class="min-w-0 text-xs sm:text-sm">
-                        <p class="font-semibold text-amber-900 dark:text-amber-200">
-                            {{ $missingCount }} required document{{ $missingCount === 1 ? '' : 's' }} still missing
-                        </p>
-                        <p class="mt-0.5 text-amber-800/80 dark:text-amber-300/80 leading-relaxed">
-                            {{ implode(' · ', $missing) }}
-                        </p>
-                    </div>
-                </div>
-            </div>
-        @endif
-
-        {{-- Navigation bar --}}
+        {{-- Navigation --}}
         <div class="sticky bottom-4 mt-5 z-20">
             <div class="bg-white/95 dark:bg-gray-800/95 backdrop-blur border border-gray-200 dark:border-gray-700 rounded-2xl shadow-lg p-2.5 flex items-center justify-between gap-3">
 
@@ -1236,8 +2134,11 @@ class extends Component
                             wire:click="back"
                             wire:loading.attr="disabled"
                             wire:target="back,next,submit"
-                            class="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 disabled:opacity-60">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                                   transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                                   disabled:opacity-60 disabled:cursor-not-allowed">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                         </svg>
                         Back
@@ -1249,18 +2150,21 @@ class extends Component
                 <div class="hidden sm:flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400">
                     <span class="font-semibold tabular-nums">{{ $step }}</span>
                     <span class="text-gray-300 dark:text-gray-600">/</span>
-                    <span class="tabular-nums">{{ count($stepLabels) }}</span>
+                    <span class="tabular-nums">{{ count($this->stepLabels) }}</span>
                 </div>
 
-                @if ($step < count($stepLabels))
+                @if ($step < count($this->stepLabels))
                     <button type="button"
                             wire:click="next"
                             wire:loading.attr="disabled"
                             wire:target="back,next,submit"
-                            class="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 disabled:opacity-60">
+                            class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                   transition-all duration-200 active:scale-95
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                                   disabled:opacity-60 disabled:cursor-not-allowed">
                         <span wire:loading.remove wire:target="next">Continue</span>
                         <span wire:loading wire:target="next">Saving…</span>
-                        <svg wire:loading.remove wire:target="next" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                         </svg>
                     </button>
@@ -1271,10 +2175,13 @@ class extends Component
                             wire:target="back,next,submit"
                             @disabled(!$this->isReadyToSubmit)
                             title="{{ $this->isReadyToSubmit ? 'Submit your application for review' : 'Complete all required fields and upload all required documents first' }}"
-                            class="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 disabled:opacity-40 disabled:cursor-not-allowed">
+                            class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                   transition-all duration-200 active:scale-95
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                                   disabled:opacity-40 disabled:cursor-not-allowed">
                         <span wire:loading.remove wire:target="submit">Submit for Review</span>
                         <span wire:loading wire:target="submit">Submitting…</span>
-                        <svg wire:loading.remove wire:target="submit" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                         </svg>
                     </button>
@@ -1283,7 +2190,10 @@ class extends Component
         </div>
 
         <p class="mt-3 text-center text-[11px] text-gray-400 dark:text-gray-500">
-            Progress saves automatically when you continue.
+            Progress saves automatically when you continue. You can close this tab and come back anytime.
         </p>
     </div>
+
+    {{-- Image crop modal — singleton for this SFC --}}
+    <x-image-crop-modal />
 </main>

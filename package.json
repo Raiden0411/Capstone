@@ -20,6 +20,7 @@
     "dependencies": {
         "@alpinejs/collapse": "^3.17.2",
         "@vis.gl/react-maplibre": "^8.1.2",
+        "cropperjs": "^2.2.0",
         "leaflet": "^1.9.4",
         "lucide-react": "^1.35.0",
         "maplibre-gl": "^6.6.0",

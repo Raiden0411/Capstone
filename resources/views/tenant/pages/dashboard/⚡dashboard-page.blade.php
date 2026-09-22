@@ -9,6 +9,7 @@ use App\Models\Booking;
 use App\Models\Property;
 use App\Models\Payment;
 use App\Scopes\TenantScope;
+use App\Traits\ChecksTenantPermissions;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
@@ -16,18 +17,48 @@ use Carbon\Carbon;
 new
 #[Layout('tenant.layouts.app')]
 #[Title('Business Dashboard')]
-class extends Component {
+class extends Component
+{
+    use ChecksTenantPermissions;
 
     public string $dateRange   = 'this-month';
     public string $customStart = '';
     public string $customEnd   = '';
 
+    // ─────────────────────────────────────────────────────────
+    //  Lifecycle
+    // ─────────────────────────────────────────────────────────
+
     public function mount(): void
     {
-        abort_unless(Auth::user()?->tenant_id, 403);
+        $this->authorizeDashboard();
 
         $this->customStart = now()->startOfMonth()->format('Y-m-d');
         $this->customEnd   = now()->endOfMonth()->format('Y-m-d');
+    }
+
+    /**
+     * Livewire re-hydrates this component on every subsequent request.
+     * Route middleware (`IsTenantAdmin`) only runs on the original GET.
+     *
+     * NOTE: this route was previously ungated — any employee with ≥1
+     * permission could see tenant-wide revenue/bookings. The dashboard
+     * is analytics-grade content, so it's gated by `view analytics`.
+     */
+    public function hydrate(): void
+    {
+        $this->authorizeDashboard();
+    }
+
+    protected function authorizeDashboard(): void
+    {
+        abort_unless(
+            Auth::user()?->tenant_id,
+            403,
+            'No business is linked to your account.'
+        );
+
+        $this->requirePermission('view analytics');
     }
 
     /**
@@ -193,233 +224,331 @@ class extends Component {
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto space-y-6" wire:poll.60s>
+@php
+    $s = $this->stats;
 
-    {{-- ═══════════════ HEADER ═══════════════ --}}
+    $primaryKpis = [
+        [
+            'label'    => 'Revenue',
+            'value'    => '₱' . number_format($s['revenue'], 2),
+            'subtitle' => 'Paid this period',
+            'bg'       => 'bg-emerald-50 dark:bg-emerald-500/15',
+            'fg'       => 'text-emerald-600 dark:text-emerald-400',
+            'icon'     => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>',
+        ],
+        [
+            'label'    => 'Bookings',
+            'value'    => number_format($s['total_bookings']),
+            'subtitle' => $s['total_guests'] > 0
+                            ? 'from ' . number_format($s['total_guests']) . ' unique ' . \Illuminate\Support\Str::plural('guest', (int) $s['total_guests'])
+                            : 'Created this period',
+            'bg'       => 'bg-primary-50 dark:bg-primary-500/15',
+            'fg'       => 'text-primary-600 dark:text-primary-400',
+            'icon'     => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>',
+        ],
+        [
+            'label'    => 'Occupancy',
+            'value'    => $s['occupancy_rate'] . '%',
+            'subtitle' => $s['total_properties'] > 0
+                            ? $s['occupied_properties'] . ' of ' . $s['total_properties'] . ' occupied'
+                            : 'No properties yet',
+            'bg'       => 'bg-blue-50 dark:bg-blue-500/15',
+            'fg'       => 'text-blue-600 dark:text-blue-400',
+            'icon'     => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>',
+        ],
+        [
+            'label'    => 'Outstanding',
+            'value'    => '₱' . number_format($s['outstanding_balance'], 2),
+            'subtitle' => 'Unpaid balance across active bookings',
+            'bg'       => 'bg-amber-50 dark:bg-amber-500/15',
+            'fg'       => 'text-amber-600 dark:text-amber-400',
+            'icon'     => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>',
+        ],
+    ];
+
+    $secondaryKpis = [
+        [
+            'label' => 'Arrivals Today',
+            'value' => number_format($s['arrivals_today']),
+            'dot'   => 'bg-emerald-500',
+        ],
+        [
+            'label' => 'Departures Today',
+            'value' => number_format($s['departures_today']),
+            'dot'   => 'bg-rose-500',
+        ],
+        [
+            'label' => 'Avg Booking Value',
+            'value' => '₱' . number_format($s['avg_booking_value'], 2),
+            'dot'   => 'bg-slate-500',
+        ],
+        [
+            'label' => 'Repeat Guest Rate',
+            'value' => $s['repeat_guest_rate'] . '%',
+            'dot'   => 'bg-purple-500',
+        ],
+    ];
+@endphp
+
+<div class="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6" wire:poll.60s>
+
+    {{-- ═══════════════════════════════════════════════════════════
+         HEADER
+         ═══════════════════════════════════════════════════════════ --}}
     <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
-        <div>
-            <p class="text-xs font-semibold uppercase tracking-wider text-primary-600 dark:text-primary-400">
-                Dashboard
-            </p>
-            <h1 class="mt-1 text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">
+        <div class="min-w-0">
+            <div class="flex items-center gap-2 mb-2">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Dashboard</span>
+            </div>
+            <h1 class="font-display text-2xl sm:text-3xl font-semibold text-gray-900 dark:text-white tracking-tight truncate">
                 {{ Auth::user()?->tenant?->name ?? 'Business Dashboard' }}
             </h1>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+            <p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1">
                 Overview of your property performance and activity.
             </p>
         </div>
 
-        <div class="flex flex-col sm:flex-row gap-2">
-            <a href="{{ route('tenant.bookings.create') }}" wire:navigate
-               class="btn-primary active:scale-95 transition-transform
-                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                      inline-flex items-center justify-center gap-2">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                </svg>
-                New Booking
-            </a>
-            <a href="{{ route('tenant.analytics.index') }}" wire:navigate
-               class="btn-secondary active:scale-95 transition-transform
-                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                      inline-flex items-center justify-center gap-2">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3v18h18"/>
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16l4-4 4 4 5-5"/>
-                </svg>
-                View Analytics
-            </a>
-        </div>
-    </div>
+        <div class="flex flex-wrap items-center gap-2 shrink-0">
+            @if($this->tenantCan('create bookings'))
+                <a href="{{ route('tenant.bookings.create') }}" wire:navigate
+                   class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                          transition-all duration-200 active:scale-95
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                    <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                    </svg>
+                    <span>New Booking</span>
+                </a>
+            @endif
 
-    {{-- ═══════════════ DATE RANGE ═══════════════ --}}
-    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4 relative">
-        <div wire:loading.delay class="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none">
-            <svg class="animate-spin h-5 w-5 text-primary-600 dark:text-primary-400 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-            </svg>
-        </div>
-
-        <div class="flex flex-wrap items-center gap-2">
-            @foreach([
-                'today'      => 'Today',
-                'yesterday'  => 'Yesterday',
-                'last-7'     => '7 Days',
-                'last-30'    => '30 Days',
-                'this-month' => 'This Month',
-                'last-month' => 'Last Month',
-                'custom'     => 'Custom',
-            ] as $val => $label)
-                <button type="button"
-                        wire:key="range-{{ $val }}"
-                        wire:click="$set('dateRange', '{{ $val }}')"
-                        class="px-4 py-2 rounded-full text-xs font-semibold uppercase tracking-wider transition-all duration-200 active:scale-95
-                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                               {{ $dateRange === $val
-                                  ? 'bg-primary-600 text-white shadow-md shadow-primary-600/20'
-                                  : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600' }}">
-                    {{ $label }}
-                </button>
-            @endforeach
-
-            @if($dateRange === 'custom')
-                <div class="flex flex-col sm:flex-row gap-2 items-start sm:items-center w-full sm:w-auto">
-                    <input type="date" wire:model.live="customStart" class="input !py-2 !w-full sm:!w-auto">
-                    <span class="text-gray-500 dark:text-gray-400 text-sm">to</span>
-                    <input type="date" wire:model.live="customEnd" class="input !py-2 !w-full sm:!w-auto">
-                </div>
+            @if($this->tenantCan('view analytics'))
+                <a href="{{ route('tenant.analytics.index') }}" wire:navigate
+                   class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                          transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                    <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3v18h18"/>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16l4-4 4 4 5-5"/>
+                    </svg>
+                    <span>Analytics</span>
+                </a>
             @endif
         </div>
     </div>
 
-    {{-- ═══════════════ KPI CARDS ═══════════════ --}}
-    @php $s = $this->stats; @endphp
-    <div wire:loading.class="opacity-50 pointer-events-none" class="grid grid-cols-2 lg:grid-cols-4 gap-4 transition-opacity duration-200">
-
-        {{-- Primary KPIs --}}
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4 flex items-center justify-between">
-            <div class="min-w-0">
-                <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Revenue</p>
-                <p class="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white mt-1 tabular-nums truncate">
-                    ₱{{ number_format($s['revenue'], 2) }}
-                </p>
-            </div>
-            <div class="p-3 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-lg shrink-0 ml-3">
-                <svg class="w-5 h-5 sm:w-6 sm:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                </svg>
-            </div>
-        </div>
-
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4 flex items-center justify-between">
-            <div class="min-w-0">
-                <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Bookings</p>
-                <p class="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white mt-1 tabular-nums truncate">
-                    {{ number_format($s['total_bookings']) }}
-                </p>
-            </div>
-            <div class="p-3 bg-primary-50 dark:bg-primary-500/10 text-primary-600 dark:text-primary-400 rounded-lg shrink-0 ml-3">
-                <svg class="w-5 h-5 sm:w-6 sm:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+    {{-- ═══════════════════════════════════════════════════════════
+         DATE RANGE
+         ═══════════════════════════════════════════════════════════ --}}
+    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4">
+        <div class="flex flex-wrap items-center gap-3">
+            <div class="flex items-center gap-1.5 shrink-0">
+                <svg class="w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                 </svg>
+                <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 hidden sm:inline">Period</span>
             </div>
-        </div>
 
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4 flex items-center justify-between">
-            <div class="min-w-0">
-                <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Occupancy</p>
-                <p class="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white mt-1 tabular-nums truncate">
-                    {{ $s['occupancy_rate'] }}%
-                </p>
+            <div class="flex flex-wrap items-center gap-1.5 flex-1 min-w-0">
+                @foreach([
+                    'today'      => 'Today',
+                    'yesterday'  => 'Yesterday',
+                    'last-7'     => '7D',
+                    'last-30'    => '30D',
+                    'this-month' => 'This Month',
+                    'last-month' => 'Last Month',
+                    'custom'     => 'Custom',
+                ] as $val => $label)
+                    @php $isActive = $dateRange === $val; @endphp
+                    <button type="button"
+                            wire:key="range-{{ $val }}"
+                            wire:click="$set('dateRange', '{{ $val }}')"
+                            aria-pressed="{{ $isActive ? 'true' : 'false' }}"
+                            class="inline-flex items-center justify-center h-9 px-3.5 rounded-full text-xs font-semibold uppercase tracking-wide shrink-0
+                                   transition-all duration-200 active:scale-95
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                                   {{ $isActive
+                                      ? 'bg-primary-600 text-white shadow-sm shadow-primary-600/20'
+                                      : 'border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:border-primary-400 hover:text-primary-600 dark:hover:text-primary-400' }}">
+                        {{ $label }}
+                    </button>
+                @endforeach
             </div>
-            <div class="p-3 bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 rounded-lg shrink-0 ml-3">
-                <svg class="w-5 h-5 sm:w-6 sm:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+
+            <div wire:loading.delay wire:target="dateRange,customStart,customEnd"
+                 class="ml-auto inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-primary-600 dark:text-primary-400 shrink-0">
+                <svg class="animate-spin h-3.5 w-3.5 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                 </svg>
+                Updating
             </div>
         </div>
 
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-amber-200 dark:border-amber-500/30 shadow-sm p-4 flex items-center justify-between">
-            <div class="min-w-0">
-                <p class="text-xs text-amber-600 dark:text-amber-400 uppercase tracking-wider">Outstanding</p>
-                <p class="text-xl sm:text-2xl font-bold text-amber-600 dark:text-amber-400 mt-1 tabular-nums truncate">
-                    ₱{{ number_format($s['outstanding_balance'], 2) }}
-                </p>
+        @if($dateRange === 'custom')
+            <div class="flex flex-wrap items-center gap-2 mt-4 pt-4 border-t border-gray-100 dark:border-gray-700/60">
+                <input type="date"
+                       wire:model.live="customStart"
+                       aria-label="Start date"
+                       class="input h-11 w-full sm:w-auto">
+                <span class="text-gray-400 dark:text-gray-500 text-xs font-medium">to</span>
+                <input type="date"
+                       wire:model.live="customEnd"
+                       aria-label="End date"
+                       class="input h-11 w-full sm:w-auto">
             </div>
-            <div class="p-3 bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 rounded-lg shrink-0 ml-3">
-                <svg class="w-5 h-5 sm:w-6 sm:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                </svg>
-            </div>
-        </div>
-
-        {{-- Secondary KPIs --}}
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Avg Booking</p>
-            <p class="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white mt-1 tabular-nums truncate">
-                ₱{{ number_format($s['avg_booking_value'], 2) }}
-            </p>
-        </div>
-
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Repeat Guests</p>
-            <p class="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white mt-1 tabular-nums">
-                {{ $s['repeat_guest_rate'] }}%
-            </p>
-        </div>
-
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Arrivals Today</p>
-            <p class="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white mt-1 tabular-nums">
-                {{ number_format($s['arrivals_today']) }}
-            </p>
-        </div>
-
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Departures Today</p>
-            <p class="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white mt-1 tabular-nums">
-                {{ number_format($s['departures_today']) }}
-            </p>
-        </div>
+        @endif
     </div>
 
-    {{-- ═══════════════ RECENT BOOKINGS ═══════════════ --}}
+    {{-- ═══════════════════════════════════════════════════════════
+         PRIMARY KPI CARDS
+         ═══════════════════════════════════════════════════════════ --}}
+    <div wire:loading.class="opacity-50 pointer-events-none"
+         wire:target="dateRange,customStart,customEnd"
+         class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 transition-opacity duration-200">
+        @foreach($primaryKpis as $kpi)
+            <div wire:key="kpi-primary-{{ $loop->index }}"
+                 class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm hover:shadow-md transition-shadow duration-200 p-5 flex items-start justify-between gap-4">
+                <div class="min-w-0">
+                    <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                        {{ $kpi['label'] }}
+                    </p>
+                    <p class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white tabular-nums mt-2 leading-none truncate">
+                        {{ $kpi['value'] }}
+                    </p>
+                    <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-2 truncate">
+                        {{ $kpi['subtitle'] }}
+                    </p>
+                </div>
+                <div class="w-11 h-11 rounded-xl flex items-center justify-center shrink-0 {{ $kpi['bg'] }} {{ $kpi['fg'] }}">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        {!! $kpi['icon'] !!}
+                    </svg>
+                </div>
+            </div>
+        @endforeach
+    </div>
+
+    {{-- ═══════════════════════════════════════════════════════════
+         SECONDARY KPI STRIP
+         ═══════════════════════════════════════════════════════════ --}}
+    <div wire:loading.class="opacity-50 pointer-events-none"
+         wire:target="dateRange,customStart,customEnd"
+         class="grid grid-cols-2 lg:grid-cols-4 gap-3 transition-opacity duration-200">
+        @foreach($secondaryKpis as $kpi)
+            <div wire:key="kpi-secondary-{{ $loop->index }}"
+                 class="bg-white dark:bg-gray-800/90 rounded-xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-3.5">
+                <div class="flex items-center gap-1.5">
+                    <span class="w-1.5 h-1.5 rounded-full {{ $kpi['dot'] }}"></span>
+                    <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 truncate">
+                        {{ $kpi['label'] }}
+                    </span>
+                </div>
+                <p class="text-xl font-bold text-gray-900 dark:text-white tabular-nums mt-1.5">
+                    {{ $kpi['value'] }}
+                </p>
+            </div>
+        @endforeach
+    </div>
+
+    {{-- ═══════════════════════════════════════════════════════════
+         RECENT BOOKINGS
+         ═══════════════════════════════════════════════════════════ --}}
     <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm overflow-hidden">
-        <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
-            <h2 class="font-bold text-gray-900 dark:text-white">Recent Bookings</h2>
+        <div class="px-5 py-4 border-b border-gray-100 dark:border-gray-700/60 flex items-center justify-between gap-3">
+            <div class="flex items-center gap-3">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <div>
+                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Recent Bookings</h2>
+                    <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">The five latest bookings created for your business.</p>
+                </div>
+            </div>
             <a href="{{ route('tenant.bookings.index') }}" wire:navigate
-               class="inline-flex items-center gap-1 text-sm font-semibold text-primary-600 dark:text-primary-400
-                      hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded
-                      active:scale-95 transition-transform">
-                View all
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+               class="inline-flex items-center gap-1 text-xs font-semibold text-primary-600 dark:text-primary-400 hover:text-primary-800 dark:hover:text-primary-300
+                      transition-all duration-200 active:scale-95 shrink-0
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                <span>View all</span>
+                <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                 </svg>
             </a>
         </div>
 
-        <div class="overflow-x-auto">
+        <div wire:loading.class="opacity-40 pointer-events-none"
+             wire:target="dateRange,customStart,customEnd"
+             class="overflow-x-auto transition-opacity duration-200">
             <table class="min-w-full text-sm">
                 <thead>
-                    <tr class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50">
-                        <th class="px-6 py-4 text-left">Ref</th>
-                        <th class="px-6 py-4 text-left">Guest</th>
-                        <th class="px-6 py-4 text-left hidden sm:table-cell">Check‑in</th>
-                        <th class="px-6 py-4 text-left">Amount</th>
-                        <th class="px-6 py-4 text-left">Status</th>
+                    <tr class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700/60 bg-gray-50/60 dark:bg-gray-900/40">
+                        <th class="px-5 py-3 text-left">Reference</th>
+                        <th class="px-5 py-3 text-left">Guest</th>
+                        <th class="px-5 py-3 text-left hidden sm:table-cell">Start date</th>
+                        <th class="px-5 py-3 text-left">Amount</th>
+                        <th class="px-5 py-3 text-left">Status</th>
                     </tr>
                 </thead>
-                <tbody class="divide-y divide-gray-100 dark:divide-gray-700 text-gray-700 dark:text-gray-200">
+                <tbody class="divide-y divide-gray-100 dark:divide-gray-700/60 text-gray-700 dark:text-gray-200">
                     @forelse($this->recentBookings as $b)
-                        <tr wire:key="booking-{{ $b->id }}" class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
-                            <td class="px-6 py-4 font-mono text-xs">{{ $b->booking_reference }}</td>
-                            <td class="px-6 py-4 font-medium">{{ $b->user->name ?? 'N/A' }}</td>
-                            <td class="px-6 py-4 text-gray-500 dark:text-gray-400 hidden sm:table-cell">{{ $b->check_in?->format('M d, Y') ?? '—' }}</td>
-                            <td class="px-6 py-4 font-semibold text-gray-900 dark:text-white tabular-nums">₱{{ number_format((float) $b->total_amount, 2) }}</td>
-                            <td class="px-6 py-4">
-                                <span class="px-2.5 py-1 rounded-full text-xs font-medium border
-                                    {{ $b->status === 'pending'    ? 'bg-amber-100 dark:bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-500/30' : '' }}
-                                    {{ $b->status === 'confirmed'  ? 'bg-primary-100 dark:bg-primary-500/15 text-primary-700 dark:text-primary-300 border-primary-200 dark:border-primary-500/30' : '' }}
-                                    {{ $b->status === 'completed'  ? 'bg-green-100 dark:bg-green-500/15 text-green-700 dark:text-green-300 border-green-200 dark:border-green-500/30' : '' }}
-                                    {{ $b->status === 'cancelled'  ? 'bg-red-100 dark:bg-red-500/15 text-red-700 dark:text-red-300 border-red-200 dark:border-red-500/30' : '' }}">
+                        @php
+                            $statusClasses = match ($b->status) {
+                                'pending'    => 'bg-amber-100 dark:bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-500/40',
+                                'reserved'   => 'bg-blue-100 dark:bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-500/40',
+                                'confirmed'  => 'bg-primary-100 dark:bg-primary-500/15 text-primary-700 dark:text-primary-300 border-primary-200 dark:border-primary-500/40',
+                                'completed'  => 'bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-500/40',
+                                'cancelled'  => 'bg-rose-100 dark:bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-500/40',
+                                'checked_in' => 'bg-purple-100 dark:bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-500/40',
+                                default      => 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-600',
+                            };
+                        @endphp
+                        <tr wire:key="booking-{{ $b->id }}" class="hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors">
+                            <td class="px-5 py-3">
+                                <a href="{{ route('tenant.bookings.show', $b->id) }}" wire:navigate
+                                   class="font-mono text-xs font-semibold text-primary-600 dark:text-primary-400 hover:text-primary-800 dark:hover:text-primary-300
+                                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                                    {{ $b->booking_reference }}
+                                </a>
+                            </td>
+                            <td class="px-5 py-3 font-medium text-gray-900 dark:text-white truncate max-w-[180px]">
+                                {{ $b->user->name ?? 'Walk-in Guest' }}
+                            </td>
+                            <td class="px-5 py-3 text-gray-500 dark:text-gray-400 tabular-nums hidden sm:table-cell">
+                                {{ $b->check_in?->format('M d, Y') ?? '—' }}
+                            </td>
+                            <td class="px-5 py-3 font-semibold text-gray-900 dark:text-white tabular-nums">
+                                ₱{{ number_format((float) $b->total_amount, 2) }}
+                            </td>
+                            <td class="px-5 py-3">
+                                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border {{ $statusClasses }}">
+                                    <span class="w-1 h-1 rounded-full bg-current"></span>
                                     {{ ucfirst(str_replace('_', ' ', $b->status)) }}
                                 </span>
                             </td>
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="5" class="px-6 py-12 text-center">
-                                <div class="flex flex-col items-center">
-                                    <svg class="w-12 h-12 text-gray-300 dark:text-gray-600 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
-                                    </svg>
-                                    <p class="text-sm text-gray-500 dark:text-gray-400">No bookings yet.</p>
-                                    <a href="{{ route('tenant.bookings.create') }}" wire:navigate
-                                       class="mt-3 text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline
-                                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
-                                        Create your first booking →
-                                    </a>
+                            <td colspan="5" class="px-5 py-14 text-center">
+                                <div class="flex flex-col items-center max-w-sm mx-auto">
+                                    <div class="p-3 rounded-2xl bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 mb-3">
+                                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
+                                        </svg>
+                                    </div>
+                                    <p class="text-sm font-semibold text-gray-900 dark:text-white">No bookings yet</p>
+                                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                        Booking activity will appear here once guests start reserving.
+                                    </p>
+                                    @if($this->tenantCan('create bookings'))
+                                        <a href="{{ route('tenant.bookings.create') }}" wire:navigate
+                                           class="mt-4 inline-flex items-center justify-center gap-2 h-9 px-3.5 rounded-lg
+                                                  bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold shadow-sm
+                                                  transition-all duration-200 active:scale-95
+                                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                                            <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                            </svg>
+                                            Create first booking
+                                        </a>
+                                    @endif
                                 </div>
                             </td>
                         </tr>
@@ -429,54 +558,97 @@ class extends Component {
         </div>
     </div>
 
-    {{-- ═══════════════ ARRIVALS + PAYMENTS ═══════════════ --}}
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+    {{-- ═══════════════════════════════════════════════════════════
+         UPCOMING ARRIVALS + RECENT PAYMENTS
+         ═══════════════════════════════════════════════════════════ --}}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
 
         {{-- Upcoming arrivals --}}
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6">
-            <h2 class="font-bold text-gray-900 dark:text-white mb-4">Upcoming Arrivals</h2>
-            <div class="divide-y divide-gray-100 dark:divide-gray-700">
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm overflow-hidden">
+            <div class="px-5 py-4 border-b border-gray-100 dark:border-gray-700/60 flex items-center justify-between gap-3">
+                <div class="flex items-center gap-3">
+                    <span class="w-5 h-px bg-emerald-500"></span>
+                    <div>
+                        <h2 class="text-base font-bold text-gray-900 dark:text-white">Upcoming Arrivals</h2>
+                        <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">Confirmed guests arriving soon.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div wire:loading.class="opacity-40 pointer-events-none" class="divide-y divide-gray-100 dark:divide-gray-700/60 transition-opacity duration-200">
                 @forelse($this->upcomingArrivals as $b)
-                    <div wire:key="arrival-{{ $b->id }}" class="py-3 flex justify-between items-center group">
+                    <a href="{{ route('tenant.bookings.show', $b->id) }}" wire:navigate
+                       wire:key="arrival-{{ $b->id }}"
+                       class="group flex items-center justify-between gap-3 p-4
+                              hover:bg-gray-50 dark:hover:bg-gray-700/40
+                              transition-colors
+                              focus-visible:outline-none focus-visible:bg-gray-50 dark:focus-visible:bg-gray-700/40">
                         <div class="flex items-center gap-3 min-w-0">
-                            <div class="w-10 h-10 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center text-primary-700 dark:text-primary-300 font-bold shrink-0">
+                            <div class="w-10 h-10 rounded-full bg-primary-100 dark:bg-primary-500/15 text-primary-700 dark:text-primary-300 flex items-center justify-center font-bold text-sm shrink-0">
                                 {{ strtoupper(substr($b->user->name ?? 'G', 0, 1)) }}
                             </div>
                             <div class="min-w-0">
                                 <p class="text-sm font-semibold text-gray-900 dark:text-white truncate group-hover:text-primary-600 dark:group-hover:text-primary-400 transition-colors">
                                     {{ $b->user->name ?? 'Guest' }}
                                 </p>
-                                <p class="text-xs text-gray-500 dark:text-gray-400 truncate">
-                                    {{ $b->check_in?->format('M d, Y') ?? '—' }} · <span class="font-mono">{{ $b->booking_reference }}</span>
+                                <p class="text-[11px] text-gray-500 dark:text-gray-400 truncate tabular-nums">
+                                    {{ $b->check_in?->format('M d, Y') ?? '—' }}
+                                    · <span class="font-mono">{{ $b->booking_reference }}</span>
                                 </p>
                             </div>
                         </div>
-                        <span class="text-xs bg-green-50 text-green-700 dark:bg-green-500/10 dark:text-green-400 px-2 py-1 rounded font-medium flex items-center gap-1 shrink-0">
-                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-                            </svg>
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider shrink-0
+                                     bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/40">
+                            <span class="w-1 h-1 rounded-full bg-current"></span>
                             Confirmed
                         </span>
-                    </div>
+                    </a>
                 @empty
-                    <div class="py-8 text-center border-2 border-dashed border-gray-100 dark:border-gray-700 rounded-xl">
-                        <svg class="w-8 h-8 mx-auto text-gray-300 dark:text-gray-600 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
-                        </svg>
-                        <p class="text-sm text-gray-500 dark:text-gray-400">No arrivals expected soon.</p>
+                    <div class="px-5 py-12 text-center">
+                        <div class="flex flex-col items-center max-w-sm mx-auto">
+                            <div class="p-3 rounded-2xl bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 mb-3">
+                                <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                                </svg>
+                            </div>
+                            <p class="text-sm font-semibold text-gray-900 dark:text-white">No upcoming arrivals</p>
+                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                Confirmed bookings will appear here as their start date approaches.
+                            </p>
+                        </div>
                     </div>
                 @endforelse
             </div>
         </div>
 
         {{-- Recent payments --}}
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6">
-            <h2 class="font-bold text-gray-900 dark:text-white mb-4">Recent Payments</h2>
-            <div class="divide-y divide-gray-100 dark:divide-gray-700">
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm overflow-hidden">
+            <div class="px-5 py-4 border-b border-gray-100 dark:border-gray-700/60 flex items-center justify-between gap-3">
+                <div class="flex items-center gap-3">
+                    <span class="w-5 h-px bg-emerald-500"></span>
+                    <div>
+                        <h2 class="text-base font-bold text-gray-900 dark:text-white">Recent Payments</h2>
+                        <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">Latest settled transactions.</p>
+                    </div>
+                </div>
+                @if($this->tenantCan('view payments'))
+                    <a href="{{ route('tenant.payments.index') }}" wire:navigate
+                       class="inline-flex items-center gap-1 text-xs font-semibold text-primary-600 dark:text-primary-400 hover:text-primary-800 dark:hover:text-primary-300
+                              transition-all duration-200 active:scale-95 shrink-0
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                        <span>View all</span>
+                        <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                        </svg>
+                    </a>
+                @endif
+            </div>
+
+            <div wire:loading.class="opacity-40 pointer-events-none" class="divide-y divide-gray-100 dark:divide-gray-700/60 transition-opacity duration-200">
                 @forelse($this->recentPayments as $p)
-                    <div wire:key="payment-{{ $p->id }}" class="py-3 flex justify-between items-center">
+                    <div wire:key="payment-{{ $p->id }}" class="flex items-center justify-between gap-3 p-4">
                         <div class="flex items-center gap-3 min-w-0">
-                            <div class="w-10 h-10 rounded-full bg-green-100 dark:bg-green-900 flex items-center justify-center text-green-700 dark:text-green-300 shrink-0">
+                            <div class="w-10 h-10 rounded-full bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 flex items-center justify-center shrink-0">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                 </svg>
@@ -485,49 +657,82 @@ class extends Component {
                                 <p class="text-sm font-semibold text-gray-900 dark:text-white tabular-nums">
                                     ₱{{ number_format((float) $p->amount, 2) }}
                                 </p>
-                                <p class="text-xs text-gray-500 dark:text-gray-400 truncate">
-                                    {{ $p->paid_at?->format('M d') ?? '—' }}
+                                <p class="text-[11px] text-gray-500 dark:text-gray-400 truncate tabular-nums">
+                                    {{ $p->paid_at?->format('M d, Y') ?? '—' }}
                                     @if($p->reference_number)
                                         · <span class="font-mono">{{ $p->reference_number }}</span>
                                     @endif
                                 </p>
                             </div>
                         </div>
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider shrink-0
+                                     bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/40">
+                            <span class="w-1 h-1 rounded-full bg-current"></span>
+                            Paid
+                        </span>
                     </div>
                 @empty
-                    <div class="py-8 text-center border-2 border-dashed border-gray-100 dark:border-gray-700 rounded-xl">
-                        <svg class="w-8 h-8 mx-auto text-gray-300 dark:text-gray-600 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
-                        </svg>
-                        <p class="text-sm text-gray-500 dark:text-gray-400">No recent payments recorded.</p>
+                    <div class="px-5 py-12 text-center">
+                        <div class="flex flex-col items-center max-w-sm mx-auto">
+                            <div class="p-3 rounded-2xl bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 mb-3">
+                                <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+                                </svg>
+                            </div>
+                            <p class="text-sm font-semibold text-gray-900 dark:text-white">No recent payments</p>
+                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                Settled payments will appear here once recorded.
+                            </p>
+                        </div>
                     </div>
                 @endforelse
             </div>
         </div>
     </div>
 
-    {{-- ═══════════════ QUICK ACTIONS ═══════════════ --}}
-    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5">
-        <h3 class="font-bold text-gray-900 dark:text-white mb-4">Quick Actions</h3>
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-            @foreach([
-                ['tenant.services.create',      'Add Service',   'M12 6v6m0 0v6m0-6h6m-6 0H6'],
-                ['tenant.employees.create',     'Add Employee',  'M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z'],
-                ['tenant.payments.index',       'Payments',      'M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z'],
-                ['tenant.settings.index',       'Settings',      'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z'],
-            ] as [$route, $label, $icon])
-                <a href="{{ route($route) }}" wire:navigate
-                   class="flex items-center justify-center gap-2 p-3 rounded-xl
-                          bg-primary-50 dark:bg-primary-500/10 hover:bg-primary-100 dark:hover:bg-primary-500/20
-                          text-primary-600 dark:text-primary-400 text-sm font-medium transition-all duration-200
-                          active:scale-95 border border-primary-200 dark:border-primary-500/20
-                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                    <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="{{ $icon }}"/>
-                    </svg>
-                    <span class="truncate">{{ $label }}</span>
-                </a>
-            @endforeach
+    {{-- ═══════════════════════════════════════════════════════════
+         QUICK ACTIONS
+         ═══════════════════════════════════════════════════════════ --}}
+    @php
+        $quickActions = array_values(array_filter([
+            $this->tenantCan('manage services')   ? ['tenant.services.create',   'Add Service',   'M12 6v6m0 0v6m0-6h6m-6 0H6'] : null,
+            $this->tenantCan('manage employees')  ? ['tenant.employees.create',  'Add Employee',  'M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z'] : null,
+            $this->tenantCan('view payments')     ? ['tenant.payments.index',    'Payments',      'M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z'] : null,
+            $this->tenantCan('manage properties') ? ['tenant.properties.create',  'Add Property',  'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6'] : null,
+        ]));
+    @endphp
+
+    @if(!empty($quickActions))
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5">
+            <div class="flex items-center gap-3 mb-4">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    Quick Actions
+                </h2>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                @foreach($quickActions as [$routeName, $label, $icon])
+                    <a href="{{ route($routeName) }}" wire:navigate
+                       wire:key="qa-{{ $routeName }}"
+                       aria-label="{{ $label }}"
+                       class="group inline-flex items-center gap-2.5 h-12 px-3.5 rounded-xl
+                              bg-primary-50 dark:bg-primary-500/10
+                              border border-primary-200 dark:border-primary-500/25
+                              hover:bg-primary-100 dark:hover:bg-primary-500/20
+                              text-primary-700 dark:text-primary-300
+                              text-sm font-semibold
+                              transition-all duration-200 active:scale-95
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="{{ $icon }}"/>
+                        </svg>
+                        <span class="truncate">{{ $label }}</span>
+                        <svg class="w-3 h-3 ml-auto shrink-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                        </svg>
+                    </a>
+                @endforeach
+            </div>
         </div>
-    </div>
+    @endif
 </div>

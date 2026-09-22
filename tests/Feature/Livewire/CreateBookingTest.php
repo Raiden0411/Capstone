@@ -64,8 +64,8 @@ it('calculates total amount and service charges', function () {
         ->set('check_out', now()->addDays(7)->format('Y-m-d'))
         ->call('addService', $service->id)
         ->assertSet('totalDays', 2)
-        ->assertSet('totalAmount', 2250) // 2 days * 1000 + 250
-        ->assertSet('reservationFee', 450) // 20% of 2250
+        ->assertSet('totalAmount', 2250)
+        ->assertSet('reservationFee', 450)
         ->assertSet('balanceOnArrival', 1800);
 });
 
@@ -93,7 +93,6 @@ it('submits booking and creates payment record', function () {
     ]);
     $this->actingAs($user);
 
-    // Mock PayMongo service
     $this->mock(PayMongoService::class, function ($mock) {
         $mock->shouldReceive('createCheckoutSession')
             ->once()
@@ -111,13 +110,12 @@ it('submits booking and creates payment record', function () {
         ->call('submit')
         ->assertRedirect('https://checkout.paymongo.com/test');
 
-    // Verify booking and payment records exist
     $this->assertDatabaseHas('bookings', [
         'tenant_id' => $tenant->id,
         'user_id' => $user->id,
         'status' => 'pending',
         'booking_type' => 'full',
-        'total_amount' => 2500, // 2 days * 1000 + 500
+        'total_amount' => 2500,
     ]);
 
     /** @var Booking|null $booking */
@@ -127,10 +125,12 @@ it('submits booking and creates payment record', function () {
 
     $this->assertNotNull($booking);
 
+    // payment_status is 'pending' — 'unpaid' is not a valid canonical
+    // status (handoff §2.10).
     $this->assertDatabaseHas('payments', [
         'tenant_id' => $tenant->id,
         'booking_id' => $booking->id,
-        'payment_status' => 'unpaid',
+        'payment_status' => 'pending',
         'payment_type' => 'full',
         'paymongo_session_id' => 'sess_test123',
         'amount' => 2500,

@@ -5,17 +5,21 @@ use App\Models\PropertyType;
 use App\Models\Tenant;
 use App\Models\User;
 use Livewire\Livewire;
+use Spatie\Permission\Models\Role;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Carbon\Carbon;
 
 uses(RefreshDatabase::class);
 
 it('loads existing property data and updates it', function () {
+    Role::firstOrCreate(['name' => 'admin', 'guard_name' => 'web']);
+
     /** @var Tenant $tenant */
     $tenant = Tenant::factory()->create();
 
     /** @var User $user */
     $user = User::factory()->create(['tenant_id' => $tenant->id]);
+    $user->assignRole('admin');
 
     /** @var PropertyType $propertyType */
     $propertyType = PropertyType::factory()->create([
@@ -38,10 +42,8 @@ it('loads existing property data and updates it', function () {
 
     $this->actingAs($user);
 
-    // Pass the model instance, not the ID
     $component = Livewire::test('tenant::pages.property.edit-property', ['property' => $property]);
 
-    // Assert initial data loaded
     $component->assertSet('name', 'Original Activity')
         ->assertSet('description', 'Original description')
         ->assertSet('property_type_id', (string) $propertyType->id)
@@ -51,11 +53,9 @@ it('loads existing property data and updates it', function () {
         ->assertSet('status', 'available')
         ->assertSet('is_active', true);
 
-    // Define blackout dates (2 days)
     $from = Carbon::today()->toDateString();
     $to = Carbon::today()->addDays(1)->toDateString();
 
-    // Update fields
     $component->set('name', 'Updated Activity');
     $component->set('description', 'Updated description');
     $component->set('capacity', 4);
@@ -66,12 +66,10 @@ it('loads existing property data and updates it', function () {
     $component->set('unavailableFrom', $from);
     $component->set('unavailableTo', $to);
 
-    // Submit update
     $component->call('update')
         ->assertHasNoErrors()
         ->assertRedirect(route('tenant.properties.index'));
 
-    // Verify property updated
     $this->assertDatabaseHas('properties', [
         'id'               => $property->id,
         'name'             => 'Updated Activity',
@@ -83,7 +81,6 @@ it('loads existing property data and updates it', function () {
         'is_active'        => false,
     ]);
 
-    // Verify availability records created (2 days blackout)
     $property->refresh();
     $this->assertEquals(2, $property->availabilities()->where('is_available', false)->count());
 });

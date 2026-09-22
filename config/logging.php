@@ -3,6 +3,7 @@
 use Monolog\Handler\NullHandler;
 use Monolog\Handler\StreamHandler;
 use Monolog\Handler\SyslogUdpHandler;
+use Monolog\Formatter\JsonFormatter;
 use Monolog\Processor\PsrLogMessageProcessor;
 
 return [
@@ -11,11 +12,6 @@ return [
     |--------------------------------------------------------------------------
     | Default Log Channel
     |--------------------------------------------------------------------------
-    |
-    | This option defines the default log channel that is utilized to write
-    | messages to your logs. The value provided here should match one of
-    | the channels present in the list of "channels" configured below.
-    |
     */
 
     'default' => env('LOG_CHANNEL', 'stack'),
@@ -24,11 +20,6 @@ return [
     |--------------------------------------------------------------------------
     | Deprecations Log Channel
     |--------------------------------------------------------------------------
-    |
-    | This option controls the log channel that should be used to log warnings
-    | regarding deprecated PHP and library features. This allows you to get
-    | your application ready for upcoming major versions of dependencies.
-    |
     */
 
     'deprecations' => [
@@ -40,14 +31,6 @@ return [
     |--------------------------------------------------------------------------
     | Log Channels
     |--------------------------------------------------------------------------
-    |
-    | Here you may configure the log channels for your application. Laravel
-    | utilizes the Monolog PHP logging library, which includes a variety
-    | of powerful log handlers and formatters that you're free to use.
-    |
-    | Available drivers: "single", "daily", "slack", "syslog",
-    |                    "errorlog", "monolog", "custom", "stack"
-    |
     */
 
     'channels' => [
@@ -71,6 +54,30 @@ return [
             'level' => env('LOG_LEVEL', 'debug'),
             'days' => env('LOG_DAILY_DAYS', 14),
             'replace_placeholders' => true,
+        ],
+
+        /*
+        |--------------------------------------------------------------------------
+        | Slow Query Log
+        |--------------------------------------------------------------------------
+        | One JSON object per line (JSONL). The harvest command reads this
+        | file in full, rotates it atomically, and aggregates each line by
+        | sha256(sql). Do NOT switch this channel to the 'daily' driver —
+        | the harvest command depends on a single, predictable path.
+        |
+        | Level is 'warning' but this is not a warning — it's a signal log.
+        | We set warning to guarantee the record is written regardless of
+        | the app-wide LOG_LEVEL.
+        */
+        'slow_queries' => [
+            'driver' => 'single',
+            'path' => storage_path('logs/slow-queries.log'),
+            'level' => 'warning',
+            'formatter' => JsonFormatter::class,
+            'formatter_with' => [
+                'appendNewline' => true,
+            ],
+            'replace_placeholders' => false,
         ],
 
         'slack' => [

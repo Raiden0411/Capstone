@@ -3,22 +3,28 @@
 
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {{-- viewport-fit=cover activates env(safe-area-inset-*) for notch devices. --}}
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <meta name="color-scheme" content="light dark">
     <meta name="description" content="{{ $description ?? config('app.name') . ' — Book your perfect stay.' }}">
+
+    {{-- Android Chrome address-bar tint, matched to the page background. --}}
+    <meta name="theme-color" content="#F8F7F3" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#111827" media="(prefers-color-scheme: dark)">
 
     <meta property="og:title" content="{{ $title ?? config('app.name') }}">
     <meta property="og:description" content="{{ $description ?? 'Discover and book premium accommodations.' }}">
     <meta property="og:type" content="website">
     <meta property="og:url" content="{{ url()->current() }}">
+    <meta property="og:site_name" content="{{ config('app.name') }}">
 
     <link rel="icon" href="{{ asset('favicon.ico') }}" sizes="any">
 
     {{-- Hide x-cloak elements before Alpine boots. Tailwind v4 does not emit this rule. --}}
     <style>[x-cloak]{display:none!important}</style>
 
-    {{-- Dark mode flash prevention + livewire:navigated re-apply --}}
+    {{-- Dark mode flash prevention + livewire:navigated re-apply. --}}
     <script>
         function applyTheme() {
             var t = localStorage.getItem('hs_theme');
@@ -29,7 +35,7 @@
         document.addEventListener('livewire:navigated', applyTheme);
     </script>
 
-    {{-- Fonts – Inter + Playfair Display --}}
+    {{-- Fonts – Inter + Playfair Display. --}}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="preload" as="style"
@@ -51,27 +57,24 @@
     @stack('styles')
 </head>
 
-<body class="font-sans antialiased flex flex-col min-h-screen bg-[#F8F7F3] dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-300">
+<body class="font-sans antialiased flex flex-col min-h-screen min-h-[100dvh] bg-[#F8F7F3] dark:bg-gray-900 text-gray-900 dark:text-gray-100">
 
-    {{-- Subtle background decoration (light/dark aware) --}}
-    <div class="fixed inset-0 -z-10 overflow-hidden pointer-events-none">
+    {{-- Subtle background decoration (light/dark aware). --}}
+    <div class="fixed inset-0 -z-10 overflow-hidden pointer-events-none" aria-hidden="true">
         <div class="absolute inset-0 bg-linear-to-br from-white via-[#F8F7F3] to-gray-100 dark:from-gray-900 dark:via-gray-900 dark:to-gray-900"></div>
     </div>
 
     <x-headers.public-header />
 
-    {{-- Offset matches header height: h-16 (64px) mobile, h-20 (80px) desktop --}}
+    {{-- Offset matches header height: h-16 (64px) mobile, h-20 (80px) desktop. --}}
     <main class="flex-1 pt-16 md:pt-20">
         {{ $slot }}
     </main>
 
     <x-footers.public-footer />
 
-    {{--
-        Alpine Collapse is registered in resources/js/app.js via
-        `Alpine.plugin(collapse)` on `alpine:init`. No CDN script here.
-        See app.js for the full rationale.
-    --}}
+    {{-- Alpine Collapse is registered in resources/js/app.js via
+         `Alpine.plugin(collapse)` on `alpine:init`. No CDN script here. --}}
 
     {{-- Livewire Scripts (asset pipeline — required for @livewireMapScripts and wire:navigate). --}}
     @livewireScripts

@@ -3,10 +3,21 @@
 
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {{-- viewport-fit=cover activates env(safe-area-inset-*) for notch devices. --}}
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="csrf-token" content="{{ csrf_token() }}">
+    <meta name="color-scheme" content="light dark">
 
-    {{-- Dark mode flash prevention + livewire:navigated re-apply --}}
+    {{-- Android Chrome address-bar tint, matched to the page background. --}}
+    <meta name="theme-color" content="#F8F7F3" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#111827" media="(prefers-color-scheme: dark)">
+
+    <link rel="icon" href="{{ asset('favicon.ico') }}" sizes="any">
+
+    {{-- Hide x-cloak elements before Alpine boots. Tailwind v4 does not emit this rule. --}}
+    <style>[x-cloak]{display:none!important}</style>
+
+    {{-- Dark mode flash prevention + livewire:navigated re-apply. --}}
     <script>
         function applyTheme() {
             var t = localStorage.getItem('hs_theme');
@@ -19,7 +30,7 @@
 
     <title>{{ $title ?? 'Business Dashboard' }}</title>
 
-    {{-- Fonts – Inter + Playfair Display --}}
+    {{-- Fonts – Inter + Playfair Display (non-blocking) --}}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="preload" as="style"
@@ -37,10 +48,33 @@
 
     @livewireStyles
     @livewireMapStyles
+
+    @stack('styles')
 </head>
 
-<body x-data="{ minified: false }"
-      class="font-sans antialiased min-h-screen bg-[#F8F7F3] dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-300">
+<body
+    x-data="{
+        // Persisted across wire:navigate — otherwise the sidebar collapses
+        // back to expanded every time the user navigates to a new page.
+        //
+        // KEY CONTRACT (must match the tenant sidebar + tenant header):
+        //   - localStorage key: `tenant_sidebar_minified` ('1' = collapsed)
+        //   - window event:     `sidebar-minified-tenant` with detail = boolean
+        //
+        // The sidebar owns the toggle and fires the event; the header and
+        // this layout consume it. Both also read localStorage directly so
+        // a cold page load with a collapsed sidebar renders correctly
+        // without waiting for the event.
+        minified: localStorage.getItem('tenant_sidebar_minified') === '1',
+    }"
+    @sidebar-minified-tenant.window="minified = $event.detail"
+    x-init="
+        $watch('minified', v => {
+            try { localStorage.setItem('tenant_sidebar_minified', v ? '1' : '0'); } catch (e) {}
+        });
+    "
+    class="font-sans antialiased min-h-screen min-h-[100dvh] bg-[#F8F7F3] dark:bg-gray-900 text-gray-900 dark:text-gray-100"
+>
 
     {{-- Subtle background decoration (light/dark aware) --}}
     <div class="fixed inset-0 -z-10 overflow-hidden pointer-events-none">
@@ -53,26 +87,27 @@
     {{-- Sidebar --}}
     <x-headers.tenant.sidebar />
 
-    {{-- Main content area --}}
-    <div class="w-full transition-all duration-300"
-         :class="minified ? 'lg:ps-13' : 'lg:ps-64'">
+    {{-- Content wrapper.
+         The padding-start transition mirrors the sidebar's own width
+         transition (300ms ease-out) so the two animate in lockstep.
+         `lg:ps-20` = 80px (matches the collapsed sidebar's `lg:w-20`);
+         `lg:ps-64` = 256px (matches `lg:w-64`). --}}
+    <div class="w-full transition-[padding] duration-300 ease-out"
+         :class="minified ? 'lg:ps-20' : 'lg:ps-64'">
         <div class="p-4 sm:p-6 space-y-4 sm:space-y-6">
-            @if(isset($slot))
-                {{ $slot }}
-            @else
-                @yield('content')
-            @endif
+            {{ $slot }}
         </div>
     </div>
 
-    {{-- Chart.js for analytics --}}
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
+    {{-- Alpine Collapse is registered in resources/js/app.js via
+         `Alpine.plugin(collapse)` on `alpine:init`. No CDN script here. --}}
+    {{-- Chart.js is now opt-in per page via @push('scripts'). The analytics
+         and dashboard pages push it themselves. --}}
 
     @livewireScripts
     @livewireMapScripts
 
-    {{-- Preline JS --}}
-    <script src="https://unpkg.com/preline/dist/preline.js"></script>
+    @stack('scripts')
 </body>
 
 </html>

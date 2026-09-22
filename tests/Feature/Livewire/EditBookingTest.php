@@ -9,30 +9,34 @@ use App\Models\User;
 use App\Models\BookingItem;
 use App\Models\BookingService;
 use Livewire\Livewire;
+use Spatie\Permission\Models\Role;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Carbon\Carbon;
 
 uses(RefreshDatabase::class);
 
 it('loads existing booking data and updates it', function () {
+    Role::firstOrCreate(['name' => 'admin', 'guard_name' => 'web']);
+
     /** @var Tenant $tenant */
     $tenant = Tenant::factory()->create();
 
     /** @var User $adminUser */
     $adminUser = User::factory()->create(['tenant_id' => $tenant->id]);
+    $adminUser->assignRole('admin');
 
     /** @var User $guestUser */
     $guestUser = User::factory()->create([
         'tenant_id' => $tenant->id,
-        'name' => 'Original Guest',
-        'phone' => '09171234567',
-        'email' => 'guest@example.com',
+        'name'      => 'Original Guest',
+        'phone'     => '09171234567',
+        'email'     => 'guest@example.com',
     ]);
 
     /** @var PropertyType $propertyType */
     $propertyType = PropertyType::factory()->create([
         'tenant_id' => null,
-        'name' => 'Standard Room',
+        'name'      => 'Standard Room',
     ]);
 
     /** @var Property $property */
@@ -60,6 +64,13 @@ it('loads existing booking data and updates it', function () {
     $checkIn  = Carbon::today()->addDays(5)->toDateString();
     $checkOut = Carbon::today()->addDays(7)->toDateString();
 
+    /*
+     * total_amount must equal the sum of items + services. The SFC's
+     * mount() computes a discount as (sum) − total_amount, so a mismatch
+     * makes mount() think a discount was applied, which it then re-saves
+     * on update. Items = 1000 × 1 × 2 days = 2000. Services = 250.
+     * Sum = 2250.
+     */
     /** @var Booking $booking */
     $booking = Booking::factory()->create([
         'tenant_id'         => $tenant->id,
@@ -67,7 +78,7 @@ it('loads existing booking data and updates it', function () {
         'booking_reference' => 'BK-EDITEST',
         'check_in'          => $checkIn,
         'check_out'         => $checkOut,
-        'total_amount'      => 2000,
+        'total_amount'      => 2250,
         'status'            => 'pending',
         'booking_type'      => 'full',
     ]);
@@ -109,7 +120,7 @@ it('loads existing booking data and updates it', function () {
     $component->set('customerEmail', 'updated@example.com');
     $component->set('check_in', $newCheckIn);
     $component->set('check_out', $newCheckOut);
-    $component->set('status', 'confirmed'); // allowed transition from pending
+    $component->set('status', 'confirmed');
 
     // Submit update
     $component->call('update')
@@ -132,6 +143,6 @@ it('loads existing booking data and updates it', function () {
     $this->assertEquals('confirmed', $booking->status);
     $this->assertEquals('full', $booking->booking_type);
 
-    // Verify totals (new duration = 2 days, property total 2000 + service 250 = 2250)
-    $this->assertEquals(2250, $booking->total_amount);
+    // Total stays 2250 — same 2 nights, same property, same service.
+    $this->assertEquals(2250, (float) $booking->total_amount);
 });

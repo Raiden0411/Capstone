@@ -28,6 +28,8 @@ class AppServiceProvider extends ServiceProvider
         |--------------------------------------------------------------------------
         | Livewire Component Namespaces
         |--------------------------------------------------------------------------
+        | Three top-level namespaces map to the three actor contexts. Any SFC
+        | under resources/views/public resolves as `public::...`, etc.
         */
         Livewire::addNamespace(namespace: 'public',     viewPath: resource_path('views/public'));
         Livewire::addNamespace(namespace: 'superadmin', viewPath: resource_path('views/superadmin'));
@@ -37,6 +39,16 @@ class AppServiceProvider extends ServiceProvider
         |--------------------------------------------------------------------------
         | Manual Component Registrations
         |--------------------------------------------------------------------------
+        | SFCs whose paths don't resolve through the namespace auto-resolution
+        | are registered explicitly. Livewire uses these registrations verbatim
+        | without running its directory scanner.
+        |
+        | The `deletion-request` folder SHOULD be picked up by the superadmin
+        | namespace, but Livewire v4's resolver silently skips it. Registering
+        | the two files explicitly bypasses the scanner.
+        |
+        | The slow-query dashboard lives under a new `health/` subfolder — the
+        | same resolver behavior is expected, so it's registered explicitly too.
         */
         Livewire::addComponent(
             name: 'public::pages.create-booking',
@@ -49,6 +61,18 @@ class AppServiceProvider extends ServiceProvider
         Livewire::addComponent(
             name: 'public::pages.payment-processing',
             viewPath: resource_path('views/public/pages/⚡payment-processing.blade.php')
+        );
+        Livewire::addComponent(
+            name: 'superadmin::pages.deletion-request.view-deletion-requests',
+            viewPath: resource_path('views/superadmin/pages/deletion-request/⚡view-deletion-requests.blade.php')
+        );
+        Livewire::addComponent(
+            name: 'superadmin::pages.deletion-request.show-deletion-request',
+            viewPath: resource_path('views/superadmin/pages/deletion-request/⚡show-deletion-request.blade.php')
+        );
+        Livewire::addComponent(
+            name: 'superadmin::pages.health.slow-query-dashboard',
+            viewPath: resource_path('views/superadmin/pages/health/⚡slow-query-dashboard.blade.php')
         );
 
         /*
@@ -90,12 +114,28 @@ class AppServiceProvider extends ServiceProvider
         |--------------------------------------------------------------------------
         | Rate Limiters
         |--------------------------------------------------------------------------
+        | Route-level limiters protect GET requests against scrapers and naive
+        | floods. The credential-level brute-force guards live INSIDE their
+        | respective SFCs (per-email+IP keys checked before Auth::attempt(),
+        | User::create(), or Password::sendResetLink()) — those are the ones
+        | that actually stop account takeover, spam registration, and
+        | password-reset abuse.
+        |
         | `auth.login.ip` — 20 GET /login requests per minute per IP.
-        |   Catches scrapers and naive brute-forcers hammering the page.
         |   The POST path goes through Livewire's /livewire/update endpoint,
         |   so this limiter only fires on page renders. The real credential
-        |   brute-force guard lives inside the SFC's login() method, which
-        |   checks a per-email+IP key before Auth::attempt() runs.
+        |   brute-force guard lives inside the login SFC.
+        |
+        | `auth.register.ip` — 10 GET /register requests per minute per IP.
+        |   Tighter than login because legitimate users almost never reload
+        |   the register page more than a few times. The credential-level
+        |   guard lives inside the register SFC's register() method.
+        |
+        | `auth.password.request.ip` — 5 GET /forgot-password requests per
+        |   minute per IP. Prevents the SMTP relay from being abused as a
+        |   spam amplifier. The email+IP-level guard inside the SFC is
+        |   even tighter (3 attempts / 60s) to stop email bombing of a
+        |   single target address.
         */
         RateLimiter::for('auth.login.ip', function (Request $request) {
             return Limit::perMinute(20)
@@ -109,21 +149,74 @@ class AppServiceProvider extends ServiceProvider
                 });
         });
 
+        RateLimiter::for('auth.register.ip', function (Request $request) {
+            return Limit::perMinute(10)
+                ->by($request->ip())
+                ->response(function (Request $request, array $headers) {
+                    return response(
+                        'Too many registration attempts. Please wait a moment and try again.',
+                        429,
+                        $headers
+                    );
+                });
+        });
+
+        RateLimiter::for('auth.password.request.ip', function (Request $request) {
+            return Limit::perMinute(5)
+                ->by($request->ip())
+                ->response(function (Request $request, array $headers) {
+                    return response(
+                        'Too many password reset requests. Please slow down.',
+                        429,
+                        $headers
+                    );
+                });
+        });
+
         /*
         |--------------------------------------------------------------------------
-        | Query Performance Monitoring
+        | Slow Query Logging
         |--------------------------------------------------------------------------
+        | Every query slower than config('app.slow_query_ms') is written as
+        | one JSON line to the `slow_queries` channel — the file
+        | storage/logs/slow-queries.log. The `slow-queries:harvest` scheduled
+        | command aggregates these into the slow_query_aggregates table for
+        | the /platform/health/queries dashboard.
+        |
+        | Three safety guards:
+        |   • Recursion — any query touching slow_query_aggregates is skipped,
+        |     so the harvest command's own INSERTs never feed themselves back.
+        |   • Exception safety — a logging failure is swallowed. A broken log
+        |     channel must never 500 the request that triggered a slow query.
+        |   • Threshold — read from config('app.slow_query_ms'). NOT env().
+        |     env() returns null when config is cached, and Larastan's
+        |     larastan.noEnvCallsOutsideOfConfig rule forbids env() outside
+        |     the config/ directory. The default (200ms local / 500ms prod)
+        |     is resolved once in config/app.php and read from there.
         */
-        if (app()->environment('local', 'staging')) {
-            DB::listen(function ($query) {
-                if ($query->time > 200) {
-                    Log::warning('Slow query detected', [
-                        'sql'      => $query->sql,
-                        'bindings' => $query->bindings,
-                        'time'     => $query->time,
-                    ]);
-                }
-            });
-        }
+        DB::listen(function ($query) {
+            $threshold = (int) config('app.slow_query_ms', 500);
+
+            if ($query->time < $threshold) {
+                return;
+            }
+
+            // Recursion guard: never log the slow-query infrastructure itself.
+            if (str_contains($query->sql, 'slow_query_aggregates')) {
+                return;
+            }
+
+            try {
+                Log::channel('slow_queries')->warning('slow_query', [
+                    'sql'        => (string) $query->sql,
+                    'bindings'   => $query->bindings,
+                    'time_ms'    => round((float) $query->time, 2),
+                    'connection' => $query->connectionName,
+                    'route'      => request()->route()?->getName(),
+                ]);
+            } catch (\Throwable) {
+                // Never break the request because logging failed.
+            }
+        });
     }
 }

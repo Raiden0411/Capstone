@@ -1,9 +1,10 @@
-{{-- resources/views/superadmin/pages/map-marker/⚡manage-marker-categories.blade.php --}}
+{{-- resources/views/superadmin/pages/marker-category/⚡manage-marker-categories.blade.php --}}
 <?php
 
 use Livewire\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
+use Livewire\Attributes\Computed;
 use Livewire\WithFileUploads;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -270,9 +271,12 @@ class extends Component
     }
 
     /**
+     * Marker-category counters.
+     *
      * @return array{total: int, active: int, inactive: int}
      */
-    public function getStatsProperty(): array
+    #[Computed]
+    public function stats(): array
     {
         $total    = count($this->categories);
         $inactive = collect($this->categories)->filter(fn ($c) => !($c['is_active'] ?? true))->count();
@@ -286,64 +290,126 @@ class extends Component
 };
 ?>
 
+@php $stats = $this->stats; @endphp
+
 <div class="p-4 sm:p-6 lg:p-8 max-w-5xl mx-auto space-y-6">
 
-    {{-- Header --}}
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-800">
+    {{-- ═══ Page header ═══ --}}
+    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
         <div>
-            <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white">Marker Categories</h1>
-            <p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1">Manage the categories used for sub-locations across the map.</p>
+            <div class="flex items-center gap-2 mb-2">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Map Management</span>
+            </div>
+            <h1 class="font-display text-3xl md:text-4xl font-semibold text-gray-900 dark:text-white">
+                Marker <em class="italic text-primary-600 dark:text-primary-400">Categories</em>
+            </h1>
+            <p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-2">
+                Manage the categories used for sub-locations across the map.
+            </p>
         </div>
     </div>
 
-    {{-- Add New Category Form --}}
-    <form wire:submit="addCategory" class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6 space-y-6">
-        <div class="flex items-center gap-2">
+    {{-- ═══ Add New Category ═══ --}}
+    <form wire:submit="addCategory"
+          class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
+
+        <div class="flex items-center gap-3">
             <span class="w-5 h-px bg-primary-600"></span>
-            <h2 class="text-base font-semibold text-gray-900 dark:text-white">Add New Category</h2>
+            <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                Add New Category
+            </h2>
         </div>
 
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 items-start">
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-start">
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Key (slug) <span class="text-red-500">*</span></label>
-                <input type="text" wire:model="newKey" class="input" placeholder="e.g. restaurant">
-                @error('newKey') <span class="text-red-500 text-xs mt-1 block">{{ $message }}</span> @enderror
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Key (slug) <span class="text-rose-500">*</span>
+                </label>
+                <input type="text"
+                       wire:model="newKey"
+                       maxlength="50"
+                       autocomplete="off"
+                       class="input w-full font-mono text-sm"
+                       placeholder="e.g. restaurant">
+                @error('newKey') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
 
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Label <span class="text-red-500">*</span></label>
-                <input type="text" wire:model="newLabel" class="input" placeholder="e.g. Restaurant">
-                @error('newLabel') <span class="text-red-500 text-xs mt-1 block">{{ $message }}</span> @enderror
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Label <span class="text-rose-500">*</span>
+                </label>
+                <input type="text"
+                       wire:model="newLabel"
+                       maxlength="100"
+                       autocomplete="off"
+                       class="input w-full"
+                       placeholder="e.g. Restaurant">
+                @error('newLabel') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
 
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Color <span class="text-red-500">*</span></label>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Color <span class="text-rose-500">*</span>
+                </label>
                 <div class="flex items-center gap-2">
-                    <input type="color" wire:model="newColor" class="h-10 w-14 rounded-lg border border-gray-300 dark:border-gray-600 cursor-pointer p-1 shrink-0">
-                    <input type="text" wire:model="newColor" class="input uppercase font-mono text-sm" placeholder="#000000">
+                    <input type="color"
+                           wire:model="newColor"
+                           aria-label="Pick a color"
+                           class="h-11 w-14 rounded-lg border border-gray-300 dark:border-gray-600 cursor-pointer p-1 shrink-0 bg-white dark:bg-gray-800">
+                    <input type="text"
+                           wire:model="newColor"
+                           maxlength="7"
+                           autocomplete="off"
+                           class="input w-full uppercase font-mono text-sm"
+                           placeholder="#000000">
                 </div>
-                @error('newColor') <span class="text-red-500 text-xs mt-1 block">{{ $message }}</span> @enderror
+                @error('newColor') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
 
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Icon (SVG)</label>
-                <input type="file" wire:model="newIcon" accept=".svg"
-                       class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300 hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30 transition cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                @error('newIcon') <span class="text-red-500 text-xs mt-1 block">{{ $message }}</span> @enderror
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Icon (SVG) <span class="text-gray-400 dark:text-gray-500 font-normal">(optional)</span>
+                </label>
+                <input type="file"
+                       wire:model="newIcon"
+                       accept=".svg,image/svg+xml"
+                       class="block w-full text-sm text-gray-500 dark:text-gray-400
+                              file:mr-3 file:py-2 file:px-3.5 file:rounded-lg file:border-0
+                              file:text-xs file:font-semibold
+                              file:bg-primary-50 dark:file:bg-primary-500/15
+                              file:text-primary-700 dark:file:text-primary-300
+                              hover:file:bg-primary-100 dark:hover:file:bg-primary-500/25
+                              transition cursor-pointer
+                              focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                @error('newIcon') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
 
-                <div wire:loading wire:target="newIcon" class="mt-1 text-xs text-primary-600 dark:text-primary-400 flex items-center gap-1">
-                    <svg class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                <div wire:loading wire:target="newIcon" class="mt-1.5 text-xs text-primary-600 dark:text-primary-400 inline-flex items-center gap-1.5">
+                    <svg class="animate-spin h-3 w-3 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                    </svg>
                     Uploading…
                 </div>
             </div>
         </div>
 
-        <div class="flex justify-end">
-            <button type="submit" wire:loading.attr="disabled" wire:target="addCategory"
-                    class="btn-primary active:scale-95 transition-transform inline-flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50 disabled:opacity-60 disabled:cursor-not-allowed">
-                <span wire:loading.remove wire:target="addCategory">Add Category</span>
-                <span wire:loading wire:target="addCategory" class="inline-flex items-center gap-1.5">
-                    <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+        <div class="flex justify-end pt-2">
+            <button type="submit"
+                    wire:loading.attr="disabled"
+                    wire:target="addCategory"
+                    class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                           disabled:opacity-60 disabled:cursor-not-allowed">
+                <span wire:loading.remove wire:target="addCategory" class="inline-flex items-center gap-2">
+                    <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                    </svg>
+                    Add Category
+                </span>
+                <span wire:loading wire:target="addCategory" class="inline-flex items-center gap-2">
+                    <svg class="animate-spin h-4 w-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                     </svg>
@@ -353,66 +419,94 @@ class extends Component
         </div>
     </form>
 
-    {{-- Existing Categories List --}}
+    {{-- ═══ Existing Categories ═══ --}}
     <div class="space-y-4">
         <div class="flex items-center justify-between px-1">
-            <h2 class="text-base font-semibold text-gray-900 dark:text-white">Manage Categories</h2>
-            @php $stats = $this->stats; @endphp
+            <div class="flex items-center gap-3">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    Manage Categories
+                </h2>
+            </div>
             @if($stats['total'] > 0)
-                <span class="text-xs text-gray-500 dark:text-gray-400">
-                    <strong class="text-gray-900 dark:text-white">{{ $stats['total'] }}</strong> total
+                <span class="text-xs text-gray-500 dark:text-gray-400 tabular-nums">
+                    <strong class="text-gray-900 dark:text-white font-semibold">{{ $stats['total'] }}</strong> total
                     @if($stats['inactive'] > 0)
-                        · <span class="text-amber-600 dark:text-amber-400">{{ $stats['inactive'] }} hidden</span>
+                        · <span class="text-amber-600 dark:text-amber-400 font-semibold">{{ $stats['inactive'] }} hidden</span>
                     @endif
                 </span>
             @endif
         </div>
 
         @forelse($categories as $index => $cat)
-            @php
-                $isActive = $cat['is_active'] ?? true;
-            @endphp
-            <div wire:key="category-{{ $cat['key'] ?? $index }}"
-                 class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 flex flex-col lg:flex-row lg:items-center gap-5 transition-all duration-200 hover:shadow-md {{ !$isActive ? 'opacity-60 bg-gray-50 dark:bg-gray-800/50' : '' }}">
+            @php $isActive = $cat['is_active'] ?? true; @endphp
+            <div wire:key="category-{{ $cat['key'] ?: 'idx-' . $loop->index }}"
+                 class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 flex flex-col lg:flex-row lg:items-center gap-5 transition-all duration-200 hover:shadow-md {{ !$isActive ? 'opacity-70 bg-gray-50 dark:bg-gray-800/40' : '' }}">
 
                 {{-- Info & Icon --}}
                 <div class="flex items-center gap-4 lg:w-1/4 shrink-0">
                     <div class="h-12 w-12 rounded-xl flex items-center justify-center shrink-0 border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-2 shadow-sm">
                         @if(!empty($cat['icon_path']) && Storage::disk('public')->exists($cat['icon_path']))
-                            <img src="{{ Storage::url($cat['icon_path']) }}" class="w-full h-full object-contain" alt="{{ $cat['label'] }}">
+                            <img src="{{ Storage::url($cat['icon_path']) }}"
+                                 class="w-full h-full object-contain"
+                                 alt="{{ $cat['label'] }}"
+                                 loading="lazy"
+                                 decoding="async">
                         @elseif(!empty($cat['icon_svg']))
                             <div class="w-full h-full text-gray-700 dark:text-gray-300">
                                 {!! str_replace('<svg ', '<svg class="w-full h-full stroke-current fill-none" ', $cat['icon_svg']) !!}
                             </div>
                         @else
-                            <div class="w-4 h-4 rounded-full" style="background-color: {{ $cat['color'] }};"></div>
+                            <div class="w-4 h-4 rounded-full shadow-sm" style="background-color: {{ $cat['color'] }};"></div>
                         @endif
                     </div>
                     <div class="min-w-0">
-                        <p class="font-bold text-gray-900 dark:text-white truncate">{{ $cat['label'] }}</p>
-                        <p class="text-xs text-gray-500 dark:text-gray-400 font-mono bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded mt-0.5 inline-block">{{ $cat['key'] }}</p>
+                        <p class="font-semibold text-gray-900 dark:text-white truncate">{{ $cat['label'] }}</p>
+                        <p class="text-[11px] text-gray-500 dark:text-gray-400 font-mono bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded mt-0.5 inline-block">
+                            {{ $cat['key'] }}
+                        </p>
                     </div>
                 </div>
 
                 {{-- Edit Fields --}}
-                <div class="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-4 items-start">
+                <div class="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-3 items-start">
                     <div>
-                        <input type="text" wire:model="categories.{{ $index }}.label" class="input text-sm" placeholder="Label">
-                        @error("categories.$index.label") <span class="text-red-500 text-[10px] block mt-1">{{ $message }}</span> @enderror
+                        <input type="text"
+                               wire:model="categories.{{ $index }}.label"
+                               maxlength="100"
+                               class="input w-full text-sm"
+                               placeholder="Label">
+                        @error("categories.$index.label") <span class="text-rose-500 dark:text-rose-400 text-[10px] block mt-1">{{ $message }}</span> @enderror
                     </div>
 
                     <div>
                         <div class="flex items-center gap-2">
-                            <input type="color" wire:model="categories.{{ $index }}.color" class="h-9 w-12 rounded border border-gray-300 dark:border-gray-600 cursor-pointer p-0.5 shrink-0">
-                            <input type="text" wire:model="categories.{{ $index }}.color" class="input text-sm uppercase font-mono px-2" placeholder="#000000">
+                            <input type="color"
+                                   wire:model="categories.{{ $index }}.color"
+                                   aria-label="Color for {{ $cat['label'] }}"
+                                   class="h-11 w-12 rounded-lg border border-gray-300 dark:border-gray-600 cursor-pointer p-0.5 shrink-0 bg-white dark:bg-gray-800">
+                            <input type="text"
+                                   wire:model="categories.{{ $index }}.color"
+                                   maxlength="7"
+                                   class="input w-full text-sm uppercase font-mono px-2"
+                                   placeholder="#000000">
                         </div>
-                        @error("categories.$index.color") <span class="text-red-500 text-[10px] block mt-1">{{ $message }}</span> @enderror
+                        @error("categories.$index.color") <span class="text-rose-500 dark:text-rose-400 text-[10px] block mt-1">{{ $message }}</span> @enderror
                     </div>
 
                     <div>
-                        <input type="file" wire:model="categories.{{ $index }}.icon_file" accept=".svg"
-                               class="block w-full text-xs text-gray-500 file:mr-2 file:py-1 file:px-2 file:rounded-lg file:border-0 file:text-xs file:font-medium file:bg-gray-100 dark:file:bg-gray-700 file:text-gray-700 dark:file:text-gray-300 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                        @error("categories.$index.icon_file") <span class="text-red-500 text-[10px] block mt-1">{{ $message }}</span> @enderror
+                        <input type="file"
+                               wire:model="categories.{{ $index }}.icon_file"
+                               accept=".svg,image/svg+xml"
+                               class="block w-full text-xs text-gray-500 dark:text-gray-400
+                                      file:mr-2 file:py-1.5 file:px-2.5 file:rounded-lg file:border-0
+                                      file:text-xs file:font-medium
+                                      file:bg-gray-100 dark:file:bg-gray-700
+                                      file:text-gray-700 dark:file:text-gray-300
+                                      hover:file:bg-gray-200 dark:hover:file:bg-gray-600
+                                      cursor-pointer
+                                      focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                        @error("categories.$index.icon_file") <span class="text-rose-500 dark:text-rose-400 text-[10px] block mt-1">{{ $message }}</span> @enderror
 
                         <div wire:loading wire:target="categories.{{ $index }}.icon_file" class="mt-1 text-[10px] text-primary-600 dark:text-primary-400">
                             Uploading…
@@ -421,33 +515,58 @@ class extends Component
                 </div>
 
                 {{-- Actions --}}
-                <div class="flex items-center justify-between lg:justify-end gap-4 shrink-0 pt-4 lg:pt-0 border-t lg:border-t-0 border-gray-100 dark:border-gray-700">
+                <div class="flex items-center justify-between lg:justify-end gap-3 shrink-0 pt-4 lg:pt-0 border-t lg:border-t-0 border-gray-100 dark:border-gray-700/60">
 
                     {{-- Toggle Active --}}
-                    <button type="button" wire:click="toggleActive({{ $index }})"
+                    <button type="button"
+                            wire:click="toggleActive({{ $index }})"
                             wire:loading.attr="disabled"
-                            wire:target="toggleActive({{ $index }})"
-                            class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-lg px-2 py-1 disabled:opacity-60">
-                        <div class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {{ $isActive ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-600' }}">
-                            <span class="inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform {{ $isActive ? 'translate-x-4' : 'translate-x-1' }}"></span>
+                            wire:target="toggleActive"
+                            aria-label="{{ $isActive ? 'Deactivate' : 'Activate' }} {{ $cat['label'] }}"
+                            class="inline-flex items-center gap-2 px-2 py-1 rounded-lg text-sm text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white
+                                   transition-colors
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                                   disabled:opacity-60 disabled:cursor-not-allowed">
+                        <div class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {{ $isActive ? 'bg-emerald-500' : 'bg-gray-300 dark:bg-gray-600' }}">
+                            <span class="inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform {{ $isActive ? 'translate-x-4' : 'translate-x-1' }}"></span>
                         </div>
                         <span class="text-xs font-medium">{{ $isActive ? 'Active' : 'Hidden' }}</span>
                     </button>
 
-                    <div class="flex items-center gap-2">
-                        <button type="button" wire:click="updateCategory({{ $index }})" wire:loading.attr="disabled" wire:target="updateCategory({{ $index }})"
-                                class="px-3 py-1.5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold shadow-sm transition active:scale-95 focus:outline-none focus:ring-2 focus:ring-primary-500/50 disabled:opacity-60 inline-flex items-center gap-1.5">
-                            <span wire:loading.remove wire:target="updateCategory({{ $index }})">Save</span>
-                            <span wire:loading wire:target="updateCategory({{ $index }})" class="inline-flex items-center gap-1.5">
-                                <svg class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                    <div class="flex items-center gap-1.5">
+                        {{-- Save --}}
+                        <button type="button"
+                                wire:click="updateCategory({{ $index }})"
+                                wire:loading.attr="disabled"
+                                wire:target="updateCategory"
+                                class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold shadow-sm
+                                       transition-all duration-200 active:scale-95
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                                       disabled:opacity-60 disabled:cursor-not-allowed">
+                            <span wire:loading.remove wire:target="updateCategory">Save</span>
+                            <span wire:loading wire:target="updateCategory" class="inline-flex items-center gap-1.5">
+                                <svg class="animate-spin h-3 w-3 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                </svg>
                                 Saving…
                             </span>
                         </button>
-                        <button type="button" wire:click="removeCategory({{ $index }})"
-                                wire:confirm="Delete '{{ $cat['label'] }}'? Markers using this key will fall back to Uncategorized."
+
+                        {{-- Delete — Rule 19: Alpine confirm --}}
+                        <button type="button"
+                                x-on:click="if (confirm('Delete \'{{ addslashes($cat['label']) }}\'? Markers using this key will fall back to Uncategorized.')) $wire.removeCategory({{ $index }})"
                                 wire:loading.attr="disabled"
-                                wire:target="removeCategory({{ $index }})"
-                                class="px-3 py-1.5 rounded-xl bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 text-xs font-semibold border border-red-200 dark:border-red-500/30 hover:bg-red-100 dark:hover:bg-red-500/20 transition active:scale-95 focus:outline-none focus:ring-2 focus:ring-red-500/50 disabled:opacity-60">
+                                wire:target="removeCategory"
+                                aria-label="Delete {{ $cat['label'] }}"
+                                class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg
+                                       border border-rose-300 dark:border-rose-500/40
+                                       bg-white dark:bg-gray-800 text-rose-700 dark:text-rose-300
+                                       text-xs font-semibold
+                                       transition-all duration-200 active:scale-95
+                                       hover:bg-rose-50 dark:hover:bg-rose-500/10
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
+                                       disabled:opacity-60 disabled:cursor-not-allowed">
                             Delete
                         </button>
                     </div>
@@ -456,7 +575,7 @@ class extends Component
         @empty
             <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-10 flex flex-col items-center justify-center text-center">
                 <div class="p-3 bg-gray-100 dark:bg-gray-800 rounded-2xl mb-3 text-gray-400 dark:text-gray-500">
-                    <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
                     </svg>
@@ -467,28 +586,31 @@ class extends Component
         @endforelse
     </div>
 
-    {{-- Toast Notifications --}}
+    {{-- ═══════════════════════════════════════════════════════════════
+         TOAST NOTIFICATIONS
+         ─────────────────────────────────────────────────────────────
+         Rule 69 fix (bug 6.155): the previous `<template x-for>` used
+         `x-transition:enter/leave` — that combination crashes the v4
+         morph engine during wire:navigate (Cannot read properties of
+         undefined reading 'cloneNode'). Transitions are removed; toasts
+         appear/disappear instantly.
+         ═══════════════════════════════════════════════════════════════ --}}
     <div x-data="{ toasts: [] }"
          x-on:toast.window="
              const id = Date.now() + Math.random();
              toasts.push({ id, message: $event.detail.message, type: $event.detail.type || 'info' });
              setTimeout(() => { toasts = toasts.filter(t => t.id !== id) }, 4000);
          "
-         class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 w-full max-w-sm pointer-events-none">
+         class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 w-full max-w-sm pointer-events-none"
+         aria-live="polite"
+         role="status">
         <template x-for="toast in toasts" :key="toast.id">
-            <div
-                x-transition:enter="transition ease-out duration-300"
-                x-transition:enter-start="opacity-0 translate-y-4"
-                x-transition:enter-end="opacity-100 translate-y-0"
-                x-transition:leave="transition ease-in duration-200"
-                x-transition:leave-start="opacity-100"
-                x-transition:leave-end="opacity-0"
-                class="pointer-events-auto rounded-xl px-4 py-3 shadow-lg text-sm font-medium flex items-center gap-2 border"
-                :class="{
-                    'bg-green-50 border-green-200 text-green-800 dark:bg-green-500/10 dark:border-green-500/30 dark:text-green-300': toast.type === 'success',
-                    'bg-red-50 border-red-200 text-red-800 dark:bg-red-500/10 dark:border-red-500/30 dark:text-red-300': toast.type === 'error',
-                    'bg-blue-50 border-blue-200 text-blue-800 dark:bg-blue-500/10 dark:border-blue-500/30 dark:text-blue-300': toast.type === 'info',
-                }">
+            <div class="pointer-events-auto rounded-xl px-4 py-3 shadow-lg text-sm font-medium flex items-center gap-2 border"
+                 :class="{
+                     'bg-emerald-50 border-emerald-200 text-emerald-800 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-300': toast.type === 'success',
+                     'bg-rose-50 border-rose-200 text-rose-800 dark:bg-rose-500/10 dark:border-rose-500/30 dark:text-rose-300': toast.type === 'error',
+                     'bg-blue-50 border-blue-200 text-blue-800 dark:bg-blue-500/10 dark:border-blue-500/30 dark:text-blue-300': toast.type === 'info',
+                 }">
                 <span x-text="toast.message"></span>
             </div>
         </template>

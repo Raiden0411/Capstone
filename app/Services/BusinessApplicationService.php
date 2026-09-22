@@ -2,33 +2,35 @@
 
 namespace App\Services;
 
+use App\Mail\BusinessApplicationApproved;
+use App\Mail\BusinessApplicationNeedsRevision;
+use App\Mail\BusinessApplicationRejected;
+use App\Mail\BusinessApplicationSubmitted;
 use App\Models\BusinessApplication;
 use App\Models\BusinessDocument;
 use App\Models\Tenant;
 use App\Models\TenantSetting;
 use App\Models\User;
+use App\Traits\HandlesImageUploads;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use RuntimeException;
 
 class BusinessApplicationService
 {
+    use HandlesImageUploads;
+
     public function __construct(
         protected KybVerificationService $kyb,
         protected DocumentWatermarkService $watermark,
+        protected SuperadminNotificationService $notifications,
     ) {}
 
-    /**
-     * Attach an uploaded file, watermark it, and record the document row.
-     * File is cleaned up if the DB write fails.
-     *
-     * All metadata (mime, size, hash) is read from the STORED copy on the
-     * public disk — never from the Livewire temp file, which may already
-     * have been cleaned up by the time we reach the DB transaction.
-     */
     public function attachDocument(
         BusinessApplication $application,
         User $user,
@@ -40,8 +42,6 @@ class BusinessApplicationService
         $watermarked = null;
 
         try {
-            // Filename is a client-provided value — usually safe even on
-            // a Livewire temp file, but still guard against exotic failures.
             $originalFilename = 'document';
             try {
                 $originalFilename = (string) $uploadedFile->getClientOriginalName();
@@ -49,14 +49,23 @@ class BusinessApplicationService
                 // fall back to generic name
             }
 
-            // 1) Store FIRST. This copies the temp file to stable storage.
-            $storedPath = $uploadedFile->store("kyb-documents/{$application->id}", 'public');
+            // storeImage() runs the file through ImageCompressionService
+            // for image mimes only — PDFs and other non-images are stored
+            // as-is. Context key 'kyb-document' selects the ceiling from
+            // config/images.php. Returns null on any failure (store or
+            // compression); we translate that into the same RuntimeException
+            // the previous inline path threw.
+            $storedPath = $this->storeImage(
+                $uploadedFile,
+                "kyb-documents/{$application->id}",
+                'public',
+                'kyb-document',
+            );
 
-            if (!$storedPath) {
+            if ($storedPath === null) {
                 throw new RuntimeException('Failed to store the uploaded file.');
             }
 
-            // 2) Everything else reads from the STORED copy — never the temp file.
             $disk           = Storage::disk('public');
             $storedFullPath = $disk->path($storedPath);
 
@@ -64,6 +73,10 @@ class BusinessApplicationService
                 throw new RuntimeException('Stored file is not readable at ' . $storedFullPath);
             }
 
+            // ── Metadata is read AFTER compression ──
+            // storeImage() has already written the (possibly re-encoded)
+            // file to disk, so the mime, size, and hash computed below all
+            // reflect the final stored bytes — not the raw upload.
             $mime = 'application/octet-stream';
             if (function_exists('mime_content_type')) {
                 $detected = @mime_content_type($storedFullPath);
@@ -73,22 +86,17 @@ class BusinessApplicationService
             }
 
             $fileSize = (int) @filesize($storedFullPath);
-            if ($fileSize < 0) {
-                $fileSize = 0;
-            }
 
             $fileHash = @hash_file('sha256', $storedFullPath);
-            if (!is_string($fileHash) || $fileHash === '') {
+            if (!is_string($fileHash)) {
                 $fileHash = null;
             }
 
-            // 3) Watermark (best-effort — service returns null on failure).
             $watermarked = $this->watermark->watermark(
                 $storedPath,
                 config('app.name', 'Victorias Tourism')
             );
 
-            // 4) Persist.
             return DB::transaction(function () use (
                 $application,
                 $user,
@@ -119,7 +127,6 @@ class BusinessApplicationService
                 ]);
             });
         } catch (\Throwable $e) {
-            // Clean up any files that were written before the failure.
             if ($storedPath && Storage::disk('public')->exists($storedPath)) {
                 Storage::disk('public')->delete($storedPath);
             }
@@ -150,9 +157,6 @@ class BusinessApplicationService
             );
         }
 
-        // Cross-application uniqueness. Throws RuntimeException with a
-        // specific message when a collision is found. See the method
-        // below for scope and rationale.
         $this->assertUniqueBusinessIdentifiers($application);
 
         DB::transaction(function () use ($application): void {
@@ -162,16 +166,43 @@ class BusinessApplicationService
             ]);
         });
 
+        // Status just moved draft/needs_revision → pending, which is
+        // inside the "awaiting review" set the superadmin badge counts.
+        // Refresh the cached badge so reviewers see the new count on
+        // their next page load.
+        $this->notifications->flush();
+
         $this->kyb->verify($application->fresh(['documents']));
+
+        $fresh = $application->fresh(['user', 'documents']);
+
+        $this->safeMail(function () use ($fresh) {
+            /** @var BusinessApplication $fresh */
+            /** @var User|null $applicant */
+            $applicant = $fresh->user;
+            $to = $fresh->contact_email ?: $applicant?->email;
+            if ($to) {
+                Mail::to($to)->send(new BusinessApplicationSubmitted($fresh));
+            }
+        }, 'submit-applicant', $fresh->id);
+
+        $this->safeMail(function () use ($fresh) {
+            /** @var EloquentCollection<int, User> $admins */
+            $admins = User::role('super-admin')->get(['id', 'name', 'email']);
+            foreach ($admins as $admin) {
+                Mail::to($admin->email)->send(
+                    new BusinessApplicationSubmitted($fresh, forAdmin: true)
+                );
+            }
+        }, 'submit-admin', $fresh->id);
 
         return true;
     }
 
     public function approve(BusinessApplication $application, User $reviewer): Tenant
     {
-        return DB::transaction(function () use ($application, $reviewer) {
-            // Lock + re-read the application to prevent concurrent approvals
-            // producing two tenants from one application.
+        $tenant = DB::transaction(function () use ($application, $reviewer) {
+            /** @var BusinessApplication|null $locked */
             $locked = BusinessApplication::query()
                 ->whereKey($application->getKey())
                 ->lockForUpdate()
@@ -199,6 +230,7 @@ class BusinessApplicationService
 
             $slug = $this->uniqueSlug($locked->business_name ?? 'business');
 
+            /** @var BusinessDocument|null $permitDoc */
             $permitDoc = $locked->documents
                 ->firstWhere('document_type', BusinessDocument::TYPE_MAYORS_PERMIT);
 
@@ -211,6 +243,7 @@ class BusinessApplicationService
                 'email'             => $locked->contact_email,
                 'contact_number'    => $locked->contact_phone,
                 'coordinates'       => $locked->coordinates,
+                'logo'              => $locked->logo_path,
                 'is_active'         => true,
                 'is_recommended'    => false,
                 'verified_at'       => now(),
@@ -229,11 +262,13 @@ class BusinessApplicationService
                 ],
             ]);
 
+            /** @var User|null $applicant */
             $applicant = $locked->user;
             if ($applicant) {
                 $applicant->update([
                     'tenant_id'   => $tenant->id,
                     'active_mode' => User::MODE_BUSINESS,
+                    'avatar'      => $locked->owner_avatar_path ?: $applicant->avatar,
                 ]);
 
                 if (!$applicant->hasRole('admin')) {
@@ -255,6 +290,24 @@ class BusinessApplicationService
 
             return $tenant;
         });
+
+        // Status moved to approved (outside the counted set). Refresh the
+        // superadmin badge so reviewers see the reduced count on reload.
+        $this->notifications->flush();
+
+        $fresh = $application->fresh(['user']);
+
+        $this->safeMail(function () use ($fresh, $tenant) {
+            /** @var BusinessApplication $fresh */
+            /** @var User|null $applicant */
+            $applicant = $fresh->user;
+            $to = $fresh->contact_email ?: $applicant?->email;
+            if ($to) {
+                Mail::to($to)->send(new BusinessApplicationApproved($fresh, $tenant));
+            }
+        }, 'approve-applicant', $fresh->id);
+
+        return $tenant;
     }
 
     public function reject(BusinessApplication $application, User $reviewer, string $reason): void
@@ -267,6 +320,22 @@ class BusinessApplicationService
                 'reviewed_by'      => $reviewer->id,
             ]);
         });
+
+        // Status moved to rejected (outside the counted set). Refresh the
+        // superadmin badge.
+        $this->notifications->flush();
+
+        $fresh = $application->fresh(['user']);
+
+        $this->safeMail(function () use ($fresh, $reason) {
+            /** @var BusinessApplication $fresh */
+            /** @var User|null $applicant */
+            $applicant = $fresh->user;
+            $to = $fresh->contact_email ?: $applicant?->email;
+            if ($to) {
+                Mail::to($to)->send(new BusinessApplicationRejected($fresh, $reason));
+            }
+        }, 'reject-applicant', $fresh->id);
     }
 
     public function requestRevision(BusinessApplication $application, User $reviewer, string $notes): void
@@ -279,6 +348,36 @@ class BusinessApplicationService
                 'reviewed_by'    => $reviewer->id,
             ]);
         });
+
+        // Status moved to needs_revision (outside the counted set).
+        // Refresh the superadmin badge.
+        $this->notifications->flush();
+
+        $fresh = $application->fresh(['user']);
+
+        $this->safeMail(function () use ($fresh, $notes) {
+            /** @var BusinessApplication $fresh */
+            /** @var User|null $applicant */
+            $applicant = $fresh->user;
+            $to = $fresh->contact_email ?: $applicant?->email;
+            if ($to) {
+                Mail::to($to)->send(new BusinessApplicationNeedsRevision($fresh, $notes));
+            }
+        }, 'revision-applicant', $fresh->id);
+    }
+
+    protected function safeMail(callable $callback, string $context, int $applicationId): void
+    {
+        try {
+            $callback();
+        } catch (\Throwable $e) {
+            Log::warning('KYB mail dispatch failed', [
+                'context'        => $context,
+                'application_id' => $applicationId,
+                'error'          => $e->getMessage(),
+                'exception'      => get_class($e),
+            ]);
+        }
     }
 
     protected function uniqueSlug(string $name): string
@@ -295,16 +394,6 @@ class BusinessApplicationService
         return $slug;
     }
 
-    /**
-     * Refuse submission if this TIN or Registration No. is already
-     * attached to a live application (pending / under review / approved).
-     *
-     * Drafts and rejected applications are intentionally excluded —
-     * otherwise a legitimate re-application would be blocked by a
-     * stale draft left behind by the same applicant.
-     *
-     * @throws RuntimeException when a collision is found.
-     */
     protected function assertUniqueBusinessIdentifiers(BusinessApplication $application): void
     {
         $tinCanonical = $application->tin_canonical;

@@ -5,17 +5,21 @@ use App\Models\PropertyType;
 use App\Models\Tenant;
 use App\Models\User;
 use Livewire\Livewire;
+use Spatie\Permission\Models\Role;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Carbon\Carbon;
 
 uses(RefreshDatabase::class);
 
 it('creates a property with availability blackout dates', function () {
+    Role::firstOrCreate(['name' => 'admin', 'guard_name' => 'web']);
+
     /** @var Tenant $tenant */
     $tenant = Tenant::factory()->create();
 
     /** @var User $user */
     $user = User::factory()->create(['tenant_id' => $tenant->id]);
+    $user->assignRole('admin');
 
     /** @var PropertyType $propertyType */
     $propertyType = PropertyType::factory()->create([

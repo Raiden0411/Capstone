@@ -5,6 +5,7 @@ use Livewire\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
+use Livewire\Attributes\Url;
 use Livewire\WithPagination;
 use App\Models\Booking;
 use App\Models\Payment;
@@ -22,16 +23,36 @@ class extends Component
 {
     use WithPagination;
 
-    public string $search       = '';
-    public string $statusFilter = 'all';
-    public string $sortBy       = 'newest';
+    #[Url] public string $search       = '';
+    #[Url] public string $statusFilter = 'all';
+    #[Url] public string $sortBy       = 'newest';
 
     /** Currently expanded booking — server-owned so it survives re-renders. */
     public ?int $expandedId = null;
 
-    public function updatingSearch(): void       { $this->resetPage(); }
-    public function updatingStatusFilter(): void { $this->resetPage(); }
-    public function updatingSortBy(): void       { $this->resetPage(); }
+    // ─────────────────────────────────────────────────────────
+    //  Lifecycle
+    // ─────────────────────────────────────────────────────────
+
+    /**
+     * Livewire actions bypass route middleware. Re-verify the session on
+     * every subsequent request. Without this, an expired session causes
+     * `where('user_id', null)` → no rows → `firstOrFail()` → a 404 on
+     * every action instead of a clean "session expired" response.
+     */
+    public function hydrate(): void
+    {
+        abort_unless(Auth::check(), 403, 'Your session has expired. Please sign in again.');
+    }
+
+    protected function requireAuth(): void
+    {
+        abort_unless(Auth::check(), 403, 'Your session has expired. Please sign in again.');
+    }
+
+    public function updatingSearch(): void       { $this->resetPage(); $this->expandedId = null; }
+    public function updatingStatusFilter(): void { $this->resetPage(); $this->expandedId = null; }
+    public function updatingSortBy(): void       { $this->resetPage(); $this->expandedId = null; }
 
     public function toggleExpand(int $bookingId): void
     {
@@ -48,10 +69,16 @@ class extends Component
      */
     public function cancelOverdue(int $bookingId): void
     {
+        $this->requireAuth();
+
         $booking = Booking::withoutGlobalScope(TenantScope::class)
             ->where('user_id', Auth::id())
             ->whereKey($bookingId)
-            ->firstOrFail();
+            ->first();
+
+        if (!$booking) {
+            return;
+        }
 
         $cancelled = DB::transaction(function () use ($booking): bool {
             $locked = Booking::withoutGlobalScope(TenantScope::class)
@@ -73,6 +100,10 @@ class extends Component
         });
 
         if ($cancelled) {
+            // Invalidate any memoized computed state on this request.
+            unset($this->bookings);
+            unset($this->counts);
+
             session()->flash('message', 'Booking cancelled due to payment timeout.');
         }
     }
@@ -98,10 +129,16 @@ class extends Component
      */
     protected function startCheckout(int $bookingId, string $expectedType)
     {
+        $this->requireAuth();
+
         $booking = Booking::withoutGlobalScope(TenantScope::class)
             ->where('user_id', Auth::id())
             ->whereKey($bookingId)
-            ->firstOrFail();
+            ->first();
+
+        if (!$booking) {
+            return null;
+        }
 
         if ($booking->status !== Booking::STATUS_PENDING
             || $booking->booking_type !== $expectedType) {
@@ -129,6 +166,9 @@ class extends Component
         });
 
         if ($shouldCancel) {
+            unset($this->bookings);
+            unset($this->counts);
+
             session()->flash('error', 'Payment deadline has passed. This booking has been cancelled.');
             return null;
         }
@@ -221,10 +261,17 @@ class extends Component
 
     public function requestCancellation(int $bookingId): void
     {
+        $this->requireAuth();
+
         $booking = Booking::withoutGlobalScope(TenantScope::class)
             ->where('user_id', Auth::id())
             ->whereKey($bookingId)
-            ->firstOrFail();
+            ->first();
+
+        if (!$booking) {
+            session()->flash('error', 'Booking not found.');
+            return;
+        }
 
         $result = DB::transaction(function () use ($booking): string {
             $locked = Booking::withoutGlobalScope(TenantScope::class)
@@ -248,6 +295,9 @@ class extends Component
 
             return 'cancelled';
         });
+
+        unset($this->bookings);
+        unset($this->counts);
 
         match ($result) {
             'cancelled' => session()->flash('message', 'Booking cancelled successfully.'),
@@ -384,7 +434,16 @@ class extends Component
 };
 ?>
 
-<div class="relative z-10 min-h-screen py-8 px-4 sm:px-6 lg:px-8 bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100">
+@push('styles')
+    @once
+        <style>
+            .hide-scrollbar::-webkit-scrollbar { display: none; }
+            .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        </style>
+    @endonce
+@endpush
+
+<div class="relative z-10 min-h-screen py-8 px-4 sm:px-6 lg:px-8 text-gray-900 dark:text-gray-100">
     <div class="max-w-7xl mx-auto">
 
         {{-- Header — public-page dash-eyebrow pattern --}}
@@ -403,28 +462,54 @@ class extends Component
             </div>
         </div>
 
-        {{-- Flash messages --}}
+        {{-- Flash messages — Rule 95 auto-dismiss + dismiss X --}}
         @if(session()->has('message'))
-            <div class="bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-400/40 text-green-700 dark:text-green-200 p-4 rounded-2xl text-sm mb-6 flex items-start gap-3 border-l-4 border-l-green-500">
-                <svg class="w-5 h-5 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <div x-data="{ show: true }"
+                 x-init="setTimeout(() => show = false, 4000)"
+                 :class="show ? '' : 'hidden'"
+                 role="status"
+                 aria-live="polite"
+                 class="flex items-start gap-3 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 border-l-4 border-l-emerald-500 p-4 rounded-md mb-6">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                 </svg>
-                <span>{{ session('message') }}</span>
+                <p class="text-sm text-emerald-700 dark:text-emerald-300 font-medium flex-1">{{ session('message') }}</p>
+                <button type="button"
+                        @click="show = false"
+                        class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                               transition-all duration-200 active:scale-95
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 shrink-0"
+                        aria-label="Dismiss message">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
             </div>
         @endif
         @if(session()->has('error'))
-            <div class="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-400/40 text-red-700 dark:text-red-200 p-4 rounded-2xl text-sm mb-6 flex items-start gap-3 border-l-4 border-l-red-500">
-                <svg class="w-5 h-5 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <div x-data="{ show: true }"
+                 x-init="setTimeout(() => show = false, 5000)"
+                 :class="show ? '' : 'hidden'"
+                 role="alert"
+                 aria-live="polite"
+                 class="flex items-start gap-3 bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 border-l-4 border-l-rose-500 p-4 rounded-md mb-6">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                 </svg>
-                <span>{{ session('error') }}</span>
+                <p class="text-sm text-rose-700 dark:text-rose-300 font-medium flex-1">{{ session('error') }}</p>
+                <button type="button"
+                        @click="show = false"
+                        class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                               transition-all duration-200 active:scale-95
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 shrink-0"
+                        aria-label="Dismiss error">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
             </div>
         @endif
 
         {{-- Filters & search --}}
         @php $counts = $this->counts; @endphp
         <div class="mb-6 space-y-4">
-            <div class="flex gap-2 overflow-x-auto pb-2" style="scrollbar-width:none">
+            <div class="flex gap-2 overflow-x-auto pb-2 hide-scrollbar">
                 @foreach([
                     ['all',       'All',        $counts['all']],
                     ['pending',   'Pending',    $counts['pending']],
@@ -435,18 +520,21 @@ class extends Component
                     ['past',      'Past',       $counts['past']],
                     ['cancelled', 'Cancelled',  $counts['cancelled']],
                 ] as [$val, $label, $num])
+                    @php $isActive = $statusFilter === $val; @endphp
                     <button type="button"
                             wire:key="pill-{{ $val }}"
                             wire:click="$set('statusFilter','{{ $val }}')"
-                            class="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[11px] font-bold uppercase tracking-wide border transition-all duration-200 active:scale-95
-                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 shrink-0
-                                   {{ $statusFilter === $val
-                                       ? 'bg-primary-600 border-primary-600 text-white shadow-md shadow-primary-600/20'
-                                       : 'bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:border-gray-400 dark:hover:border-gray-600' }}">
-                        {{ $label }}
+                            aria-pressed="{{ $isActive ? 'true' : 'false' }}"
+                            class="inline-flex items-center gap-2 h-9 pl-3.5 pr-1.5 rounded-full text-xs font-semibold uppercase tracking-wide border
+                                   transition-all duration-200 active:scale-95 shrink-0
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                                   {{ $isActive
+                                       ? 'bg-primary-600 border-primary-600 text-white shadow-sm'
+                                       : 'border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:border-primary-400' }}">
+                        <span>{{ $label }}</span>
                         @if($num > 0)
-                            <span class="min-w-[18px] h-[18px] px-1 rounded-full flex items-center justify-center text-[9px] font-bold
-                                         {{ $statusFilter === $val ? 'bg-white/20 text-white' : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400' }}">
+                            <span class="inline-flex items-center justify-center min-w-[22px] h-5 px-1.5 rounded-full text-[10px] font-bold tabular-nums
+                                         {{ $isActive ? 'bg-white/20 text-white' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300' }}">
                                 {{ $num }}
                             </span>
                         @endif
@@ -456,39 +544,47 @@ class extends Component
 
             <div class="flex flex-col sm:flex-row gap-3">
                 <div class="relative flex-1">
-                    <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
                     </svg>
-                    <input type="text" wire:model.live.debounce.300ms="search"
+                    <input type="text"
+                           wire:model.live.debounce.300ms="search"
+                           enterkeyhint="search"
+                           autocomplete="off"
                            placeholder="Search by reference or property name..."
-                           class="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 pl-10 pr-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500
-                                  focus:outline-none focus:ring-2 focus:ring-primary-600/50 transition">
+                           aria-label="Search bookings"
+                           class="input w-full"
+                           style="padding-left: 2.5rem;">
                 </div>
                 <select wire:model.live="sortBy"
-                        class="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white
-                               focus:outline-none focus:ring-2 focus:ring-primary-600/50 transition appearance-none">
+                        aria-label="Sort bookings"
+                        class="input w-full sm:w-auto sm:min-w-[220px] appearance-none">
                     <option value="newest">Newest First</option>
                     <option value="oldest">Oldest First</option>
-                    <option value="check_in_asc">Check-in Date (Ascending)</option>
-                    <option value="check_in_desc">Check-in Date (Descending)</option>
+                    <option value="check_in_asc">Start Date (Ascending)</option>
+                    <option value="check_in_desc">Start Date (Descending)</option>
                 </select>
             </div>
         </div>
 
-        {{-- Bookings list --}}
-        <div class="grid grid-cols-1 gap-6 transition-opacity duration-200" wire:loading.class="opacity-50">
+        {{-- Bookings list — Rule 108: scoped wire:target so unrelated actions
+             (pay, cancel, expand) don't dim the whole list. --}}
+        <div class="grid grid-cols-1 gap-6 transition-opacity duration-200"
+             wire:loading.class="opacity-50"
+             wire:target="search,statusFilter,sortBy,gotoPage,nextPage,previousPage">
             @forelse($this->bookings as $booking)
                 @php
-                    $property      = $booking->items->first()->property ?? null;
-                    $tenant        = $property?->tenant;
-                    $imagePath     = $property?->images?->first()?->image_path;
-                    $logoPath      = $tenant?->logo;
-                    $paid          = $this->getPaidAmount($booking);
-                    $balance       = $booking->total_amount - $paid;
-                    $deadline      = $booking->payment_deadline;
-                    $services      = $booking->services;
+                    $property       = $booking->items->first()->property ?? null;
+                    $tenant         = $property?->tenant;
+                    $imagePath      = $property?->images?->first()?->image_path;
+                    $logoPath       = $tenant?->logo;
+                    $paid           = $this->getPaidAmount($booking);
+                    $balance        = $booking->total_amount - $paid;
+                    $deadline       = $booking->payment_deadline;
+                    $services       = $booking->services;
                     $classification = $this->getBookingClassification($booking);
-                    $isExpanded    = $expandedId === $booking->id;
+                    $isExpanded     = $expandedId === $booking->id;
+                    $days           = max(1, (int) $booking->check_in->diffInDays($booking->check_out));
                 @endphp
 
                 <div wire:key="booking-{{ $booking->id }}"
@@ -507,11 +603,13 @@ class extends Component
                         @if($logoPath)
                             <img src="{{ asset('storage/' . $logoPath) }}"
                                  alt="{{ $tenant->name ?? 'Business' }}"
-                                 class="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl object-cover border border-gray-200 dark:border-gray-700 shrink-0">
+                                 class="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl object-cover border border-gray-200 dark:border-gray-700 shrink-0"
+                                 loading="lazy" decoding="async">
                         @elseif($imagePath)
                             <img src="{{ asset('storage/' . $imagePath) }}"
                                  alt="{{ $property?->name ?? 'Property' }}"
-                                 class="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl object-cover border border-gray-200 dark:border-gray-700 shrink-0">
+                                 class="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl object-cover border border-gray-200 dark:border-gray-700 shrink-0"
+                                 loading="lazy" decoding="async">
                         @else
                             <div class="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl flex items-center justify-center bg-primary-50 dark:bg-primary-900/30 border border-primary-200 dark:border-primary-500/30 text-primary-700 dark:text-primary-300 font-display text-2xl font-bold shrink-0">
                                 {{ strtoupper(substr($property?->name ?? 'B', 0, 1)) }}
@@ -520,20 +618,28 @@ class extends Component
 
                         <div class="flex-1 min-w-0">
                             <div class="flex flex-wrap items-center gap-2 mb-2">
-                                <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider
-                                    @if($booking->status === 'confirmed') bg-green-100 text-green-800 dark:bg-green-500/20 dark:text-green-300
-                                    @elseif($booking->status === 'reserved') bg-blue-100 text-blue-800 dark:bg-blue-500/20 dark:text-blue-300
-                                    @elseif($booking->status === 'pending') bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300
-                                    @elseif($booking->status === 'cancelled') bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-300
-                                    @else bg-gray-100 text-gray-800 dark:bg-gray-500/20 dark:text-gray-300 @endif">
+                                @php
+                                    $statusClasses = match ($booking->status) {
+                                        'confirmed' => 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300',
+                                        'reserved'  => 'bg-blue-100 text-blue-800 dark:bg-blue-500/20 dark:text-blue-300',
+                                        'pending'   => 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300',
+                                        'cancelled' => 'bg-rose-100 text-rose-800 dark:bg-rose-500/20 dark:text-rose-300',
+                                        default     => 'bg-gray-100 text-gray-800 dark:bg-gray-500/20 dark:text-gray-300',
+                                    };
+                                @endphp
+                                <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider {{ $statusClasses }}">
                                     {{ $booking->status }}
                                 </span>
 
                                 @if(in_array($classification, ['upcoming', 'ongoing', 'past'], true))
-                                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide
-                                        @if($classification === 'upcoming') bg-cyan-100 text-cyan-800 dark:bg-cyan-500/20 dark:text-cyan-300
-                                        @elseif($classification === 'ongoing') bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300
-                                        @else bg-gray-100 text-gray-800 dark:bg-gray-500/20 dark:text-gray-300 @endif">
+                                    @php
+                                        $classClasses = match ($classification) {
+                                            'upcoming' => 'bg-blue-100 text-blue-800 dark:bg-blue-500/20 dark:text-blue-300',
+                                            'ongoing'  => 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300',
+                                            default    => 'bg-gray-100 text-gray-800 dark:bg-gray-500/20 dark:text-gray-300',
+                                        };
+                                    @endphp
+                                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide {{ $classClasses }}">
                                         {{ ucfirst($classification) }}
                                     </span>
                                 @endif
@@ -549,9 +655,9 @@ class extends Component
                             </h3>
 
                             <p class="text-sm text-gray-600 dark:text-gray-300 mt-1">
-                                {{ Carbon::parse($booking->check_in)->format('M d, Y') }} →
-                                {{ Carbon::parse($booking->check_out)->format('M d, Y') }}
-                                · {{ max(1, Carbon::parse($booking->check_in)->diffInDays($booking->check_out)) }} day(s)
+                                {{ $booking->check_in->format('M d, Y') }} →
+                                {{ $booking->check_out->format('M d, Y') }}
+                                · {{ $days }} day(s)
                             </p>
 
                             <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
@@ -603,15 +709,17 @@ class extends Component
                                 </div>
 
                                 @if($booking->booking_type === 'full')
-                                    <button type="button" wire:click.stop="payFull({{ $booking->id }})"
+                                    <button type="button"
+                                            wire:click.stop="payFull({{ $booking->id }})"
                                             wire:loading.attr="disabled"
                                             wire:target="payFull"
-                                            class="bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold uppercase tracking-wider py-2 px-5 rounded-full transition-all duration-200 shadow-md shadow-primary-600/20
-                                                   disabled:opacity-60 disabled:cursor-not-allowed active:scale-95
-                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                            class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                                   transition-all duration-200 active:scale-95
+                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                                                   disabled:opacity-60 disabled:cursor-not-allowed">
                                         <span wire:loading.remove wire:target="payFull">Pay Now</span>
                                         <span wire:loading wire:target="payFull" class="inline-flex items-center gap-2">
-                                            <svg class="animate-spin w-3 h-3 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="animate-spin w-4 h-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
                                                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                                             </svg>
@@ -619,15 +727,17 @@ class extends Component
                                         </span>
                                     </button>
                                 @else
-                                    <button type="button" wire:click.stop="payReservation({{ $booking->id }})"
+                                    <button type="button"
+                                            wire:click.stop="payReservation({{ $booking->id }})"
                                             wire:loading.attr="disabled"
                                             wire:target="payReservation"
-                                            class="bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold uppercase tracking-wider py-2 px-5 rounded-full transition-all duration-200 shadow-md shadow-primary-600/20
-                                                   disabled:opacity-60 disabled:cursor-not-allowed active:scale-95
-                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                        <span wire:loading.remove wire:target="payReservation">Pay Reservation Fee (20%)</span>
+                                            class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                                   transition-all duration-200 active:scale-95
+                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                                                   disabled:opacity-60 disabled:cursor-not-allowed">
+                                        <span wire:loading.remove wire:target="payReservation">Pay Reservation (20%)</span>
                                         <span wire:loading wire:target="payReservation" class="inline-flex items-center gap-2">
-                                            <svg class="animate-spin w-3 h-3 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="animate-spin w-4 h-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
                                                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                                             </svg>
@@ -637,15 +747,16 @@ class extends Component
                                 @endif
                             @elseif($booking->status === 'pending' && $balance <= 0)
                                 <span class="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
-                                    Payment complete – awaiting confirmation
+                                    Payment complete — awaiting confirmation
                                 </span>
                             @elseif($tenant && $booking->status !== 'cancelled')
                                 <a href="{{ route('explore.map', ['marker' => $tenant->id, 'directions' => '1']) }}"
                                    wire:navigate
                                    wire:click.stop
-                                   class="inline-flex items-center gap-1.5 bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold uppercase tracking-wider py-2 px-5 rounded-full transition-all duration-200 shadow-md shadow-primary-600/20
-                                          active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                   class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                          transition-all duration-200 active:scale-95
+                                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
                                     </svg>
                                     Get Directions
@@ -673,7 +784,8 @@ class extends Component
                                             <div class="w-full h-40 rounded-xl overflow-hidden mb-3">
                                                 <img src="{{ asset('storage/' . $imagePath) }}"
                                                      class="w-full h-full object-cover"
-                                                     alt="{{ $property->name }}">
+                                                     alt="{{ $property->name }}"
+                                                     loading="lazy" decoding="async">
                                             </div>
                                         @endif
                                         <h4 class="text-base font-bold text-gray-900 dark:text-white">{{ $property->name }}</h4>
@@ -684,16 +796,16 @@ class extends Component
 
                                         <div class="mt-3 space-y-1 text-sm">
                                             <div class="flex justify-between">
-                                                <span class="text-gray-500 dark:text-gray-400">Check-in</span>
-                                                <span class="text-gray-900 dark:text-white">{{ Carbon::parse($booking->check_in)->format('M d, Y') }}</span>
+                                                <span class="text-gray-500 dark:text-gray-400">Start</span>
+                                                <span class="text-gray-900 dark:text-white">{{ $booking->check_in->format('M d, Y') }}</span>
                                             </div>
                                             <div class="flex justify-between">
-                                                <span class="text-gray-500 dark:text-gray-400">Check-out</span>
-                                                <span class="text-gray-900 dark:text-white">{{ Carbon::parse($booking->check_out)->format('M d, Y') }}</span>
+                                                <span class="text-gray-500 dark:text-gray-400">End</span>
+                                                <span class="text-gray-900 dark:text-white">{{ $booking->check_out->format('M d, Y') }}</span>
                                             </div>
                                             <div class="flex justify-between">
                                                 <span class="text-gray-500 dark:text-gray-400">Duration</span>
-                                                <span class="text-gray-900 dark:text-white">{{ max(1, Carbon::parse($booking->check_in)->diffInDays($booking->check_out)) }} day(s)</span>
+                                                <span class="text-gray-900 dark:text-white">{{ $days }} day(s)</span>
                                             </div>
                                         </div>
 
@@ -782,15 +894,17 @@ class extends Component
                                     <div class="mt-4 space-y-2">
                                         @if($booking->status === 'pending' && $balance > 0)
                                             @if($booking->booking_type === 'full')
-                                                <button type="button" wire:click="payFull({{ $booking->id }})"
+                                                <button type="button"
+                                                        wire:click="payFull({{ $booking->id }})"
                                                         wire:loading.attr="disabled"
                                                         wire:target="payFull"
-                                                        class="w-full py-2 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold uppercase tracking-wider transition-all duration-200
-                                                               disabled:opacity-60 active:scale-95
-                                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                                        class="inline-flex w-full items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                                               transition-all duration-200 active:scale-95
+                                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                                                               disabled:opacity-60 disabled:cursor-not-allowed">
                                                     <span wire:loading.remove wire:target="payFull">Pay Full Amount</span>
                                                     <span wire:loading wire:target="payFull" class="inline-flex items-center gap-2">
-                                                        <svg class="animate-spin w-3 h-3 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                                        <svg xmlns="http://www.w3.org/2000/svg" class="animate-spin w-4 h-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
                                                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                                             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                                                         </svg>
@@ -798,15 +912,17 @@ class extends Component
                                                     </span>
                                                 </button>
                                             @else
-                                                <button type="button" wire:click="payReservation({{ $booking->id }})"
+                                                <button type="button"
+                                                        wire:click="payReservation({{ $booking->id }})"
                                                         wire:loading.attr="disabled"
                                                         wire:target="payReservation"
-                                                        class="w-full py-2 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold uppercase tracking-wider transition-all duration-200
-                                                               disabled:opacity-60 active:scale-95
-                                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                                    <span wire:loading.remove wire:target="payReservation">Pay Reservation Fee (20%)</span>
+                                                        class="inline-flex w-full items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                                               transition-all duration-200 active:scale-95
+                                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                                                               disabled:opacity-60 disabled:cursor-not-allowed">
+                                                    <span wire:loading.remove wire:target="payReservation">Pay Reservation (20%)</span>
                                                     <span wire:loading wire:target="payReservation" class="inline-flex items-center gap-2">
-                                                        <svg class="animate-spin w-3 h-3 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                                        <svg xmlns="http://www.w3.org/2000/svg" class="animate-spin w-4 h-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
                                                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                                             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                                                         </svg>
@@ -818,9 +934,10 @@ class extends Component
 
                                         @if($tenant)
                                             <a href="{{ route('business.offerings', ['slug' => $tenant->slug]) }}" wire:navigate
-                                               class="flex items-center justify-center gap-1.5 py-2 rounded-xl border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white text-xs font-semibold uppercase tracking-wider transition-all duration-200
-                                                      active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                               class="inline-flex w-full items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                                                      transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                                                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
                                                 </svg>
                                                 View Business
@@ -829,9 +946,10 @@ class extends Component
                                             @if($booking->status !== 'cancelled')
                                                 <a href="{{ route('explore.map', ['marker' => $tenant->id, 'directions' => '1']) }}"
                                                    wire:navigate
-                                                   class="flex items-center justify-center gap-1.5 py-2 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold uppercase tracking-wider transition-all duration-200 shadow-md shadow-primary-600/20
-                                                          active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                   class="inline-flex w-full items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                                          transition-all duration-200 active:scale-95
+                                                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
                                                     </svg>
                                                     Get Directions
@@ -840,30 +958,37 @@ class extends Component
                                         @endif
 
                                         <a href="{{ route('booking.receipt', $booking) }}" wire:navigate
-                                           class="flex items-center justify-center gap-1.5 py-2 rounded-xl border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white text-xs font-semibold uppercase tracking-wider transition-all duration-200
-                                                  active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                           class="inline-flex w-full items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                                                  transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2m-6-4h.01M6 18v4h12v-4"/>
                                             </svg>
                                             Print Receipt
                                         </a>
 
-                                        <a href="https://calendar.google.com/calendar/render?action=TEMPLATE&text={{ urlencode($property?->name ?? 'Booking') }}&dates={{ Carbon::parse($booking->check_in)->format('Ymd\THis') }}/{{ Carbon::parse($booking->check_out)->format('Ymd\THis') }}&details={{ urlencode('Booking reference: ' . $booking->booking_reference) }}"
-                                           target="_blank" rel="noopener"
-                                           class="flex items-center justify-center gap-1.5 py-2 rounded-xl border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white text-xs font-semibold uppercase tracking-wider transition-all duration-200
-                                                  active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <a href="https://calendar.google.com/calendar/render?action=TEMPLATE&text={{ urlencode($property?->name ?? 'Booking') }}&dates={{ $booking->check_in->format('Ymd\THis') }}/{{ $booking->check_out->format('Ymd\THis') }}&details={{ urlencode('Booking reference: ' . $booking->booking_reference) }}"
+                                           target="_blank" rel="noopener noreferrer"
+                                           class="inline-flex w-full items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                                                  transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                                             </svg>
                                             Add to Calendar
                                         </a>
 
                                         @if(in_array($booking->status, [Booking::STATUS_PENDING, Booking::STATUS_CONFIRMED, Booking::STATUS_RESERVED], true))
-                                            <button type="button" wire:click="requestCancellation({{ $booking->id }})"
-                                                    wire:confirm="Are you sure you want to cancel this booking?"
-                                                    class="flex items-center justify-center gap-1.5 w-full py-2 rounded-xl border border-red-300 dark:border-red-500/40 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 text-xs font-bold uppercase tracking-wider transition-all duration-200
-                                                           active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50">
-                                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                            {{-- Rule 19: Alpine confirm() replaces wire:confirm. --}}
+                                            <button type="button"
+                                                    x-on:click="if (confirm('Are you sure you want to cancel this booking?')) $wire.requestCancellation({{ $booking->id }})"
+                                                    wire:loading.attr="disabled"
+                                                    wire:target="requestCancellation"
+                                                    class="inline-flex w-full items-center justify-center gap-2 h-11 px-5 rounded-xl border border-rose-300 dark:border-rose-500/40 bg-white dark:bg-gray-800 text-rose-700 dark:text-rose-300 text-sm font-semibold
+                                                           transition-all duration-200 active:scale-95 hover:bg-rose-50 dark:hover:bg-rose-500/10
+                                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                                                           disabled:opacity-60 disabled:cursor-not-allowed">
+                                                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                                                 </svg>
                                                 Cancel Booking
@@ -884,15 +1009,16 @@ class extends Component
             @empty
                 <div class="text-center py-24 text-gray-500 dark:text-gray-400">
                     <div class="w-20 h-20 mx-auto mb-4 rounded-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 flex items-center justify-center">
-                        <svg class="w-8 h-8 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                         </svg>
                     </div>
                     <h3 class="font-display text-2xl italic text-gray-400 dark:text-gray-500 mb-2">No bookings found</h3>
                     <p class="text-gray-500 dark:text-gray-400 text-sm max-w-xs mx-auto mb-6">Try adjusting your filters or start planning your next trip.</p>
                     <a href="{{ route('explore.map') }}" wire:navigate
-                       class="inline-flex items-center gap-2 px-6 py-3 rounded-full bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold uppercase tracking-wider transition-all duration-200 shadow-lg shadow-primary-600/20
-                              active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                       class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                              transition-all duration-200 active:scale-95
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                         Explore Destinations
                     </a>
                 </div>

@@ -2,12 +2,53 @@
 
 namespace App\Models;
 
+use App\Observers\BusinessApplicationObserver;
+use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Carbon;
 
+/**
+ * @property int $id
+ * @property int $user_id
+ * @property string|null $business_name
+ * @property string|null $business_type
+ * @property string|null $business_registration_number
+ * @property string|null $business_registration_number_canonical
+ * @property string|null $tin_number
+ * @property string|null $tin_canonical
+ * @property string|null $owner_full_name
+ * @property string|null $owner_id_type
+ * @property string|null $owner_id_number
+ * @property Carbon|null $owner_birthdate
+ * @property string|null $contact_email
+ * @property string|null $contact_phone
+ * @property string|null $address
+ * @property string|null $barangay
+ * @property string|null $city
+ * @property string|null $province
+ * @property array<array-key, mixed>|null $coordinates
+ * @property string|null $logo_path
+ * @property string|null $cover_photo_path
+ * @property string|null $owner_avatar_path
+ * @property int|null $type_of_tenant_id
+ * @property string $status
+ * @property string $source
+ * @property string|null $rejection_reason
+ * @property string|null $revision_notes
+ * @property Carbon|null $submitted_at
+ * @property Carbon|null $reviewed_at
+ * @property int|null $reviewed_by
+ * @property int|null $approved_tenant_id
+ * @property array<array-key, mixed>|null $metadata
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ * @property Carbon|null $deleted_at
+ */
+#[ObservedBy([BusinessApplicationObserver::class])]
 class BusinessApplication extends Model
 {
     use HasFactory, SoftDeletes;
@@ -21,6 +62,7 @@ class BusinessApplication extends Model
         'tin_number',
         'tin_canonical',
         'owner_full_name',
+        'cover_photo_path',
         'owner_id_type',
         'owner_id_number',
         'owner_birthdate',
@@ -31,8 +73,11 @@ class BusinessApplication extends Model
         'city',
         'province',
         'coordinates',
+        'logo_path',
+        'owner_avatar_path',
         'type_of_tenant_id',
         'status',
+        'source',
         'rejection_reason',
         'revision_notes',
         'submitted_at',
@@ -61,7 +106,6 @@ class BusinessApplication extends Model
     public const STATUS_APPROVED       = 'approved';
     public const STATUS_REJECTED       = 'rejected';
 
-    /** Human-readable labels for application statuses. */
     public const STATUS_LABELS = [
         'draft'          => 'Draft',
         'pending'        => 'Pending',
@@ -71,37 +115,34 @@ class BusinessApplication extends Model
         'rejected'       => 'Rejected',
     ];
 
+    public const SOURCE_SELF_SERVE        = 'self_serve';
+    public const SOURCE_SUPERADMIN_DIRECT = 'superadmin_direct';
+
+    public const SOURCE_LABELS = [
+        'self_serve'        => 'Self-Serve KYB',
+        'superadmin_direct' => 'Superadmin Onboarded',
+    ];
+
     public const BUSINESS_TYPES = ['dti', 'sec', 'cda'];
 
-    /** Human-readable labels for registration types. */
     public const BUSINESS_TYPE_LABELS = [
         'dti' => 'DTI — Sole Proprietorship',
         'sec' => 'SEC — Corporation or Partnership',
         'cda' => 'CDA — Cooperative',
     ];
 
-    /**
-     * Example registration-number format per registration type. Drives the
-     * placeholder text on Step 1 of the KYB form so the hint matches
-     * whichever authority issued the applicant's certificate.
-     */
     public const REGISTRATION_NUMBER_PLACEHOLDERS = [
         'dti' => 'DTI-2024-123456',
         'sec' => 'CS20241234567',
         'cda' => 'CDA-2024-12345',
     ];
 
-    /**
-     * One-line explanation of what the registration number is, per type.
-     * Rendered as helper text below the field.
-     */
     public const REGISTRATION_NUMBER_HINTS = [
         'dti' => 'Found on your DTI Certificate of Business Name Registration.',
         'sec' => 'Your SEC Company Registration Number (CS or PS).',
         'cda' => 'Your CDA Certificate of Registration number.',
     ];
 
-    /** Documents always required for every application. */
     public const REQUIRED_DOCUMENTS = [
         'dti_sec_cda',
         'bir_2303',
@@ -109,14 +150,12 @@ class BusinessApplication extends Model
         'owner_id',
     ];
 
-    /** Optional or conditional. */
     public const OPTIONAL_DOCUMENTS = [
         'authorization_letter',
         'bank_proof',
         'sample_receipt',
     ];
 
-    /** Human-readable labels for document types. */
     public const DOCUMENT_LABELS = [
         'dti_sec_cda'          => 'DTI / SEC / CDA Registration',
         'bir_2303'             => 'BIR Form 2303',
@@ -127,16 +166,6 @@ class BusinessApplication extends Model
         'sample_receipt'       => 'Sample Receipt',
     ];
 
-    /**
-     * Accepted owner identification documents.
-     *
-     * Keys are stored in `business_applications.owner_id_type`; values are
-     * the human-readable labels shown in the application form.
-     *
-     * Only IDs issued by a Philippine government agency — or the equivalent
-     * digital variants recognized by the Philippine Statistics Authority —
-     * are accepted.
-     */
     public const OWNER_ID_TYPES = [
         'national_id'     => 'National ID (Physical, Printed ePhilID, or Digital)',
         'passport'        => 'Philippine Passport',
@@ -149,31 +178,37 @@ class BusinessApplication extends Model
     ];
 
     // ── Relationships ────────────────────────────────────
+    /** @return BelongsTo<User, $this> */
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
     }
 
+    /** @return BelongsTo<User, $this> */
     public function reviewer(): BelongsTo
     {
         return $this->belongsTo(User::class, 'reviewed_by');
     }
 
+    /** @return BelongsTo<Tenant, $this> */
     public function approvedTenant(): BelongsTo
     {
         return $this->belongsTo(Tenant::class, 'approved_tenant_id');
     }
 
+    /** @return BelongsTo<TypeOfTenant, $this> */
     public function typeOfTenant(): BelongsTo
     {
         return $this->belongsTo(TypeOfTenant::class, 'type_of_tenant_id');
     }
 
+    /** @return HasMany<BusinessDocument, $this> */
     public function documents(): HasMany
     {
         return $this->hasMany(BusinessDocument::class);
     }
 
+    /** @return HasMany<BusinessDocumentVerification, $this> */
     public function verifications(): HasMany
     {
         return $this->hasMany(BusinessDocumentVerification::class);
@@ -190,7 +225,10 @@ class BusinessApplication extends Model
 
     public function documentOf(string $type): ?BusinessDocument
     {
-        return $this->documents->firstWhere('document_type', $type);
+        /** @var BusinessDocument|null $document */
+        $document = $this->documents->firstWhere('document_type', $type);
+
+        return $document;
     }
 
     public function hasAllRequiredDocuments(): bool
@@ -200,10 +238,6 @@ class BusinessApplication extends Model
         return empty(array_diff(self::REQUIRED_DOCUMENTS, $uploaded));
     }
 
-    /**
-     * Whether the application has every required field and document
-     * needed to enter the review queue.
-     */
     public function isReadyForSubmission(): bool
     {
         foreach ([
@@ -222,35 +256,42 @@ class BusinessApplication extends Model
             }
         }
 
-        if (!$this->type_of_tenant_id) {
+        if (! $this->type_of_tenant_id) {
             return false;
         }
 
         return $this->hasAllRequiredDocuments();
     }
 
-    /**
-     * Percentage of required setup completed.
-     */
     public function completionPercent(): int
     {
         $checks = [
-            !empty($this->business_name),
-            !empty($this->business_type),
-            !empty($this->type_of_tenant_id),
-            !empty($this->business_registration_number),
-            !empty($this->tin_number),
-            !empty($this->owner_full_name),
-            !empty($this->owner_id_type),
-            !empty($this->owner_id_number),
-            !empty($this->contact_email),
-            !empty($this->contact_phone),
+            ! empty($this->business_name),
+            ! empty($this->business_type),
+            ! empty($this->type_of_tenant_id),
+            ! empty($this->business_registration_number),
+            ! empty($this->tin_number),
+            ! empty($this->owner_full_name),
+            ! empty($this->owner_id_type),
+            ! empty($this->owner_id_number),
+            ! empty($this->contact_email),
+            ! empty($this->contact_phone),
             $this->hasAllRequiredDocuments(),
         ];
 
         $done = count(array_filter($checks));
 
         return (int) round(($done / count($checks)) * 100);
+    }
+
+    public function sourceLabel(): string
+    {
+        return self::SOURCE_LABELS[$this->source] ?? ucfirst(str_replace('_', ' ', (string) $this->source));
+    }
+
+    public function isSuperadminOnboarded(): bool
+    {
+        return $this->source === self::SOURCE_SUPERADMIN_DIRECT;
     }
 
     // ── Scopes ───────────────────────────────────────────
@@ -262,15 +303,17 @@ class BusinessApplication extends Model
         ]);
     }
 
+    public function scopeSelfServe($query)
+    {
+        return $query->where('source', self::SOURCE_SELF_SERVE);
+    }
+
+    public function scopeSuperadminOnboarded($query)
+    {
+        return $query->where('source', self::SOURCE_SUPERADMIN_DIRECT);
+    }
+
     // ── Boot ─────────────────────────────────────────────
-    /**
-     * Keep the canonical columns in sync with the human-readable
-     * originals on every save. Canonical forms are used by the
-     * uniqueness check in BusinessApplicationService::submit().
-     *
-     *   TIN   → digits only               "123-456-789-000" → "123456789000"
-     *   Reg# → uppercase, no whitespace   "cs2024 1234567"  → "CS20241234567"
-     */
     protected static function booted(): void
     {
         static::saving(function (BusinessApplication $application): void {

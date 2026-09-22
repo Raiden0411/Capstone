@@ -1,3 +1,4 @@
+{{-- resources/views/superadmin/pages/user/⚡edit-user.blade.php --}}
 <?php
 
 use Livewire\Component;
@@ -5,6 +6,7 @@ use Livewire\WithFileUploads;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
+use App\Traits\HandlesImageUploads;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\DB;
@@ -23,6 +25,7 @@ new
 class extends Component {
 
     use WithFileUploads;
+    use HandlesImageUploads;
 
     public User $user;
 
@@ -38,11 +41,6 @@ class extends Component {
     public bool $isPlatformUser = false;
     public bool $is_active = true;
 
-    /**
-     * Roles auto-assigned by the system — never manually assignable.
-     *
-     * @var array<int, string>
-     */
     protected array $internalRoles = ['super-admin', 'tourist'];
 
     public function mount(User $user): void
@@ -63,6 +61,11 @@ class extends Component {
         }
 
         $this->role = $user->roles->first()?->name ?? '';
+    }
+
+    public function hydrate(): void
+    {
+        abort_unless(Auth::user()?->hasRole('super-admin'), 403, 'Super-admin access only.');
     }
 
     // ─────────────────────────────────────────────────────────
@@ -86,7 +89,6 @@ class extends Component {
 
     public function updatedTenantId(): void
     {
-        // Switching tenant invalidates the previously selected role.
         $this->role = '';
     }
 
@@ -133,12 +135,6 @@ class extends Component {
             ->get();
     }
 
-    /**
-     * Assignable roles for the current edit target:
-     *   - The target is a super-admin → only "super-admin" (locked).
-     *   - Platform user (no tenant)    → only "tourist".
-     *   - Tenant user                  → all non-internal roles.
-     */
     #[Computed]
     public function availableRoles()
     {
@@ -166,6 +162,14 @@ class extends Component {
             ->values();
     }
 
+    #[Computed]
+    public function currentAvatarUrl(): ?string
+    {
+        return $this->user->avatar
+            ? asset('storage/' . $this->user->avatar)
+            : null;
+    }
+
     // ─────────────────────────────────────────────────────────
     //  Validation
     // ─────────────────────────────────────────────────────────
@@ -177,14 +181,21 @@ class extends Component {
             'email'     => ['required', 'email', 'max:255', Rule::unique('users', 'email')->ignore($this->user->id)],
             'phone'     => ['required', 'string', 'max:20', 'regex:/^(09|\+639)\d{9}$/'],
             'password'  => ['nullable', 'string', 'min:8', 'confirmed'],
-            'avatar'    => ['nullable', 'image', 'max:2048'],
-            'role'      => [
+            'avatar'    => ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
+            'is_active' => ['boolean'],
+        ];
+
+        if ($this->user->hasRole('super-admin')) {
+            $rules['role'] = ['required', 'string', Rule::in(['super-admin'])];
+        } elseif ($this->isPlatformUser) {
+            $rules['role'] = ['required', 'string', Rule::in(['tourist'])];
+        } else {
+            $rules['role'] = [
                 'required', 'string',
                 Rule::exists('roles', 'name')->where('guard_name', 'web'),
                 Rule::notIn($this->internalRoles),
-            ],
-            'is_active' => ['boolean'],
-        ];
+            ];
+        }
 
         if ($this->isPlatformUser) {
             $rules['tenant_id'] = ['nullable'];
@@ -216,10 +227,8 @@ class extends Component {
         $this->name = trim($this->name);
         $this->validate();
 
-        // Defensive re-check.
         abort_unless(Auth::user()?->hasRole('super-admin'), 403, 'Super-admin access only.');
 
-        // Ensure the selected role is assignable for this user type.
         if (!$this->availableRoles->contains('name', $this->role)) {
             $this->addError('role', 'Invalid role selected.');
             return null;
@@ -245,7 +254,11 @@ class extends Component {
 
         try {
             if ($this->avatar) {
-                $newAvatarPath = $this->avatar->store('user-avatars', 'public');
+                $newAvatarPath = $this->storeImage($this->avatar, 'user-avatars', 'public', 'avatars');
+
+                if (!$newAvatarPath) {
+                    throw new \RuntimeException('Failed to store the uploaded avatar.');
+                }
             }
 
             DB::transaction(function () use ($tenantId, $newAvatarPath): void {
@@ -262,12 +275,7 @@ class extends Component {
                     $data['password'] = Hash::make($this->password);
                 }
 
-                // Reconcile active_mode with the resulting role set.
-                // A user with no tenant or no admin role cannot be in
-                // "business" mode; keep their prior mode otherwise so a
-                // business owner editing a field doesn't lose their state.
-                $willBeBusinessOwner = $tenantId
-                    && $this->role === 'admin';
+                $willBeBusinessOwner = $tenantId && $this->role === 'admin';
 
                 if (!$willBeBusinessOwner) {
                     $data['active_mode'] = User::MODE_TOURIST;
@@ -275,13 +283,9 @@ class extends Component {
 
                 $this->user->update($data);
 
-                // syncRoles replaces the role set entirely — this is the
-                // intended behaviour for the superadmin panel where the
-                // operator explicitly chooses the user's single role.
                 $this->user->syncRoles([$this->role]);
             });
         } catch (\Throwable $e) {
-            // Clean up the newly stored avatar if the transaction failed.
             if ($newAvatarPath && Storage::disk('public')->exists($newAvatarPath)) {
                 Storage::disk('public')->delete($newAvatarPath);
             }
@@ -296,13 +300,10 @@ class extends Component {
             return null;
         }
 
-        // Delete old avatar AFTER successful commit (only if replaced).
         if ($newAvatarPath && $oldAvatarPath && Storage::disk('public')->exists($oldAvatarPath)) {
             Storage::disk('public')->delete($oldAvatarPath);
         }
 
-        // Clear Spatie's permission cache after commit so any subsequent
-        // authorization checks pick up the new role assignment.
         app(PermissionRegistrar::class)->forgetCachedPermissions();
 
         session()->flash('message', "User '{$this->user->name}' updated successfully.");
@@ -312,37 +313,12 @@ class extends Component {
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto space-y-6"
-     x-data="{ showPassword: false, showConfirmPassword: false, avatarPreview: null }"
-     x-on:user-form-reset.window="avatarPreview = null; showPassword = false; showConfirmPassword = false">
+<div
+    x-data="{ showPassword: false, showConfirmPassword: false }"
+    class="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto space-y-6"
+>
 
-    {{-- Flash Messages --}}
-    @if (session()->has('message'))
-        <div x-data="{ show: true }" x-show="show" x-transition.opacity
-             class="flex items-center justify-between bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 border-l-4 border-l-emerald-500 p-4 rounded-xl text-xs sm:text-sm text-emerald-800 dark:text-emerald-300 font-medium shadow-sm">
-            <div class="flex items-center gap-2.5">
-                <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                <span>{{ session('message') }}</span>
-            </div>
-            <button type="button" @click="show = false" class="text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 transition">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-            </button>
-        </div>
-    @endif
-    @if (session()->has('error'))
-        <div x-data="{ show: true }" x-show="show" x-transition.opacity
-             class="flex items-center justify-between bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 border-l-4 border-l-rose-500 p-4 rounded-xl text-xs sm:text-sm text-rose-800 dark:text-rose-300 font-medium shadow-sm">
-            <div class="flex items-center gap-2.5">
-                <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
-                <span>{{ session('error') }}</span>
-            </div>
-            <button type="button" @click="show = false" class="text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 transition">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-            </button>
-        </div>
-    @endif
-
-    {{-- Header --}}
+    {{-- ═══ Page header ═══ --}}
     <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
         <div>
             <div class="flex items-center gap-2 mb-2">
@@ -352,226 +328,445 @@ class extends Component {
             <h1 class="font-display text-3xl md:text-4xl font-semibold text-gray-900 dark:text-white">
                 Edit <em class="italic text-primary-600 dark:text-primary-400">{{ $user->name }}</em>
             </h1>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mt-2">Update account details, role, and access level.</p>
+            <p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-2">
+                Update account details, role, and access level.
+            </p>
         </div>
         <a href="{{ route('superadmin.users.index') }}" wire:navigate
-           class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
-            Back to Users
+           class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                  transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+            </svg>
+            <span>Back to Users</span>
         </a>
     </div>
 
-    <form wire:submit="update" class="card p-5 sm:p-6 space-y-6">
+    {{-- ═══ Flash: success ═══ --}}
+    @if(session()->has('message'))
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 4000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-center justify-between bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 border-l-4 border-l-emerald-500 p-4 rounded-xl text-xs sm:text-sm text-emerald-800 dark:text-emerald-300 font-medium shadow-sm">
+            <div class="flex items-center gap-2.5">
+                <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <span>{{ session('message') }}</span>
+            </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+    @endif
 
-        {{-- Basic Information --}}
-        <div>
-            <h3 class="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-3">Basic Information</h3>
+    {{-- ═══ Flash: error ═══ --}}
+    @if(session()->has('error'))
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 5000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-center justify-between bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 border-l-4 border-l-rose-500 p-4 rounded-xl text-xs sm:text-sm text-rose-800 dark:text-rose-300 font-medium shadow-sm">
+            <div class="flex items-center gap-2.5">
+                <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                </svg>
+                <span>{{ session('error') }}</span>
+            </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+    @endif
+
+    {{-- ═══ Form card ═══ --}}
+    <form wire:submit="update" class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-8">
+
+        {{-- ── Section: Basic Information ── --}}
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    Basic Information
+                </h2>
+            </div>
+
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Full Name *</label>
-                    <input type="text" wire:model="name" class="input">
-                    @error('name') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    <label for="field-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Full Name <span class="text-rose-500">*</span>
+                    </label>
+                    <input type="text" id="field-name" wire:model="name" autocomplete="name" class="input w-full">
+                    @error('name') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email Address *</label>
-                    <input type="email" wire:model="email" class="input">
-                    @error('email') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    <label for="field-email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Email Address <span class="text-rose-500">*</span>
+                    </label>
+                    <input type="email" id="field-email" wire:model="email" autocomplete="email" class="input w-full">
+                    @error('email') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             </div>
         </div>
 
-        {{-- Contact & Avatar --}}
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Phone *</label>
-                <input type="text" wire:model="phone" class="input" placeholder="09123456789">
-                @error('phone') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+        <hr class="border-gray-100 dark:border-gray-700/60">
+
+        {{-- ── Section: Contact & Photo ── --}}
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    Contact &amp; Photo
+                </h2>
             </div>
-            <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Profile Picture (Optional)</label>
-                <div
-                    x-data="{ dragging: false }"
-                    x-on:dragover.prevent="dragging = true"
-                    x-on:dragleave.prevent="dragging = false"
-                    x-on:drop.prevent="dragging = false; $refs.avatarInput.files = $event.dataTransfer.files; $refs.avatarInput.dispatchEvent(new Event('change'))"
-                    :class="dragging ? 'border-primary-600 bg-blue-50 dark:bg-blue-500/10' : 'border-gray-300 dark:border-gray-600'"
-                    class="relative flex items-center gap-4 rounded-xl border-2 border-dashed p-4 transition-colors"
-                >
-                    <template x-if="avatarPreview">
-                        <img :src="avatarPreview" class="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-700 shrink-0">
-                    </template>
 
-                    <template x-if="!avatarPreview">
-                        <div class="shrink-0">
-                            @if($user->avatar && !$avatar)
-                                <img src="{{ asset('storage/' . $user->avatar) }}" class="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-700" alt="{{ $user->name }}">
-                            @else
-                                <div class="h-16 w-16 rounded-lg bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-gray-400">
-                                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 11c2.209 0 4-1.791 4-4s-1.791-4-4-4-4 1.791-4 4 1.791 4 4 4zm0 2c-2.67 0-8 1.34-8 4v3h16v-3c0-2.66-5.33-4-8-4z"/></svg>
-                                </div>
-                            @endif
-                        </div>
-                    </template>
-
-                    <div class="flex-1 min-w-0">
-                        <span class="inline-flex items-center gap-1.5 text-sm font-semibold text-primary-600 dark:text-primary-400">
-                            {{ $avatar ? 'Change photo' : 'Upload a photo' }}
-                        </span>
-                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Drag & drop, or click to browse. PNG/JPG up to 2MB.</p>
-                        <div wire:loading wire:target="avatar" class="text-xs text-primary-600 dark:text-primary-400 mt-1 flex items-center gap-1">
-                            <svg class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-                            Uploading…
-                        </div>
-                    </div>
-
-                    @if ($avatar)
-                        <button type="button" wire:click="$set('avatar', null)" @click="avatarPreview = null"
-                                class="relative z-10 shrink-0 text-xs font-semibold text-rose-500 hover:text-rose-700 active:scale-95 transition-transform">
-                            Remove
-                        </button>
-                    @endif
-
-                    <input x-ref="avatarInput" type="file" wire:model="avatar" accept="image/*"
-                           @change="avatarPreview = $refs.avatarInput.files[0] ? URL.createObjectURL($refs.avatarInput.files[0]) : null"
-                           class="absolute inset-0 opacity-0 cursor-pointer">
-                </div>
-                @error('avatar') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-            </div>
-        </div>
-
-        {{-- Passwords --}}
-        <div>
-            <h3 class="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-3">Credentials</h3>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label for="field-phone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Phone <span class="text-rose-500">*</span>
+                    </label>
+                    <input type="text" id="field-phone" wire:model="phone" autocomplete="tel" inputmode="tel" class="input w-full" placeholder="09123456789">
+                    @error('phone') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                </div>
+
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        New Password <span class="text-gray-400 dark:text-gray-500 font-normal">(leave blank to keep current)</span>
+                        Profile Picture <span class="text-gray-400 font-normal">(optional)</span>
                     </label>
-                    <div class="relative">
-                        <input :type="showPassword ? 'text' : 'password'" wire:model="password" class="input pr-10" placeholder="••••••••">
-                        <button type="button" @click="showPassword = !showPassword"
-                                class="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded"
-                                tabindex="-1" aria-label="Toggle password visibility">
-                            <svg x-show="!showPassword" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
-                            <svg x-show="showPassword" x-cloak class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/></svg>
-                        </button>
+
+                    <div
+                        x-data="avatarPreview()"
+                        x-on:avatar-preview.window="setUrl($event.detail.url)"
+                        x-on:avatar-cleared.window="clear()"
+                    >
+                        <div
+                            x-data="{
+                                ...imageCropper({
+                                    wireProperty: 'avatar',
+                                    aspect: 1,
+                                    title: 'Crop profile picture',
+                                    description: 'Square crop works best',
+                                    previewEvent: 'avatar-preview',
+                                }),
+                                dragging: false,
+                            }"
+                            x-init="init()"
+                            x-on:dragover.prevent="dragging = true"
+                            x-on:dragleave.prevent="dragging = false"
+                            x-on:drop.prevent="
+                                dragging = false;
+                                const dt = new DataTransfer();
+                                for (const f of $event.dataTransfer.files) dt.items.add(f);
+                                $refs.input.files = dt.files;
+                                $refs.input.dispatchEvent(new Event('change'));
+                            "
+                            :class="dragging
+                                ? 'border-primary-600 bg-primary-50 dark:bg-primary-500/10'
+                                : 'border-gray-300 dark:border-gray-600'"
+                            class="relative flex items-center gap-4 rounded-xl border-2 border-dashed p-4 transition-colors"
+                        >
+                            <div class="relative h-16 w-16 shrink-0">
+                                <img
+                                    :src="previewUrl || '{{ $this->currentAvatarUrl ?? '' }}'"
+                                    :class="(previewUrl || {{ $this->currentAvatarUrl ? 'true' : 'false' }}) ? 'block' : 'hidden'"
+                                    alt="{{ $user->name }}"
+                                    class="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-700"
+                                    decoding="async"
+                                >
+
+                                <div
+                                    :class="(previewUrl || {{ $this->currentAvatarUrl ? 'true' : 'false' }}) ? 'hidden' : 'flex'"
+                                    class="h-16 w-16 rounded-lg bg-gray-100 dark:bg-gray-700 items-center justify-center text-gray-400 dark:text-gray-500"
+                                >
+                                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 11c2.209 0 4-1.791 4-4s-1.791-4-4-4-4 1.791-4 4 1.791 4 4 4zm0 2c-2.67 0-8 1.34-8 4v3h16v-3c0-2.66-5.33-4-8-4z"/>
+                                    </svg>
+                                </div>
+
+                                <div
+                                    wire:loading.flex
+                                    wire:target="avatar"
+                                    class="absolute inset-0 rounded-lg bg-black/55 backdrop-blur-[2px] items-center justify-center pointer-events-none"
+                                    aria-hidden="true"
+                                >
+                                    <svg class="w-5 h-5 text-white animate-spin motion-reduce:animate-none" fill="none" viewBox="0 0 24 24">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                    </svg>
+                                </div>
+                            </div>
+
+                            <div class="flex-1 min-w-0">
+                                <div class="flex items-center gap-2 flex-wrap">
+                                    <span class="text-sm font-semibold text-primary-600 dark:text-primary-400">
+                                        {{ $avatar ? 'Change photo' : 'Upload a new photo' }}
+                                    </span>
+
+                                    @if($avatar)
+                                        <button type="button"
+                                                wire:click="$set('avatar', null)"
+                                                @click="$dispatch('avatar-cleared')"
+                                                class="relative z-10 text-xs font-semibold text-rose-500 hover:text-rose-700 dark:hover:text-rose-300 active:scale-95 transition rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 px-1">
+                                            Remove
+                                        </button>
+                                    @endif
+                                </div>
+                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                                    Drag &amp; drop, or click to browse. JPG, PNG, or WebP up to 5 MB.
+                                </p>
+
+                                <div wire:loading wire:target="avatar" class="text-xs text-primary-600 dark:text-primary-400 mt-1 flex items-center gap-1">
+                                    <svg class="animate-spin h-3 w-3 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                    </svg>
+                                    Uploading…
+                                </div>
+                            </div>
+
+                            <input
+                                x-ref="input"
+                                id="avatar-input"
+                                type="file"
+                                x-on:change="pick($event)"
+                                accept="image/jpeg,image/png,image/webp"
+                                class="absolute inset-0 opacity-0 cursor-pointer"
+                            >
+                        </div>
+
+                        @error('avatar') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
-                    @error('password') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Confirm New Password</label>
-                    <div class="relative">
-                        <input :type="showConfirmPassword ? 'text' : 'password'" wire:model="password_confirmation" class="input pr-10" placeholder="••••••••">
-                        <button type="button" @click="showConfirmPassword = !showConfirmPassword"
-                                class="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded"
-                                tabindex="-1" aria-label="Toggle confirm password visibility">
-                            <svg x-show="!showConfirmPassword" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
-                            <svg x-show="showConfirmPassword" x-cloak class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/></svg>
-                        </button>
-                    </div>
-                    @error('password_confirmation') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             </div>
         </div>
 
-        {{-- Access & Permissions --}}
-        <div class="pt-4 border-t border-gray-200 dark:border-gray-700">
-            <h3 class="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-4">Access & Permissions</h3>
+        <hr class="border-gray-100 dark:border-gray-700/60">
+
+        {{-- ── Section: Credentials ── --}}
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    Credentials
+                </h2>
+            </div>
+
+            <p class="text-xs text-gray-500 dark:text-gray-400 -mt-3">
+                Leave both password fields blank to keep the current password.
+            </p>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label for="field-password" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">New Password</label>
+                    <div class="relative">
+                        <input :type="showPassword ? 'text' : 'password'"
+                               id="field-password"
+                               wire:model="password"
+                               autocomplete="new-password"
+                               class="input w-full pr-10"
+                               placeholder="••••••••">
+                        <button type="button"
+                                @click="showPassword = !showPassword"
+                                class="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition active:scale-95 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                                tabindex="-1"
+                                aria-label="Toggle password visibility">
+                            <svg :class="showPassword ? 'hidden' : 'block'" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+                            </svg>
+                            <svg :class="showPassword ? 'block' : 'hidden'" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/>
+                            </svg>
+                        </button>
+                    </div>
+                    @error('password') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                </div>
+
+                <div>
+                    <label for="field-confirm-password" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Confirm New Password</label>
+                    <div class="relative">
+                        <input :type="showConfirmPassword ? 'text' : 'password'"
+                               id="field-confirm-password"
+                               wire:model="password_confirmation"
+                               autocomplete="new-password"
+                               class="input w-full pr-10"
+                               placeholder="••••••••">
+                        <button type="button"
+                                @click="showConfirmPassword = !showConfirmPassword"
+                                class="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition active:scale-95 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                                tabindex="-1"
+                                aria-label="Toggle confirm password visibility">
+                            <svg :class="showConfirmPassword ? 'hidden' : 'block'" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+                            </svg>
+                            <svg :class="showConfirmPassword ? 'block' : 'hidden'" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/>
+                            </svg>
+                        </button>
+                    </div>
+                    @error('password_confirmation') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                </div>
+            </div>
+        </div>
+
+        <hr class="border-gray-100 dark:border-gray-700/60">
+
+        {{-- ── Section: Access & Permissions ── --}}
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    Access &amp; Permissions
+                </h2>
+            </div>
 
             {{-- Self-editing notice --}}
             @if($user->id === Auth::id() && $user->hasRole('super-admin'))
-                <div class="mb-4 p-3 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 text-xs text-amber-800 dark:text-amber-200">
+                <div class="p-3 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 text-xs text-amber-800 dark:text-amber-200">
                     <div class="flex items-start gap-2">
-                        <svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                        <svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                        </svg>
                         <span>You are editing your own super-admin account. Your role and active status are locked.</span>
                     </div>
                 </div>
             @endif
 
-            {{-- Platform User Toggle --}}
-            <div class="mb-4">
-                <div class="flex items-center gap-3">
-                    <label class="relative inline-flex items-center cursor-pointer {{ $user->hasRole('super-admin') ? 'opacity-60' : '' }}">
+            {{-- Platform-user toggle --}}
+            <div class="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-800/40 p-4">
+                <div class="flex items-start gap-3">
+                    <label class="relative inline-flex items-center cursor-pointer shrink-0 mt-0.5 {{ $user->hasRole('super-admin') ? 'opacity-60' : '' }}">
                         <input type="checkbox" wire:model.live="isPlatformUser" class="sr-only peer"
                                @if($user->hasRole('super-admin')) disabled @endif>
                         <div class="w-11 h-6 bg-gray-200 dark:bg-gray-600 rounded-full peer peer-checked:bg-primary-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-full peer-disabled:opacity-50"></div>
                     </label>
-                    <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Platform User (No Business Affiliation)</span>
+                    <div class="min-w-0">
+                        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                            Platform User
+                        </span>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                            Platform users get the <strong class="text-gray-700 dark:text-gray-300">Tourist</strong> role and are not tied to any business.
+                            @if($user->hasRole('super-admin'))
+                                <span class="block mt-1 text-amber-700 dark:text-amber-300 font-medium">Locked — super-admin accounts are always platform users.</span>
+                            @endif
+                        </p>
+                    </div>
                 </div>
-                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 ml-14">
-                    Platform users get the <strong>Tourist</strong> role and are not tied to any business.
-                </p>
             </div>
 
-            {{-- Tenant Selection --}}
+            {{-- Tenant + Role --}}
             @if(!$isPlatformUser && !$user->hasRole('super-admin'))
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Assign Business (Tenant) *</label>
-                    <input type="text" wire:model.live.debounce.300ms="tenantSearch"
-                           placeholder="Search businesses…"
-                           class="input mb-2">
-                    <select wire:model.live="tenant_id" class="select">
-                        <option value="">-- Select a business --</option>
-                        @foreach($this->tenants as $tenant)
-                            <option wire:key="tenant-{{ $tenant->id }}" value="{{ $tenant->id }}">{{ $tenant->name }}</option>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label for="field-tenant-search" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Assign Business</label>
+                        <input type="text"
+                               id="field-tenant-search"
+                               wire:model.live.debounce.300ms="tenantSearch"
+                               placeholder="Search businesses…"
+                               class="input w-full mb-2">
+                        <select wire:model.live="tenant_id" class="input w-full">
+                            <option value="">— Select a business —</option>
+                            @foreach($this->tenants as $tenant)
+                                <option wire:key="tenant-{{ $tenant->id }}" value="{{ $tenant->id }}">{{ $tenant->name }}</option>
+                            @endforeach
+                        </select>
+                        @error('tenant_id') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    </div>
+
+                    <div>
+                        <label for="field-role" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Assign Role</label>
+                        <select id="field-role" wire:model="role" class="input w-full">
+                            <option value="">— Select a role —</option>
+                            @foreach($this->availableRoles as $roleData)
+                                <option wire:key="role-{{ $roleData['name'] }}" value="{{ $roleData['name'] }}">{{ $roleData['label'] }}</option>
+                            @endforeach
+                        </select>
+                        @error('role') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    </div>
+                </div>
+            @else
+                <div>
+                    <label for="field-role" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Assign Role
+                        @if($user->hasRole('super-admin'))
+                            <span class="text-gray-400 font-normal">(locked — super-admin role cannot be changed)</span>
+                        @elseif($isPlatformUser)
+                            <span class="text-gray-400 font-normal">(locked to Tourist for platform users)</span>
+                        @endif
+                    </label>
+                    <select id="field-role" wire:model="role" class="input w-full"
+                            @if($user->hasRole('super-admin') || $isPlatformUser) disabled @endif>
+                        @foreach($this->availableRoles as $roleData)
+                            <option wire:key="role-{{ $roleData['name'] }}" value="{{ $roleData['name'] }}">{{ $roleData['label'] }}</option>
                         @endforeach
                     </select>
-                    @error('tenant_id') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    @error('role') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             @endif
 
-            {{-- Role Select --}}
+            {{-- Active toggle --}}
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                    Assign Role *
-                    @if($user->hasRole('super-admin'))
-                        <span class="text-xs text-gray-400 font-normal">(locked — super-admin role cannot be changed)</span>
-                    @elseif($isPlatformUser)
-                        <span class="text-xs text-gray-400 font-normal">(locked to Tourist for platform users)</span>
+                <div class="flex items-center gap-3 pt-1">
+                    <label class="relative inline-flex items-center cursor-pointer {{ $user->id === Auth::id() ? 'opacity-60 cursor-not-allowed' : '' }}">
+                        <input type="checkbox" wire:model="is_active" class="sr-only peer"
+                               @if($user->id === Auth::id()) disabled @endif>
+                        <div class="w-11 h-6 bg-gray-200 dark:bg-gray-600 rounded-full peer peer-checked:bg-primary-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-full peer-disabled:opacity-50"></div>
+                    </label>
+                    <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Active Account</span>
+                    @if($user->id === Auth::id())
+                        <span class="text-xs text-gray-400 dark:text-gray-500">(You)</span>
                     @endif
-                </label>
-                <select wire:model="role" class="select"
-                        @if($user->hasRole('super-admin') || $isPlatformUser) disabled @endif>
-                    <option value="">-- Select a role --</option>
-                    @foreach($this->availableRoles as $roleData)
-                        <option wire:key="role-{{ $roleData['name'] }}" value="{{ $roleData['name'] }}">{{ $roleData['label'] }}</option>
-                    @endforeach
-                </select>
-                @error('role') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                </div>
+                @error('is_active') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
-
-            {{-- Active Toggle --}}
-            <div class="mt-4 flex items-center gap-3">
-                <label class="relative inline-flex items-center cursor-pointer {{ $user->id === Auth::id() ? 'opacity-60 cursor-not-allowed' : '' }}">
-                    <input type="checkbox" wire:model="is_active" class="sr-only peer"
-                           @if($user->id === Auth::id()) disabled @endif>
-                    <div class="w-11 h-6 bg-gray-200 dark:bg-gray-600 rounded-full peer peer-checked:bg-primary-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-full peer-disabled:opacity-50"></div>
-                </label>
-                <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Active Account</span>
-                @if($user->id === Auth::id())
-                    <span class="text-xs text-gray-400 dark:text-gray-500">(You)</span>
-                @endif
-            </div>
-            @error('is_active') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
         </div>
 
-        {{-- Form Actions --}}
-        <div class="flex flex-col sm:flex-row gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
-            <button type="submit" wire:loading.attr="disabled" wire:target="update"
-                    class="btn-primary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50 disabled:opacity-60 disabled:cursor-not-allowed">
-                <span wire:loading.remove wire:target="update">Update User</span>
+        {{-- ── Actions ── --}}
+        <div class="pt-5 border-t border-gray-100 dark:border-gray-700/60 flex flex-col sm:flex-row sm:items-center sm:justify-end gap-3">
+            <a href="{{ route('superadmin.users.index') }}" wire:navigate
+               class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                      transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                Cancel
+            </a>
+
+            <button type="submit"
+                    wire:loading.attr="disabled"
+                    wire:target="update"
+                    class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                           disabled:opacity-60 disabled:cursor-not-allowed">
+                <span wire:loading.remove wire:target="update" class="inline-flex items-center gap-2">
+                    <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                    </svg>
+                    Update User
+                </span>
                 <span wire:loading wire:target="update" class="inline-flex items-center gap-2">
-                    <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                    <svg class="animate-spin h-4 w-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                     </svg>
                     Saving…
                 </span>
             </button>
-            <a href="{{ route('superadmin.users.index') }}" wire:navigate
-               class="btn-secondary w-full sm:w-auto active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                Cancel
-            </a>
         </div>
     </form>
+
+    {{-- Image crop modal — singleton for this page --}}
+    <x-image-crop-modal />
 </div>

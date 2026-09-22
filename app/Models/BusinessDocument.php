@@ -8,6 +8,57 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+/**
+ * @property int $id
+ * @property int $business_application_id
+ * @property int $user_id
+ * @property string $document_type
+ * @property string $original_filename
+ * @property string $stored_path
+ * @property string|null $watermarked_path
+ * @property string $mime_type
+ * @property int $file_size
+ * @property string|null $file_hash
+ * @property string|null $document_number
+ * @property \Illuminate\Support\Carbon|null $issued_at
+ * @property \Illuminate\Support\Carbon|null $expires_at
+ * @property string $verification_status
+ * @property string|null $verification_notes
+ * @property \Illuminate\Support\Carbon|null $watermarked_at
+ * @property \Illuminate\Support\Carbon|null $created_at
+ * @property \Illuminate\Support\Carbon|null $updated_at
+ * @property \Illuminate\Support\Carbon|null $deleted_at
+ * @property-read \App\Models\BusinessApplication|null $application
+ * @property-read \App\Models\User $user
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument expiringWithin(int $days)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument newModelQuery()
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument newQuery()
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument ofType(string $type)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument onlyTrashed()
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument query()
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument whereBusinessApplicationId($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument whereCreatedAt($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument whereDeletedAt($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument whereDocumentNumber($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument whereDocumentType($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument whereExpiresAt($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument whereFileHash($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument whereFileSize($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument whereId($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument whereIssuedAt($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument whereMimeType($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument whereOriginalFilename($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument whereStoredPath($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument whereUpdatedAt($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument whereUserId($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument whereVerificationNotes($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument whereVerificationStatus($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument whereWatermarkedAt($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument whereWatermarkedPath($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument withTrashed(bool $withTrashed = true)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BusinessDocument withoutTrashed()
+ * @mixin \Eloquent
+ */
 class BusinessDocument extends Model
 {
     use HasFactory, SoftDeletes;

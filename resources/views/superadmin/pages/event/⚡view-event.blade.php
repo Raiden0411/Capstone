@@ -10,6 +10,7 @@ use Livewire\Attributes\Computed;
 use App\Models\Event;
 use App\Scopes\TenantScope;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
@@ -20,12 +21,21 @@ class extends Component
 {
     use WithPagination;
 
-    #[Url] public string $search       = '';
-    #[Url] public string $typeFilter   = '';
-    #[Url] public string $statusFilter = '';
-    #[Url] public int    $perPage      = 12;
+    #[Url(keep: true)] public string $search       = '';
+    #[Url(keep: true)] public string $typeFilter   = '';
+    #[Url(keep: true)] public string $statusFilter = '';
+    #[Url(keep: true)] public int    $perPage      = 12;
 
     public function mount(): void
+    {
+        abort_unless(Auth::user()?->hasRole('super-admin'), 403, 'Super-admin access only.');
+    }
+
+    /**
+     * Four-layer pattern, Layer 3 — re-verify on every Livewire update
+     * request. Route middleware only runs on the initial GET.
+     */
+    public function hydrate(): void
     {
         abort_unless(Auth::user()?->hasRole('super-admin'), 403, 'Super-admin access only.');
     }
@@ -55,26 +65,23 @@ class extends Component
                 $now = now();
 
                 match ($this->statusFilter) {
-                    // Live and future events, not yet ended
                     'active' => $q->where('is_active', true)
                         ->where(fn ($sub) => $sub->whereNull('end_date')
                             ->orWhere('end_date', '>=', $now)),
 
-                    // Not yet started
                     'upcoming' => $q->where('start_date', '>', $now),
 
-                    // Started but not yet ended
                     'ongoing' => $q->where('start_date', '<=', $now)
                         ->where(fn ($sub) => $sub->whereNull('end_date')
                             ->orWhere('end_date', '>=', $now)),
 
-                    // Ended — either end_date is past, or start_date is past and no end_date
                     'archived' => $q->where(fn ($sub) => $sub->where('end_date', '<', $now)
                         ->orWhere(fn ($s2) => $s2->whereNull('end_date')
                             ->where('start_date', '<', $now))),
 
-                    // Manually turned off (regardless of dates)
                     'inactive' => $q->where('is_active', false),
+
+                    'featured' => $q->where('featured', true),
 
                     default => $q,
                 };
@@ -107,18 +114,27 @@ class extends Component
             ->pluck('type');
     }
 
+    /**
+     * Aggregate counts via the query builder — returns a plain stdClass
+     * rather than a phantom Eloquent Event with only the selectRaw
+     * attributes. Safe to cache later if the numbers ever warrant it
+     * (Rule 79).
+     *
+     * @return array{total: int, active: int, upcoming: int, ongoing: int, archived: int, inactive: int, featured: int}
+     */
     #[Computed]
     public function stats(): array
     {
         $now = now();
 
-        $row = Event::withoutGlobalScope(TenantScope::class)
+        $row = DB::table('events')
             ->selectRaw('
                 COUNT(*) as total,
                 SUM(CASE WHEN is_active = 1 AND (end_date IS NULL OR end_date >= ?) THEN 1 ELSE 0 END) as active,
                 SUM(CASE WHEN start_date > ? THEN 1 ELSE 0 END) as upcoming,
                 SUM(CASE WHEN start_date <= ? AND (end_date IS NULL OR end_date >= ?) THEN 1 ELSE 0 END) as ongoing,
                 SUM(CASE WHEN (end_date IS NOT NULL AND end_date < ?) OR (end_date IS NULL AND start_date < ?) THEN 1 ELSE 0 END) as archived,
+                SUM(CASE WHEN is_active = 0 THEN 1 ELSE 0 END) as inactive,
                 SUM(CASE WHEN featured = 1 THEN 1 ELSE 0 END) as featured
             ', [$now, $now, $now, $now, $now, $now])
             ->first();
@@ -129,6 +145,7 @@ class extends Component
             'upcoming' => (int) ($row->upcoming ?? 0),
             'ongoing'  => (int) ($row->ongoing  ?? 0),
             'archived' => (int) ($row->archived ?? 0),
+            'inactive' => (int) ($row->inactive ?? 0),
             'featured' => (int) ($row->featured ?? 0),
         ];
     }
@@ -145,12 +162,6 @@ class extends Component
     //  Per-row helpers
     // ─────────────────────────────────────────────────────────
 
-    /**
-     * Live, on-the-fly status — independent of the stored `is_active` flag.
-     * This is what the operator sees. The stored flag is what the scheduler flips.
-     *
-     * @return array{key: string, label: string, classes: string}
-     */
     public function effectiveStatus(Event $event): array
     {
         $now = now();
@@ -159,7 +170,7 @@ class extends Component
             return [
                 'key'     => 'upcoming',
                 'label'   => 'Upcoming',
-                'classes' => 'bg-blue-100 dark:bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-500/30',
+                'classes' => 'bg-blue-600 text-white',
             ];
         }
 
@@ -167,7 +178,7 @@ class extends Component
             return [
                 'key'     => 'archived',
                 'label'   => 'Ended',
-                'classes' => 'bg-slate-100 dark:bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-500/30',
+                'classes' => 'bg-slate-600 text-white',
             ];
         }
 
@@ -175,14 +186,14 @@ class extends Component
             return [
                 'key'     => 'inactive',
                 'label'   => 'Inactive',
-                'classes' => 'bg-red-100 dark:bg-red-500/15 text-red-700 dark:text-red-300 border-red-200 dark:border-red-500/30',
+                'classes' => 'bg-rose-600 text-white',
             ];
         }
 
         return [
             'key'     => 'ongoing',
             'label'   => 'Ongoing',
-            'classes' => 'bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-500/30',
+            'classes' => 'bg-emerald-600 text-white',
         ];
     }
 
@@ -210,7 +221,6 @@ class extends Component
             return;
         }
 
-        // Only delete the image after the DB row is gone.
         if ($imagePath && Storage::disk('public')->exists($imagePath)) {
             Storage::disk('public')->delete($imagePath);
         }
@@ -232,11 +242,6 @@ class extends Component
         );
     }
 
-    /**
-     * Move an archived event's dates forward so it becomes live again.
-     * Shifts both dates by the same delta so the event's duration is preserved.
-     * If only one date exists, shifts that one.
-     */
     public function reactivate(int $eventId): void
     {
         abort_unless(Auth::user()?->hasRole('super-admin'), 403);
@@ -246,7 +251,7 @@ class extends Component
         $now = now();
 
         if ($event->end_date && $event->end_date < $now) {
-            $delta      = $event->end_date->diffInSeconds($now) + 86400; // +1 day buffer
+            $delta      = $event->end_date->diffInSeconds($now) + 86400;
             $startShift = $event->start_date ? $event->start_date->copy()->addSeconds($delta) : null;
             $endShift   = $event->end_date->copy()->addSeconds($delta);
 
@@ -280,187 +285,167 @@ class extends Component
         $this->reset(['search', 'typeFilter', 'statusFilter']);
         $this->resetPage();
     }
-
-    // ─────────────────────────────────────────────────────────
-    //  Export
-    // ─────────────────────────────────────────────────────────
-
-    public function exportCsv()
-    {
-        abort_unless(Auth::user()?->hasRole('super-admin'), 403);
-
-        $events = $this->filteredQuery()
-            ->select('id', 'name', 'barangay', 'type', 'start_date', 'end_date',
-                     'tenant_id', 'is_active', 'featured')
-            ->with(['tenant:id,name'])
-            ->orderByDesc('start_date')
-            ->cursor();
-
-        $filename = 'events-' . now()->format('Y-m-d-His') . '.csv';
-
-        return response()->streamDownload(function () use ($events): void {
-            $out = fopen('php://output', 'w');
-            fputcsv($out, ['Name', 'Barangay', 'Type', 'Start Date', 'End Date', 'Tenant', 'Active', 'Featured', 'Status']);
-
-            foreach ($events as $e) {
-                fputcsv($out, [
-                    $e->name,
-                    $e->barangay,
-                    $e->type,
-                    $e->start_date?->format('Y-m-d H:i') ?? '',
-                    $e->end_date?->format('Y-m-d H:i') ?? '',
-                    $e->tenant->name ?? 'Platform-wide',
-                    $e->is_active ? 'Yes' : 'No',
-                    $e->featured ? 'Yes' : 'No',
-                    $this->effectiveStatus($e)['label'],
-                ]);
-            }
-            fclose($out);
-        }, $filename);
-    }
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto space-y-6">
+<div class="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
 
-    {{-- Header — superadmin plain pattern --}}
+    {{-- ═══ Flash: success ═══ --}}
+    @if(session()->has('message'))
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 4000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-center justify-between bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 border-l-4 border-l-emerald-500 p-4 rounded-xl text-xs sm:text-sm text-emerald-800 dark:text-emerald-300 font-medium shadow-sm">
+            <div class="flex items-center gap-2.5">
+                <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <span>{{ session('message') }}</span>
+            </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+    @endif
+
+    {{-- ═══ Flash: error ═══ --}}
+    @if(session()->has('error'))
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 5000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-center justify-between bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 border-l-4 border-l-rose-500 p-4 rounded-xl text-xs sm:text-sm text-rose-800 dark:text-rose-300 font-medium shadow-sm">
+            <div class="flex items-center gap-2.5">
+                <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                </svg>
+                <span>{{ session('error') }}</span>
+            </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+    @endif
+
+    {{-- ═══ Page header ═══ --}}
     <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
         <div>
+            <div class="flex items-center gap-2 mb-2">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Platform</span>
+            </div>
             <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
                 Events
             </h1>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+            <p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1">
                 Manage festivals, activities, and community events across the platform.
             </p>
         </div>
         <a href="{{ route('superadmin.events.create') }}" wire:navigate
-           class="btn-primary active:scale-95 transition-transform
-                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                  inline-flex items-center justify-center gap-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+           class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                  transition-all duration-200 active:scale-95
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
             </svg>
-            Add Event
+            <span>Add Event</span>
         </a>
     </div>
 
-    {{-- Flash messages --}}
-    @if(session()->has('message'))
-        <div class="flex items-start gap-3 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 border-l-4 border-l-emerald-500 p-4 rounded-md">
-            <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-            </svg>
-            <p class="text-sm text-emerald-700 dark:text-emerald-300 font-medium">{{ session('message') }}</p>
-        </div>
-    @endif
-    @if(session()->has('error'))
-        <div class="flex items-start gap-3 bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 border-l-4 border-l-rose-500 p-4 rounded-md">
-            <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-            </svg>
-            <p class="text-sm text-rose-700 dark:text-rose-300 font-medium">{{ session('error') }}</p>
-        </div>
-    @endif
-
-    {{-- Stats --}}
+    {{-- ═══ Filter card ═══ --}}
     @php $s = $this->stats; @endphp
-    <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
-        @php
-            $cards = [
-                ['label' => 'Total',    'value' => $s['total'],    'dot' => 'bg-gray-500',    'value_class' => 'text-gray-900 dark:text-white'],
-                ['label' => 'Active',   'value' => $s['active'],   'dot' => 'bg-emerald-500', 'value_class' => 'text-emerald-600 dark:text-emerald-400'],
-                ['label' => 'Upcoming', 'value' => $s['upcoming'], 'dot' => 'bg-blue-500',    'value_class' => 'text-blue-600 dark:text-blue-400'],
-                ['label' => 'Ongoing',  'value' => $s['ongoing'],  'dot' => 'bg-primary-500', 'value_class' => 'text-primary-600 dark:text-primary-400'],
-                ['label' => 'Archived', 'value' => $s['archived'], 'dot' => 'bg-slate-500',   'value_class' => 'text-slate-600 dark:text-slate-400'],
-                ['label' => 'Featured', 'value' => $s['featured'], 'dot' => 'bg-amber-500',   'value_class' => 'text-amber-600 dark:text-amber-400'],
-            ];
-        @endphp
-        @foreach($cards as $card)
-            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 hover:shadow-md transition-shadow duration-200">
-                <div class="flex items-center justify-between">
-                    <span class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">{{ $card['label'] }}</span>
-                    <span class="w-2 h-2 rounded-full {{ $card['dot'] }}"></span>
-                </div>
-                <p class="text-2xl font-bold {{ $card['value_class'] }} mt-2">{{ $card['value'] }}</p>
-            </div>
-        @endforeach
-    </div>
+    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4 space-y-3">
 
-    {{-- Filters --}}
-    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4 space-y-4">
-        <div class="flex flex-wrap gap-3 items-center">
+        {{-- Row 1: search + selects --}}
+        <div class="flex flex-wrap gap-2 items-center">
             <div class="relative flex-1 min-w-[200px]">
-                <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <svg class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
                 </svg>
-                <input type="text" wire:model.live.debounce.300ms="search"
-                       placeholder="Search by name, barangay, or type…"
-                       class="input w-full pl-10">
+                <input type="text"
+                       wire:model.live.debounce.300ms="search"
+                       placeholder="Search events by name, barangay, or type…"
+                       enterkeyhint="search"
+                       aria-label="Search events"
+                       class="input w-full"
+                       style="padding-left: 2.5rem;">
             </div>
 
-            <select wire:model.live="typeFilter" class="input w-full sm:w-auto">
+            <select wire:model.live="typeFilter"
+                    aria-label="Filter by type"
+                    class="input w-full sm:w-auto sm:min-w-[140px]">
                 <option value="">All Types</option>
                 @foreach($this->eventTypes as $type)
-                    <option value="{{ $type }}" wire:key="type-{{ Str::slug($type) }}">{{ ucfirst($type) }}</option>
+                    <option value="{{ $type }}" wire:key="type-opt-{{ $loop->index }}">{{ ucfirst($type) }}</option>
                 @endforeach
             </select>
 
-            <select wire:model.live="perPage" class="input w-full sm:w-auto">
+            <select wire:model.live="perPage"
+                    aria-label="Events per page"
+                    class="input w-full sm:w-auto sm:min-w-[140px]">
                 <option value="12">12 per page</option>
                 <option value="25">25 per page</option>
                 <option value="50">50 per page</option>
             </select>
-
-            <button type="button" wire:click="exportCsv"
-                    wire:loading.attr="disabled"
-                    wire:target="exportCsv"
-                    class="btn-secondary text-xs sm:text-sm active:scale-95 transition-transform
-                           inline-flex items-center justify-center gap-2
-                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                           disabled:opacity-60">
-                <svg wire:loading.remove wire:target="exportCsv" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-                </svg>
-                <span wire:loading.remove wire:target="exportCsv">Export CSV</span>
-                <span wire:loading wire:target="exportCsv" class="inline-flex items-center gap-1.5">
-                    <svg class="animate-spin h-4 w-4 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
-                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-                    </svg>
-                    Exporting…
-                </span>
-            </button>
         </div>
 
-        {{-- Status pills --}}
-        <div class="flex flex-wrap gap-2">
-            @foreach([
-                ''         => 'All',
-                'active'   => 'Active',
-                'upcoming' => 'Upcoming',
-                'ongoing'  => 'Ongoing',
-                'archived' => 'Archived',
-                'inactive' => 'Inactive',
-            ] as $val => $label)
+        {{-- Row 2: status pills with inline counts --}}
+        <div class="flex flex-wrap gap-2 items-center">
+            @php
+                $pills = [
+                    ['value' => '',         'label' => 'All',      'count' => $s['total']],
+                    ['value' => 'active',   'label' => 'Active',   'count' => $s['active']],
+                    ['value' => 'upcoming', 'label' => 'Upcoming', 'count' => $s['upcoming']],
+                    ['value' => 'ongoing',  'label' => 'Ongoing',  'count' => $s['ongoing']],
+                    ['value' => 'archived', 'label' => 'Archived', 'count' => $s['archived']],
+                    ['value' => 'inactive', 'label' => 'Inactive', 'count' => $s['inactive']],
+                    ['value' => 'featured', 'label' => 'Featured', 'count' => $s['featured']],
+                ];
+            @endphp
+
+            @foreach($pills as $pill)
+                @php $isActive = $statusFilter === $pill['value']; @endphp
                 <button type="button"
-                        wire:click="$set('statusFilter', '{{ $val }}')"
-                        wire:key="pill-{{ $val !== '' ? $val : 'all' }}"
-                        class="px-3.5 py-1.5 rounded-full text-[11px] font-bold uppercase tracking-wide border transition-all duration-200 active:scale-95
-                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 shrink-0
-                               {{ $statusFilter === $val
-                                  ? 'bg-primary-600 border-primary-600 text-white shadow-md shadow-primary-600/20'
-                                  : 'bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:border-gray-400 dark:hover:border-gray-600' }}">
-                    {{ $label }}
+                        wire:click="$set('statusFilter', '{{ $pill['value'] }}')"
+                        wire:key="pill-{{ $pill['value'] !== '' ? $pill['value'] : 'all' }}"
+                        aria-pressed="{{ $isActive ? 'true' : 'false' }}"
+                        class="inline-flex items-center gap-2 h-9 pl-3.5 pr-1.5 rounded-full text-xs font-semibold uppercase tracking-wide border
+                               transition-all duration-200 active:scale-95 shrink-0
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                               {{ $isActive
+                                  ? 'bg-primary-600 border-primary-600 text-white shadow-sm'
+                                  : 'border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:border-primary-400 hover:text-primary-600 dark:hover:text-primary-400' }}">
+                    <span>{{ $pill['label'] }}</span>
+                    <span class="inline-flex items-center justify-center min-w-[22px] h-5 px-1.5 rounded-full text-[10px] font-bold tabular-nums
+                                 {{ $isActive
+                                    ? 'bg-white/20 text-white'
+                                    : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300' }}">
+                        {{ $pill['count'] }}
+                    </span>
                 </button>
             @endforeach
 
             @if($this->hasActiveFilters)
-                <button type="button" wire:click="clearFilters"
-                        class="inline-flex items-center gap-1 px-3.5 py-1.5 rounded-full text-[11px] font-bold uppercase tracking-wide
-                               border border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400
-                               hover:border-rose-400 hover:text-rose-600 dark:hover:text-rose-400
-                               transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
-                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <button type="button"
+                        wire:click="clearFilters"
+                        class="inline-flex items-center gap-1 h-9 px-3.5 rounded-full text-xs font-semibold uppercase tracking-wide
+                               border border-rose-300 dark:border-rose-500/40
+                               bg-white dark:bg-gray-800 text-rose-700 dark:text-rose-300
+                               transition-all duration-200 active:scale-95 shrink-0
+                               hover:bg-rose-50 dark:hover:bg-rose-500/10
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                     </svg>
                     Clear
@@ -469,183 +454,224 @@ class extends Component
         </div>
     </div>
 
-    {{-- Events table --}}
-    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm overflow-hidden">
-        <div class="overflow-x-auto" wire:loading.class="opacity-50">
-            <table class="w-full text-sm">
-                <thead>
-                    <tr class="border-b border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/30">
-                        <th class="px-4 sm:px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Event</th>
-                        <th class="px-4 sm:px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 hidden md:table-cell">Barangay</th>
-                        <th class="px-4 sm:px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 hidden lg:table-cell">Type</th>
-                        <th class="px-4 sm:px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 hidden lg:table-cell">Date</th>
-                        <th class="px-4 sm:px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 hidden xl:table-cell">Tenant</th>
-                        <th class="px-4 sm:px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Status</th>
-                        <th class="px-4 sm:px-6 py-4 text-right text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Actions</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-100 dark:divide-gray-700">
-                    @forelse($this->events as $event)
-                        @php
-                            $status = $this->effectiveStatus($event);
-                            $isArchived = $status['key'] === 'archived';
-                        @endphp
-                        <tr wire:key="event-{{ $event->id }}"
-                            class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors
-                                   {{ $isArchived ? 'bg-slate-50/40 dark:bg-slate-900/10' : '' }}">
-                            <td class="px-4 sm:px-6 py-4">
-                                <div class="flex items-center gap-3">
-                                    @if($event->image_path)
-                                        <img src="{{ asset('storage/' . $event->image_path) }}"
-                                             class="w-11 h-11 rounded-lg object-cover border border-gray-200 dark:border-gray-700 shrink-0
-                                                    {{ $isArchived ? 'grayscale-[0.5]' : '' }}"
-                                             alt="{{ $event->name }}">
-                                    @else
-                                        <div class="w-11 h-11 rounded-lg bg-primary-50 dark:bg-primary-500/10 border border-primary-200 dark:border-primary-500/20 flex items-center justify-center text-primary-700 dark:text-primary-300 font-bold text-sm shrink-0">
-                                            {{ strtoupper(substr($event->name, 0, 1)) }}
-                                        </div>
-                                    @endif
-                                    <div class="min-w-0">
-                                        <p class="font-medium text-gray-900 dark:text-white truncate">{{ $event->name }}</p>
-                                        @if($event->featured)
-                                            <span class="inline-flex items-center gap-1 mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-100 dark:bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-500/30">
-                                                <svg class="w-2.5 h-2.5" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
-                                                    <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
-                                                </svg>
-                                                Featured
-                                            </span>
-                                        @endif
-                                    </div>
-                                </div>
-                            </td>
-                            <td class="px-4 sm:px-6 py-4 hidden md:table-cell text-gray-600 dark:text-gray-300">
-                                {{ $event->barangay ?: '—' }}
-                            </td>
-                            <td class="px-4 sm:px-6 py-4 hidden lg:table-cell">
-                                <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 capitalize">
-                                    {{ $event->type }}
-                                </span>
-                            </td>
-                            <td class="px-4 sm:px-6 py-4 hidden lg:table-cell">
-                                <p class="text-sm text-gray-900 dark:text-white">{{ $event->start_date?->format('M d, Y') ?? '—' }}</p>
-                                @if($event->end_date)
-                                    <p class="text-xs text-gray-500 dark:text-gray-400">to {{ $event->end_date->format('M d, Y') }}</p>
-                                @endif
-                            </td>
-                            <td class="px-4 sm:px-6 py-4 hidden xl:table-cell text-gray-600 dark:text-gray-300">
-                                {{ $event->tenant->name ?? 'Platform-wide' }}
-                            </td>
-                            <td class="px-4 sm:px-6 py-4">
-                                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold uppercase tracking-wider border {{ $status['classes'] }}">
-                                    <span class="w-1.5 h-1.5 rounded-full bg-current"></span>
-                                    {{ $status['label'] }}
-                                </span>
-                            </td>
-                            <td class="px-4 sm:px-6 py-4 text-right whitespace-nowrap">
-                                <div class="flex items-center justify-end gap-1">
-                                    @if($isArchived)
-                                        <button type="button"
-                                                wire:click="reactivate({{ $event->id }})"
-                                                wire:loading.attr="disabled"
-                                                wire:target="reactivate({{ $event->id }})"
-                                                wire:confirm="Shift this event's dates forward and reactivate it?"
-                                                title="Reactivate"
-                                                class="p-1.5 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 rounded-lg transition active:scale-95
-                                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 disabled:opacity-50">
-                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-                                            </svg>
-                                        </button>
-                                    @else
-                                        <button type="button"
-                                                wire:click="toggleActive({{ $event->id }})"
-                                                wire:loading.attr="disabled"
-                                                wire:target="toggleActive({{ $event->id }})"
-                                                wire:confirm="{{ $event->is_active ? 'Deactivate this event?' : 'Activate this event?' }}"
-                                                title="{{ $event->is_active ? 'Deactivate' : 'Activate' }}"
-                                                class="p-1.5 {{ $event->is_active ? 'text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-500/10' : 'text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10' }} rounded-lg transition active:scale-95
-                                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 disabled:opacity-50">
-                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                @if($event->is_active)
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
-                                                @else
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-                                                @endif
-                                            </svg>
-                                        </button>
-                                    @endif
+    {{-- ═══ Events grid ═══ --}}
+    @if($this->events->isEmpty())
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-12">
+            <div class="flex flex-col items-center max-w-md mx-auto text-center">
+                <div class="p-4 rounded-2xl bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 mb-4">
+                    <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                    </svg>
+                </div>
+                <p class="text-base font-semibold text-gray-900 dark:text-white">
+                    No events found
+                </p>
+                <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                    @if($this->hasActiveFilters)
+                        No events match your current filters. Try adjusting or clearing them.
+                    @else
+                        Get started by creating the first event on the platform.
+                    @endif
+                </p>
+                <div class="mt-6 flex flex-wrap gap-2 justify-center">
+                    @if($this->hasActiveFilters)
+                        <button type="button"
+                                wire:click="clearFilters"
+                                class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                                       transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                            <span>Clear Filters</span>
+                        </button>
+                    @endif
+                    <a href="{{ route('superadmin.events.create') }}" wire:navigate
+                       class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                              transition-all duration-200 active:scale-95
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                        </svg>
+                        <span>Add Event</span>
+                    </a>
+                </div>
+            </div>
+        </div>
+    @else
+        <div wire:loading.class="opacity-40 pointer-events-none"
+             wire:target="search,typeFilter,statusFilter,perPage,gotoPage,nextPage,previousPage"
+             class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 transition-opacity duration-200">
+            @foreach($this->events as $event)
+                @php
+                    $status     = $this->effectiveStatus($event);
+                    $isArchived = $status['key'] === 'archived';
+                @endphp
+                <article wire:key="event-{{ $event->id }}"
+                         class="group bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm
+                                hover:shadow-md hover:border-primary-300 dark:hover:border-primary-500/40
+                                overflow-hidden flex flex-col transition-all duration-200">
 
-                                    <a href="{{ route('superadmin.events.edit', $event) }}" wire:navigate
-                                       title="Edit"
-                                       class="p-1.5 text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-500/10 rounded-lg transition active:scale-95
-                                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
-                                        </svg>
-                                    </a>
+                    {{-- ── Cover ── --}}
+                    <div class="relative aspect-video bg-gray-100 dark:bg-gray-900 overflow-hidden">
+                        @if($event->image_path)
+                            <img src="{{ asset('storage/' . $event->image_path) }}"
+                                 alt="{{ $event->name }}"
+                                 class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105
+                                        {{ $isArchived ? 'grayscale-[0.5]' : '' }}"
+                                 loading="lazy"
+                                 decoding="async">
+                        @else
+                            <div class="w-full h-full flex items-center justify-center text-gray-300 dark:text-gray-600">
+                                <svg class="w-14 h-14" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                                </svg>
+                            </div>
+                        @endif
 
-                                    <button type="button"
-                                            wire:click="deleteEvent({{ $event->id }})"
-                                            wire:confirm="Are you sure you want to delete this event? This cannot be undone."
-                                            wire:loading.attr="disabled"
-                                            wire:target="deleteEvent({{ $event->id }})"
-                                            title="Delete"
-                                            class="p-1.5 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 rounded-lg transition active:scale-95
-                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 disabled:opacity-50">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                                        </svg>
-                                    </button>
-                                </div>
-                            </td>
-                        </tr>
-                    @empty
-                        <tr>
-                            <td colspan="7" class="px-6 py-16 text-center">
-                                <div class="flex flex-col items-center max-w-md mx-auto">
-                                    <svg class="w-14 h-14 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                        {{-- Status badge overlay --}}
+                        <div class="absolute top-3 right-3">
+                            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider shadow-sm backdrop-blur-sm {{ $status['classes'] }}">
+                                <span class="w-1.5 h-1.5 rounded-full bg-current opacity-90" aria-hidden="true"></span>
+                                {{ $status['label'] }}
+                            </span>
+                        </div>
+
+                        {{-- Featured badge overlay --}}
+                        @if($event->featured)
+                            <div class="absolute top-3 left-3">
+                                <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider
+                                             bg-amber-500 text-white shadow-sm backdrop-blur-sm">
+                                    <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+                                        <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
                                     </svg>
-                                    <p class="mt-4 text-base font-semibold text-gray-900 dark:text-white">
-                                        No events found
-                                    </p>
-                                    <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                                        @if($this->hasActiveFilters)
-                                            No events match your current filters. Try adjusting or clearing them.
+                                    Featured
+                                </span>
+                            </div>
+                        @endif
+                    </div>
+
+                    {{-- ── Content ── --}}
+                    <div class="p-4 flex-1 flex flex-col gap-3">
+
+                        <h3 class="font-semibold text-gray-900 dark:text-white text-base leading-snug line-clamp-2 min-h-[2.5rem]">
+                            {{ $event->name }}
+                        </h3>
+
+                        <div class="space-y-1.5 text-xs text-gray-600 dark:text-gray-400">
+                            <div class="flex items-center gap-1.5 min-w-0">
+                                <svg class="w-3.5 h-3.5 shrink-0 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
+                                </svg>
+                                <span class="truncate">{{ $event->barangay ?: 'No barangay' }}</span>
+                                <span class="text-gray-300 dark:text-gray-700 shrink-0" aria-hidden="true">·</span>
+                                <span class="capitalize truncate">{{ $event->type }}</span>
+                            </div>
+
+                            <div class="flex items-center gap-1.5 min-w-0">
+                                <svg class="w-3.5 h-3.5 shrink-0 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                                </svg>
+                                <span class="truncate tabular-nums">
+                                    @if($event->start_date)
+                                        {{ $event->start_date->format('M d, Y') }}
+                                        @if($event->end_date)
+                                            – {{ $event->end_date->format('M d, Y') }}
+                                        @endif
+                                    @else
+                                        No dates set
+                                    @endif
+                                </span>
+                            </div>
+
+                            <div class="flex items-center gap-1.5 min-w-0">
+                                <svg class="w-3.5 h-3.5 shrink-0 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
+                                </svg>
+                                <span class="truncate">{{ $event->tenant->name ?? 'Platform-wide' }}</span>
+                            </div>
+                        </div>
+
+                        {{-- ── Actions ── --}}
+                        <div class="mt-auto pt-3 border-t border-gray-100 dark:border-gray-700/60 flex items-center justify-end gap-2">
+                            @if($isArchived)
+                                {{-- Rule 19: Alpine confirm() --}}
+                                <button type="button"
+                                        x-on:click="if (confirm('Shift this event\'s dates forward and reactivate it?')) $wire.reactivate({{ $event->id }})"
+                                        wire:loading.attr="disabled"
+                                        wire:target="reactivate"
+                                        aria-label="Reactivate {{ $event->name }}"
+                                        title="Reactivate"
+                                        class="inline-flex items-center justify-center h-9 w-9 rounded-lg
+                                               text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10
+                                               transition-all duration-200 active:scale-95
+                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50
+                                               disabled:opacity-60 disabled:cursor-not-allowed">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                                    </svg>
+                                </button>
+                            @else
+                                {{-- Rule 19: Alpine confirm() --}}
+                                <button type="button"
+                                        x-on:click="if (confirm('{{ $event->is_active ? 'Deactivate' : 'Activate' }} this event?')) $wire.toggleActive({{ $event->id }})"
+                                        wire:loading.attr="disabled"
+                                        wire:target="toggleActive"
+                                        aria-label="{{ $event->is_active ? 'Deactivate' : 'Activate' }} {{ $event->name }}"
+                                        title="{{ $event->is_active ? 'Deactivate' : 'Activate' }}"
+                                        class="inline-flex items-center justify-center h-9 w-9 rounded-lg
+                                               transition-all duration-200 active:scale-95
+                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                                               disabled:opacity-60 disabled:cursor-not-allowed
+                                               {{ $event->is_active
+                                                  ? 'text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-500/10'
+                                                  : 'text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10' }}">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        @if($event->is_active)
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
                                         @else
-                                            Get started by creating the first event on the platform.
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                                         @endif
-                                    </p>
-                                    <div class="mt-5 flex flex-wrap gap-2 justify-center">
-                                        @if($this->hasActiveFilters)
-                                            <button type="button" wire:click="clearFilters"
-                                                    class="btn-secondary active:scale-95 transition-transform
-                                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                                Clear Filters
-                                            </button>
-                                        @endif
-                                        <a href="{{ route('superadmin.events.create') }}" wire:navigate
-                                           class="btn-primary active:scale-95 transition-transform
-                                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                                                  inline-flex items-center gap-2">
-                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                                            </svg>
-                                            Add Event
-                                        </a>
-                                    </div>
-                                </div>
-                            </td>
-                        </tr>
-                    @endforelse
-                </tbody>
-            </table>
+                                    </svg>
+                                </button>
+                            @endif
+
+                            <a href="{{ route('superadmin.events.edit', $event) }}" wire:navigate
+                               aria-label="Edit {{ $event->name }}"
+                               title="Edit"
+                               class="inline-flex items-center justify-center h-9 w-9 rounded-lg
+                                      text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10
+                                      transition-all duration-200 active:scale-95
+                                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                                </svg>
+                            </a>
+
+                            {{-- Rule 19: Alpine confirm() --}}
+                            <button type="button"
+                                    x-on:click="if (confirm('Are you sure you want to delete this event? This cannot be undone.')) $wire.deleteEvent({{ $event->id }})"
+                                    wire:loading.attr="disabled"
+                                    wire:target="deleteEvent"
+                                    aria-label="Delete {{ $event->name }}"
+                                    title="Delete"
+                                    class="inline-flex items-center justify-center h-9 w-9 rounded-lg
+                                           text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10
+                                           transition-all duration-200 active:scale-95
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
+                                           disabled:opacity-60 disabled:cursor-not-allowed">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                </article>
+            @endforeach
         </div>
 
         @if($this->events->hasPages())
-            <div class="px-4 sm:px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/30">
+            <div class="pt-2">
                 {{ $this->events->links() }}
             </div>
         @endif
-    </div>
+    @endif
 </div>

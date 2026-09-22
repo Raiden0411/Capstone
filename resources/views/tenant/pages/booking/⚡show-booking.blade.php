@@ -32,9 +32,14 @@ class extends Component
         $this->booking = $booking;
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Computed
-    // ─────────────────────────────────────────────────────────
+    public function hydrate(): void
+    {
+        abort_unless(
+            Auth::user()?->tenant_id
+            && $this->booking->tenant_id === Auth::user()->tenant_id,
+            403
+        );
+    }
 
     #[Computed]
     public function paidAmount(): float
@@ -80,12 +85,12 @@ class extends Component
     public function statusMeta(): array
     {
         return match ($this->booking->status) {
-            Booking::STATUS_PENDING    => ['label' => 'Pending',    'stamp' => 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-500/40',   'stripe' => 'bg-amber-500',  'dot' => 'bg-amber-500'],
-            Booking::STATUS_RESERVED   => ['label' => 'Reserved',   'stamp' => 'bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300 border-blue-300 dark:border-blue-500/40',         'stripe' => 'bg-blue-500',   'dot' => 'bg-blue-500'],
-            Booking::STATUS_CONFIRMED  => ['label' => 'Confirmed',  'stamp' => 'bg-green-50 dark:bg-green-500/10 text-green-700 dark:text-green-300 border-green-300 dark:border-green-500/40',   'stripe' => 'bg-green-500',  'dot' => 'bg-green-500'],
-            Booking::STATUS_CHECKED_IN => ['label' => 'Checked In', 'stamp' => 'bg-purple-50 dark:bg-purple-500/10 text-purple-700 dark:text-purple-300 border-purple-300 dark:border-purple-500/40', 'stripe' => 'bg-purple-500', 'dot' => 'bg-purple-500'],
-            Booking::STATUS_COMPLETED  => ['label' => 'Completed',  'stamp' => 'bg-slate-50 dark:bg-slate-500/10 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-500/40',   'stripe' => 'bg-slate-500',  'dot' => 'bg-slate-500'],
-            Booking::STATUS_CANCELLED  => ['label' => 'Cancelled',  'stamp' => 'bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-300 border-red-300 dark:border-red-500/40',               'stripe' => 'bg-red-500',    'dot' => 'bg-red-500'],
+            Booking::STATUS_PENDING    => ['label' => 'Pending',    'stamp' => 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-500/40',     'stripe' => 'bg-amber-500',   'dot' => 'bg-amber-500'],
+            Booking::STATUS_RESERVED   => ['label' => 'Reserved',   'stamp' => 'bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300 border-blue-300 dark:border-blue-500/40',           'stripe' => 'bg-blue-500',    'dot' => 'bg-blue-500'],
+            Booking::STATUS_CONFIRMED  => ['label' => 'Confirmed',  'stamp' => 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-500/40', 'stripe' => 'bg-emerald-500', 'dot' => 'bg-emerald-500'],
+            Booking::STATUS_CHECKED_IN => ['label' => 'Checked In', 'stamp' => 'bg-purple-50 dark:bg-purple-500/10 text-purple-700 dark:text-purple-300 border-purple-300 dark:border-purple-500/40', 'stripe' => 'bg-purple-500',  'dot' => 'bg-purple-500'],
+            Booking::STATUS_COMPLETED  => ['label' => 'Completed',  'stamp' => 'bg-slate-50 dark:bg-slate-500/10 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-500/40',     'stripe' => 'bg-slate-500',   'dot' => 'bg-slate-500'],
+            Booking::STATUS_CANCELLED  => ['label' => 'Cancelled',  'stamp' => 'bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-300 border-rose-300 dark:border-rose-500/40',             'stripe' => 'bg-rose-500',    'dot' => 'bg-rose-500'],
             default                    => ['label' => ucfirst((string) $this->booking->status), 'stamp' => 'bg-gray-50 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600', 'stripe' => 'bg-gray-400', 'dot' => 'bg-gray-400'],
         };
     }
@@ -93,7 +98,7 @@ class extends Component
     #[Computed]
     public function canDelete(): bool
     {
-        return !in_array($this->booking->status, [
+        return ! in_array($this->booking->status, [
             Booking::STATUS_COMPLETED,
             Booking::STATUS_CANCELLED,
         ], true);
@@ -101,438 +106,660 @@ class extends Component
 };
 ?>
 
-<div x-data="{ confirmDelete: false }" class="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto space-y-6">
+@php
+    $tenantAddress = trim(implode(', ', array_filter([
+        $booking->tenant?->address,
+        $booking->tenant?->barangay,
+    ])));
+    $tenantContact = trim(implode(' · ', array_filter([
+        $booking->tenant?->contact_number,
+        $booking->tenant?->email,
+    ])));
+@endphp
 
-    {{-- ═══════════════════════════════════════════════════════════
-         Page header — action bar (hidden when printing)
-         ═══════════════════════════════════════════════════════════ --}}
-    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700 no-print">
-        <div>
-            <p class="text-xs font-semibold uppercase tracking-wider text-primary-600 dark:text-primary-400">
-                Bookings
-            </p>
-            <h1 class="mt-1 text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">
-                Booking Details
-            </h1>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1 font-mono">
-                #{{ $booking->booking_reference }}
-            </p>
-        </div>
+<div x-data="{ confirmDelete: false }">
 
-        <div class="flex flex-wrap items-center gap-2">
-            <a href="{{ route('tenant.bookings.index') }}" wire:navigate
-               class="btn-secondary text-xs sm:text-sm active:scale-95 transition-transform
-                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                      inline-flex items-center gap-2">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
-                </svg>
-                Back
-            </a>
+    {{-- ═══ SCREEN LAYOUT ═══ --}}
+    <div class="no-print p-4 sm:p-6 lg:p-8 max-w-6xl mx-auto space-y-6">
 
-            <livewire:tenant::pages.payment.quick-pay :booking="$booking" />
+        <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
+            <div>
+                <div class="flex items-center gap-2 mb-2">
+                    <span class="w-5 h-px bg-primary-600"></span>
+                    <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Bookings</span>
+                </div>
+                <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
+                    Booking Details
+                </h1>
+                <p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1 font-mono">
+                    #{{ $booking->booking_reference }}
+                </p>
+            </div>
 
-            @if(!$this->isSettled && !in_array($booking->status, [Booking::STATUS_CANCELLED, Booking::STATUS_COMPLETED], true))
-                <a href="{{ route('tenant.payments.create', ['booking' => $booking->id]) }}" wire:navigate
-                   class="btn-primary text-xs sm:text-sm active:scale-95 transition-transform
-                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                          inline-flex items-center gap-2">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8V7m0 9v2m0-3.5c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            <div class="flex flex-wrap items-center gap-2">
+                <a href="{{ route('tenant.bookings.index') }}" wire:navigate
+                   class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                          transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                    <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
                     </svg>
-                    Record Payment
+                    <span>Back</span>
                 </a>
-            @endif
 
-            <a href="{{ route('tenant.bookings.edit', $booking->id) }}" wire:navigate
-               class="btn-secondary text-xs sm:text-sm active:scale-95 transition-transform
-                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                      inline-flex items-center gap-2">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
-                </svg>
-                Edit
-            </a>
-
-            <button type="button" onclick="window.print()"
-                    class="btn-secondary text-xs sm:text-sm active:scale-95 transition-transform
-                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                           inline-flex items-center gap-2">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z"/>
-                </svg>
-                Print
-            </button>
-
-            @if($this->canDelete)
-                <button type="button" @click="confirmDelete = true"
-                        class="text-xs sm:text-sm active:scale-95 transition-transform
-                               inline-flex items-center gap-2 px-4 py-2.5 rounded-full
-                               bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30
-                               text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-500/20 font-semibold
-                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                <a href="{{ route('tenant.bookings.edit', $booking->id) }}" wire:navigate
+                   class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                          transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                    <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
                     </svg>
-                    Delete
+                    <span>Edit</span>
+                </a>
+
+                <button type="button" onclick="window.print()"
+                        class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                               transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                    <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z"/>
+                    </svg>
+                    <span>Print Receipt</span>
                 </button>
-            @endif
+
+                @if($this->canDelete)
+                    <button type="button" @click="confirmDelete = true"
+                            class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-rose-300 dark:border-rose-500/40 bg-white dark:bg-gray-800 text-rose-700 dark:text-rose-300 text-sm font-semibold
+                                   transition-all duration-200 active:scale-95 hover:bg-rose-50 dark:hover:bg-rose-500/10
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                        </svg>
+                        <span>Delete</span>
+                    </button>
+                @endif
+            </div>
         </div>
-    </div>
 
-    {{-- ═══════════════════════════════════════════════════════════
-         Receipt card — the printable artifact
-         ═══════════════════════════════════════════════════════════ --}}
-    <div class="receipt-card bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-sm overflow-hidden">
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm overflow-hidden">
+            <div class="h-1.5 {{ $this->statusMeta['stripe'] }}"></div>
 
-        {{-- Status stripe --}}
-        <div class="h-1.5 {{ $this->statusMeta['stripe'] }}"></div>
-
-        <div class="p-6 sm:p-8">
-
-            {{-- ─── Receipt header ─────────────────────────────── --}}
-            <div class="flex items-start justify-between gap-4">
-                <div class="flex items-start gap-3 min-w-0">
-                    <div class="w-12 h-12 rounded-lg bg-primary-600 text-white flex items-center justify-center font-bold text-lg shrink-0">
-                        {{ strtoupper(substr($booking->tenant?->name ?? 'B', 0, 1)) }}
+            <div class="p-5 sm:p-6 space-y-5">
+                <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+                    <div class="flex items-start gap-3 min-w-0">
+                        <div class="w-12 h-12 rounded-xl bg-primary-600 text-white flex items-center justify-center font-bold text-lg shrink-0">
+                            {{ strtoupper(substr($booking->tenant?->name ?? 'B', 0, 1)) }}
+                        </div>
+                        <div class="min-w-0">
+                            <p class="text-[10px] font-bold uppercase tracking-[0.22em] text-gray-400 dark:text-gray-500">
+                                Booking Receipt
+                            </p>
+                            <p class="font-mono font-bold text-gray-900 dark:text-white mt-0.5 truncate">
+                                #{{ $booking->booking_reference }}
+                            </p>
+                            @if($booking->tenant?->name)
+                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">
+                                    {{ $booking->tenant->name }}
+                                </p>
+                            @endif
+                        </div>
                     </div>
+
+                    <div class="shrink-0 sm:text-right">
+                        <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider border-2
+                                     {{ $this->statusMeta['stamp'] }}">
+                            <span class="w-1.5 h-1.5 rounded-full {{ $this->statusMeta['dot'] }}"></span>
+                            {{ $this->statusMeta['label'] }}
+                        </span>
+                        <p class="text-[10px] text-gray-400 dark:text-gray-500 mt-1.5 sm:text-right">
+                            {{ $this->isReservation ? 'Reservation (20% fee)' : 'Full Payment' }}
+                        </p>
+                    </div>
+                </div>
+
+                @if($this->deadline)
+                    <div x-data="{
+                             deadline: {{ $this->deadline->timestamp * 1000 }},
+                             timerText: '',
+                             isExpired: false,
+                             timer: null,
+                             init() {
+                                 this.update();
+                                 this.timer = setInterval(() => this.update(), 1000);
+                             },
+                             destroy() {
+                                 if (this.timer) clearInterval(this.timer);
+                             },
+                             update() {
+                                 const diff = this.deadline - Date.now();
+                                 if (diff <= 0) {
+                                     this.isExpired = true;
+                                     this.timerText = 'Payment overdue';
+                                     return;
+                                 }
+                                 const m = Math.floor(diff / 60000);
+                                 const s = Math.floor((diff % 60000) / 1000);
+                                 this.timerText = `Payment due in ${m}m ${s.toString().padStart(2, '0')}s`;
+                             }
+                         }"
+                         :class="isExpired
+                             ? 'text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800'
+                             : 'text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800/50'"
+                         class="text-xs font-semibold px-3 py-2 rounded-lg border tabular-nums flex items-center gap-2">
+                        <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                        <span x-text="timerText"></span>
+                    </div>
+                @endif
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-5 border-t border-gray-100 dark:border-gray-700/60">
                     <div class="min-w-0">
-                        <p class="text-[10px] font-bold uppercase tracking-[0.22em] text-gray-400 dark:text-gray-500">
-                            Booking Receipt
+                        <p class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500 mb-1.5">Guest</p>
+                        @if($booking->user)
+                            <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">{{ $booking->user->name }}</p>
+                            @if($booking->user->phone)
+                                <a href="tel:{{ $booking->user->phone }}"
+                                   class="text-xs text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors block truncate mt-0.5">
+                                    {{ $booking->user->phone }}
+                                </a>
+                            @endif
+                            @if($booking->user->email)
+                                <a href="mailto:{{ $booking->user->email }}"
+                                   class="text-xs text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors block truncate mt-0.5">
+                                    {{ $booking->user->email }}
+                                </a>
+                            @endif
+                        @else
+                            <p class="text-sm text-gray-400 dark:text-gray-500 italic">Walk-in · no profile</p>
+                        @endif
+                    </div>
+
+                    <div class="min-w-0">
+                        <p class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500 mb-1.5">Start</p>
+                        <p class="text-sm font-semibold text-gray-900 dark:text-white tabular-nums">
+                            {{ $booking->check_in->format('M d, Y') }}
                         </p>
-                        <p class="font-mono font-bold text-gray-900 dark:text-white mt-0.5 truncate">
-                            #{{ $booking->booking_reference }}
+                        <p class="text-xs text-gray-500 dark:text-gray-400 tabular-nums mt-0.5">
+                            {{ $booking->check_in->format('h:i A') }}
                         </p>
-                        @if($booking->tenant?->name)
-                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">
-                                {{ $booking->tenant->name }}
+                    </div>
+
+                    <div class="min-w-0">
+                        <p class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500 mb-1.5">End</p>
+                        <p class="text-sm font-semibold text-gray-900 dark:text-white tabular-nums">
+                            {{ $booking->check_out->format('M d, Y') }}
+                        </p>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 tabular-nums mt-0.5">
+                            {{ $booking->check_out->format('h:i A') }} · {{ $this->days }} {{ Str::plural('day', $this->days) }}
+                        </p>
+                    </div>
+
+                    <div class="min-w-0">
+                        <p class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500 mb-1.5">Total</p>
+                        <p class="text-lg font-bold text-gray-900 dark:text-white tabular-nums leading-none">
+                            ₱{{ number_format((float) $booking->total_amount, 2) }}
+                        </p>
+                        @if($this->isSettled)
+                            <p class="text-xs text-emerald-600 dark:text-emerald-400 mt-1 inline-flex items-center gap-1">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+                                </svg>
+                                Paid in full
+                            </p>
+                        @else
+                            <p class="text-xs text-rose-600 dark:text-rose-400 tabular-nums mt-1">
+                                ₱{{ number_format($this->balance, 2) }} due
                             </p>
                         @endif
                     </div>
                 </div>
+            </div>
+        </div>
 
-                {{-- Status stamp --}}
-                <div class="shrink-0 text-right">
-                    <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider border-2
-                                 {{ $this->statusMeta['stamp'] }}">
-                        <span class="w-1.5 h-1.5 rounded-full {{ $this->statusMeta['dot'] }}"></span>
-                        {{ $this->statusMeta['label'] }}
-                    </span>
-                    <p class="text-[10px] text-gray-400 dark:text-gray-500 mt-1.5">
-                        {{ $this->isReservation ? 'Reservation (20% fee)' : 'Full Payment' }}
-                    </p>
+        <div class="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6 items-start">
+
+            <div class="space-y-6">
+
+                @if($booking->items->isNotEmpty())
+                    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-4">
+                        <div class="flex items-center gap-3">
+                            <span class="w-5 h-px bg-primary-600"></span>
+                            <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                                Activities
+                            </h2>
+                        </div>
+
+                        <div class="divide-y divide-gray-100 dark:divide-gray-700/60">
+                            @foreach($booking->items as $item)
+                                <div wire:key="item-{{ $item->id }}" class="flex justify-between items-start gap-4 py-3 first:pt-0 last:pb-0">
+                                    <div class="min-w-0">
+                                        <p class="font-medium text-gray-900 dark:text-white truncate">
+                                            {{ $item->property?->name ?? 'Unknown Activity' }}
+                                        </p>
+                                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 tabular-nums">
+                                            ₱{{ number_format((float) $item->price, 2) }} × {{ $this->days }} {{ Str::plural('day', $this->days) }}
+                                            @if((int) $item->quantity > 1)
+                                                × {{ $item->quantity }}
+                                            @endif
+                                        </p>
+                                    </div>
+                                    <p class="font-mono font-semibold text-gray-900 dark:text-white tabular-nums shrink-0 text-sm">
+                                        ₱{{ number_format((float) $item->subtotal, 2) }}
+                                    </p>
+                                </div>
+                            @endforeach
+                        </div>
+                    </div>
+                @endif
+
+                @if($booking->services->isNotEmpty())
+                    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-4">
+                        <div class="flex items-center gap-3">
+                            <span class="w-5 h-px bg-primary-600"></span>
+                            <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                                Services
+                            </h2>
+                        </div>
+
+                        <div class="divide-y divide-gray-100 dark:divide-gray-700/60">
+                            @foreach($booking->services as $service)
+                                <div wire:key="service-{{ $service->id }}" class="flex justify-between items-start gap-4 py-3 first:pt-0 last:pb-0">
+                                    <div class="min-w-0">
+                                        <p class="font-medium text-gray-900 dark:text-white truncate">
+                                            {{ $service->service?->name ?? 'Unknown Service' }}
+                                        </p>
+                                        @if((int) $service->quantity > 1)
+                                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                                                Qty: {{ $service->quantity }}
+                                            </p>
+                                        @endif
+                                    </div>
+                                    <p class="font-mono font-semibold text-gray-900 dark:text-white tabular-nums shrink-0 text-sm">
+                                        ₱{{ number_format((float) $service->subtotal, 2) }}
+                                    </p>
+                                </div>
+                            @endforeach
+                        </div>
+                    </div>
+                @endif
+
+                <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-4">
+                    <div class="flex items-center gap-3">
+                        <span class="w-5 h-px bg-primary-600"></span>
+                        <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                            Payment History
+                        </h2>
+                    </div>
+
+                    @if($booking->payments->isNotEmpty())
+                        <div class="divide-y divide-gray-100 dark:divide-gray-700/60">
+                            @foreach($booking->payments as $payment)
+                                <div wire:key="payment-{{ $payment->id }}" class="py-3 first:pt-0 last:pb-0 text-sm">
+                                    <div class="flex justify-between items-start gap-4">
+                                        <div class="min-w-0">
+                                            <p class="text-gray-900 dark:text-white font-medium">
+                                                <span class="capitalize">{{ str_replace('_', ' ', (string) $payment->payment_method) }}</span>
+                                                <span class="text-gray-400 dark:text-gray-500 font-normal mx-1">·</span>
+                                                <span class="text-gray-600 dark:text-gray-400 font-normal">
+                                                    {{ $payment->payment_type === 'reservation' ? 'Reservation Fee' : 'Full Payment' }}
+                                                </span>
+                                            </p>
+                                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 tabular-nums">
+                                                {{ $payment->paid_at?->format('M d, Y · h:i A')
+                                                    ?? $payment->created_at?->format('M d, Y · h:i A')
+                                                    ?? '—' }}
+                                            </p>
+                                        </div>
+                                        <p class="font-mono font-semibold tabular-nums shrink-0
+                                                  {{ $payment->payment_status === 'paid' ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400' }}">
+                                            ₱{{ number_format((float) $payment->amount, 2) }}
+                                        </p>
+                                    </div>
+
+                                    @if($payment->reference_number || $payment->paymongo_session_id)
+                                        <p class="text-[10px] text-gray-400 dark:text-gray-500 font-mono mt-1 truncate">
+                                            @if($payment->reference_number)
+                                                Ref: {{ $payment->reference_number }}
+                                            @endif
+                                            @if($payment->reference_number && $payment->paymongo_session_id)
+                                                <span class="mx-1">·</span>
+                                            @endif
+                                            @if($payment->paymongo_session_id)
+                                                PayMongo: {{ $payment->paymongo_session_id }}
+                                            @endif
+                                        </p>
+                                    @endif
+                                </div>
+                            @endforeach
+                        </div>
+                    @else
+                        <p class="text-sm text-gray-400 dark:text-gray-500 italic">
+                            No payments recorded yet.
+                        </p>
+                    @endif
                 </div>
             </div>
 
-            {{-- ─── Live expiry timer (visible inline, hidden on print) ── --}}
-            @if($this->deadline)
-                <div class="mt-4 no-print"
-                     x-data="{
-                         deadline: {{ $this->deadline->timestamp * 1000 }},
-                         timerText: '',
-                         isExpired: false,
-                         update() {
-                             const diff = this.deadline - Date.now();
-                             if (diff <= 0) {
-                                 this.isExpired = true;
-                                 this.timerText = 'Payment overdue';
-                                 return;
-                             }
-                             const m = Math.floor(diff / 60000);
-                             const s = Math.floor((diff % 60000) / 1000);
-                             this.timerText = `Payment due in ${m}m ${s.toString().padStart(2, '0')}s`;
-                         }
-                     }"
-                     x-init="update(); setInterval(() => update(), 1000)"
-                     :class="isExpired
-                         ? 'text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-800'
-                         : 'text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800/50'"
-                     class="text-xs font-semibold px-3 py-2 rounded-lg border tabular-nums flex items-center gap-2">
-                    <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                    </svg>
-                    <span x-text="timerText"></span>
-                </div>
-            @endif
+            <div class="space-y-4 lg:sticky lg:top-24">
 
-            {{-- ─── Meta grid: guest + stay ───────────────────── --}}
-            <div class="mt-6 pt-6 border-t border-dashed border-gray-300 dark:border-gray-600 grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-5">
+                <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 space-y-4">
+                    <div class="flex items-center gap-3">
+                        <span class="w-5 h-px bg-primary-600"></span>
+                        <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                            Payment Summary
+                        </h2>
+                    </div>
 
-                {{-- Guest --}}
-                <div>
-                    <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500 mb-2">
-                        Guest
-                    </p>
-                    @if($booking->user)
-                        <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">
-                            {{ $booking->user->name }}
-                        </p>
-                        @if($booking->user->phone)
-                            <a href="tel:{{ $booking->user->phone }}"
-                               class="text-xs text-gray-600 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors block truncate mt-0.5">
-                                {{ $booking->user->phone }}
-                            </a>
-                        @endif
-                        @if($booking->user->email)
-                            <a href="mailto:{{ $booking->user->email }}"
-                               class="text-xs text-gray-600 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors block truncate mt-0.5">
-                                {{ $booking->user->email }}
-                            </a>
-                        @endif
-                    @else
-                        <p class="text-sm text-gray-400 dark:text-gray-500 italic">Walk-in · no profile</p>
-                    @endif
-                </div>
-
-                {{-- Stay --}}
-                <div>
-                    <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500 mb-2">
-                        Stay
-                    </p>
-                    <dl class="space-y-1 text-sm">
-                        <div class="flex justify-between gap-4">
-                            <dt class="text-gray-500 dark:text-gray-400">Check-in</dt>
-                            <dd class="text-gray-900 dark:text-white font-medium text-right">
-                                {{ $booking->check_in->format('M d, Y') }}
-                                <span class="text-gray-500 dark:text-gray-400 font-normal">· {{ $booking->check_in->format('h:i A') }}</span>
+                    <dl class="space-y-2 text-sm">
+                        <div class="flex justify-between">
+                            <dt class="text-gray-500 dark:text-gray-400">Total</dt>
+                            <dd class="font-mono text-gray-900 dark:text-white tabular-nums">
+                                ₱{{ number_format((float) $booking->total_amount, 2) }}
                             </dd>
                         </div>
-                        <div class="flex justify-between gap-4">
-                            <dt class="text-gray-500 dark:text-gray-400">Check-out</dt>
-                            <dd class="text-gray-900 dark:text-white font-medium text-right">
-                                {{ $booking->check_out->format('M d, Y') }}
-                                <span class="text-gray-500 dark:text-gray-400 font-normal">· {{ $booking->check_out->format('h:i A') }}</span>
-                            </dd>
-                        </div>
-                        <div class="flex justify-between gap-4">
-                            <dt class="text-gray-500 dark:text-gray-400">Duration</dt>
-                            <dd class="text-gray-900 dark:text-white font-medium text-right">
-                                {{ $this->days }} {{ Str::plural('night', $this->days) }}
+
+                        @if($this->paidAmount > 0)
+                            <div class="flex justify-between">
+                                <dt class="text-emerald-600 dark:text-emerald-400">Amount Paid</dt>
+                                <dd class="font-mono text-emerald-600 dark:text-emerald-400 tabular-nums">
+                                    −₱{{ number_format($this->paidAmount, 2) }}
+                                </dd>
+                            </div>
+                        @endif
+
+                        <div class="flex justify-between items-baseline pt-3 mt-1 border-t-2 border-dashed border-gray-200 dark:border-gray-700">
+                            <dt class="text-sm font-bold uppercase tracking-wider {{ $this->isSettled ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-700 dark:text-rose-400' }}">
+                                {{ $this->isSettled ? 'Paid in Full' : 'Balance Due' }}
+                            </dt>
+                            <dd class="font-mono font-bold text-lg tabular-nums {{ $this->isSettled ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400' }}">
+                                ₱{{ number_format($this->balance, 2) }}
                             </dd>
                         </div>
                     </dl>
+
+                    <div>
+                        <div class="w-full h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
+                            <div class="h-full rounded-full transition-all duration-500 {{ $this->isSettled ? 'bg-emerald-500' : 'bg-primary-600' }}"
+                                 style="width: {{ (float) $booking->total_amount > 0
+                                     ? min(100, ($this->paidAmount / (float) $booking->total_amount) * 100)
+                                     : 0 }}%;"></div>
+                        </div>
+                        <div class="flex justify-between text-[11px] mt-1.5 text-gray-500 dark:text-gray-400">
+                            <span class="tabular-nums">{{ number_format((float) $booking->total_amount > 0 ? ($this->paidAmount / (float) $booking->total_amount) * 100 : 0, 0) }}% paid</span>
+                            <span class="tabular-nums">{{ $this->isSettled ? 'Settled' : '₱' . number_format($this->balance, 2) . ' remaining' }}</span>
+                        </div>
+                    </div>
+
+                    @if($this->isReservation)
+                        @php
+                            $reservationFee   = round((float) $booking->total_amount * 0.20, 2);
+                            $balanceOnArrival = max(0, (float) $booking->total_amount - $reservationFee);
+                        @endphp
+                        <div class="pt-4 border-t border-dashed border-gray-200 dark:border-gray-700 grid grid-cols-2 gap-3">
+                            <div>
+                                <p class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                                    Reservation Fee
+                                </p>
+                                <p class="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">20% of total</p>
+                                <p class="font-mono font-bold text-gray-900 dark:text-white mt-1 tabular-nums text-sm">
+                                    ₱{{ number_format($reservationFee, 2) }}
+                                </p>
+                            </div>
+                            <div>
+                                <p class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                                    Balance on Arrival
+                                </p>
+                                <p class="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">&nbsp;</p>
+                                <p class="font-mono font-bold text-amber-600 dark:text-amber-400 mt-1 tabular-nums text-sm">
+                                    ₱{{ number_format($balanceOnArrival, 2) }}
+                                </p>
+                            </div>
+                        </div>
+                    @endif
                 </div>
+
+                @if(!$this->isSettled && !in_array($booking->status, [Booking::STATUS_CANCELLED, Booking::STATUS_COMPLETED], true))
+                    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 space-y-3">
+                        <div class="flex items-center gap-3">
+                            <span class="w-5 h-px bg-primary-600"></span>
+                            <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                                Collect Payment
+                            </h2>
+                        </div>
+
+                        <livewire:tenant::pages.payment.quick-pay :booking="$booking" />
+
+                        <a href="{{ route('tenant.payments.create', ['booking' => $booking->id]) }}" wire:navigate
+                           class="w-full inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                  transition-all duration-200 active:scale-95
+                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8V7m0 9v2m0-3.5c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            <span>Record Payment</span>
+                        </a>
+                    </div>
+                @endif
+            </div>
+        </div>
+    </div>
+    {{-- ═══ /SCREEN LAYOUT ═══ --}}
+
+
+    {{-- ═══════════════════════════════════════════════════════════════
+         PRINT-ONLY RECEIPT — 80mm thermal receipt, centered on paper
+         ═══════════════════════════════════════════════════════════════ --}}
+    <div class="receipt-print-only">
+        <div class="receipt-document">
+
+            {{-- ─── Letterhead ─────────────────────────────────── --}}
+            <header class="receipt-letterhead">
+                @if($booking->tenant?->logo)
+                    <img src="{{ asset('storage/' . $booking->tenant->logo) }}"
+                         alt="{{ $booking->tenant->name }}"
+                         class="receipt-logo">
+                @endif
+
+                <h1 class="receipt-business-name">
+                    {{ $booking->tenant?->name ?? config('app.name') }}
+                </h1>
+
+                @if($tenantAddress !== '')
+                    <p class="receipt-letterhead-meta">{{ $tenantAddress }}</p>
+                @endif
+
+                @if($tenantContact !== '')
+                    <p class="receipt-letterhead-meta">{{ $tenantContact }}</p>
+                @endif
+
+                <p class="receipt-document-title">Booking Receipt</p>
+            </header>
+
+            <div class="receipt-rule-dashed"></div>
+
+            {{-- ─── Reference / Status / Issued / Type ─────────── --}}
+            <div class="receipt-row">
+                <span class="receipt-row-label">Reference</span>
+                <span class="receipt-row-value receipt-mono">#{{ $booking->booking_reference }}</span>
+            </div>
+            <div class="receipt-row">
+                <span class="receipt-row-label">Status</span>
+                <span class="receipt-row-value">{{ $this->statusMeta['label'] }}</span>
+            </div>
+            <div class="receipt-row">
+                <span class="receipt-row-label">Issued</span>
+                <span class="receipt-row-value">{{ now()->format('M j, Y · g:i A') }}</span>
+            </div>
+            <div class="receipt-row">
+                <span class="receipt-row-label">Type</span>
+                <span class="receipt-row-value">{{ $this->isReservation ? 'Reservation (20% fee)' : 'Full Payment' }}</span>
             </div>
 
-            {{-- ─── Activities ─────────────────────────────────── --}}
-            @if($booking->items->isNotEmpty())
-                <div class="mt-6 pt-6 border-t border-dashed border-gray-300 dark:border-gray-600">
-                    <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500 mb-3">
-                        Activities
-                    </p>
-                    <div class="space-y-3">
+            <div class="receipt-rule-dashed"></div>
+
+            {{-- ─── Guest ──────────────────────────────────────── --}}
+            <h2 class="receipt-section-title">Guest</h2>
+            @if($booking->user)
+                <p class="receipt-line-bold">{{ $booking->user->name }}</p>
+                @if($booking->user->phone)
+                    <p class="receipt-line">{{ $booking->user->phone }}</p>
+                @endif
+                @if($booking->user->email)
+                    <p class="receipt-line">{{ $booking->user->email }}</p>
+                @endif
+            @else
+                <p class="receipt-line-italic">Walk-in guest</p>
+            @endif
+
+            <div class="receipt-rule-dashed"></div>
+
+            {{-- ─── Booking Dates ──────────────────────────────── --}}
+            <h2 class="receipt-section-title">Booking Dates</h2>
+            <div class="receipt-row">
+                <span class="receipt-row-label">Start</span>
+                <span class="receipt-row-value">{{ $booking->check_in->format('M j, Y · g:i A') }}</span>
+            </div>
+            <div class="receipt-row">
+                <span class="receipt-row-label">End</span>
+                <span class="receipt-row-value">{{ $booking->check_out->format('M j, Y · g:i A') }}</span>
+            </div>
+            <div class="receipt-row">
+                <span class="receipt-row-label">Duration</span>
+                <span class="receipt-row-value">{{ $this->days }} {{ Str::plural('day', $this->days) }}</span>
+            </div>
+
+            <div class="receipt-rule-dashed"></div>
+
+            {{-- ─── Activities & Services ──────────────────────── --}}
+            <h2 class="receipt-section-title">Activities &amp; Services</h2>
+
+            @if($booking->items->isEmpty() && $booking->services->isEmpty())
+                <p class="receipt-line-italic">No items recorded.</p>
+            @else
+                <table class="receipt-table">
+                    <tbody>
                         @foreach($booking->items as $item)
-                            <div wire:key="item-{{ $item->id }}" class="flex justify-between items-start gap-4 text-sm">
-                                <div class="min-w-0">
-                                    <p class="font-medium text-gray-900 dark:text-white truncate">
-                                        {{ $item->property?->name ?? 'Unknown Activity' }}
-                                    </p>
-                                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 tabular-nums">
+                            <tr wire:key="print-item-{{ $item->id }}">
+                                <td>
+                                    <p class="receipt-item-name">{{ $item->property?->name ?? 'Unknown Activity' }}</p>
+                                    <p class="receipt-item-detail">
                                         ₱{{ number_format((float) $item->price, 2) }} × {{ $this->days }} {{ Str::plural('day', $this->days) }}
                                         @if((int) $item->quantity > 1)
                                             × {{ $item->quantity }}
                                         @endif
                                     </p>
-                                </div>
-                                <p class="font-mono font-semibold text-gray-900 dark:text-white tabular-nums shrink-0">
+                                </td>
+                                <td class="receipt-text-right receipt-item-amount receipt-mono">
                                     ₱{{ number_format((float) $item->subtotal, 2) }}
-                                </p>
-                            </div>
+                                </td>
+                            </tr>
                         @endforeach
-                    </div>
-                </div>
+                        @foreach($booking->services as $service)
+                            <tr wire:key="print-service-{{ $service->id }}">
+                                <td>
+                                    <p class="receipt-item-name">{{ $service->service?->name ?? 'Unknown Service' }}</p>
+                                    @if((int) $service->quantity > 1)
+                                        <p class="receipt-item-detail">Qty: {{ $service->quantity }}</p>
+                                    @endif
+                                </td>
+                                <td class="receipt-text-right receipt-item-amount receipt-mono">
+                                    ₱{{ number_format((float) $service->subtotal, 2) }}
+                                </td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
             @endif
 
-            {{-- ─── Services ───────────────────────────────────── --}}
-            @if($booking->services->isNotEmpty())
-                <div class="mt-6 pt-6 border-t border-dashed border-gray-300 dark:border-gray-600">
-                    <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500 mb-3">
-                        Services
-                    </p>
-                    <div class="space-y-2.5">
-                        @foreach($booking->services as $service)
-                            <div wire:key="service-{{ $service->id }}" class="flex justify-between items-start gap-4 text-sm">
-                                <div class="min-w-0">
-                                    <p class="font-medium text-gray-900 dark:text-white truncate">
-                                        {{ $service->service?->name ?? 'Unknown Service' }}
-                                    </p>
-                                    @if((int) $service->quantity > 1)
-                                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                                            Qty: {{ $service->quantity }}
-                                        </p>
-                                    @endif
-                                </div>
-                                <p class="font-mono font-semibold text-gray-900 dark:text-white tabular-nums shrink-0">
-                                    ₱{{ number_format((float) $service->subtotal, 2) }}
-                                </p>
-                            </div>
-                        @endforeach
-                    </div>
-                </div>
-            @endif
+            <div class="receipt-rule"></div>
 
             {{-- ─── Totals ─────────────────────────────────────── --}}
-            <div class="mt-6 pt-6 border-t-2 border-gray-900 dark:border-gray-300">
-                <dl class="space-y-2">
-                    <div class="flex justify-between text-sm">
-                        <dt class="text-gray-500 dark:text-gray-400">Subtotal</dt>
-                        <dd class="font-mono text-gray-900 dark:text-white tabular-nums">
-                            ₱{{ number_format((float) $booking->total_amount, 2) }}
-                        </dd>
-                    </div>
+            <div class="receipt-row">
+                <span class="receipt-row-label">Total</span>
+                <span class="receipt-row-value receipt-mono">₱{{ number_format((float) $booking->total_amount, 2) }}</span>
+            </div>
 
-                    <div class="flex justify-between text-base font-bold pt-2">
-                        <dt class="text-gray-900 dark:text-white">Total</dt>
-                        <dd class="font-mono text-gray-900 dark:text-white tabular-nums">
-                            ₱{{ number_format((float) $booking->total_amount, 2) }}
-                        </dd>
-                    </div>
-
-                    @if($this->paidAmount > 0)
-                        <div class="flex justify-between text-sm pt-1">
-                            <dt class="text-emerald-600 dark:text-emerald-400">Amount Paid</dt>
-                            <dd class="font-mono text-emerald-600 dark:text-emerald-400 tabular-nums">
-                                −₱{{ number_format($this->paidAmount, 2) }}
-                            </dd>
-                        </div>
-                    @endif
-
-                    <div class="flex justify-between items-baseline pt-3 mt-2 border-t-2 border-dashed border-gray-300 dark:border-gray-600">
-                        <dt class="text-sm font-bold uppercase tracking-wider {{ $this->isSettled ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-700 dark:text-red-400' }}">
-                            {{ $this->isSettled ? 'Paid in Full' : 'Balance Due' }}
-                        </dt>
-                        <dd class="font-mono font-bold text-lg tabular-nums {{ $this->isSettled ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400' }}">
-                            ₱{{ number_format($this->balance, 2) }}
-                        </dd>
-                    </div>
-                </dl>
-
-                {{-- Progress bar --}}
-                <div class="mt-4">
-                    <div class="w-full h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
-                        <div class="h-full rounded-full transition-all duration-500 {{ $this->isSettled ? 'bg-emerald-500' : 'bg-primary-600' }}"
-                             style="width: {{ (float) $booking->total_amount > 0
-                                 ? min(100, ($this->paidAmount / (float) $booking->total_amount) * 100)
-                                 : 0 }}%;"></div>
-                    </div>
-                    <div class="flex justify-between text-[11px] mt-1.5 text-gray-500 dark:text-gray-400">
-                        <span>{{ number_format((float) $booking->total_amount > 0 ? ($this->paidAmount / (float) $booking->total_amount) * 100 : 0, 0) }}% paid</span>
-                        <span>{{ $this->isSettled ? 'Settled' : '₱' . number_format($this->balance, 2) . ' remaining' }}</span>
-                    </div>
+            @if($this->paidAmount > 0)
+                <div class="receipt-row">
+                    <span class="receipt-row-label">Amount Paid</span>
+                    <span class="receipt-row-value receipt-mono">−₱{{ number_format($this->paidAmount, 2) }}</span>
                 </div>
+            @endif
 
-                {{-- Reservation split --}}
-                @if($this->isReservation)
-                    @php
-                        $reservationFee   = round((float) $booking->total_amount * 0.20, 2);
-                        $balanceOnArrival = max(0, (float) $booking->total_amount - $reservationFee);
-                    @endphp
-                    <div class="mt-5 pt-5 border-t border-dashed border-gray-300 dark:border-gray-600 grid grid-cols-2 gap-4">
-                        <div>
-                            <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500">
-                                Reservation Fee (20%)
-                            </p>
-                            <p class="font-mono font-bold text-gray-900 dark:text-white mt-1 tabular-nums">
-                                ₱{{ number_format($reservationFee, 2) }}
-                            </p>
-                        </div>
-                        <div>
-                            <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500">
-                                Balance on Arrival
-                            </p>
-                            <p class="font-mono font-bold text-amber-600 dark:text-amber-400 mt-1 tabular-nums">
-                                ₱{{ number_format($balanceOnArrival, 2) }}
-                            </p>
-                        </div>
-                    </div>
-                @endif
+            <div class="receipt-row receipt-row-total">
+                <span class="receipt-row-label">{{ $this->isSettled ? 'Paid in Full' : 'Balance Due' }}</span>
+                <span class="receipt-row-value receipt-mono">₱{{ number_format($this->balance, 2) }}</span>
             </div>
 
-            {{-- ─── Payment history ────────────────────────────── --}}
-            <div class="mt-6 pt-6 border-t border-dashed border-gray-300 dark:border-gray-600">
-                <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500 mb-3">
-                    Payment History
-                </p>
+            @if($this->isReservation)
+                @php
+                    $reservationFee   = round((float) $booking->total_amount * 0.20, 2);
+                    $balanceOnArrival = max(0, (float) $booking->total_amount - $reservationFee);
+                @endphp
+                <div class="receipt-rule-dashed"></div>
+                <div class="receipt-row">
+                    <span class="receipt-row-label">Reservation Fee (20%)</span>
+                    <span class="receipt-row-value receipt-mono">₱{{ number_format($reservationFee, 2) }}</span>
+                </div>
+                <div class="receipt-row">
+                    <span class="receipt-row-label">Balance on Arrival</span>
+                    <span class="receipt-row-value receipt-mono">₱{{ number_format($balanceOnArrival, 2) }}</span>
+                </div>
+            @endif
 
-                @if($booking->payments->isNotEmpty())
-                    <div class="space-y-3">
-                        @foreach($booking->payments as $payment)
-                            <div wire:key="payment-{{ $payment->id }}" class="text-sm">
-                                <div class="flex justify-between items-start gap-4">
-                                    <div class="min-w-0">
-                                        <p class="text-gray-900 dark:text-white font-medium capitalize">
-                                            {{ str_replace('_', ' ', (string) $payment->payment_method) }}
-                                            <span class="text-gray-400 dark:text-gray-500 font-normal">·</span>
-                                            <span class="text-gray-600 dark:text-gray-400 font-normal">
-                                                {{ $payment->payment_type === 'reservation' ? 'Reservation Fee' : 'Full Payment' }}
-                                            </span>
-                                        </p>
-                                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                                            {{ $payment->paid_at?->format('M d, Y · h:i A')
-                                                ?? $payment->created_at?->format('M d, Y · h:i A')
-                                                ?? '—' }}
-                                        </p>
-                                    </div>
-                                    <p class="font-mono font-semibold tabular-nums shrink-0 {{ $payment->payment_status === 'paid' ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400' }}">
-                                        ₱{{ number_format((float) $payment->amount, 2) }}
-                                    </p>
-                                </div>
+            {{-- ─── Payment History ─────────────────────────────── --}}
+            @if($booking->payments->isNotEmpty())
+                <div class="receipt-rule-dashed"></div>
 
-                                @if($payment->reference_number || $payment->paymongo_session_id)
-                                    <p class="text-[10px] text-gray-400 dark:text-gray-500 font-mono mt-1 truncate">
-                                        @if($payment->reference_number)
-                                            Ref: {{ $payment->reference_number }}
-                                        @endif
-                                        @if($payment->reference_number && $payment->paymongo_session_id)
-                                            <span class="mx-1">·</span>
-                                        @endif
-                                        @if($payment->paymongo_session_id)
-                                            PayMongo: {{ $payment->paymongo_session_id }}
-                                        @endif
-                                    </p>
+                <h2 class="receipt-section-title">Payment History</h2>
+
+                @foreach($booking->payments as $payment)
+                    <div class="receipt-payment" wire:key="print-payment-{{ $payment->id }}">
+                        <div class="receipt-row">
+                            <span class="receipt-row-label capitalize">
+                                {{ str_replace('_', ' ', (string) $payment->payment_method) }}
+                                @if($payment->payment_type === 'reservation')
+                                    · Fee
                                 @endif
-                            </div>
-                        @endforeach
+                            </span>
+                            <span class="receipt-row-value receipt-mono">₱{{ number_format((float) $payment->amount, 2) }}</span>
+                        </div>
+                        <p class="receipt-item-detail">
+                            {{ $payment->paid_at?->format('M j, Y · g:i A')
+                                ?? $payment->created_at?->format('M j, Y · g:i A')
+                                ?? '—' }}
+                            @if($payment->reference_number)
+                                · Ref: {{ $payment->reference_number }}
+                            @endif
+                        </p>
                     </div>
-                @else
-                    <p class="text-sm text-gray-400 dark:text-gray-500 italic">
-                        No payments recorded.
-                    </p>
-                @endif
-            </div>
+                @endforeach
+            @endif
+
+            <div class="receipt-rule-thick"></div>
 
             {{-- ─── Footer ─────────────────────────────────────── --}}
-            <div class="mt-8 pt-6 border-t border-dashed border-gray-300 dark:border-gray-600 text-center">
-                <p class="text-sm font-semibold text-gray-700 dark:text-gray-200">
-                    Thank you for booking with us!
-                </p>
-                <p class="text-[10px] text-gray-400 dark:text-gray-500 mt-1">
-                    Generated {{ now()->format('M d, Y · h:i A') }}
-                </p>
-            </div>
-
+            <footer class="receipt-footer">
+                <p class="receipt-footer-primary">Thank you for booking with us!</p>
+                <p class="receipt-footer-meta">Generated {{ now()->format('M j, Y · g:i A') }}</p>
+                <p class="receipt-footer-ref receipt-mono">#{{ $booking->booking_reference }}</p>
+            </footer>
         </div>
     </div>
+    {{-- ═══ /PRINT-ONLY RECEIPT ═══ --}}
 
-    {{-- ═══════════════════════════════════════════════════════════
-         Delete confirmation modal
-         ═══════════════════════════════════════════════════════════ --}}
-    <div x-show="confirmDelete"
-         x-cloak
-         x-transition:enter="transition ease-out duration-200"
-         x-transition:enter-start="opacity-0 scale-95"
-         x-transition:enter-end="opacity-100 scale-100"
-         x-transition:leave="transition ease-in duration-150"
-         x-transition:leave-start="opacity-100 scale-100"
-         x-transition:leave-end="opacity-0 scale-95"
+
+    {{-- ═══ DELETE MODAL (screen-only) ═══ --}}
+    <div :class="confirmDelete ? '' : 'hidden'"
          @keydown.escape.window="confirmDelete = false"
          class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm no-print"
          role="dialog" aria-modal="true" aria-labelledby="delete-modal-title">
         <div @click.outside="confirmDelete = false"
              class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 max-w-md w-full shadow-2xl">
             <div class="flex items-start gap-3 mb-4">
-                <div class="shrink-0 w-10 h-10 rounded-full bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
-                    <svg class="w-5 h-5 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <div class="shrink-0 w-10 h-10 rounded-full bg-rose-50 dark:bg-rose-500/10 flex items-center justify-center">
+                    <svg class="w-5 h-5 text-rose-600 dark:text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                     </svg>
                 </div>
@@ -549,53 +776,359 @@ class extends Component
             </div>
             <div class="flex justify-end gap-2">
                 <button type="button" @click="confirmDelete = false"
-                        class="btn-secondary text-sm active:scale-95 transition-transform
-                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                        class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                               transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                     Cancel
                 </button>
                 <form action="{{ route('tenant.bookings.destroy', $booking->id) }}" method="POST">
                     @csrf
                     @method('DELETE')
                     <button type="submit"
-                            class="px-4 py-2.5 rounded-full bg-red-600 hover:bg-red-500 text-white font-semibold text-sm transition shadow-md shadow-red-500/20
-                                   active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50">
+                            class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-sm font-semibold shadow-sm
+                                   transition-all duration-200 active:scale-95
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                         Confirm Delete
                     </button>
                 </form>
             </div>
         </div>
     </div>
+
+
+    {{-- ═══════════════════════════════════════════════════════════════
+         INLINE PRINT CSS — 80mm thermal receipt, centered
+         ═══════════════════════════════════════════════════════════════ --}}
+    <style>
+        /* Screen: keep the receipt hidden. */
+        .receipt-print-only { display: none; }
+
+        @media print {
+            /* Preferred: 80mm thermal paper. `auto` height = exactly as
+               tall as the content needs — never a second blank page. */
+            @page {
+                size: 80mm auto;
+                margin: 0;
+            }
+
+            html, body {
+                background: #fff !important;
+                color: #000 !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                min-height: 0 !important;
+                height: auto !important;
+            }
+
+            /* Visibility-based hide. The JS layer below provides stronger
+               inline-style hiding for the layout chrome. */
+            body * { visibility: hidden !important; }
+            .receipt-print-only,
+            .receipt-print-only * { visibility: visible !important; }
+
+            /* ── The receipt wrapper ──
+               No absolute positioning. The JS strip-pass already removed
+               the layout chrome and cleared padding/margin from every
+               ancestor, so the receipt flows from the top of the page.
+               `margin: 0 auto` centers it horizontally when the printer's
+               paper is wider than 80mm (A4/Letter PDF).
+               On real 80mm thermal paper the auto margins resolve to 0
+               and the receipt fills the roll edge-to-edge. */
+            .receipt-print-only {
+                display: block !important;
+                width: 80mm !important;
+                max-width: 80mm !important;
+                margin: 0 auto !important;
+                padding: 3mm !important;
+                box-sizing: border-box;
+                background: #fff !important;
+                font-size: 10px !important;
+            }
+
+            .no-print { display: none !important; }
+        }
+
+
+        /* ══════════════════════════════════════════════════════════════
+           RECEIPT DOCUMENT — 80mm single-column, print-safe
+           ══════════════════════════════════════════════════════════════ */
+
+        .receipt-document {
+            width: 100%;
+            color: #111;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            font-size: 10px;
+            line-height: 1.35;
+            font-variant-numeric: tabular-nums;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* ── Letterhead ── */
+        .receipt-letterhead {
+            text-align: center;
+            padding-bottom: 2mm;
+            page-break-after: avoid;
+        }
+
+        .receipt-logo {
+            display: block;
+            max-width: 40mm;
+            max-height: 15mm;
+            width: auto;
+            margin: 0 auto 2mm;
+            object-fit: contain;
+        }
+
+        .receipt-business-name {
+            font-size: 13px;
+            font-weight: 700;
+            margin: 0;
+            letter-spacing: -0.01em;
+            line-height: 1.2;
+        }
+
+        .receipt-letterhead-meta {
+            font-size: 8.5px;
+            color: #666;
+            margin: 0.5mm 0 0;
+            line-height: 1.3;
+        }
+
+        .receipt-document-title {
+            font-size: 8.5px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.14em;
+            color: #888;
+            margin: 2mm 0 0;
+        }
+
+        /* ── Rules (separators) ── */
+        .receipt-rule        { border-top: 1px solid #111; margin: 2.5mm 0; }
+        .receipt-rule-dashed { border-top: 1px dashed #aaa; margin: 2.5mm 0; }
+        .receipt-rule-thick  { border-top: 1px solid #111; margin: 3mm 0; }
+
+        /* ── Section headings ── */
+        .receipt-section-title {
+            font-size: 8.5px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: #666;
+            margin: 0 0 1.5mm;
+            page-break-after: avoid;
+        }
+
+        /* ── Rows (label / value pairs) ── */
+        .receipt-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 2mm;
+            padding: 0.4mm 0;
+            page-break-inside: avoid;
+        }
+
+        .receipt-row-label {
+            color: #555;
+            flex: 0 0 auto;
+            min-width: 0;
+        }
+
+        .receipt-row-value {
+            font-weight: 600;
+            text-align: right;
+            flex: 1 1 auto;
+            min-width: 0;
+            word-break: break-word;
+        }
+
+        .receipt-row-total {
+            font-size: 12px;
+            font-weight: 700;
+            padding-top: 1.5mm;
+            margin-top: 1mm;
+            border-top: 1px dashed #aaa;
+        }
+
+        .receipt-row-total .receipt-row-label { color: #111; }
+
+        /* ── Guest / text blocks ── */
+        .receipt-line-bold {
+            font-size: 11px;
+            font-weight: 600;
+            margin: 0;
+            line-height: 1.3;
+        }
+
+        .receipt-line {
+            font-size: 9px;
+            color: #555;
+            margin: 0.3mm 0 0;
+            word-break: break-word;
+            line-height: 1.3;
+        }
+
+        .receipt-line-italic {
+            font-size: 9px;
+            font-style: italic;
+            color: #888;
+            margin: 0;
+        }
+
+        /* ── Items table ── */
+        .receipt-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .receipt-table td {
+            padding: 1.2mm 0;
+            vertical-align: top;
+            border-bottom: 1px dotted #ccc;
+            page-break-inside: avoid;
+        }
+
+        .receipt-table tbody tr:last-child td { border-bottom: none; }
+        .receipt-table td.receipt-text-right   { text-align: right; padding-left: 2mm; }
+
+        .receipt-item-name {
+            font-weight: 500;
+            font-size: 10px;
+            margin: 0;
+            line-height: 1.3;
+        }
+
+        .receipt-item-detail {
+            font-size: 8.5px;
+            color: #666;
+            margin: 0.4mm 0 0;
+            line-height: 1.3;
+        }
+
+        .receipt-item-amount {
+            font-weight: 600;
+            font-size: 10px;
+        }
+
+        /* ── Payments ── */
+        .receipt-payment {
+            padding: 0.8mm 0;
+            page-break-inside: avoid;
+        }
+
+        /* ── Footer ── */
+        .receipt-footer {
+            text-align: center;
+            padding-top: 2mm;
+            page-break-inside: avoid;
+        }
+
+        .receipt-footer p { margin: 0.8mm 0; }
+
+        .receipt-footer-primary {
+            font-size: 10px;
+            font-weight: 600;
+            color: #111;
+        }
+
+        .receipt-footer-meta {
+            font-size: 8.5px;
+            color: #666;
+        }
+
+        .receipt-footer-ref {
+            font-size: 8.5px;
+            font-weight: 700;
+            color: #111;
+            margin-top: 1.5mm !important;
+            letter-spacing: 0.05em;
+        }
+
+        /* ── Monospace numbers ── */
+        .receipt-mono {
+            font-family: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* ── Capitalized labels ── */
+        .receipt-table .capitalize,
+        .receipt-payment .capitalize { text-transform: capitalize; }
+    </style>
+
+
+    {{-- ═══════════════════════════════════════════════════════════════
+         PRINT SCOPE HANDLER
+         Before print: hide every direct child of <body> that is not an
+         ancestor of the receipt, and strip padding/margin/background
+         from its ancestors. After print: restore.
+         ═══════════════════════════════════════════════════════════════ --}}
+    <script>
+        (function () {
+            if (window.__bookingPrintScopeInstalled) return;
+            window.__bookingPrintScopeInstalled = true;
+
+            function applyPrintScope() {
+                const receipt = document.querySelector('.receipt-print-only');
+                if (!receipt) return;
+
+                const ancestors = new Set();
+                let el = receipt;
+                while (el && el !== document.body) {
+                    ancestors.add(el);
+                    el = el.parentElement;
+                }
+
+                Array.from(document.body.children).forEach(function (child) {
+                    if (!ancestors.has(child)) {
+                        if (child.dataset.printHidden !== '1') {
+                            child.dataset.printHidden = '1';
+                            child.dataset.printOldDisplay = child.style.display || '';
+                        }
+                        child.style.setProperty('display', 'none', 'important');
+                    }
+                });
+
+                ancestors.forEach(function (node) {
+                    if (node === receipt) return;
+                    if (node.dataset.printReset !== '1') {
+                        node.dataset.printReset = '1';
+                        node.dataset.printOldPadding = node.style.padding || '';
+                        node.dataset.printOldMargin = node.style.margin || '';
+                        node.dataset.printOldBackground = node.style.background || '';
+                    }
+                    node.style.setProperty('padding', '0', 'important');
+                    node.style.setProperty('margin', '0', 'important');
+                    node.style.setProperty('background', 'transparent', 'important');
+                });
+            }
+
+            function restorePrintScope() {
+                document.querySelectorAll('[data-print-hidden="1"]').forEach(function (node) {
+                    node.style.removeProperty('display');
+                    if (node.dataset.printOldDisplay) {
+                        node.style.display = node.dataset.printOldDisplay;
+                    }
+                    delete node.dataset.printHidden;
+                    delete node.dataset.printOldDisplay;
+                });
+
+                document.querySelectorAll('[data-print-reset="1"]').forEach(function (node) {
+                    node.style.removeProperty('padding');
+                    node.style.removeProperty('margin');
+                    node.style.removeProperty('background');
+                    if (node.dataset.printOldPadding) node.style.padding = node.dataset.printOldPadding;
+                    if (node.dataset.printOldMargin)  node.style.margin  = node.dataset.printOldMargin;
+                    if (node.dataset.printOldBackground) node.style.background = node.dataset.printOldBackground;
+                    delete node.dataset.printReset;
+                    delete node.dataset.printOldPadding;
+                    delete node.dataset.printOldMargin;
+                    delete node.dataset.printOldBackground;
+                });
+            }
+
+            window.addEventListener('beforeprint', applyPrintScope);
+            window.addEventListener('afterprint', restorePrintScope);
+        })();
+    </script>
+
 </div>
-
-<style>
-    [x-cloak] { display: none !important; }
-
-    @media print {
-        @page { margin: 1cm; size: auto; }
-        html, body { background: #fff !important; color: #000 !important; }
-        .no-print { display: none !important; }
-
-        .receipt-card {
-            max-width: 100% !important;
-            margin: 0 !important;
-            border: none !important;
-            border-radius: 0 !important;
-            box-shadow: none !important;
-            background: #fff !important;
-        }
-        .receipt-card > .h-1\.5 { height: 3px !important; }
-
-        .bg-white, .dark\:bg-gray-800, .dark\:bg-gray-800\/90,
-        .bg-gray-50, .dark\:bg-gray-700\/50 {
-            background: transparent !important;
-            border-color: #d1d5db !important;
-            box-shadow: none !important;
-        }
-        .text-gray-900, .text-gray-700, .text-gray-600, .text-gray-500, .text-gray-400,
-        .dark\:text-white, .dark\:text-gray-200, .dark\:text-gray-300, .dark\:text-gray-400 {
-            color: #000 !important;
-        }
-        table { border-collapse: collapse !important; width: 100% !important; }
-        th, td { border-bottom: 1px solid #e5e7eb !important; }
-    }
-</style>

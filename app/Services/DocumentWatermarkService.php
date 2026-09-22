@@ -3,8 +3,8 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 class DocumentWatermarkService
 {
@@ -14,7 +14,7 @@ class DocumentWatermarkService
     public function watermark(string $storedPath, string $platformName = 'Victorias Tourism'): ?string
     {
         $fullPath = Storage::disk('public')->path($storedPath);
-        if (!file_exists($fullPath)) {
+        if (! file_exists($fullPath)) {
             return null;
         }
 
@@ -25,7 +25,7 @@ class DocumentWatermarkService
         $outputRelative = 'kyb-documents/watermarked/' . basename($storedPath) . '.watermarked.' . $extension;
         $outputFull     = Storage::disk('public')->path($outputRelative);
 
-        if (!is_dir(dirname($outputFull))) {
+        if (! is_dir(dirname($outputFull))) {
             mkdir(dirname($outputFull), 0755, true);
         }
 
@@ -57,7 +57,7 @@ class DocumentWatermarkService
             default                   => null,
         };
 
-        if (!$image) {
+        if (! $image) {
             throw new \RuntimeException("Unsupported image format: {$mime}");
         }
 
@@ -82,13 +82,12 @@ class DocumentWatermarkService
             'image/png'               => imagepng($image, $dest),
             'image/webp'              => imagewebp($image, $dest, 88),
         };
-
     }
 
     protected function watermarkPdf(string $source, string $dest, string $text): void
     {
         $fpdiClass = 'setasign\\Fpdi\\Fpdi';
-        if (!class_exists($fpdiClass)) {
+        if (! class_exists($fpdiClass)) {
             throw new \RuntimeException('FPDI is not installed.');
         }
 
@@ -104,7 +103,10 @@ class DocumentWatermarkService
 
             $pdf->SetFont('Helvetica', 'B', 22);
             $pdf->SetTextColor(200, 30, 30);
-            $pdf->SetAlpha(0.22);
+
+            // FPDF has no alpha channel. The watermark is drawn fully
+            // opaque; the muted red palette keeps it readable over
+            // light document backgrounds without obscuring content.
 
             for ($i = -2; $i <= 2; $i++) {
                 $pdf->SetXY($size['width'] * 0.08, $size['height'] * 0.5 + $i * 90);

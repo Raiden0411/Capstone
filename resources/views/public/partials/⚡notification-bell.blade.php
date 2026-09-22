@@ -1,3 +1,4 @@
+{{-- resources/views/public/partials/⚡notification-bell.blade.php --}}
 <?php
 
 use App\Services\PublicNotificationService;
@@ -7,14 +8,42 @@ use Livewire\Component;
 
 new class extends Component
 {
-    /** Polling interval in seconds. Set to 0 to disable. */
+    /**
+     * Polling interval in seconds. Set to 0 to disable.
+     *
+     * Guests never see a value here — mount() zeroes it so the poll
+     * directive never renders for unauthenticated visitors. That keeps
+     * the header's mobile bandwidth cost at zero for guests.
+     */
     public int $pollInterval = 60;
+
+    public function mount(): void
+    {
+        // If the header renders this component for a guest (some
+        // layouts do, as a placeholder), disable polling. There is
+        // nothing to poll for, and mobile users should not pay for
+        // empty network roundtrips.
+        if (! Auth::check()) {
+            $this->pollInterval = 0;
+        }
+    }
+
+    public function hydrate(): void
+    {
+        // If the user logged out from another tab mid-session,
+        // subsequent poll requests hydrate the component with a
+        // still-live poll interval. Re-check and stop the poll.
+        if (! Auth::check()) {
+            $this->pollInterval = 0;
+        }
+    }
 
     #[Computed]
     public function payload(): array
     {
+        /** @var \App\Models\User|null $user */
         $user = Auth::user();
-        if (!$user) {
+        if (! $user) {
             return ['items' => [], 'count' => 0];
         }
 
@@ -83,44 +112,90 @@ new class extends Component
 };
 ?>
 
-{{-- Livewire polls here; Alpine owns the open/close state entirely. --}}
+{{-- Livewire polls here; Alpine owns the open/close state AND the
+     mobile positioning. On viewports < 640px the dropdown is not
+     anchored to the bell (which sits ~150px from the viewport's right
+     edge because of the dark-mode toggle, user dropdown, and mobile
+     hamburger to its right). Anchoring `right-0` to the bell would push
+     a 320px-wide panel ~85px off the left edge of a 375px screen.
+     Instead we compute width and left-offset from the wrapper's
+     viewport rect and write them as an inline style. On sm+ the
+     override is cleared and Tailwind's w-80 sm:w-96 apply as normal.
+
+     Visibility uses :class toggling — NOT x-show. Livewire v4's morph
+     engine can call Alpine's show() handler on a detached node and
+     crash with cloneNode on undefined (Rule 69). The dropdown also
+     carries wire:ignore.self so Livewire doesn't strip Alpine's
+     applied classes on the next poll — while still morphing the
+     CHILDREN so @foreach ($this->items) keeps updating. --}}
 <div
     @if ($pollInterval > 0) wire:poll.{{ $pollInterval }}s @endif
-    x-data="{ open: false }"
-    x-on:livewire:navigated.window="$wire.$refresh()"
+    x-data="{
+        open: false,
+        dropdownStyle: '',
+
+        reposition() {
+            if (! this.open) return;
+
+            const dropdown = this.$refs.dropdown;
+            const wrapper  = this.$refs.wrapper;
+            if (! dropdown || ! wrapper) return;
+
+            const isMobile = window.innerWidth < 640;
+
+            if (! isMobile) {
+                this.dropdownStyle = '';
+                return;
+            }
+
+            const margin      = 12;
+            const maxWidth    = 384;
+            const wrapperRect = wrapper.getBoundingClientRect();
+            const width       = Math.min(window.innerWidth - margin * 2, maxWidth);
+            const left        = margin - wrapperRect.left;
+
+            this.dropdownStyle = `width: ${width}px; left: ${left}px; right: auto;`;
+        }
+    }"
+    x-ref="wrapper"
+    x-on:resize.window.throttle.100ms="reposition()"
     x-on:click.outside="open = false"
     x-on:keydown.escape.window="open = false"
     class="relative">
 
-    {{-- Bell button --}}
+    {{-- Bell button.
+         size-11 (44px) on mobile meets the Apple HIG minimum tap target.
+         size-10 (40px) on desktop matches the sibling controls in the
+         public header (dark-mode toggle, hamburger). --}}
     <button type="button"
-            @click="open = !open"
+            @click="open = !open; if (open) $nextTick(() => reposition())"
             :aria-expanded="open.toString()"
             aria-haspopup="true"
-            class="relative flex items-center justify-center size-10 md:size-9 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 transition-all duration-200 active:scale-95"
-            aria-label="Notifications">
+            aria-label="Notifications"
+            class="relative flex items-center justify-center size-11 md:size-10 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition-all duration-200 active:scale-95">
 
-        <svg class="shrink-0 size-4 md:size-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <svg xmlns="http://www.w3.org/2000/svg" class="shrink-0 size-5 md:size-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
             <path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
         </svg>
 
         @if ($this->count > 0)
-            <span class="absolute -top-1 -right-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white ring-2 ring-white dark:ring-gray-900">
+            <span class="absolute -top-1 -right-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-bold text-white ring-2 ring-white dark:ring-gray-900">
                 {{ $this->count > 9 ? '9+' : $this->count }}
             </span>
         @endif
     </button>
 
     {{-- Dropdown --}}
-    <div x-cloak
-         x-show="open"
-         x-transition:enter="transition ease-out duration-150"
-         x-transition:enter-start="opacity-0 scale-95 -translate-y-1"
-         x-transition:enter-end="opacity-100 scale-100 translate-y-0"
-         x-transition:leave="transition ease-in duration-100"
-         x-transition:leave-start="opacity-100 scale-100 translate-y-0"
-         x-transition:leave-end="opacity-0 scale-95 -translate-y-1"
-         class="absolute right-0 z-50 mt-2 w-80 sm:w-96 overflow-hidden rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-2xl origin-top-right">
+    <div x-ref="dropdown"
+         wire:ignore.self
+         x-cloak
+         :style="dropdownStyle"
+         :class="open
+             ? 'opacity-100 scale-100 translate-y-0 pointer-events-auto'
+             : 'opacity-0 scale-95 -translate-y-1 pointer-events-none'"
+         class="absolute right-0 z-50 mt-2 w-80 sm:w-96 max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-2xl origin-top sm:origin-top-right transition-all duration-150 ease-out"
+         role="dialog"
+         aria-label="Notifications">
 
         <div class="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-4 py-3">
             <p class="text-sm font-semibold text-gray-900 dark:text-white">Notifications</p>
@@ -134,7 +209,7 @@ new class extends Component
         @if (empty($this->items))
             <div class="p-8 text-center">
                 <div class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-gray-100 dark:bg-gray-800 mb-3">
-                    <svg class="w-6 h-6 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M9.143 17.082a24.248 24.248 0 003.844.148m-3.844-.148a23.856 23.856 0 01-5.455-1.31 8.964 8.964 0 002.3-5.542m3.155 6.852a3 3 0 005.667 1.97m1.965-2.277L21 21m-4.225-4.225a23.81 23.81 0 003.536-1.003A8.967 8.967 0 0118 9.75V9A6 6 0 006.53 6.53m10.245 10.245L6.53 6.53M3 3l3.53 3.53"/>
                     </svg>
                 </div>
@@ -142,7 +217,7 @@ new class extends Component
                 <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">No notifications right now.</p>
             </div>
         @else
-            <div class="max-h-[28rem] overflow-y-auto">
+            <div class="max-h-[min(28rem,60vh)] overflow-y-auto">
                 @foreach ($this->items as $notification)
                     @php
                         $colors   = $this->colorClasses($notification['color'] ?? 'gray');
@@ -154,7 +229,7 @@ new class extends Component
                        @click="open = false"
                        class="flex items-start gap-3 px-4 py-3 border-b border-gray-100 dark:border-gray-700/60 last:border-0 hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors">
                         <div class="flex items-center justify-center shrink-0 w-9 h-9 rounded-xl border {{ $colors['bg'] }} {{ $colors['text'] }} {{ $colors['border'] }}">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" d="{{ $iconPath }}"/>
                             </svg>
                         </div>
@@ -171,7 +246,7 @@ new class extends Component
                                 </p>
                             @endif
                         </div>
-                        <svg class="w-4 h-4 shrink-0 text-gray-300 dark:text-gray-600 mt-2.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0 text-gray-300 dark:text-gray-600 mt-2.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
                         </svg>
                     </a>

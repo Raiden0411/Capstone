@@ -25,19 +25,60 @@
     $showRegisterBusiness = !$authUser
         || ($authUser instanceof User && $authUser->canRegisterBusiness());
 
+    // Business registration is behind auth middleware. Guests clicking
+    // "Register Business" from the public header would be silently
+    // bounced to /login with no context. Route them through account
+    // creation first, preserving /register-business as the return target.
+    $registerBusinessUrl = $authUser
+        ? route('register_business')
+        : route('register', ['redirect' => route('register_business')]);
+
     // Dual-role (business owner) flag + current mode.
     $canSwitchModes = $authUser instanceof User && $authUser->canSwitchModes();
     $isBusinessMode = $canSwitchModes && $authUser->active_mode === User::MODE_BUSINESS;
     $isTouristMode  = $canSwitchModes && $authUser->active_mode === User::MODE_TOURIST;
 
+    // Nav order — discovery-first. "About" is a static info page and
+    // sits last; the four discovery-focused links cluster together.
     $navLinks = [
         ['route' => 'home',                'label' => 'Home'],
-        ['route' => 'about',               'label' => 'About'],
         ['route' => 'explore.map',         'label' => 'Explore'],
         ['route' => 'tourist-spots.index', 'label' => 'Tourist Spots'],
         ['route' => 'events',              'label' => 'Events'],
+        ['route' => 'about',               'label' => 'About'],
     ];
 @endphp
+
+@push('styles')
+    @once
+        <style>
+            /* Rule 69 replacements — CSS keyframes in place of x-transition. */
+
+            /* User dropdown — fade + scale + slide from top-right. */
+            .public-header-dropdown {
+                animation: publicHeaderDropdownIn .15s cubic-bezier(.16,1,.3,1);
+            }
+            @keyframes publicHeaderDropdownIn {
+                from { opacity: 0; transform: scale(.96) translateY(-4px); }
+                to   { opacity: 1; transform: scale(1) translateY(0); }
+            }
+
+            /* Mobile drawer — fade + slide down from the header. */
+            .public-header-drawer {
+                animation: publicHeaderDrawerIn .2s cubic-bezier(.16,1,.3,1);
+            }
+            @keyframes publicHeaderDrawerIn {
+                from { opacity: 0; transform: translateY(-8px); }
+                to   { opacity: 1; transform: translateY(0); }
+            }
+
+            @media (prefers-reduced-motion: reduce) {
+                .public-header-dropdown,
+                .public-header-drawer { animation: none; }
+            }
+        </style>
+    @endonce
+@endpush
 
 <div x-data="{
         scrolled: false,
@@ -53,7 +94,6 @@
             }
 
             // Lock body scroll while the mobile drawer is open.
-            // Only on mobile — desktop never uses mobileOpen.
             this.$watch('mobileOpen', open => {
                 document.body.classList.toggle(
                     'overflow-hidden',
@@ -70,20 +110,22 @@
             });
         }
     }"
-     @scroll.window.throttle.100ms="scrolled = window.scrollY > 10"
+     @scroll.window.throttle.100ms.passive="scrolled = window.scrollY > 10"
      @keydown.escape.window="mobileOpen = false; userDropdownOpen = false">
 
+    {{-- `[transform:translateZ(0)]` promotes the fixed header to its own
+         compositor layer, so backdrop-blur re-sampling doesn't queue
+         behind other paints (carousel, map tiles). `transition-[...]`
+         narrows the transition to only the properties that actually
+         animate (border-color, box-shadow, background-color) — no more
+         `transition-all` invalidating on every cascade. --}}
     <header
         class="fixed top-0 left-0 right-0 z-50 flex items-center w-full h-16 md:h-20
-               bg-white/90 dark:bg-gray-900/90 backdrop-blur border-b transition-all duration-300"
+               bg-white/90 dark:bg-gray-900/90 backdrop-blur border-b
+               [transform:translateZ(0)] [backface-visibility:hidden]
+               transition-[border-color,box-shadow,background-color] duration-300"
         :class="scrolled ? 'border-gray-200 dark:border-gray-700 shadow-lg shadow-gray-900/5' : 'border-gray-200 dark:border-gray-700'">
 
-        {{--
-            Safe-area aware padding:
-            - ps/pe grow with breakpoints and never dip below the OS notch inset.
-            - On non-notched devices, env() resolves to 0 so the min() picks the
-              regular padding value.
-        --}}
         <nav class="w-full max-w-[90rem] mx-auto flex items-center justify-between gap-2 sm:gap-3 lg:gap-4
                     ps-[max(1rem,env(safe-area-inset-left))]
                     pe-[max(1rem,env(safe-area-inset-right))]
@@ -99,7 +141,8 @@
                href="{{ route('home') }}" wire:navigate>
                 @if($logoUrl)
                     <img src="{{ $logoUrl }}" alt="{{ $siteName }} logo"
-                         class="h-8 md:h-10 w-auto object-contain shrink-0">
+                         class="h-8 md:h-10 w-auto object-contain shrink-0"
+                         decoding="async">
                 @else
                     <div class="flex items-center justify-center h-8 md:h-10 w-8 md:w-10 rounded-lg bg-primary-600 text-white shrink-0"
                          role="img" aria-label="{{ $siteName }} logo">
@@ -112,12 +155,12 @@
                 </span>
             </a>
 
-            {{-- Desktop Nav --}}
+            {{-- Desktop Nav — discovery links first, "About" last --}}
             <div class="hidden lg:flex items-center gap-8 shrink-0">
                 @foreach($navLinks as $link)
                     <a wire:key="desktop-{{ $link['route'] }}"
                        href="{{ route($link['route']) }}" wire:navigate
-                       class="text-[15px] transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-md px-1 {{ request()->routeIs($link['route']) ? 'text-primary-600 dark:text-blue-400 font-bold' : 'font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white' }}">
+                       class="text-[15px] transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-md px-1 {{ request()->routeIs($link['route']) ? 'text-primary-600 dark:text-primary-400 font-bold' : 'font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white' }}">
                         {{ $link['label'] }}
                     </a>
                 @endforeach
@@ -126,9 +169,7 @@
             {{-- Actions --}}
             <div class="flex items-center gap-1 sm:gap-1.5 md:gap-3 shrink-0">
 
-                {{-- ─────────────────────────────────────────────────
-                     MODE SWITCHER — dual-role accounts only
-                     ───────────────────────────────────────────────── --}}
+                {{-- Mode switcher — dual-role accounts only --}}
                 @if($canSwitchModes)
                     <form method="POST" action="{{ route('mode.switch') }}" class="hidden md:block">
                         @csrf
@@ -136,7 +177,7 @@
                             <input type="hidden" name="mode" value="{{ User::MODE_TOURIST }}">
                             <button type="submit"
                                     class="group inline-flex items-center gap-2 px-3 lg:px-3.5 py-2 rounded-full border border-blue-200 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300 text-xs font-semibold transition-all duration-200 hover:bg-blue-100 dark:hover:bg-blue-500/20 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50">
-                                <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v3m0 12v3M5.636 5.636l2.121 2.121m8.486 8.486l2.121 2.121M3 12h3m12 0h3M5.636 18.364l2.121-2.121m8.486-8.486l2.121-2.121"/>
                                 </svg>
                                 <span class="hidden lg:inline">Switch to Tourist</span>
@@ -145,7 +186,7 @@
                             <input type="hidden" name="mode" value="{{ User::MODE_BUSINESS }}">
                             <button type="submit"
                                     class="group inline-flex items-center gap-2 px-3 lg:px-3.5 py-2 rounded-full border border-emerald-200 dark:border-emerald-500/30 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 text-xs font-semibold transition-all duration-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50">
-                                <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" d="M20.25 14.15v4.073a2.25 2.25 0 01-1.606 2.16l-6.75 1.93a2.25 2.25 0 01-1.288 0l-6.75-1.93a2.25 2.25 0 01-1.606-2.16V14.15M18 9.75V7.5a3 3 0 00-3-3H9a3 3 0 00-3 3v2.25M3.75 12v.75h16.5V12a2.25 2.25 0 00-2.25-2.25h-12A2.25 2.25 0 003.75 12z"/>
                                 </svg>
                                 <span class="hidden lg:inline">Switch to Business</span>
@@ -159,7 +200,7 @@
                     <livewire:public::partials.notification-bell />
                 @endauth
 
-                {{-- Dark mode toggle --}}
+                {{-- Dark mode toggle — Rule 69: :class swap on the icons. --}}
                 <button type="button"
                         @click="
                             dark = !dark;
@@ -167,21 +208,21 @@
                             localStorage.setItem('hs_theme', dark ? 'dark' : 'light');
                             window.dispatchEvent(new CustomEvent('theme-changed'));
                         "
-                        class="flex justify-center items-center size-9 md:size-9 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 transition-all duration-200 active:scale-95 shrink-0"
+                        class="flex justify-center items-center size-9 md:size-10 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition-all duration-200 active:scale-95 shrink-0"
                         aria-label="Toggle dark mode">
-                    <svg x-show="dark" x-cloak class="shrink-0 size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
-                    <svg x-show="!dark" x-cloak class="shrink-0 size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" x-cloak :class="dark ? '' : 'hidden'" class="shrink-0 size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" x-cloak :class="dark ? 'hidden' : ''" class="shrink-0 size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
                 </button>
 
                 @guest
                     <a href="{{ route('login') }}" wire:navigate
-                       class="hidden sm:inline-flex px-4 lg:px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 bg-primary-600 rounded-full hover:bg-primary-700 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 shrink-0">
+                       class="hidden sm:inline-flex px-4 lg:px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 bg-primary-600 rounded-full hover:bg-primary-700 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 shrink-0">
                         Login / Sign Up
                     </a>
 
                     @if($showRegisterBusiness)
-                        <a href="{{ route('register_business') }}" wire:navigate
-                           class="hidden md:inline-flex px-4 lg:px-5 py-2.5 text-sm font-medium text-primary-700 dark:text-gray-200 border border-gray-300 dark:border-gray-600 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50 shrink-0">
+                        <a href="{{ $registerBusinessUrl }}" wire:navigate
+                           class="hidden md:inline-flex px-4 lg:px-5 py-2.5 text-sm font-medium text-primary-700 dark:text-gray-200 border border-gray-300 dark:border-gray-600 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 shrink-0">
                             Register Business
                         </a>
                     @endif
@@ -197,38 +238,36 @@
                                        py-1.5 ps-1.5 pe-2 sm:ps-2 sm:pe-3
                                        rounded-full bg-primary-600 text-white hover:bg-primary-700
                                        transition-all duration-200 shadow-sm active:scale-95
-                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50">
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                             @if($avatarUrl)
                                 <img src="{{ $avatarUrl }}" alt="{{ $authUser->name }}"
-                                     class="object-cover w-7 h-7 sm:w-6 sm:h-6 rounded-full shrink-0">
+                                     class="object-cover w-7 h-7 sm:w-6 sm:h-6 rounded-full shrink-0"
+                                     decoding="async">
                             @else
                                 <div class="flex items-center justify-center w-7 h-7 sm:w-6 sm:h-6 text-xs sm:text-sm font-bold text-white rounded-full bg-white/20 shrink-0">
                                     {{ $avatarInitial }}
                                 </div>
                             @endif
                             <span class="hidden sm:inline max-w-[120px] truncate">{{ $authUser->name }}</span>
-                            <svg class="hidden sm:block w-4 h-4 transition-transform duration-200 shrink-0"
+                            <svg xmlns="http://www.w3.org/2000/svg" class="hidden sm:block w-4 h-4 transition-transform duration-200 shrink-0"
                                  :class="userDropdownOpen ? 'rotate-180' : ''"
                                  width="16" height="16" viewBox="0 0 24 24" fill="none"
-                                 stroke="currentColor" stroke-width="2.5">
+                                 stroke="currentColor" stroke-width="2.5" aria-hidden="true">
                                 <path d="m19 9-7 7-7-7"/>
                             </svg>
                         </button>
 
-                        <div x-cloak x-show="userDropdownOpen"
-                             x-transition:enter="transition ease-out duration-150"
-                             x-transition:enter-start="opacity-0 scale-95 -translate-y-1"
-                             x-transition:enter-end="opacity-100 scale-100 translate-y-0"
-                             x-transition:leave="transition ease-in duration-100"
-                             x-transition:leave-start="opacity-100 scale-100 translate-y-0"
-                             x-transition:leave-end="opacity-0 scale-95 -translate-y-1"
+                        {{-- Rule 69: :class toggle + CSS keyframe for entry. --}}
+                        <div x-cloak
+                             :class="userDropdownOpen ? 'public-header-dropdown' : 'hidden'"
                              class="absolute right-0 mt-2 w-64 max-w-[calc(100vw-2rem)] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-2 shadow-xl z-50 origin-top-right">
 
                             <div class="px-4 py-3 border-b border-gray-100 dark:border-gray-700">
                                 <div class="flex items-center gap-3">
                                     @if($avatarUrl)
                                         <img src="{{ $avatarUrl }}" alt="{{ $authUser->name }}"
-                                             class="object-cover w-9 h-9 rounded-full shrink-0">
+                                             class="object-cover w-9 h-9 rounded-full shrink-0"
+                                             decoding="async">
                                     @else
                                         <div class="flex items-center justify-center w-9 h-9 text-sm font-bold text-white bg-primary-600 rounded-full shrink-0">
                                             {{ $avatarInitial }}
@@ -238,7 +277,6 @@
                                         <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">{{ $authUser->name }}</p>
                                         <p class="text-xs text-gray-500 dark:text-gray-400 truncate">{{ $authUser->email }}</p>
 
-                                        {{-- Badge: respects active_mode for dual-role users --}}
                                         @if($authUser->hasRole('super-admin'))
                                             <span class="mt-1 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-300">
                                                 Super Admin
@@ -274,7 +312,7 @@
                                             <input type="hidden" name="mode" value="{{ User::MODE_TOURIST }}">
                                             <button type="submit"
                                                     class="flex w-full items-center gap-3 py-2 px-3 rounded-lg text-sm text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50">
-                                                <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
                                                     <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v3m0 12v3M5.636 5.636l2.121 2.121m8.486 8.486l2.121 2.121M3 12h3m12 0h3M5.636 18.364l2.121-2.121m8.486-8.486l2.121-2.121"/>
                                                 </svg>
                                                 Switch to Tourist Mode
@@ -283,7 +321,7 @@
                                             <input type="hidden" name="mode" value="{{ User::MODE_BUSINESS }}">
                                             <button type="submit"
                                                     class="flex w-full items-center gap-3 py-2 px-3 rounded-lg text-sm text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-500/10 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50">
-                                                <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
                                                     <path stroke-linecap="round" stroke-linejoin="round" d="M20.25 14.15v4.073a2.25 2.25 0 01-1.606 2.16l-6.75 1.93a2.25 2.25 0 01-1.288 0l-6.75-1.93a2.25 2.25 0 01-1.606-2.16V14.15M18 9.75V7.5a3 3 0 00-3-3H9a3 3 0 00-3 3v2.25M3.75 12v.75h16.5V12a2.25 2.25 0 00-2.25-2.25h-12A2.25 2.25 0 003.75 12z"/>
                                                 </svg>
                                                 Switch to Business Mode
@@ -299,7 +337,7 @@
                                     <a class="flex items-center gap-3 py-2 px-3 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-primary-600 dark:hover:text-white transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                                        href="{{ route('tenant.dashboard') }}" wire:navigate
                                        @click="userDropdownOpen = false">
-                                        <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" d="M3 12l9-9 9 9M5 10v10a1 1 0 001 1h3a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1h3a1 1 0 001-1V10"/>
                                         </svg>
                                         Business Dashboard
@@ -307,7 +345,7 @@
                                     <a class="flex items-center gap-3 py-2 px-3 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-primary-600 dark:hover:text-white transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                                        href="{{ route('my-bookings') }}" wire:navigate
                                        @click="userDropdownOpen = false">
-                                        <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                                         </svg>
                                         My Bookings
@@ -316,7 +354,7 @@
                                     <a class="flex items-center gap-3 py-2 px-3 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-primary-600 dark:hover:text-white transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                                        href="{{ route('my-bookings') }}" wire:navigate
                                        @click="userDropdownOpen = false">
-                                        <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                                         </svg>
                                         My Bookings
@@ -326,7 +364,7 @@
                                 <a class="flex items-center gap-3 py-2 px-3 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-primary-600 dark:hover:text-white transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                                    href="{{ route('profile') }}" wire:navigate
                                    @click="userDropdownOpen = false">
-                                    <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
                                         <path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
                                     </svg>
                                     My Profile
@@ -334,9 +372,9 @@
 
                                 @if($showRegisterBusiness)
                                     <a class="flex items-center gap-3 py-2 px-3 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-primary-600 dark:hover:text-white transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
-                                       href="{{ route('register_business') }}" wire:navigate
+                                       href="{{ $registerBusinessUrl }}" wire:navigate
                                        @click="userDropdownOpen = false">
-                                        <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
                                         </svg>
                                         Register Business
@@ -350,7 +388,7 @@
                                        class="flex items-center gap-3 py-2 px-3 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-primary-600 dark:hover:text-white transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                                        href="{{ route($link['route']) }}" wire:navigate
                                        @click="userDropdownOpen = false">
-                                        <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657 13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
                                             <path stroke-linecap="round" stroke-linejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
                                         </svg>
@@ -363,8 +401,8 @@
                                 <form method="POST" action="{{ route('logout') }}">
                                     @csrf
                                     <button type="submit"
-                                            class="flex w-full items-center gap-3 py-2 px-3 rounded-lg text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50">
-                                        <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                                            class="flex w-full items-center gap-3 py-2 px-3 rounded-lg text-sm text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9"/>
                                         </svg>
                                         Logout
@@ -375,17 +413,17 @@
                     </div>
                 @endauth
 
-                {{-- Mobile hamburger --}}
+                {{-- Mobile hamburger — Rule 69: :class swap on the icons. --}}
                 <div class="lg:hidden shrink-0">
                     <button type="button"
                             @click="mobileOpen = !mobileOpen"
                             :aria-expanded="mobileOpen.toString()"
-                            class="w-9 h-9 md:w-10 md:h-10 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-all duration-200 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-600/50"
+                            class="size-9 md:size-10 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-all duration-200 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                             aria-label="Toggle navigation">
-                        <svg x-show="!mobileOpen" x-cloak class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <svg xmlns="http://www.w3.org/2000/svg" x-cloak :class="!mobileOpen ? '' : 'hidden'" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
                             <line x1="3" x2="21" y1="6" y2="6"/><line x1="3" x2="21" y1="12" y2="12"/><line x1="3" x2="21" y1="18" y2="18"/>
                         </svg>
-                        <svg x-show="mobileOpen" x-cloak class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <svg xmlns="http://www.w3.org/2000/svg" x-cloak :class="mobileOpen ? '' : 'hidden'" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
                             <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
                         </svg>
                     </button>
@@ -393,22 +431,12 @@
             </div>
         </nav>
 
-        {{--
-            Mobile drawer.
-            - max-h uses `dvh` (dynamic viewport) with an md variant matching the
-              header's growth from h-16 to h-20.
-            - Bottom padding respects `env(safe-area-inset-bottom)` so the
-              Logout button isn't swallowed by the home indicator.
-            - Left/right padding respects notch in landscape.
-        --}}
-        <div x-cloak x-show="mobileOpen"
-             x-transition:enter="transition ease-out duration-200"
-             x-transition:enter-start="opacity-0 -translate-y-2"
-             x-transition:enter-end="opacity-100 translate-y-0"
-             x-transition:leave="transition ease-in duration-150"
-             x-transition:leave-start="opacity-100 translate-y-0"
-             x-transition:leave-end="opacity-0 -translate-y-2"
+        {{-- Mobile drawer — Rule 69: :class toggle + CSS keyframe. --}}
+        <div x-cloak
+             :class="mobileOpen ? 'public-header-drawer' : 'hidden'"
              data-mobile-drawer
+             role="navigation"
+             aria-label="Mobile navigation"
              class="lg:hidden absolute top-full left-0 right-0
                     bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700
                     pt-5 pb-[max(1.25rem,env(safe-area-inset-bottom))]
@@ -421,10 +449,10 @@
                     max-h-[calc(100dvh-4rem)] md:max-h-[calc(100dvh-5rem)]
                     overflow-y-auto overscroll-contain">
 
-            {{-- Nav links — 44px+ touch targets --}}
+            {{-- Nav links — same discovery-first order as desktop --}}
             @foreach($navLinks as $link)
                 <a wire:key="mobile-{{ $link['route'] }}"
-                   class="block text-base font-medium active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 {{ request()->routeIs($link['route']) ? 'text-primary-600 dark:text-blue-400 font-bold bg-primary-50 dark:bg-primary-500/10' : 'text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50' }}"
+                   class="block text-base font-medium active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 {{ request()->routeIs($link['route']) ? 'text-primary-600 dark:text-primary-400 font-bold bg-primary-50 dark:bg-primary-500/10' : 'text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50' }}"
                    href="{{ route($link['route']) }}" wire:navigate
                    @click="mobileOpen = false">
                     {{ $link['label'] }}
@@ -472,14 +500,14 @@
 
                     @if($showRegisterBusiness)
                         <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
-                           href="{{ route('register_business') }}" wire:navigate
+                           href="{{ $registerBusinessUrl }}" wire:navigate
                            @click="mobileOpen = false">Register Business</a>
                     @endif
 
                     <form method="POST" action="{{ route('logout') }}" class="pt-3">
                         @csrf
                         <button type="submit"
-                                class="w-full text-center text-base font-medium py-3 rounded-full bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-500/20 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50">
+                                class="w-full text-center text-base font-medium py-3 rounded-full bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-500/20 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                             Logout
                         </button>
                     </form>
@@ -494,7 +522,7 @@
                     </a>
 
                     @if($showRegisterBusiness)
-                        <a href="{{ route('register_business') }}" wire:navigate @click="mobileOpen = false"
+                        <a href="{{ $registerBusinessUrl }}" wire:navigate @click="mobileOpen = false"
                            class="w-full text-center text-base font-medium py-3 rounded-full border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                             Register Business
                         </a>
@@ -504,9 +532,10 @@
         </div>
     </header>
 
-    {{-- Mobile drawer backdrop --}}
-    <div x-cloak x-show="mobileOpen" x-transition.opacity
-         class="fixed inset-0 z-40 bg-black/50 lg:hidden"
+    {{-- Mobile drawer backdrop — Rule 69: :class + transition-opacity. --}}
+    <div x-cloak
+         :class="mobileOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'"
+         class="fixed inset-0 z-40 bg-black/50 lg:hidden transition-opacity duration-200"
          @click="mobileOpen = false"
          aria-hidden="true"></div>
 </div>

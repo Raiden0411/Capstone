@@ -9,6 +9,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 use Throwable;
 
@@ -21,8 +22,9 @@ class RegisterBusinessController extends Controller
     public function store(Request $request)
     {
         $user = Auth::user();
-        abort_if(!$user, 403);
+        abort_if(! $user, 403);
 
+        /** @var BusinessApplication|null $application */
         $application = $user->businessApplications()
             ->whereIn('status', [
                 BusinessApplication::STATUS_DRAFT,
@@ -31,7 +33,7 @@ class RegisterBusinessController extends Controller
             ->latest()
             ->first();
 
-        if (!$application) {
+        if (! $application) {
             $application = BusinessApplication::create([
                 'user_id' => $user->id,
                 'status'  => BusinessApplication::STATUS_DRAFT,
@@ -63,16 +65,15 @@ class RegisterBusinessController extends Controller
             'type_of_tenant_id'            => 'nullable|exists:type_of_tenants,id',
         ]);
 
-        // Normalize exactly like the SFC's payloadForStep(1).
         $validated['business_name'] = trim($validated['business_name']);
 
-        if (!empty($validated['business_registration_number'])) {
+        if (! empty($validated['business_registration_number'])) {
             $validated['business_registration_number'] = strtoupper(trim($validated['business_registration_number']));
         } else {
             $validated['business_registration_number'] = null;
         }
 
-        if (!empty($validated['tin_number'])) {
+        if (! empty($validated['tin_number'])) {
             $validated['tin_number'] = trim($validated['tin_number']);
         } else {
             $validated['tin_number'] = null;
@@ -99,17 +100,44 @@ class RegisterBusinessController extends Controller
             'expires_at'      => 'nullable|date|after:issued_at',
         ]);
 
+        // Paths of any replaced documents, collected inside the transaction
+        // and drained AFTER commit. Filesystem operations are not
+        // transactional: deleting files inside the transaction would leave
+        // a soft-deleted row pointing at a missing file if the transaction
+        // rolled back (which it does whenever attachDocument throws — e.g.
+        // a storage failure). Deferring to post-commit means we only ever
+        // delete files whose replacement actually succeeded.
+        $replacedPaths = [];
+
         try {
-            DB::transaction(function () use ($application, $validated, $request): void {
-                // Delete previous versions of this doc type first.
+            DB::transaction(function () use ($application, $validated, $request, &$replacedPaths): void {
+                // Soft-delete previous versions of this doc type. The rows
+                // are retained (SoftDeletes on BusinessDocument) so the
+                // audit trail shows "document_type X was replaced on date Y"
+                // — the model metadata (document_number, issued_at,
+                // expires_at, verification_status, timestamps) survives.
+                //
+                // Uses ->where() instead of ->ofType() so PHPStan can
+                // resolve the call chain without a custom scope annotation.
                 $application->documents()
-                    ->ofType($validated['document_type'])
+                    ->where('document_type', $validated['document_type'])
                     ->get()
-                    ->each(fn ($doc) => $doc->delete());
+                    ->each(function ($doc) use (&$replacedPaths): void {
+                        foreach (['stored_path', 'watermarked_path'] as $field) {
+                            $path = $doc->{$field} ?? null;
+                            if (is_string($path) && $path !== '') {
+                                $replacedPaths[] = $path;
+                            }
+                        }
+                        $doc->delete();
+                    });
+
+                /** @var \App\Models\User $currentUser */
+                $currentUser = Auth::user();
 
                 $this->service->attachDocument(
                     $application,
-                    Auth::user(),
+                    $currentUser,
                     $validated['document_type'],
                     $request->file('file'),
                     [
@@ -127,6 +155,30 @@ class RegisterBusinessController extends Controller
             ]);
 
             return back()->with('error', 'Document upload failed. Please try again.');
+        }
+
+        // Post-commit file cleanup. Runs only if the transaction
+        // succeeded. A failure here is logged but does NOT roll back the
+        // upload — the new version is already committed to DB + disk; a
+        // leftover old file is a bounded disk-usage concern, not a
+        // data-integrity one.
+        if (!empty($replacedPaths)) {
+            $disk = Storage::disk('public');
+
+            foreach ($replacedPaths as $path) {
+                if (! $disk->exists($path)) {
+                    continue;
+                }
+
+                try {
+                    $disk->delete($path);
+                } catch (Throwable $e) {
+                    Log::warning('Failed to delete replaced KYB doc file', [
+                        'path'  => $path,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
         }
 
         return back()->with('message', 'Document uploaded and watermarked.');

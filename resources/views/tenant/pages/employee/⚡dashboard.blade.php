@@ -1,426 +1,580 @@
-{{-- resources/views/tenant/pages/employee/⚡view-employee.blade.php --}}
+{{-- resources/views/tenant/pages/employee/⚡dashboard.blade.php --}}
 <?php
 
 use Livewire\Component;
-use Livewire\WithPagination;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
-use Livewire\Attributes\Url;
+use App\Models\Booking;
 use App\Models\Employee;
+use App\Models\Event;
+use App\Models\Payment;
+use App\Models\Property;
+use App\Models\Service;
 use App\Scopes\TenantScope;
+use App\Traits\ChecksTenantPermissions;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
-new 
+new
 #[Layout('tenant.layouts.app')]
-#[Title('Employees')]
+#[Title('Dashboard')]
 class extends Component {
-    use WithPagination;
+    use ChecksTenantPermissions;
 
-    #[Url]
-    public string $search = '';
-    #[Url]
-    public string $roleFilter = '';
-    #[Url]
-    public string $statusFilter = '';
-
-    public function updatingSearch()       { $this->resetPage(); }
-    public function updatingRoleFilter()   { $this->resetPage(); }
-    public function updatingStatusFilter() { $this->resetPage(); }
+    public function mount(): void
+    {
+        abort_unless(Auth::user()?->tenant_id, 403);
+    }
 
     /**
-     * Guard mutations. Uses getAllPermissions()->contains() instead of
-     * hasPermissionTo() so a missing permission never throws — it just
-     * returns false and the caller gets a clean 403.
+     * Guard every subsequent Livewire request. mount() runs once; every
+     * action (navigating tabs, refreshing…) is a separate HTTP request.
      */
-    protected function authorizeManage(): void
+    public function hydrate(): void
     {
-        $user = Auth::user();
-        if (!$user) {
-            abort(403);
-        }
-
-        $canManage = $user->hasAnyRole(['admin', 'super-admin'])
-            || $user->getAllPermissions()->contains('name', 'manage employees');
-
-        if (!$canManage) {
-            abort(403, 'You are not authorized to manage employees.');
-        }
+        abort_unless(Auth::user()?->tenant_id, 403);
     }
 
-    public function toggleActive(int $id)
+    // ─────────────────────────────────────────────────────────
+    //  Context
+    // ─────────────────────────────────────────────────────────
+
+    #[Computed]
+    public function employee(): ?Employee
     {
-        $this->authorizeManage();
-
-        $employee = Employee::withoutGlobalScope(TenantScope::class)
-            ->where('id', $id)
-            ->where('tenant_id', Auth::user()->tenant_id)
-            ->firstOrFail();
-
-        // Prevent deactivating your own linked account
-        if ($employee->user_id === Auth::id() && $employee->is_active) {
-            session()->flash('error', 'You cannot deactivate your own account.');
-            return;
-        }
-
-        $employee->update(['is_active' => !$employee->is_active]);
-
-        session()->flash(
-            'message',
-            "{$employee->name} " . ($employee->is_active ? 'activated' : 'deactivated') . '.'
-        );
-    }
-
-    public function delete(int $id)
-    {
-        $this->authorizeManage();
-
-        $employee = Employee::withoutGlobalScope(TenantScope::class)
-            ->where('id', $id)
-            ->where('tenant_id', Auth::user()->tenant_id)
-            ->firstOrFail();
-
-        // Guard: never let an admin delete their own employee record
-        if ($employee->user_id === Auth::id()) {
-            session()->flash('error', 'You cannot delete your own employee record.');
-            return;
-        }
-
-        // Guard: never leave the tenant without an active manager
-        if (strtolower($employee->role ?? '') === 'manager' && $employee->is_active) {
-            $otherManagers = Employee::withoutGlobalScope(TenantScope::class)
-                ->where('tenant_id', Auth::user()->tenant_id)
-                ->where('id', '!=', $employee->id)
-                ->where('is_active', true)
-                ->whereRaw("LOWER(role) = 'manager'")
-                ->count();
-
-            if ($otherManagers === 0) {
-                session()->flash('error', 'Cannot delete the last active manager.');
-                return;
-            }
-        }
-
-        try {
-            $name = $employee->name;
-
-            DB::transaction(function () use ($employee) {
-                // Deleting the employee record does NOT delete the linked user.
-                // The user may still be referenced elsewhere (bookings, another
-                // employee record on a different tenant, etc.), and the admin
-                // can remove the user from the superadmin panel if needed.
-                $employee->delete();
-            });
-
-            session()->flash('message', "{$name} deleted.");
-        } catch (\Exception $e) {
-            Log::error('Employee delete failed: ' . $e->getMessage(), [
-                'tenant_id'   => Auth::user()->tenant_id,
-                'employee_id' => $id,
-            ]);
-            session()->flash('error', 'Failed to delete employee. Please try again.');
-        }
-    }
-
-    public function clearFilters()
-    {
-        $this->reset(['search', 'roleFilter', 'statusFilter']);
-        $this->resetPage();
+        return Auth::user()?->employee;
     }
 
     #[Computed]
-    public function employees()
+    public function jobTitle(): string
     {
-        return Employee::withoutGlobalScope(TenantScope::class)
+        $role = $this->employee?->role;
+
+        return $role ? Str::headline($role) : 'Team Member';
+    }
+
+    #[Computed]
+    public function tenantName(): string
+    {
+        return Auth::user()?->tenant?->name ?? config('app.name');
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Bookings widgets
+    // ─────────────────────────────────────────────────────────
+
+    #[Computed]
+    public function todayArrivals(): int
+    {
+        return Booking::withoutGlobalScope(TenantScope::class)
             ->where('tenant_id', Auth::user()->tenant_id)
+            ->whereDate('check_in', today())
+            ->whereNotIn('status', [Booking::STATUS_CANCELLED])
+            ->count();
+    }
+
+    #[Computed]
+    public function todayDepartures(): int
+    {
+        return Booking::withoutGlobalScope(TenantScope::class)
+            ->where('tenant_id', Auth::user()->tenant_id)
+            ->whereDate('check_out', today())
+            ->whereNotIn('status', [Booking::STATUS_CANCELLED])
+            ->count();
+    }
+
+    #[Computed]
+    public function pendingBookings(): int
+    {
+        return Booking::withoutGlobalScope(TenantScope::class)
+            ->where('tenant_id', Auth::user()->tenant_id)
+            ->where('status', Booking::STATUS_PENDING)
+            ->count();
+    }
+
+    #[Computed]
+    public function upcomingBookings(): int
+    {
+        return Booking::withoutGlobalScope(TenantScope::class)
+            ->where('tenant_id', Auth::user()->tenant_id)
+            ->whereIn('status', [Booking::STATUS_CONFIRMED, Booking::STATUS_RESERVED])
+            ->where('check_in', '>=', today())
+            ->count();
+    }
+
+    #[Computed]
+    public function recentBookings()
+    {
+        return Booking::withoutGlobalScope(TenantScope::class)
             ->with([
-                'user' => fn ($q) => $q->select('id', 'tenant_id', 'name', 'email', 'phone', 'avatar', 'is_active')
-                    ->with('roles:id,name'),
+                'user:id,name,email',
+                'items.property:id,name',
             ])
-            ->when($this->search, function ($q) {
-                $q->where(function ($sq) {
-                    $sq->where('name', 'like', '%'.$this->search.'%')
-                       ->orWhere('code', 'like', '%'.$this->search.'%')
-                       ->orWhere('phone', 'like', '%'.$this->search.'%')
-                       ->orWhereHas('user', function ($uq) {
-                           $uq->where('name', 'like', '%'.$this->search.'%')
-                              ->orWhere('email', 'like', '%'.$this->search.'%')
-                              ->orWhere('phone', 'like', '%'.$this->search.'%');
-                       });
-                });
-            })
-            ->when($this->roleFilter, fn ($q) => $q->where('role', $this->roleFilter))
-            ->when($this->statusFilter === 'active',   fn ($q) => $q->where('is_active', true))
-            ->when($this->statusFilter === 'inactive', fn ($q) => $q->where('is_active', false))
-            ->orderByRaw("CASE WHEN LOWER(role) = 'manager' THEN 0 ELSE 1 END")
-            ->orderBy('name')
-            ->paginate(10);
+            ->where('tenant_id', Auth::user()->tenant_id)
+            ->latest('created_at')
+            ->limit(5)
+            ->get();
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Payments widgets
+    // ─────────────────────────────────────────────────────────
+
+    #[Computed]
+    public function pendingPayments(): int
+    {
+        return Payment::withoutGlobalScope(TenantScope::class)
+            ->where('tenant_id', Auth::user()->tenant_id)
+            ->where('payment_status', 'pending')
+            ->count();
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Properties / services widgets
+    // ─────────────────────────────────────────────────────────
+
+    #[Computed]
+    public function availableProperties(): int
+    {
+        return Property::withoutGlobalScope(TenantScope::class)
+            ->where('tenant_id', Auth::user()->tenant_id)
+            ->where('is_active', true)
+            ->where('status', 'available')
+            ->count();
     }
 
     #[Computed]
-    public function roles()
+    public function totalProperties(): int
+    {
+        return Property::withoutGlobalScope(TenantScope::class)
+            ->where('tenant_id', Auth::user()->tenant_id)
+            ->where('is_active', true)
+            ->count();
+    }
+
+    #[Computed]
+    public function activeServices(): int
+    {
+        return Service::withoutGlobalScope(TenantScope::class)
+            ->where('tenant_id', Auth::user()->tenant_id)
+            ->where('is_active', true)
+            ->count();
+    }
+
+    #[Computed]
+    public function activeEvents(): int
+    {
+        return Event::withoutGlobalScope(TenantScope::class)
+            ->where('tenant_id', Auth::user()->tenant_id)
+            ->where('is_active', true)
+            ->where(function ($q) {
+                $q->whereNull('end_date')->orWhere('end_date', '>=', now());
+            })
+            ->count();
+    }
+
+    #[Computed]
+    public function teamMembers(): int
     {
         return Employee::withoutGlobalScope(TenantScope::class)
             ->where('tenant_id', Auth::user()->tenant_id)
-            ->whereNotNull('role')
-            ->where('role', '!=', '')
-            ->distinct()
-            ->orderBy('role')
-            ->pluck('role');
+            ->where('is_active', true)
+            ->count();
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Tile + action builders (permission-filtered)
+    // ─────────────────────────────────────────────────────────
+
+    /**
+     * @return array<int, array{key: string, label: string, value: int, suffix: string, icon: string, href: ?string, color: string}>
+     */
+    #[Computed]
+    public function statTiles(): array
+    {
+        $tiles = [];
+
+        if ($this->tenantCan('view bookings')) {
+            $tiles[] = ['key' => 'arrivals',   'label' => "Today's Arrivals",   'value' => $this->todayArrivals,   'suffix' => '', 'icon' => 'inbox-check',  'href' => route('tenant.bookings.index'), 'color' => 'emerald'];
+            $tiles[] = ['key' => 'departures', 'label' => "Today's Departures", 'value' => $this->todayDepartures, 'suffix' => '', 'icon' => 'arrow-up-right','href' => route('tenant.bookings.index'), 'color' => 'rose'];
+            $tiles[] = ['key' => 'pending',    'label' => 'Pending Bookings',   'value' => $this->pendingBookings, 'suffix' => '', 'icon' => 'clock',        'href' => route('tenant.bookings.index'), 'color' => 'amber'];
+            $tiles[] = ['key' => 'upcoming',   'label' => 'Upcoming',           'value' => $this->upcomingBookings,'suffix' => '', 'icon' => 'calendar',     'href' => route('tenant.bookings.index'), 'color' => 'blue'];
+        }
+
+        if ($this->tenantCan('view payments')) {
+            $tiles[] = ['key' => 'pending-payments', 'label' => 'Pending Payments', 'value' => $this->pendingPayments, 'suffix' => '', 'icon' => 'cash', 'href' => route('tenant.payments.index'), 'color' => 'amber'];
+        }
+
+        if ($this->tenantCan('view properties')) {
+            $tiles[] = ['key' => 'available-properties', 'label' => 'Available Now',    'value' => $this->availableProperties, 'suffix' => '', 'icon' => 'building', 'href' => route('tenant.properties.index'), 'color' => 'teal'];
+            $tiles[] = ['key' => 'total-properties',     'label' => 'Total Properties', 'value' => $this->totalProperties,     'suffix' => '', 'icon' => 'key',      'href' => route('tenant.properties.index'), 'color' => 'indigo'];
+        }
+
+        if ($this->tenantCan('view services')) {
+            $tiles[] = ['key' => 'services', 'label' => 'Active Services', 'value' => $this->activeServices, 'suffix' => '', 'icon' => 'sparkles', 'href' => route('tenant.services.index'), 'color' => 'purple'];
+        }
+
+        if ($this->tenantCan('view events')) {
+            $tiles[] = ['key' => 'events', 'label' => 'Active Events', 'value' => $this->activeEvents, 'suffix' => '', 'icon' => 'calendar-star', 'href' => route('tenant.events.index'), 'color' => 'pink'];
+        }
+
+        if ($this->tenantCan('view employees')) {
+            $tiles[] = ['key' => 'team', 'label' => 'Active Team Members', 'value' => $this->teamMembers, 'suffix' => '', 'icon' => 'users', 'href' => route('tenant.employees.index'), 'color' => 'slate'];
+        }
+
+        return $tiles;
+    }
+
+    /**
+     * @return array<int, array{label: string, description: string, href: string, icon: string}>
+     */
+    #[Computed]
+    public function quickActions(): array
+    {
+        $actions = [];
+
+        if ($this->tenantCan('create bookings')) {
+            $actions[] = ['label' => 'New Reservation', 'description' => 'Create a walk-in booking',  'href' => route('tenant.bookings.create'), 'icon' => 'plus-circle'];
+        }
+        if ($this->tenantCan('view bookings')) {
+            $actions[] = ['label' => 'Active Bookings', 'description' => 'View current reservations',  'href' => route('tenant.bookings.index'),  'icon' => 'list'];
+            $actions[] = ['label' => 'Booking History', 'description' => 'Archived and cancelled',     'href' => route('tenant.bookings.history'), 'icon' => 'archive'];
+        }
+        if ($this->tenantCan('view payments')) {
+            $actions[] = ['label' => 'Payments',        'description' => 'Review payment records',     'href' => route('tenant.payments.index'),  'icon' => 'cash'];
+        }
+        if ($this->tenantCan('manage properties')) {
+            $actions[] = ['label' => 'Add Property',    'description' => 'Register a new listing',     'href' => route('tenant.properties.create'), 'icon' => 'plus-circle'];
+        } elseif ($this->tenantCan('view properties')) {
+            $actions[] = ['label' => 'Properties',      'description' => 'Manage your listings',       'href' => route('tenant.properties.index'), 'icon' => 'building'];
+        }
+        if ($this->tenantCan('view services')) {
+            $actions[] = ['label' => 'Services',        'description' => 'Add-ons and amenities',      'href' => route('tenant.services.index'),   'icon' => 'sparkles'];
+        }
+        if ($this->tenantCan('view events')) {
+            $actions[] = ['label' => 'Events',          'description' => 'Festivals and activities',   'href' => route('tenant.events.index'),     'icon' => 'calendar'];
+        }
+        if ($this->tenantCan('view employees')) {
+            $actions[] = ['label' => 'Team',            'description' => 'People and access',          'href' => route('tenant.employees.index'),  'icon' => 'users'];
+        }
+        if ($this->tenantCan('view analytics')) {
+            $actions[] = ['label' => 'Analytics',       'description' => 'Performance and trends',     'href' => route('tenant.analytics.index'),  'icon' => 'chart'];
+        }
+
+        return $actions;
     }
 
     #[Computed]
-    public function stats()
+    public function hasAnyAccess(): bool
     {
-        $tid = Auth::user()->tenant_id;
-
-        $agg = Employee::withoutGlobalScope(TenantScope::class)
-            ->where('tenant_id', $tid)
-            ->selectRaw("
-                COUNT(*) as total,
-                SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) as active,
-                SUM(CASE WHEN is_active = 0 THEN 1 ELSE 0 END) as inactive,
-                SUM(CASE WHEN LOWER(role) = 'manager' AND is_active = 1 THEN 1 ELSE 0 END) as managers
-            ")
-            ->first();
-
-        return [
-            'total'    => (int) ($agg->total ?? 0),
-            'active'   => (int) ($agg->active ?? 0),
-            'inactive' => (int) ($agg->inactive ?? 0),
-            'managers' => (int) ($agg->managers ?? 0),
-        ];
+        return ! empty($this->statTiles) || ! empty($this->quickActions);
     }
 };
 ?>
 
 <div class="p-4 sm:p-6 lg:p-8 max-w-[1440px] mx-auto space-y-6">
 
-    {{-- Header --}}
-    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
-        <div>
-            <div class="flex items-center gap-2 mb-2">
-                <span class="w-5 h-px bg-primary-600"></span>
-                <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Team</span>
-            </div>
-            <h1 class="font-display text-3xl md:text-4xl font-semibold text-gray-900 dark:text-white">
-                <em class="italic text-primary-600 dark:text-primary-400">Employees</em>
-            </h1>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mt-2">Manage your team members and their access.</p>
+    {{-- ─────────────  Header  ───────────── --}}
+    <div class="pb-6 border-b border-gray-200 dark:border-gray-700">
+        <div class="flex items-center gap-2 mb-2">
+            <span class="w-5 h-px bg-primary-600"></span>
+            <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Dashboard</span>
         </div>
-        <a href="{{ route('tenant.employees.create') }}" wire:navigate
-           class="btn-primary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-            Add Employee
-        </a>
+        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">
+            Welcome back, {{ Auth::user()->name }}
+        </h1>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+            {{ $this->jobTitle }} · {{ $this->tenantName }} · {{ now()->format('l, F j, Y') }}
+        </p>
     </div>
 
-    {{-- Flash Messages --}}
-    @if (session()->has('message'))
-        <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium flex items-center gap-2">
-            <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-            {{ session('message') }}
-        </div>
-    @endif
-    @if (session()->has('error'))
-        <div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 border-l-4 border-l-red-500 p-4 rounded-md text-sm text-red-700 dark:text-red-300 font-medium flex items-center gap-2">
-            <svg class="w-4 h-4 text-red-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-            {{ session('error') }}
-        </div>
-    @endif
-
-    {{-- Stats --}}
-    @php $s = $this->stats; @endphp
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div class="card p-4">
-            <div class="flex items-center justify-between">
-                <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Total</p>
-                <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-            </div>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $s['total'] }}</p>
-        </div>
-        <div class="card p-4">
-            <div class="flex items-center justify-between">
-                <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Active</p>
-                <span class="w-2 h-2 rounded-full bg-green-500"></span>
-            </div>
-            <p class="text-2xl font-bold text-green-600 dark:text-green-400 mt-2">{{ $s['active'] }}</p>
-        </div>
-        <div class="card p-4">
-            <div class="flex items-center justify-between">
-                <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Inactive</p>
-                <span class="w-2 h-2 rounded-full bg-gray-400"></span>
-            </div>
-            <p class="text-2xl font-bold text-gray-400 dark:text-gray-500 mt-2">{{ $s['inactive'] }}</p>
-        </div>
-        <div class="card p-4">
-            <div class="flex items-center justify-between">
-                <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Managers</p>
-                <svg class="w-4 h-4 text-primary-500" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2l2 4h4l-3 3 1 4-4-2-4 2 1-4-3-3h4l2-4z"/></svg>
-            </div>
-            <p class="text-2xl font-bold text-primary-600 dark:text-primary-400 mt-2">{{ $s['managers'] }}</p>
-        </div>
-    </div>
-
-    {{-- Filters --}}
-    <div class="card p-4">
-        <div class="flex flex-col md:flex-row gap-3 items-stretch md:items-center">
-            <div class="relative flex-1">
-                <input type="text" wire:model.live.debounce.300ms="search"
-                       placeholder="Search by name, email, phone, or code…"
-                       class="input pl-10">
-                <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+    @if(! $this->hasAnyAccess)
+        {{-- Defensive — cannot happen given IsTenantAdmin, but harmless. --}}
+        <div class="card p-8 sm:p-12 text-center">
+            <div class="mx-auto w-14 h-14 rounded-2xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-gray-400 dark:text-gray-500 mb-4">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 15v2m0 0v2m0-2h2m-2 0H10m2-8V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2h2m8-2a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4 8h4"/>
                 </svg>
             </div>
-            <select wire:model.live="roleFilter" class="select w-full md:w-auto">
-                <option value="">All Roles</option>
-                @foreach($this->roles as $role)
-                    <option value="{{ $role }}">{{ $role }}</option>
-                @endforeach
-            </select>
-            <select wire:model.live="statusFilter" class="select w-full md:w-auto">
-                <option value="">All Status</option>
-                <option value="active">Active</option>
-                <option value="inactive">Inactive</option>
-            </select>
-            @if($search || $roleFilter || $statusFilter)
-                <button wire:click="clearFilters"
-                        class="btn-secondary text-xs active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-1 whitespace-nowrap">
-                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                    Clear
-                </button>
-            @endif
+            <p class="text-base font-semibold text-gray-900 dark:text-white">No modules available</p>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1 max-w-sm mx-auto">
+                Your account does not have access to any tenant modules. Contact your business owner to request permissions.
+            </p>
         </div>
-    </div>
+    @else
 
-    {{-- Table --}}
-    <div class="card overflow-hidden">
-        <div class="overflow-x-auto" wire:loading.class="opacity-50">
-            <table class="w-full text-left">
-                <thead class="border-b border-gray-200 dark:border-gray-700">
-                    <tr>
-                        <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Employee</th>
-                        <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase hidden sm:table-cell">Code</th>
-                        <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase hidden sm:table-cell">Job Title</th>
-                        <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase hidden lg:table-cell">Account</th>
-                        <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Status</th>
-                        <th class="px-4 sm:px-6 py-4 text-right text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Actions</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-100 dark:divide-gray-700 text-gray-700 dark:text-gray-200">
-                    @forelse($this->employees as $employee)
-                        @php
-                            $isSelf    = $employee->user_id === Auth::id();
-                            $isManager = strtolower($employee->role ?? '') === 'manager';
-                            $avatarSrc = $employee->avatar ?: ($employee->user->avatar ?? null);
-                        @endphp
-                        <tr wire:key="employee-row-{{ $employee->id }}" class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
-                            <td class="px-4 sm:px-6 py-4">
-                                <div class="flex items-center gap-3">
-                                    <div class="h-10 w-10 rounded-lg bg-primary-50 dark:bg-primary-500/10 flex items-center justify-center text-primary-600 dark:text-primary-400 font-semibold text-sm shrink-0 overflow-hidden">
-                                        @if($avatarSrc)
-                                            <img src="{{ asset('storage/'. $avatarSrc) }}" alt="{{ $employee->name }}" class="h-full w-full object-cover">
-                                        @else
-                                            {{ strtoupper(substr($employee->name, 0, 1)) }}
-                                        @endif
-                                    </div>
-                                    <div class="min-w-0">
-                                        <div class="flex items-center gap-2 flex-wrap">
-                                            <p class="font-medium text-gray-900 dark:text-white truncate">{{ $employee->name }}</p>
-                                            @if($isManager)
-                                                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-primary-100 dark:bg-primary-500/15 text-primary-700 dark:text-primary-300 border border-primary-200 dark:border-primary-500/30">
-                                                    <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2l2 4h4l-3 3 1 4-4-2-4 2 1-4-3-3h4l2-4z"/></svg>
-                                                    Manager
-                                                </span>
-                                            @endif
-                                            @if($isSelf)
-                                                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 dark:bg-blue-500/15 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-500/30">
-                                                    You
-                                                </span>
-                                            @endif
-                                        </div>
-                                        <p class="text-xs text-gray-500 dark:text-gray-400 truncate">{{ $employee->phone ?? '—' }}</p>
-                                    </div>
-                                </div>
-                            </td>
-                            <td class="px-4 sm:px-6 py-4 hidden sm:table-cell font-mono text-xs text-gray-500 dark:text-gray-400">
-                                {{ $employee->code ?? '—' }}
-                            </td>
-                            <td class="px-4 sm:px-6 py-4 hidden sm:table-cell">
-                                {{ $employee->role ?? '—' }}
-                            </td>
-                            <td class="px-4 sm:px-6 py-4 hidden lg:table-cell">
-                                @if($employee->user)
-                                    <div class="min-w-0">
-                                        <p class="text-sm text-gray-700 dark:text-gray-300 truncate">{{ $employee->user->email }}</p>
-                                        <p class="text-xs text-gray-500 dark:text-gray-400 truncate">
-                                            {{ $employee->user->roles->pluck('name')->join(', ') ?: 'No roles' }}
-                                        </p>
-                                    </div>
-                                @else
-                                    <span class="text-xs text-gray-400 dark:text-gray-500">No account</span>
-                                @endif
-                            </td>
-                            <td class="px-4 sm:px-6 py-4">
-                                @if($isSelf)
-                                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-green-100 dark:bg-green-500/15 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-500/30 cursor-not-allowed opacity-70"
-                                          title="You cannot deactivate your own account">
-                                        <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
-                                        Active
-                                    </span>
-                                @else
-                                    <button type="button"
-                                            wire:click="toggleActive({{ $employee->id }})"
-                                            wire:loading.attr="disabled"
-                                            wire:target="toggleActive({{ $employee->id }})"
-                                            class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold transition-all duration-200 active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50 disabled:opacity-60
-                                                   {{ $employee->is_active
-                                                       ? 'bg-green-100 dark:bg-green-500/15 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-500/30 hover:bg-green-200 dark:hover:bg-green-500/25'
-                                                       : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 border border-gray-300 dark:border-gray-600 hover:bg-gray-200 dark:hover:bg-gray-600' }}">
-                                        <span class="w-1.5 h-1.5 rounded-full {{ $employee->is_active ? 'bg-green-500' : 'bg-gray-400' }}"></span>
-                                        {{ $employee->is_active ? 'Active' : 'Inactive' }}
-                                    </button>
-                                @endif
-                            </td>
-                            <td class="px-4 sm:px-6 py-4 text-right">
-                                <div class="flex items-center justify-end gap-1">
-                                    <a href="{{ route('tenant.employees.edit', $employee->id) }}" wire:navigate
-                                       class="p-1.5 text-gray-400 dark:text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50"
-                                       title="Edit">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                                    </a>
-                                    @if(!$isSelf)
-                                        <button type="button"
-                                                wire:click="delete({{ $employee->id }})"
-                                                wire:confirm="Delete {{ $employee->name }}? This action cannot be undone."
-                                                wire:loading.attr="disabled"
-                                                wire:target="delete({{ $employee->id }})"
-                                                class="p-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/20 rounded-lg transition active:scale-95 focus-visible:ring-2 focus-visible:ring-red-500/50 disabled:opacity-60"
-                                                title="Delete">
-                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                                        </button>
-                                    @endif
-                                </div>
-                            </td>
-                        </tr>
-                    @empty
-                        <tr>
-                            <td colspan="6" class="px-6 py-12 text-center text-gray-500 dark:text-gray-400">
-                                <svg class="mx-auto h-12 w-12 text-gray-300 dark:text-gray-600 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
-                                <span class="text-sm">No employees found{{ ($search || $roleFilter || $statusFilter) ? ' matching your filters' : '' }}.</span>
-                            </td>
-                        </tr>
-                    @endforelse
-                </tbody>
-            </table>
-        </div>
-        @if($this->employees->hasPages())
-            <div class="px-4 sm:px-6 py-4 border-t border-gray-200 dark:border-gray-700">
-                {{ $this->employees->links() }}
+        {{-- ─────────────  Stat tiles — permission-filtered  ───────────── --}}
+        @php $tiles = $this->statTiles; @endphp
+        @if(! empty($tiles))
+            <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                @foreach($tiles as $tile)
+                    @php
+                        $colorClasses = match ($tile['color']) {
+                            'emerald' => ['bg' => 'bg-emerald-50 dark:bg-emerald-500/10', 'text' => 'text-emerald-600 dark:text-emerald-400', 'ring' => 'hover:border-emerald-500/40'],
+                            'rose'    => ['bg' => 'bg-rose-50 dark:bg-rose-500/10',       'text' => 'text-rose-600 dark:text-rose-400',       'ring' => 'hover:border-rose-500/40'],
+                            'amber'   => ['bg' => 'bg-amber-50 dark:bg-amber-500/10',     'text' => 'text-amber-600 dark:text-amber-400',     'ring' => 'hover:border-amber-500/40'],
+                            'blue'    => ['bg' => 'bg-blue-50 dark:bg-blue-500/10',       'text' => 'text-blue-600 dark:text-blue-400',       'ring' => 'hover:border-blue-500/40'],
+                            'teal'    => ['bg' => 'bg-teal-50 dark:bg-teal-500/10',       'text' => 'text-teal-600 dark:text-teal-400',       'ring' => 'hover:border-teal-500/40'],
+                            'indigo'  => ['bg' => 'bg-indigo-50 dark:bg-indigo-500/10',   'text' => 'text-indigo-600 dark:text-indigo-400',   'ring' => 'hover:border-indigo-500/40'],
+                            'purple'  => ['bg' => 'bg-purple-50 dark:bg-purple-500/10',   'text' => 'text-purple-600 dark:text-purple-400',   'ring' => 'hover:border-purple-500/40'],
+                            'pink'    => ['bg' => 'bg-pink-50 dark:bg-pink-500/10',       'text' => 'text-pink-600 dark:text-pink-400',       'ring' => 'hover:border-pink-500/40'],
+                            'slate'   => ['bg' => 'bg-slate-50 dark:bg-slate-500/10',     'text' => 'text-slate-600 dark:text-slate-400',     'ring' => 'hover:border-slate-500/40'],
+                            default   => ['bg' => 'bg-gray-100 dark:bg-gray-700',         'text' => 'text-gray-600 dark:text-gray-300',       'ring' => 'hover:border-gray-500/40'],
+                        };
+                    @endphp
+                    <a href="{{ $tile['href'] }}" wire:navigate
+                       wire:key="tile-{{ $tile['key'] }}"
+                       class="card p-5 {{ $colorClasses['ring'] }} transition-all duration-200 hover:shadow-md active:scale-[0.98]
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                        <div class="flex items-start justify-between gap-3">
+                            <div class="min-w-0">
+                                <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 truncate">
+                                    {{ $tile['label'] }}
+                                </p>
+                                <p class="text-2xl sm:text-3xl font-extrabold text-gray-900 dark:text-white mt-2 tabular-nums">
+                                    {{ number_format($tile['value']) }}{{ $tile['suffix'] }}
+                                </p>
+                            </div>
+                            <div class="shrink-0 p-2 rounded-xl {{ $colorClasses['bg'] }} {{ $colorClasses['text'] }}"
+                                 aria-hidden="true">
+                                @switch($tile['icon'])
+                                    @case('inbox-check')
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                                        </svg>
+                                        @break
+                                    @case('arrow-up-right')
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 17L17 7M7 7h10v10"/>
+                                        </svg>
+                                        @break
+                                    @case('clock')
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                        </svg>
+                                        @break
+                                    @case('calendar')
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                                        </svg>
+                                        @break
+                                    @case('calendar-star')
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z"/>
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15l1.5-2.5L16 14l-1.5 1.5L16 17l-2.5-1.5L12 17l1.5-2z"/>
+                                        </svg>
+                                        @break
+                                    @case('cash')
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                        </svg>
+                                        @break
+                                    @case('building')
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
+                                        </svg>
+                                        @break
+                                    @case('key')
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l5 5a2 2 0 01.586 1.414V19a2 2 0 01-2 2H7a2 2 0 01-2-2V5a2 2 0 012-2z"/>
+                                        </svg>
+                                        @break
+                                    @case('sparkles')
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/>
+                                        </svg>
+                                        @break
+                                    @case('users')
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+                                        </svg>
+                                        @break
+                                    @default
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <circle cx="12" cy="12" r="10"/>
+                                        </svg>
+                                @endswitch
+                            </div>
+                        </div>
+                    </a>
+                @endforeach
             </div>
         @endif
-    </div>
+
+        {{-- ─────────────  Quick actions  ───────────── --}}
+        @php $actions = $this->quickActions; @endphp
+        @if(! empty($actions))
+            <div>
+                <div class="flex items-center gap-2 mb-4">
+                    <span class="w-5 h-px bg-primary-600"></span>
+                    <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Quick Actions</span>
+                </div>
+                <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                    @foreach($actions as $action)
+                        <a href="{{ $action['href'] }}" wire:navigate
+                           wire:key="action-{{ md5($action['label']) }}"
+                           class="group card p-4 hover:border-primary-500/40 hover:shadow-md transition-all duration-200 active:scale-[0.98]
+                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                            <div class="flex items-start gap-3">
+                                <div class="shrink-0 p-2 rounded-lg bg-primary-50 dark:bg-primary-500/10 text-primary-600 dark:text-primary-400 group-hover:bg-primary-100 dark:group-hover:bg-primary-500/20 transition-colors">
+                                    @switch($action['icon'])
+                                        @case('plus-circle')
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                            </svg>
+                                            @break
+                                        @case('list')
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
+                                            </svg>
+                                            @break
+                                        @case('archive')
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"/>
+                                            </svg>
+                                            @break
+                                        @case('cash')
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                            </svg>
+                                            @break
+                                        @case('building')
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
+                                            </svg>
+                                            @break
+                                        @case('sparkles')
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/>
+                                            </svg>
+                                            @break
+                                        @case('calendar')
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                                            </svg>
+                                            @break
+                                        @case('users')
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+                                            </svg>
+                                            @break
+                                        @case('chart')
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                                            </svg>
+                                            @break
+                                    @endswitch
+                                </div>
+                                <div class="min-w-0">
+                                    <p class="font-semibold text-sm text-gray-900 dark:text-white truncate">{{ $action['label'] }}</p>
+                                    <p class="text-[11px] text-gray-500 dark:text-gray-400 truncate mt-0.5">{{ $action['description'] }}</p>
+                                </div>
+                            </div>
+                        </a>
+                    @endforeach
+                </div>
+            </div>
+        @endif
+
+        {{-- ─────────────  Recent bookings  ───────────── --}}
+        @if($this->tenantCan('view bookings'))
+            @php $recent = $this->recentBookings; @endphp
+            @if($recent->isNotEmpty())
+                <div class="card overflow-hidden">
+                    <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between gap-4">
+                        <div>
+                            <h2 class="text-base font-bold text-gray-900 dark:text-white">Recent Bookings</h2>
+                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">The 5 most recently created reservations</p>
+                        </div>
+                        <a href="{{ route('tenant.bookings.index') }}" wire:navigate
+                           class="text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline
+                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                            View all →
+                        </a>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left">
+                            <thead class="border-b border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30">
+                                <tr>
+                                    <th class="px-4 sm:px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Reference</th>
+                                    <th class="px-4 sm:px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Guest</th>
+                                    <th class="px-4 sm:px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 hidden sm:table-cell">Check-in</th>
+                                    <th class="px-4 sm:px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 hidden md:table-cell">Property</th>
+                                    <th class="px-4 sm:px-6 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Status</th>
+                                    <th class="px-4 sm:px-6 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400"></th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-100 dark:divide-gray-700 text-sm">
+                                @foreach($recent as $booking)
+                                    <tr wire:key="recent-{{ $booking->id }}" class="hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors">
+                                        <td class="px-4 sm:px-6 py-3 font-mono text-xs font-semibold text-primary-600 dark:text-primary-400">
+                                            {{ $booking->booking_reference }}
+                                        </td>
+                                        <td class="px-4 sm:px-6 py-3">
+                                            <p class="font-medium text-gray-900 dark:text-white truncate">{{ $booking->user?->name ?? 'Walk-in Guest' }}</p>
+                                            <p class="text-xs text-gray-500 dark:text-gray-400 truncate">{{ $booking->user?->email ?? '—' }}</p>
+                                        </td>
+                                        <td class="px-4 sm:px-6 py-3 hidden sm:table-cell text-gray-700 dark:text-gray-300">
+                                            {{ $booking->check_in?->format('M d, Y') ?? '—' }}
+                                        </td>
+                                        <td class="px-4 sm:px-6 py-3 hidden md:table-cell text-gray-700 dark:text-gray-300 truncate">
+                                            {{ $booking->items->first()?->property?->name ?? '—' }}
+                                        </td>
+                                        <td class="px-4 sm:px-6 py-3">
+                                            @php
+                                                $badge = match ($booking->status) {
+                                                    Booking::STATUS_PENDING    => 'bg-amber-100 dark:bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-500/30',
+                                                    Booking::STATUS_RESERVED   => 'bg-blue-100 dark:bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-500/30',
+                                                    Booking::STATUS_CONFIRMED  => 'bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-500/30',
+                                                    Booking::STATUS_CHECKED_IN => 'bg-purple-100 dark:bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-500/30',
+                                                    Booking::STATUS_COMPLETED  => 'bg-slate-100 dark:bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-500/30',
+                                                    Booking::STATUS_CANCELLED  => 'bg-rose-100 dark:bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-500/30',
+                                                    default                    => 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-600',
+                                                };
+                                            @endphp
+                                            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border {{ $badge }}">
+                                                <span class="w-1.5 h-1.5 rounded-full bg-current"></span>
+                                                {{ ucfirst(str_replace('_', ' ', $booking->status)) }}
+                                            </span>
+                                        </td>
+                                        <td class="px-4 sm:px-6 py-3 text-right">
+                                            <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate
+                                               class="text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline
+                                                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                                                View
+                                            </a>
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            @else
+                <div class="card p-8 text-center">
+                    <div class="mx-auto w-12 h-12 rounded-2xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-gray-400 dark:text-gray-500 mb-3">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+                        </svg>
+                    </div>
+                    <p class="text-sm font-semibold text-gray-900 dark:text-white">No bookings yet</p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        When guests book a stay, their reservations will appear here.
+                    </p>
+                    @if($this->tenantCan('create bookings'))
+                        <a href="{{ route('tenant.bookings.create') }}" wire:navigate
+                           class="btn-primary mt-4 text-sm inline-flex items-center gap-2
+                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                            </svg>
+                            New Reservation
+                        </a>
+                    @endif
+                </div>
+            @endif
+        @endif
+
+    @endif
 </div>

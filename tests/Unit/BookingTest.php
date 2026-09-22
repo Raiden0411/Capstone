@@ -6,6 +6,7 @@ use App\Models\Payment;
 use App\Models\Property;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Services\BookingService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 
 uses(RefreshDatabase::class);
@@ -78,8 +79,10 @@ it('cancels a booking if it is overdue', function () {
         'created_at' => now()->subMinutes(40),
     ]);
 
-    $booking->cancelIfOverdue();
+    // cancelIfOverdue() lives on BookingService, not on the Booking model.
+    $cancelled = app(BookingService::class)->cancelIfOverdue($booking);
 
+    expect($cancelled)->toBeTrue();
     expect($booking->fresh()->status)->toBe(Booking::STATUS_CANCELLED);
 });
 

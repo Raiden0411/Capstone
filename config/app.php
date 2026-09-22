@@ -30,6 +30,32 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Slow Query Threshold (milliseconds)
+    |--------------------------------------------------------------------------
+    |
+    | Every database query slower than this threshold is written as one JSON
+    | line to the `slow_queries` log channel (storage/logs/slow-queries.log)
+    | and later harvested into the slow_query_aggregates table by the
+    | `slow-queries:harvest` scheduled command. Results surface on the
+    | /platform/health/queries dashboard.
+    |
+    | Resolved here rather than read directly via env() inside
+    | AppServiceProvider::boot(), because:
+    |   • env() returns null when config is cached (php artisan config:cache).
+    |   • Larastan's larastan.noEnvCallsOutsideOfConfig forbids env() calls
+    |     outside the config/ directory.
+    |
+    | Default: 200ms in the local environment, 500ms everywhere else.
+    |
+    */
+
+    'slow_query_ms' => (int) env(
+        'SLOW_QUERY_MS',
+        env('APP_ENV', 'production') === 'local' ? 200 : 500
+    ),
+
+    /*
+    |--------------------------------------------------------------------------
     | Application Debug Mode
     |--------------------------------------------------------------------------
     |
@@ -59,13 +85,22 @@ return [
     | Application Timezone
     |--------------------------------------------------------------------------
     |
-    | Here you may specify the default timezone for your application, which
-    | will be used by the PHP date and date-time functions. The timezone
-    | is set to "UTC" by default as it is suitable for most use cases.
+    | The platform serves Victorias City, Negros Occidental, Philippines.
+    | Every user-facing timestamp (receipts, bookings, events, schedules)
+    | must be shown in Philippine Standard Time (UTC+8). Laravel stores
+    | timestamps in the database as UTC regardless of this setting, so
+    | changing this value does NOT require any data migration.
+    |
+    | Scheduler implications: `->at('5')`, `->dailyAt('03:15')`, etc. now
+    | fire at these clock times in Manila. That's the intent — the
+    | scheduled events are for the local market.
+    |
+    | Do NOT set this back to 'UTC' — it will silently shift every
+    | displayed time by 8 hours.
     |
     */
 
-    'timezone' => 'UTC',
+    'timezone' => 'Asia/Manila',
 
     /*
     |--------------------------------------------------------------------------

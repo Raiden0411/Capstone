@@ -9,6 +9,7 @@ use App\Models\Booking;
 use App\Models\Payment;
 use App\Services\PayMongoService;
 use App\Scopes\TenantScope;
+use App\Traits\ChecksTenantPermissions;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -18,6 +19,8 @@ new
 #[Title('Record Payment')]
 class extends Component
 {
+    use ChecksTenantPermissions;
+
     /** Bound from route. Auto-locked (Eloquent model). */
     public Booking $booking;
 
@@ -43,13 +46,19 @@ class extends Component
 
     public function mount($booking): void
     {
-        if (!$booking instanceof Booking) {
+        if (! $booking instanceof Booking) {
             $booking = Booking::withoutGlobalScope(TenantScope::class)
                 ->with(['user:id,name,email,phone'])
                 ->findOrFail((int) $booking);
         }
 
         abort_unless($booking->tenant_id === Auth::user()->tenant_id, 403, 'Unauthorized.');
+
+        abort_unless(
+            $this->tenantCan('manage payments'),
+            403,
+            'You are not authorized to record payments.'
+        );
 
         $this->booking = $booking;
 
@@ -74,6 +83,19 @@ class extends Component
             : Payment::TYPE_FULL;
 
         $this->recalculateDefaultAmount();
+    }
+
+    /**
+     * Guard every subsequent Livewire request. mount() runs once; every
+     * action (processCashPayment, processOnlinePayment, updated()…) is a
+     * separate HTTP request that bypasses the route middleware.
+     */
+    public function hydrate(): void
+    {
+        $user = Auth::user();
+        abort_unless($user && $user->tenant_id, 403);
+        abort_unless($this->booking->tenant_id === $user->tenant_id, 403);
+        abort_unless($this->tenantCan('manage payments'), 403);
     }
 
     // ─────────────────────────────────────────────────────────
@@ -102,25 +124,31 @@ class extends Component
     }
 
     /**
-     * Set the amount input to the canonical value for the current payment type:
-     *   - reservation  → 20% of the booking total
-     *   - full         → the remaining balance
+     * Set the amount input to the canonical value for the current payment
+     * type, capped at the remaining balance so a partially-paid booking
+     * can't be over-charged by the default.
+     *
+     *   - reservation → min(20% of total, remaining balance)
+     *   - full        → remaining balance
      */
     protected function recalculateDefaultAmount(): void
     {
         $total = (float) $this->booking->total_amount;
-
-        if ($this->payment_type === Payment::TYPE_RESERVATION) {
-            $this->amount = round($total * 0.20, 2);
-            return;
-        }
 
         $paid = (float) $this->booking->payments()
             ->withoutGlobalScope(TenantScope::class)
             ->where('payment_status', 'paid')
             ->sum('amount');
 
-        $this->amount = round(max(0, $total - $paid), 2);
+        $balance = max(0, $total - $paid);
+
+        if ($this->payment_type === Payment::TYPE_RESERVATION) {
+            $defaultFee       = round($total * 0.20, 2);
+            $this->amount     = round(min($defaultFee, $balance), 2);
+            return;
+        }
+
+        $this->amount = round($balance, 2);
     }
 
     // ─────────────────────────────────────────────────────────
@@ -129,6 +157,18 @@ class extends Component
 
     public function processCashPayment()
     {
+        // Livewire actions bypass route middleware. Enforce the payment
+        // permission and the method at the action boundary.
+        $this->requirePermission('manage payments');
+
+        // Defensive: the form's wire:submit picks this method based on
+        // payment_method === 'cash'. A tampered request could invoke it
+        // with any method value. Reject non-cash.
+        if ($this->payment_method !== 'cash') {
+            session()->flash('error', 'Use the online payment flow for non-cash methods.');
+            return null;
+        }
+
         $this->validate();
 
         try {
@@ -139,6 +179,14 @@ class extends Component
                     ->whereKey($this->booking->id)
                     ->lockForUpdate()
                     ->firstOrFail();
+
+                // Reject payments on terminal bookings inside the lock.
+                if (in_array($booking->status, [
+                    Booking::STATUS_CANCELLED,
+                    Booking::STATUS_COMPLETED,
+                ], true)) {
+                    throw new \DomainException('This booking can no longer accept payments.');
+                }
 
                 $totalPaid = (float) $booking->payments()
                     ->withoutGlobalScope(TenantScope::class)
@@ -157,7 +205,7 @@ class extends Component
                     'tenant_id'        => Auth::user()->tenant_id,
                     'booking_id'       => $booking->id,
                     'amount'           => $this->amount,
-                    'payment_method'   => $this->payment_method,
+                    'payment_method'   => 'cash',
                     'payment_status'   => 'paid',
                     'payment_type'     => $this->payment_type,
                     'reference_number' => $this->reference_number ?: null,
@@ -174,6 +222,8 @@ class extends Component
                 'tenant_id'  => Auth::user()->tenant_id,
                 'booking_id' => $this->booking->id,
                 'error'      => $e->getMessage(),
+                'file'       => $e->getFile(),
+                'line'       => $e->getLine(),
             ]);
             session()->flash('error', 'Could not record the payment. Please try again.');
             return null;
@@ -190,6 +240,15 @@ class extends Component
 
     public function processOnlinePayment(PayMongoService $payMongo)
     {
+        $this->requirePermission('manage payments');
+
+        // The form's wire:submit routes here only for non-cash methods.
+        // A tampered request could invoke it with 'cash' — reject.
+        if ($this->payment_method === 'cash') {
+            session()->flash('error', 'Use the cash payment flow for cash payments.');
+            return null;
+        }
+
         $this->validate([
             'amount'         => ['required', 'numeric', 'min:0.01', 'max:999999.99'],
             'payment_method' => ['required', 'in:gcash,paymaya,card'],
@@ -258,7 +317,7 @@ class extends Component
             'payment_method_types' => ['gcash', 'paymaya', 'card', 'qrph'],
         ]);
 
-        if (!$session) {
+        if (! $session) {
             session()->flash('error', 'Unable to initiate payment. Please try again.');
             return null;
         }
@@ -304,7 +363,7 @@ class extends Component
      */
     protected function updateBookingStatus(Booking $booking): void
     {
-        if (!in_array($booking->status, [Booking::STATUS_PENDING, Booking::STATUS_RESERVED], true)) {
+        if (! in_array($booking->status, [Booking::STATUS_PENDING, Booking::STATUS_RESERVED], true)) {
             return;
         }
 
@@ -328,78 +387,130 @@ class extends Component
 
 <div class="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto space-y-6">
 
-    {{-- Header — tenant eyebrow pattern --}}
+    {{-- ═══ Page header ═══ --}}
     <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
         <div>
-            <p class="text-xs font-semibold uppercase tracking-wider text-primary-600 dark:text-primary-400">
-                Payments
-            </p>
-            <h1 class="mt-1 text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">
+            <div class="flex items-center gap-2 mb-2">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Payments</span>
+            </div>
+            <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
                 Record Payment
             </h1>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                Booking <span class="font-mono font-semibold">{{ $booking->booking_reference }}</span>
+            <p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1">
+                Booking <span class="font-mono font-semibold text-gray-700 dark:text-gray-300">{{ $booking->booking_reference }}</span>
                 · {{ $booking->user->name ?? 'Walk-in Guest' }}
             </p>
         </div>
         <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate
-           class="btn-secondary active:scale-95 transition-transform
-                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                  inline-flex items-center gap-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+           class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                  transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
             </svg>
-            Back to Booking
+            <span>Back to Booking</span>
         </a>
     </div>
 
-    {{-- Flash messages --}}
-    @if(session()->has('error'))
-        <div class="flex items-start gap-3 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 border-l-4 border-l-red-500 p-4 rounded-md">
-            <svg class="w-5 h-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-            </svg>
-            <p class="text-sm text-red-700 dark:text-red-300 font-medium">{{ session('error') }}</p>
+    {{-- ═══ Flash: success ═══ --}}
+    @if(session()->has('message'))
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 4000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-center justify-between bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 border-l-4 border-l-emerald-500 p-4 rounded-xl text-xs sm:text-sm text-emerald-800 dark:text-emerald-300 font-medium shadow-sm">
+            <div class="flex items-center gap-2.5">
+                <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <span>{{ session('message') }}</span>
+            </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
         </div>
     @endif
 
-    @if($errors->any())
-        <div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 border-l-4 border-l-red-500 p-4 rounded-md">
-            <div class="flex items-start gap-3">
-                <svg class="w-5 h-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    {{-- ═══ Flash: error ═══ --}}
+    @if(session()->has('error'))
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 5000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-center justify-between bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 border-l-4 border-l-rose-500 p-4 rounded-xl text-xs sm:text-sm text-rose-800 dark:text-rose-300 font-medium shadow-sm">
+            <div class="flex items-center gap-2.5">
+                <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
                 </svg>
-                <div class="text-sm text-red-700 dark:text-red-300">
+                <span>{{ session('error') }}</span>
+            </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+    @endif
+
+    {{-- ═══ Validation errors ═══ --}}
+    @if($errors->any())
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 6000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-start justify-between gap-3 bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 border-l-4 border-l-rose-500 p-4 rounded-xl">
+            <div class="flex items-start gap-2.5 min-w-0">
+                <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                </svg>
+                <div class="text-xs sm:text-sm text-rose-800 dark:text-rose-300 min-w-0">
                     <p class="font-semibold mb-1">Please fix the following:</p>
                     <ul class="list-disc list-inside space-y-0.5">
                         @foreach($errors->all() as $err)
-                            <li>{{ $err }}</li>
+                            <li wire:key="err-{{ $loop->index }}">{{ $err }}</li>
                         @endforeach
                     </ul>
                 </div>
             </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 shrink-0 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
         </div>
     @endif
 
     <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6">
 
-        {{-- Booking summary --}}
-        <div class="mb-6 grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {{-- ═══ Booking summary — 3 KPIs ═══ --}}
+        <div class="mb-6 grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div class="p-4 rounded-xl bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-700">
-                <p class="text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Total Amount</p>
+                <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Total Amount</p>
                 <p class="text-lg font-bold text-gray-900 dark:text-white mt-1 tabular-nums">
                     ₱{{ number_format((float) $booking->total_amount, 2) }}
                 </p>
             </div>
             <div class="p-4 rounded-xl bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-700">
-                <p class="text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Already Paid</p>
+                <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Already Paid</p>
                 <p class="text-lg font-bold text-emerald-600 dark:text-emerald-400 mt-1 tabular-nums">
                     ₱{{ number_format($alreadyPaid, 2) }}
                 </p>
             </div>
             <div class="p-4 rounded-xl bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-700">
-                <p class="text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Remaining Balance</p>
-                <p class="text-lg font-bold mt-1 tabular-nums {{ $remainingBalance > 0 ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400' }}">
+                <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Remaining Balance</p>
+                <p class="text-lg font-bold mt-1 tabular-nums {{ $remainingBalance > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400' }}">
                     ₱{{ number_format($remainingBalance, 2) }}
                 </p>
             </div>
@@ -410,41 +521,43 @@ class extends Component
               x-data="{ saved: false }"
               @payment-recorded.window="saved = true; setTimeout(() => saved = false, 2200)">
 
-            {{-- Payment type --}}
+            {{-- ═══ Payment type ═══ --}}
             <div>
-                <label for="payment-type" class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
-                    Payment Type <span class="text-red-500">*</span>
+                <label for="payment-type" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Payment Type <span class="text-rose-500">*</span>
                 </label>
                 <select id="payment-type" wire:model.live="payment_type" class="input w-full">
                     <option value="full">Full Payment</option>
                     <option value="reservation">Reservation Fee (20%)</option>
                 </select>
-                @error('payment_type') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                @error('payment_type') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
 
-            {{-- Amount --}}
+            {{-- ═══ Amount ═══ --}}
             <div>
-                <label for="payment-amount" class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
-                    Amount to Pay <span class="text-red-500">*</span>
+                <label for="payment-amount" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Amount to Pay <span class="text-rose-500">*</span>
                 </label>
                 <div class="relative">
-                    <span class="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500 text-sm font-semibold">₱</span>
+                    <span class="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500 text-sm font-semibold pointer-events-none">₱</span>
                     <input id="payment-amount" type="number" step="0.01" min="0.01"
+                           inputmode="decimal"
                            wire:model="amount"
-                           class="input w-full pl-9 font-mono tabular-nums">
+                           class="input w-full font-mono tabular-nums"
+                           style="padding-left: 2.25rem;">
                 </div>
-                @error('amount') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                @error('amount') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
 
                 @if($payment_type === 'full' && $amount >= $remainingBalance && $remainingBalance > 0)
-                    <p class="mt-1.5 text-xs text-primary-600 dark:text-primary-400 flex items-center gap-1">
-                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <p class="mt-1.5 text-xs text-primary-600 dark:text-primary-400 inline-flex items-center gap-1">
+                        <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                         </svg>
                         Full payment — the booking will be confirmed automatically.
                     </p>
                 @elseif($payment_type === 'reservation' && $amount > 0)
-                    <p class="mt-1.5 text-xs text-blue-600 dark:text-blue-400 flex items-center gap-1">
-                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <p class="mt-1.5 text-xs text-blue-600 dark:text-blue-400 inline-flex items-center gap-1">
+                        <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                         </svg>
                         Reservation fee — the booking will be marked as <strong>reserved</strong>.
@@ -452,17 +565,17 @@ class extends Component
                 @endif
             </div>
 
-            {{-- Payment method --}}
+            {{-- ═══ Payment method ═══ --}}
             <div>
-                <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2 uppercase tracking-wider">
-                    Payment Method <span class="text-red-500">*</span>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Payment Method <span class="text-rose-500">*</span>
                 </label>
                 <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
                     @foreach([
-                        ['cash',    'Cash',    '<svg class="w-7 h-7 mx-auto text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>'],
-                        ['gcash',   'GCash',   '<svg class="w-7 h-7 mx-auto text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>'],
-                        ['paymaya', 'Maya',    '<svg class="w-7 h-7 mx-auto text-purple-600 dark:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>'],
-                        ['card',    'Card',    '<svg class="w-7 h-7 mx-auto text-gray-600 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>'],
+                        ['cash',    'Cash',    '<svg xmlns="http://www.w3.org/2000/svg" class="w-7 h-7 mx-auto text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>'],
+                        ['gcash',   'GCash',   '<svg xmlns="http://www.w3.org/2000/svg" class="w-7 h-7 mx-auto text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>'],
+                        ['paymaya', 'Maya',    '<svg xmlns="http://www.w3.org/2000/svg" class="w-7 h-7 mx-auto text-purple-600 dark:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>'],
+                        ['card',    'Card',    '<svg xmlns="http://www.w3.org/2000/svg" class="w-7 h-7 mx-auto text-gray-600 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>'],
                     ] as [$val, $label, $icon])
                         <label class="cursor-pointer" wire:key="payment-method-{{ $val }}">
                             <input type="radio" wire:model.live="payment_method" value="{{ $val }}" class="sr-only peer">
@@ -476,58 +589,62 @@ class extends Component
                         </label>
                     @endforeach
                 </div>
-                @error('payment_method') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                @error('payment_method') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
 
-            {{-- Reference (cash only) --}}
+            {{-- ═══ Reference (cash only) ═══ --}}
             @if($payment_method === 'cash')
                 <div>
-                    <label for="payment-ref" class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
-                        Reference Number (Optional)
+                    <label for="payment-ref" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Reference Number <span class="text-gray-400 dark:text-gray-500 font-normal">(optional)</span>
                     </label>
                     <input id="payment-ref" type="text" wire:model="reference_number"
                            placeholder="e.g. OR number, receipt #"
                            class="input w-full">
-                    @error('reference_number') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    @error('reference_number') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             @else
-                <div class="flex items-start gap-3 p-4 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20">
-                    <svg class="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                <div class="flex items-start gap-2.5 p-3 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 text-xs text-blue-800 dark:text-blue-300">
+                    <svg class="w-3.5 h-3.5 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                     </svg>
-                    <p class="text-sm text-blue-800 dark:text-blue-300">
+                    <span class="leading-relaxed">
                         You will be redirected to PayMongo to complete the payment. The booking status updates automatically once the payment succeeds.
-                    </p>
+                    </span>
                 </div>
             @endif
 
-            {{-- Actions --}}
-            <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
+            {{-- ═══ Actions ═══ --}}
+            <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-5 border-t border-gray-100 dark:border-gray-700/60">
                 <button type="submit"
                         wire:loading.attr="disabled"
                         wire:target="processCashPayment,processOnlinePayment"
-                        class="btn-primary w-full sm:w-auto active:scale-95 transition-transform
-                               inline-flex items-center justify-center gap-2
+                        class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                               transition-all duration-200 active:scale-95
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                disabled:opacity-60 disabled:cursor-not-allowed">
                     <span wire:loading.remove wire:target="processCashPayment,processOnlinePayment">
                         {{ $payment_method === 'cash' ? 'Record Payment' : 'Proceed to Pay' }}
                     </span>
                     <span wire:loading wire:target="processCashPayment,processOnlinePayment" class="inline-flex items-center gap-2">
-                        <svg class="animate-spin h-4 w-4 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                        <svg class="animate-spin h-4 w-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                         </svg>
                         Processing…
                     </span>
                 </button>
+
                 <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate
-                   class="btn-secondary w-full sm:w-auto active:scale-95 transition-transform
-                          inline-flex items-center justify-center gap-2
-                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                   class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                          transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                     Cancel
                 </a>
-                <span x-show="saved" x-transition class="sm:ml-3 inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-primary-50 dark:bg-primary-500/15 text-primary-600 dark:text-primary-400">
+
+                {{-- "Done!" pill — Rule 69: :class toggle, not x-show/x-transition --}}
+                <span :class="saved ? 'inline-flex sm:ml-1' : 'hidden'"
+                      class="items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-primary-50 dark:bg-primary-500/15 text-primary-600 dark:text-primary-400">
                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                     </svg>

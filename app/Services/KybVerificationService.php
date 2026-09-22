@@ -1,5 +1,4 @@
 <?php
-// app/Services/KybVerificationService.php
 
 namespace App\Services;
 
@@ -13,14 +12,19 @@ class KybVerificationService
     /**
      * Run automated name + TIN cross-matching on a submitted application.
      *
-     * @return array{tin_match: bool|null, name_matches: array, all_names_match: bool}
+     * @return array{tin_match: bool|null, name_matches: array<int, bool>, all_names_match: bool}
      */
     public function verify(BusinessApplication $application): array
     {
         $application->loadMissing('documents');
 
-        $birDoc     = $application->documents->firstWhere('document_type', BusinessDocument::TYPE_BIR_2303);
-        $dtiDoc     = $application->documents->firstWhere('document_type', BusinessDocument::TYPE_DTI_SEC_CDA);
+        /** @var BusinessDocument|null $birDoc */
+        $birDoc = $application->documents->firstWhere('document_type', BusinessDocument::TYPE_BIR_2303);
+
+        /** @var BusinessDocument|null $dtiDoc */
+        $dtiDoc = $application->documents->firstWhere('document_type', BusinessDocument::TYPE_DTI_SEC_CDA);
+
+        /** @var BusinessDocument|null $ownerIdDoc */
         $ownerIdDoc = $application->documents->firstWhere('document_type', BusinessDocument::TYPE_OWNER_ID);
 
         // ── TIN match against BIR Form 2303 ─────────────────
@@ -51,15 +55,23 @@ class KybVerificationService
         ]);
 
         foreach ($checks as $entry) {
-            $doc           = $entry['doc'];
-            $extractedName = $doc->metadata['extracted_name'] ?? $doc->document_number ?? null;
+            /** @var BusinessDocument $doc */
+            $doc = $entry['doc'];
+            /** @var string $field */
+            $field = $entry['field'];
+
+            $extractedName = $doc->document_number ?? null;
             if (!$extractedName) {
                 continue;
             }
 
-            $submitted = $entry['field'] === 'owner_full_name'
+            $submitted = $field === 'owner_full_name'
                 ? $application->owner_full_name
                 : $application->business_name;
+
+            if (!$submitted) {
+                continue;
+            }
 
             $score   = $this->nameSimilarity($extractedName, $submitted);
             $matched = $score >= 85.0;
@@ -67,7 +79,7 @@ class KybVerificationService
             BusinessDocumentVerification::create([
                 'business_application_id' => $application->id,
                 'verification_type'       => 'name_match',
-                'source_field'            => $entry['field'],
+                'source_field'            => $field,
                 'reference_value'         => $extractedName,
                 'submitted_value'         => $submitted,
                 'matched'                 => $matched,

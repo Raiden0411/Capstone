@@ -4,8 +4,12 @@
 use Livewire\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
+use Livewire\Attributes\Computed;
 use Livewire\WithFileUploads;
+use App\Traits\HandlesImageUploads;
 use App\Models\SiteSetting;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
 new
@@ -14,6 +18,16 @@ new
 class extends Component
 {
     use WithFileUploads;
+    use HandlesImageUploads;
+
+    /** Image contexts that this editor manages. */
+    private const IMAGE_KEYS = [
+        'hero_background_image',
+        'hero_side_image_1',
+        'hero_side_image_2',
+        'hero_side_image_3',
+        'hero_side_image_4',
+    ];
 
     public $heroBackgroundImage;
     public $heroSideImage1;
@@ -35,11 +49,9 @@ class extends Component
 
     public function mount()
     {
-        $this->existingHeroBg = SiteSetting::getValue('hero_background_image');
-        $this->existingSide1  = SiteSetting::getValue('hero_side_image_1');
-        $this->existingSide2  = SiteSetting::getValue('hero_side_image_2');
-        $this->existingSide3  = SiteSetting::getValue('hero_side_image_3');
-        $this->existingSide4  = SiteSetting::getValue('hero_side_image_4');
+        abort_unless(Auth::user()?->hasRole('super-admin'), 403, 'Super-admin access only.');
+
+        $this->loadExistingImages();
 
         $this->heroTitle       = SiteSetting::getValue('hero_title', 'Welcome to the North');
         $this->heroSubtitle    = SiteSetting::getValue('hero_subtitle', 'Victorias City');
@@ -48,14 +60,35 @@ class extends Component
         $this->discoverDescription = SiteSetting::getValue('discover_description', 'Victorias is more than just an industrial hub; it is a blend of natural sanctuary, deep-rooted history, and warm hospitality. Experience the unique charm that makes this city a hidden gem in Western Visayas.');
     }
 
+    /**
+     * Batched, cached read of every image path this page manages.
+     * Replaces the previous pattern of 5 individual `getValue()` calls
+     * in mount + 5 more in save() for a post-write refresh.
+     */
+    private function loadExistingImages(): void
+    {
+        $stored = SiteSetting::getBatch(self::IMAGE_KEYS, 'homepage_editor_images');
+
+        $this->existingHeroBg = $stored['hero_background_image'] ?? null;
+        $this->existingSide1  = $stored['hero_side_image_1'] ?? null;
+        $this->existingSide2  = $stored['hero_side_image_2'] ?? null;
+        $this->existingSide3  = $stored['hero_side_image_3'] ?? null;
+        $this->existingSide4  = $stored['hero_side_image_4'] ?? null;
+    }
+
     public function save()
     {
+        // Livewire update requests bypass route middleware — re-check
+        // per action. Rule 16.
+        abort_unless(Auth::user()?->hasRole('super-admin'), 403, 'Super-admin access only.');
+
         $this->validate([
-            'heroBackgroundImage' => 'nullable|image|max:10240',
-            'heroSideImage1'      => 'nullable|image|max:10240',
-            'heroSideImage2'      => 'nullable|image|max:10240',
-            'heroSideImage3'      => 'nullable|image|max:10240',
-            'heroSideImage4'      => 'nullable|image|max:10240',
+            // 5 MB ceiling, raster only. Output compressed to ≤2 MB via 'site'.
+            'heroBackgroundImage' => 'nullable|image|mimes:jpg,jpeg,png,webp|max:5120',
+            'heroSideImage1'      => 'nullable|image|mimes:jpg,jpeg,png,webp|max:5120',
+            'heroSideImage2'      => 'nullable|image|mimes:jpg,jpeg,png,webp|max:5120',
+            'heroSideImage3'      => 'nullable|image|mimes:jpg,jpeg,png,webp|max:5120',
+            'heroSideImage4'      => 'nullable|image|mimes:jpg,jpeg,png,webp|max:5120',
             'heroTitle'           => 'required|string|max:255',
             'heroSubtitle'        => 'required|string|max:255',
             'heroDescription'     => 'nullable|string|max:1000',
@@ -63,11 +96,21 @@ class extends Component
             'discoverDescription' => 'nullable|string|max:1000',
         ]);
 
-        $this->updateImage('hero_background_image', $this->heroBackgroundImage);
-        $this->updateImage('hero_side_image_1', $this->heroSideImage1);
-        $this->updateImage('hero_side_image_2', $this->heroSideImage2);
-        $this->updateImage('hero_side_image_3', $this->heroSideImage3);
-        $this->updateImage('hero_side_image_4', $this->heroSideImage4);
+        try {
+            $this->updateImage('hero_background_image', $this->heroBackgroundImage);
+            $this->updateImage('hero_side_image_1', $this->heroSideImage1);
+            $this->updateImage('hero_side_image_2', $this->heroSideImage2);
+            $this->updateImage('hero_side_image_3', $this->heroSideImage3);
+            $this->updateImage('hero_side_image_4', $this->heroSideImage4);
+        } catch (\Throwable $e) {
+            Log::error('Homepage image save failed', [
+                'actor_id' => Auth::id(),
+                'error'    => $e->getMessage(),
+            ]);
+
+            session()->flash('error', 'Failed to upload one or more images. Please try again.');
+            return null;
+        }
 
         $textFields = [
             'hero_title'           => 'heroTitle',
@@ -81,11 +124,9 @@ class extends Component
             SiteSetting::setValue($key, $this->{$property});
         }
 
-        $this->existingHeroBg = SiteSetting::getValue('hero_background_image');
-        $this->existingSide1  = SiteSetting::getValue('hero_side_image_1');
-        $this->existingSide2  = SiteSetting::getValue('hero_side_image_2');
-        $this->existingSide3  = SiteSetting::getValue('hero_side_image_3');
-        $this->existingSide4  = SiteSetting::getValue('hero_side_image_4');
+        // Refresh the "existing" mirrors so the UI falls back to the
+        // freshly-saved thumbnails. Uses one batched read.
+        $this->loadExistingImages();
 
         $this->reset(
             'heroBackgroundImage',
@@ -102,11 +143,44 @@ class extends Component
         session()->flash('message', 'Homepage updated successfully.');
     }
 
-    private function updateImage($key, $uploadedFile)
+    /**
+     * Golden sequence: store + compress the new file FIRST, then write
+     * the DB row, then delete the old file AFTER success. On failure,
+     * the new file is cleaned up and the old one is preserved.
+     */
+    private function updateImage(string $key, $uploadedFile): void
     {
-        if ($uploadedFile instanceof \Livewire\Features\SupportFileUploads\TemporaryUploadedFile) {
-            $path = $uploadedFile->store('homepage', 'public');
-            SiteSetting::setValue($key, $path);
+        if (! $uploadedFile instanceof \Livewire\Features\SupportFileUploads\TemporaryUploadedFile) {
+            return;
+        }
+
+        $oldPath = SiteSetting::getValue($key);
+        $newPath = null;
+
+        try {
+            // Compresses against the 'site' context (≤2 MB / 2560×1440).
+            $newPath = $this->storeImage($uploadedFile, 'homepage', 'public', 'site');
+
+            if (! $newPath) {
+                throw new \RuntimeException('Failed to store the uploaded image.');
+            }
+
+            SiteSetting::setValue($key, $newPath);
+        } catch (\Throwable $e) {
+            if ($newPath && Storage::disk('public')->exists($newPath)) {
+                Storage::disk('public')->delete($newPath);
+            }
+
+            throw $e;
+        }
+
+        // Delete the old file AFTER the DB write succeeded. Closes the
+        // disk leak that existed before. Guard against the (theoretical)
+        // case where the new path equals the old path.
+        if ($oldPath
+            && $oldPath !== $newPath
+            && Storage::disk('public')->exists($oldPath)) {
+            Storage::disk('public')->delete($oldPath);
         }
     }
 };
@@ -129,8 +203,13 @@ class extends Component
     class="p-4 sm:p-6 lg:p-8 max-w-[1440px] mx-auto space-y-6">
 
     @if (session()->has('message'))
-        <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium">
+        <div class="bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 border-l-4 border-l-emerald-500 p-4 rounded-md text-sm text-emerald-700 dark:text-emerald-300 font-medium">
             {{ session('message') }}
+        </div>
+    @endif
+    @if (session()->has('error'))
+        <div class="bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 border-l-4 border-l-rose-500 p-4 rounded-md text-sm text-rose-700 dark:text-rose-300 font-medium">
+            {{ session('error') }}
         </div>
     @endif
 
@@ -144,7 +223,7 @@ class extends Component
         </div>
         <a href="{{ route('superadmin.dashboard') }}" wire:navigate
            class="btn-secondary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
             Back to Dashboard
         </a>
     </div>
@@ -154,7 +233,7 @@ class extends Component
         {{-- ═══════════════════════════════════════════════════════════
              SECTION 1 — HERO  (mirrors the homepage hero)
              ═══════════════════════════════════════════════════════════ --}}
-        <div class="card p-5 sm:p-6 space-y-5">
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm space-y-5">
 
             <div class="flex flex-wrap items-center justify-between gap-3">
                 <div class="flex items-center gap-3">
@@ -192,7 +271,7 @@ class extends Component
                     </div>
 
                     <div class="absolute bottom-3 left-3 inline-flex items-center gap-1.5 rounded-full bg-white/10 backdrop-blur-md px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-white/80">
-                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                         Homepage preview
                     </div>
                 </div>
@@ -204,67 +283,38 @@ class extends Component
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                             Background Image
-                            <span class="text-xs text-gray-400 font-normal ml-1">— 10 MB max</span>
+                            <span class="text-xs text-gray-400 font-normal ml-1">— 5 MB max, auto-compressed</span>
                         </label>
 
-                        <div x-on:dragover.prevent="draggingKey = 'heroBackgroundImage'"
-                             x-on:dragleave.prevent="draggingKey = null"
-                             x-on:drop.prevent="handleDrop($event, 'heroBackgroundImage')"
-                             :class="draggingKey === 'heroBackgroundImage'
-                                 ? 'border-primary-500 bg-primary-50 dark:bg-primary-500/10'
-                                 : 'border-gray-300 dark:border-gray-600'"
-                             class="relative flex items-center justify-center rounded-xl border-2 border-dashed p-4 transition-colors min-h-[140px] cursor-pointer">
-
-                            <template x-if="filePreviews.heroBackgroundImage">
-                                <div class="w-full">
-                                    <img :src="filePreviews.heroBackgroundImage" alt="" class="max-h-32 w-full object-cover rounded-lg border border-gray-200 dark:border-gray-700">
-                                    <p class="mt-2 text-[11px] text-primary-600 dark:text-primary-400 font-semibold text-center">New image — will upload on save</p>
-                                </div>
-                            </template>
-
-                            <template x-if="!filePreviews.heroBackgroundImage && @js((bool) $existingHeroBg)">
-                                <div class="w-full">
-                                    <img src="{{ asset('storage/' . $existingHeroBg) }}" alt="" class="max-h-32 w-full object-cover rounded-lg border border-gray-200 dark:border-gray-700">
-                                    <p class="mt-2 text-[11px] text-gray-500 dark:text-gray-400 font-semibold text-center">Current — click to replace</p>
-                                </div>
-                            </template>
-
-                            <template x-if="!filePreviews.heroBackgroundImage && !@js((bool) $existingHeroBg)">
-                                <div class="flex flex-col items-center text-gray-400 dark:text-gray-500">
-                                    <svg class="w-8 h-8 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M4 8h.01M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z"/></svg>
-                                    <span class="text-xs">Drag &amp; drop or click</span>
-                                </div>
-                            </template>
-
-                            <input x-ref="file-heroBackgroundImage"
-                                   type="file"
-                                   wire:model="heroBackgroundImage"
-                                   accept="image/*"
-                                   class="absolute inset-0 opacity-0 cursor-pointer"
-                                   x-on:change="previewFile($event, 'heroBackgroundImage')">
-                        </div>
-                        @error('heroBackgroundImage') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @include('superadmin.pages.homepage.partials.image-uploader', [
+                            'key'      => 'heroBackgroundImage',
+                            'existing' => $existingHeroBg ? asset('storage/' . $existingHeroBg) : null,
+                        ])
+                        @error('heroBackgroundImage') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
 
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Hero Title</label>
-                        <input type="text" wire:model="heroTitle" class="input"
+                        <input type="text" wire:model="heroTitle"
+                               class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
                                x-on:input="bindField($event, 'heroTitle')">
-                        @error('heroTitle') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('heroTitle') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
 
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Hero Subtitle</label>
-                        <input type="text" wire:model="heroSubtitle" class="input"
+                        <input type="text" wire:model="heroSubtitle"
+                               class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
                                x-on:input="bindField($event, 'heroSubtitle')">
-                        @error('heroSubtitle') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('heroSubtitle') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
 
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Hero Description</label>
-                        <textarea wire:model="heroDescription" rows="3" class="textarea"
+                        <textarea wire:model="heroDescription" rows="3"
+                                  class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
                                   x-on:input="bindField($event, 'heroDescription')"></textarea>
-                        @error('heroDescription') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('heroDescription') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
                 </div>
             </div>
@@ -273,7 +323,7 @@ class extends Component
         {{-- ═══════════════════════════════════════════════════════════
              SECTION 2 — DISCOVER VICTORIAS CITY
              ═══════════════════════════════════════════════════════════ --}}
-        <div class="card p-5 sm:p-6 space-y-5">
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm space-y-5">
 
             <div class="flex flex-wrap items-center justify-between gap-3">
                 <div class="flex items-center gap-3">
@@ -311,7 +361,7 @@ class extends Component
                                 ['key' => 'heroSideImage3', 'existing' => $existingSide3],
                                 ['key' => 'heroSideImage4', 'existing' => $existingSide4],
                             ] as $img)
-                                <div class="aspect-square rounded-xl overflow-hidden bg-white/10 backdrop-blur-sm border border-white/20">
+                                <div wire:key="preview-{{ $img['key'] }}" class="aspect-square rounded-xl overflow-hidden bg-white/10 backdrop-blur-sm border border-white/20">
                                     <template x-if="filePreviews['{{ $img['key'] }}']">
                                         <img :src="filePreviews['{{ $img['key'] }}']" alt="" class="w-full h-full object-cover">
                                     </template>
@@ -320,7 +370,7 @@ class extends Component
                                     </template>
                                     <template x-if="!filePreviews['{{ $img['key'] }}'] && !@js((bool) $img['existing'])">
                                         <div class="w-full h-full flex items-center justify-center">
-                                            <svg class="w-6 h-6 text-white/40" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M4 8h.01M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z"/></svg>
+                                            <svg class="w-6 h-6 text-white/40" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M4 8h.01M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z"/></svg>
                                         </div>
                                     </template>
                                 </div>
@@ -329,7 +379,7 @@ class extends Component
                     </div>
 
                     <div class="absolute bottom-3 left-3 inline-flex items-center gap-1.5 rounded-full bg-white/10 backdrop-blur-md px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-white/80">
-                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                         Homepage preview
                     </div>
                 </div>
@@ -340,7 +390,7 @@ class extends Component
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                             Gallery Images
-                            <span class="text-xs text-gray-400 font-normal ml-1">— 4 tiles, 10 MB max each</span>
+                            <span class="text-xs text-gray-400 font-normal ml-1">— 4 tiles, 5 MB max each</span>
                         </label>
 
                         <div class="grid grid-cols-2 gap-3">
@@ -350,42 +400,14 @@ class extends Component
                                 ['key' => 'heroSideImage3', 'existing' => $existingSide3, 'label' => 'Culture'],
                                 ['key' => 'heroSideImage4', 'existing' => $existingSide4, 'label' => 'Discover'],
                             ] as $sideImage)
-                                <div>
-                                    <div x-on:dragover.prevent="draggingKey = '{{ $sideImage['key'] }}'"
-                                         x-on:dragleave.prevent="draggingKey = null"
-                                         x-on:drop.prevent="handleDrop($event, '{{ $sideImage['key'] }}')"
-                                         :class="draggingKey === '{{ $sideImage['key'] }}'
-                                             ? 'border-primary-500 bg-primary-50 dark:bg-primary-500/10'
-                                             : 'border-gray-300 dark:border-gray-600'"
-                                         class="relative flex items-center justify-center rounded-xl border-2 border-dashed p-2 transition-colors aspect-square cursor-pointer overflow-hidden">
-
-                                        <template x-if="filePreviews['{{ $sideImage['key'] }}']">
-                                            <img :src="filePreviews['{{ $sideImage['key'] }}']" alt="" class="absolute inset-0 w-full h-full object-cover">
-                                        </template>
-
-                                        <template x-if="!filePreviews['{{ $sideImage['key'] }}'] && @js((bool) $sideImage['existing'])">
-                                            <img src="{{ asset('storage/' . $sideImage['existing']) }}" alt="" class="absolute inset-0 w-full h-full object-cover">
-                                        </template>
-
-                                        <template x-if="!filePreviews['{{ $sideImage['key'] }}'] && !@js((bool) $sideImage['existing'])">
-                                            <div class="flex flex-col items-center text-gray-400 dark:text-gray-500">
-                                                <svg class="w-6 h-6 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M4 8h.01M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z"/></svg>
-                                                <span class="text-[10px]">Upload</span>
-                                            </div>
-                                        </template>
-
-                                        <span class="absolute bottom-1.5 left-1.5 rounded bg-black/60 backdrop-blur-sm px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white">
-                                            {{ $sideImage['label'] }}
-                                        </span>
-
-                                        <input x-ref="file-{{ $sideImage['key'] }}"
-                                               type="file"
-                                               wire:model="{{ $sideImage['key'] }}"
-                                               accept="image/*"
-                                               class="absolute inset-0 opacity-0 cursor-pointer"
-                                               x-on:change="previewFile($event, '{{ $sideImage['key'] }}')">
-                                    </div>
-                                    @error($sideImage['key']) <span class="text-red-500 dark:text-red-400 text-[11px] mt-1 block">{{ $message }}</span> @enderror
+                                <div wire:key="side-{{ $sideImage['key'] }}">
+                                    @include('superadmin.pages.homepage.partials.image-uploader', [
+                                        'key'      => $sideImage['key'],
+                                        'existing' => $sideImage['existing'] ? asset('storage/' . $sideImage['existing']) : null,
+                                        'label'    => $sideImage['label'],
+                                        'compact'  => true,
+                                    ])
+                                    @error($sideImage['key']) <span class="text-rose-500 dark:text-rose-400 text-[11px] mt-1 block">{{ $message }}</span> @enderror
                                 </div>
                             @endforeach
                         </div>
@@ -393,16 +415,18 @@ class extends Component
 
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Discover Title</label>
-                        <input type="text" wire:model="discoverTitle" class="input"
+                        <input type="text" wire:model="discoverTitle"
+                               class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
                                x-on:input="bindField($event, 'discoverTitle')">
-                        @error('discoverTitle') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('discoverTitle') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
 
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Discover Description</label>
-                        <textarea wire:model="discoverDescription" rows="4" class="textarea"
+                        <textarea wire:model="discoverDescription" rows="4"
+                                  class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
                                   x-on:input="bindField($event, 'discoverDescription')"></textarea>
-                        @error('discoverDescription') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('discoverDescription') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
                 </div>
             </div>
@@ -414,7 +438,7 @@ class extends Component
         <div class="rounded-2xl border border-dashed border-gray-300 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-800/40 p-5">
             <div class="flex items-start gap-3">
                 <div class="shrink-0 rounded-xl bg-gray-200 dark:bg-gray-700 p-2 text-gray-500 dark:text-gray-400">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                 </div>
                 <div class="min-w-0">
                     <h3 class="text-sm font-semibold text-gray-800 dark:text-gray-200">Other homepage sections are data-driven</h3>
@@ -432,7 +456,7 @@ class extends Component
         <div class="sticky bottom-4 z-10 flex justify-end">
             <div class="rounded-2xl border border-gray-200 dark:border-gray-700 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md shadow-lg p-2 flex items-center gap-3">
                 <div class="hidden sm:flex items-center gap-2 px-3 text-xs text-gray-500 dark:text-gray-400">
-                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                     Changes are applied to the homepage after saving.
                 </div>
                 <button type="submit"
@@ -440,7 +464,7 @@ class extends Component
                         class="btn-primary active:scale-95 transition-transform inline-flex items-center justify-center gap-2 focus-visible:ring-2 focus-visible:ring-primary-500/50 disabled:opacity-60 disabled:cursor-not-allowed">
                     <span wire:loading.remove>Save Changes</span>
                     <span wire:loading class="inline-flex items-center gap-2">
-                        <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
+                        <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24" aria-hidden="true"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
                         Saving…
                     </span>
                 </button>

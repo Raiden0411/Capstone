@@ -14,9 +14,11 @@ use App\Models\BookingItem;
 use App\Models\BookingService;
 use App\Models\ServiceAvailability;
 use App\Scopes\TenantScope;
+use App\Traits\ChecksTenantPermissions;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rule;
 use Carbon\Carbon;
 
 new
@@ -24,6 +26,8 @@ new
 #[Title('Edit Booking')]
 class extends Component
 {
+    use ChecksTenantPermissions;
+
     /** Bound from route. Auto-locked (Eloquent model). */
     public Booking $booking;
 
@@ -32,10 +36,10 @@ class extends Component
     public string $customerPhone   = '';
     public string $customerEmail   = '';
 
-    /** Guest user id — only ever set by `selectGuest()`. */
+    /** Guest user id — set via `selectGuest()` or inherited from the booking. */
     public ?int $user_id = null;
 
-    // ── Stay ──
+    // ── Booking dates ──
     public string $check_in      = '';
     public string $check_out     = '';
     public string $check_in_time = '14:00';
@@ -80,7 +84,7 @@ class extends Component
 
     public function mount($booking): void
     {
-        if (!$booking instanceof Booking) {
+        if (! $booking instanceof Booking) {
             $booking = Booking::withoutGlobalScope(TenantScope::class)
                 ->findOrFail((int) $booking);
         }
@@ -106,7 +110,6 @@ class extends Component
         $this->check_out     = $booking->check_out ? Carbon::parse($booking->check_out)->toDateString() : now()->addDay()->toDateString();
         $this->check_in_time = $booking->check_in  ? Carbon::parse($booking->check_in)->format('H:i')   : now()->format('H:i');
 
-        // Seed selections from existing items/services.
         foreach ($booking->items as $item) {
             $this->selectedProperties[$item->property_id] = [
                 'quantity'        => (int) $item->quantity,
@@ -121,13 +124,26 @@ class extends Component
             ];
         }
 
-        // Seed discount from the difference between base and stored total.
         $baseTotal = $this->calculateBaseTotal();
         $this->discountAmount = $booking->total_amount < $baseTotal
             ? round($baseTotal - (float) $booking->total_amount, 2)
             : 0;
 
         $this->calculateTotal();
+    }
+
+    public function hydrate(): void
+    {
+        abort_unless(Auth::user()?->tenant_id, 403);
+
+        // Rule 17 — re-verify booking ownership on every update request.
+        // Livewire actions bypass route middleware, so this is the safety
+        // net against a stale snapshot from a prior tenant session.
+        abort_unless(
+            $this->booking->tenant_id === Auth::user()->tenant_id,
+            403,
+            'Unauthorized.'
+        );
     }
 
     public function updated(string $field): void
@@ -143,6 +159,11 @@ class extends Component
         }
     }
 
+    public function updatedGuestSearch(): void
+    {
+        $this->searchGuests();
+    }
+
     // ─────────────────────────────────────────────────────────
     //  Validation
     // ─────────────────────────────────────────────────────────
@@ -154,7 +175,10 @@ class extends Component
         return [
             'customerName'   => ['required', 'string', 'max:255'],
             'customerPhone'  => ['required', 'string', 'max:20', 'regex:/^(09|\+639)\d{9}$/'],
-            'customerEmail'  => ['nullable', 'email', 'max:255'],
+            'customerEmail'  => [
+                'nullable', 'email', 'max:255',
+                Rule::unique('users', 'email')->ignore($this->user_id),
+            ],
             'check_in'       => ['required', 'date'],
             'check_out'      => ['required', 'date', 'after_or_equal:check_in'],
             'check_in_time'  => ['required', 'date_format:H:i'],
@@ -165,9 +189,9 @@ class extends Component
             'user_id' => [
                 'nullable', 'integer',
                 function ($attribute, $value, $fail) use ($tenantId): void {
-                    if (!$value) return;
+                    if (! $value) return;
                     $user = User::find($value);
-                    if (!$user) {
+                    if (! $user) {
                         $fail('Selected guest does not exist.');
                         return;
                     }
@@ -218,10 +242,25 @@ class extends Component
     //  Computed
     // ─────────────────────────────────────────────────────────
 
+    /**
+     * Rule 24 — clear memoized computed values after mutations. Called at
+     * the top of calculateTotal(), which is the post-mutation funnel.
+     */
+    protected function forgetComputed(): void
+    {
+        unset(
+            $this->numberOfDays,
+            $this->selectedPropertyModels,
+            $this->selectedServiceModels,
+            $this->availableProperties,
+            $this->availableServices,
+        );
+    }
+
     #[Computed]
     public function numberOfDays(): int
     {
-        if (!$this->check_in || !$this->check_out) {
+        if (! $this->check_in || ! $this->check_out) {
             return 1;
         }
 
@@ -240,6 +279,7 @@ class extends Component
         return Property::withoutGlobalScope(TenantScope::class)
             ->where('tenant_id', Auth::user()->tenant_id)
             ->whereIn('id', array_keys($this->selectedProperties))
+            ->with(['images' => fn ($q) => $q->select('id', 'property_id', 'image_path')])
             ->get(['id', 'name', 'price', 'capacity'])
             ->keyBy('id');
     }
@@ -261,7 +301,7 @@ class extends Component
     #[Computed]
     public function availableProperties()
     {
-        if (!$this->check_in || !$this->check_out) {
+        if (! $this->check_in || ! $this->check_out) {
             return collect();
         }
 
@@ -296,7 +336,7 @@ class extends Component
     #[Computed]
     public function availableServices()
     {
-        if (!$this->check_in || !$this->check_out) {
+        if (! $this->check_in || ! $this->check_out) {
             return collect();
         }
 
@@ -375,6 +415,8 @@ class extends Component
 
     public function searchGuests(): void
     {
+        $this->requirePermission('edit bookings');
+
         if (strlen($this->guestSearch) < 2) {
             $this->guestResults      = [];
             $this->showGuestDropdown = false;
@@ -402,6 +444,8 @@ class extends Component
 
     public function selectGuest(int $userId): void
     {
+        $this->requirePermission('edit bookings');
+
         $tenantId = Auth::user()->tenant_id;
 
         $user = User::query()
@@ -412,7 +456,9 @@ class extends Component
             ->whereKey($userId)
             ->first();
 
-        if (!$user) return;
+        if (! $user) {
+            return;
+        }
 
         $this->user_id       = $user->id;
         $this->customerName  = $user->name  ?? '';
@@ -459,14 +505,22 @@ class extends Component
         $removed   = false;
 
         foreach ($this->selectedProperties as $id => $item) {
-            if (!$available->contains('id', $id)) {
+            if (! $available->contains('id', $id)) {
                 unset($this->selectedProperties[$id]);
                 $removed = true;
             }
         }
 
+        $availableServiceIds = $this->availableServices->pluck('id')->all();
+        foreach ($this->selectedServices as $id => $item) {
+            if (! in_array($id, $availableServiceIds, true)) {
+                unset($this->selectedServices[$id]);
+                $removed = true;
+            }
+        }
+
         if ($removed) {
-            session()->flash('error', 'One or more selected activities were removed — they are not available for the new dates.');
+            session()->flash('error', 'One or more selected activities or services were removed — they are not available for the new dates.');
         }
 
         $this->calculateTotal();
@@ -478,6 +532,8 @@ class extends Component
 
     public function toggleProperty(int $propertyId): void
     {
+        $this->requirePermission('edit bookings');
+
         if (isset($this->selectedProperties[$propertyId])) {
             unset($this->selectedProperties[$propertyId]);
             $this->calculateTotal();
@@ -492,9 +548,11 @@ class extends Component
             ->where('is_active', true)
             ->exists();
 
-        if (!$exists) return;
+        if (! $exists) {
+            return;
+        }
 
-        if (!$this->availableProperties->contains('id', $propertyId)) {
+        if (! $this->availableProperties->contains('id', $propertyId)) {
             session()->flash('error', 'That activity is not available for the selected dates.');
             return;
         }
@@ -509,6 +567,8 @@ class extends Component
 
     public function toggleService(int $serviceId): void
     {
+        $this->requirePermission('edit bookings');
+
         if (isset($this->selectedServices[$serviceId])) {
             unset($this->selectedServices[$serviceId]);
             $this->calculateTotal();
@@ -523,7 +583,9 @@ class extends Component
             ->where('is_active', true)
             ->exists();
 
-        if (!$exists) return;
+        if (! $exists) {
+            return;
+        }
 
         $this->selectedServices[$serviceId] = [
             'quantity'           => 1,
@@ -544,14 +606,14 @@ class extends Component
 
         foreach ($this->selectedProperties as $id => $item) {
             $property = $this->selectedPropertyModels->get($id);
-            if (!$property) continue;
+            if (! $property) continue;
             $qty    = (int) ($item['quantity'] ?? 1);
             $total += (float) $property->price * $qty * $days;
         }
 
         foreach ($this->selectedServices as $id => $item) {
             $service = $this->selectedServiceModels->get($id);
-            if (!$service) continue;
+            if (! $service) continue;
             $qty    = (int) ($item['quantity'] ?? 1);
             $total += (float) $service->price * $qty;
         }
@@ -561,6 +623,8 @@ class extends Component
 
     public function calculateTotal(): void
     {
+        $this->forgetComputed();
+
         $this->totalAmount = $this->calculateBaseTotal();
 
         $discount = is_numeric($this->discountAmount) ? (float) $this->discountAmount : 0;
@@ -577,12 +641,16 @@ class extends Component
 
     public function update()
     {
+        // Livewire actions bypass route middleware. Enforce the same
+        // permission the `/admin/bookings/{id}/edit` route requires.
+        $this->requirePermission('edit bookings');
+
         $this->calculateTotal();
 
         $this->validate();
 
         $allowed = $this->allowedStatuses;
-        if (!array_key_exists($this->status, $allowed)) {
+        if (! array_key_exists($this->status, $allowed)) {
             session()->flash('error', "Cannot change status from '{$this->booking->status}' to '{$this->status}'.");
             return null;
         }
@@ -599,13 +667,39 @@ class extends Component
                     ->lockForUpdate()
                     ->firstOrFail();
 
-                Property::withoutGlobalScope(TenantScope::class)
+                $lockedProperties = Property::withoutGlobalScope(TenantScope::class)
                     ->where('tenant_id', $tenantId)
                     ->whereIn('id', array_keys($this->selectedProperties))
                     ->lockForUpdate()
-                    ->get();
+                    ->get(['id', 'price'])
+                    ->keyBy('id');
 
-                if ($this->user_id) {
+                foreach (array_keys($this->selectedProperties) as $propertyId) {
+                    $conflict = BookingItem::withoutGlobalScope(TenantScope::class)
+                        ->where('property_id', $propertyId)
+                        ->whereHas('booking', fn ($q) => $q
+                            ->withoutGlobalScope(TenantScope::class)
+                            ->where('tenant_id', $tenantId)
+                            ->where('id', '!=', $booking->id)
+                            ->whereNotIn('status', [Booking::STATUS_CANCELLED, Booking::STATUS_COMPLETED])
+                            ->where('check_in', '<', $checkOutDateTime)
+                            ->where('check_out', '>', $checkInDateTime)
+                        )
+                        ->exists();
+
+                    if ($conflict) {
+                        $name = $lockedProperties[$propertyId]->name ?? 'Property';
+                        throw new \DomainException("'{$name}' is no longer available for the new dates — another booking took it.");
+                    }
+                }
+
+                /*
+                 * SECURITY: only update the linked user's profile when the
+                 * booking's assigned user is the one being edited. Reassigning
+                 * a booking to a *different* user must NOT overwrite that
+                 * user's name/phone/email.
+                 */
+                if ($this->user_id && $this->user_id === $this->booking->user_id) {
                     $guest = User::find($this->user_id);
                     if ($guest) {
                         $guest->update([
@@ -627,16 +721,12 @@ class extends Component
                     'total_amount' => $this->finalTotal,
                 ]);
 
-                // Sync items.
+                // ── Sync items ──
                 $existingItemIds = $booking->items()->pluck('id')->all();
 
                 foreach ($this->selectedProperties as $propertyId => $item) {
-                    $property = Property::withoutGlobalScope(TenantScope::class)
-                        ->where('tenant_id', $tenantId)
-                        ->whereKey($propertyId)
-                        ->first(['id', 'price']);
-
-                    if (!$property) continue;
+                    $property = $lockedProperties->get($propertyId);
+                    if (! $property) continue;
 
                     $qty      = (int) ($item['quantity'] ?? 1);
                     $subtotal = (float) $property->price * $qty * $days;
@@ -645,6 +735,7 @@ class extends Component
 
                     if ($existingId) {
                         $affected = BookingItem::withoutGlobalScope(TenantScope::class)
+                            ->where('tenant_id', $tenantId)
                             ->where('id', $existingId)
                             ->where('booking_id', $booking->id)
                             ->update([
@@ -670,23 +761,26 @@ class extends Component
                     ]);
                 }
 
-                if (!empty($existingItemIds)) {
+                if (! empty($existingItemIds)) {
                     BookingItem::withoutGlobalScope(TenantScope::class)
+                        ->where('tenant_id', $tenantId)
                         ->whereIn('id', $existingItemIds)
                         ->where('booking_id', $booking->id)
                         ->delete();
                 }
 
-                // Sync services.
+                // ── Sync services ──
                 $existingServiceIds = $booking->services()->pluck('id')->all();
 
-                foreach ($this->selectedServices as $serviceId => $item) {
-                    $service = Service::withoutGlobalScope(TenantScope::class)
-                        ->where('tenant_id', $tenantId)
-                        ->whereKey($serviceId)
-                        ->first(['id', 'price']);
+                $lockedServices = Service::withoutGlobalScope(TenantScope::class)
+                    ->where('tenant_id', $tenantId)
+                    ->whereIn('id', array_keys($this->selectedServices))
+                    ->get(['id', 'price'])
+                    ->keyBy('id');
 
-                    if (!$service) continue;
+                foreach ($this->selectedServices as $serviceId => $item) {
+                    $service = $lockedServices->get($serviceId);
+                    if (! $service) continue;
 
                     $qty      = (int) ($item['quantity'] ?? 1);
                     $subtotal = (float) $service->price * $qty;
@@ -695,6 +789,7 @@ class extends Component
 
                     if ($existingId) {
                         $affected = BookingService::withoutGlobalScope(TenantScope::class)
+                            ->where('tenant_id', $tenantId)
                             ->where('id', $existingId)
                             ->where('booking_id', $booking->id)
                             ->update([
@@ -718,13 +813,17 @@ class extends Component
                     ]);
                 }
 
-                if (!empty($existingServiceIds)) {
+                if (! empty($existingServiceIds)) {
                     BookingService::withoutGlobalScope(TenantScope::class)
+                        ->where('tenant_id', $tenantId)
                         ->whereIn('id', $existingServiceIds)
                         ->where('booking_id', $booking->id)
                         ->delete();
                 }
             });
+        } catch (\DomainException $e) {
+            session()->flash('error', $e->getMessage());
+            return null;
         } catch (\Throwable $e) {
             Log::error('Booking update failed', [
                 'tenant_id'  => $tenantId,
@@ -743,71 +842,126 @@ class extends Component
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto space-y-6">
+<div class="p-4 sm:p-6 lg:p-8 pb-24 lg:pb-8 max-w-7xl mx-auto space-y-6">
 
     {{-- Header --}}
     <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
         <div>
-            <p class="text-xs font-semibold uppercase tracking-wider text-primary-600 dark:text-primary-400">
-                Bookings
-            </p>
-            <h1 class="mt-1 text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">
+            <div class="flex items-center gap-2 mb-2">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Bookings</span>
+            </div>
+            <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
                 Edit Booking
             </h1>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                Ref <span class="font-mono font-semibold">{{ $booking->booking_reference }}</span>
+            <p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1">
+                Ref <span class="font-mono font-semibold text-gray-700 dark:text-gray-300">{{ $booking->booking_reference }}</span>
                 · Update guest details, dates, and items.
             </p>
         </div>
         <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate
-           class="btn-secondary active:scale-95 transition-transform
-                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                  inline-flex items-center gap-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+           class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                  transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
             </svg>
-            Back to Booking
+            <span>Back to Booking</span>
         </a>
     </div>
 
-    {{-- Flash messages --}}
-    @if(session()->has('error'))
-        <div class="flex items-start gap-3 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 border-l-4 border-l-red-500 p-4 rounded-md">
-            <svg class="w-5 h-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-            </svg>
-            <p class="text-sm text-red-700 dark:text-red-300 font-medium">{{ session('error') }}</p>
+    {{-- Flash: success --}}
+    @if(session()->has('message'))
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 4000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-center justify-between bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 border-l-4 border-l-emerald-500 p-4 rounded-xl text-xs sm:text-sm text-emerald-800 dark:text-emerald-300 font-medium shadow-sm">
+            <div class="flex items-center gap-2.5">
+                <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <span>{{ session('message') }}</span>
+            </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
         </div>
     @endif
 
-    @if($errors->any())
-        <div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 border-l-4 border-l-red-500 p-4 rounded-md">
-            <div class="flex items-start gap-3">
-                <svg class="w-5 h-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    {{-- Flash: error --}}
+    @if(session()->has('error'))
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 5000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-center justify-between bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 border-l-4 border-l-rose-500 p-4 rounded-xl text-xs sm:text-sm text-rose-800 dark:text-rose-300 font-medium shadow-sm">
+            <div class="flex items-center gap-2.5">
+                <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
                 </svg>
-                <div class="text-sm text-red-700 dark:text-red-300">
+                <span>{{ session('error') }}</span>
+            </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+    @endif
+
+    {{-- Validation errors --}}
+    @if($errors->any())
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 6000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-start justify-between gap-3 bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 border-l-4 border-l-rose-500 p-4 rounded-xl">
+            <div class="flex items-start gap-2.5 min-w-0">
+                <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                </svg>
+                <div class="text-xs sm:text-sm text-rose-800 dark:text-rose-300 min-w-0">
                     <p class="font-semibold mb-1">Please fix the following:</p>
                     <ul class="list-disc list-inside space-y-0.5">
                         @foreach($errors->all() as $err)
-                            <li>{{ $err }}</li>
+                            <li wire:key="err-{{ $loop->index }}">{{ $err }}</li>
                         @endforeach
                     </ul>
                 </div>
             </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 shrink-0 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
         </div>
     @endif
 
-    <form wire:submit="update" class="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-6 items-start">
+    <form wire:submit="update" class="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6 items-start">
 
         <div class="space-y-6">
 
-            {{-- Guest --}}
-            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6">
-                <h2 class="text-lg font-bold text-gray-900 dark:text-white mb-5">Guest Information</h2>
+            {{-- Guest Information --}}
+            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
+                <div class="flex items-center gap-3">
+                    <span class="w-5 h-px bg-primary-600"></span>
+                    <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Guest Information</h2>
+                </div>
 
-                <div class="relative mb-4" wire:click.outside="closeGuestDropdown">
-                    <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
+                <div class="relative" wire:click.outside="closeGuestDropdown">
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                         Search existing guest
                     </label>
                     <input type="text" wire:model.live.debounce.300ms="guestSearch"
@@ -832,63 +986,66 @@ class extends Component
 
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div>
-                        <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Full Name *</label>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Full Name <span class="text-rose-500">*</span></label>
                         <input type="text" wire:model="customerName" class="input w-full">
-                        @error('customerName') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('customerName') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
                     <div>
-                        <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Phone *</label>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Phone <span class="text-rose-500">*</span></label>
                         <input type="tel" wire:model="customerPhone" inputmode="numeric" maxlength="13" class="input w-full">
-                        @error('customerPhone') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('customerPhone') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
                     <div>
-                        <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Email</label>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email</label>
                         <input type="email" wire:model="customerEmail" class="input w-full">
-                        @error('customerEmail') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('customerEmail') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
                 </div>
             </div>
 
             {{-- Booking Details --}}
-            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6">
-                <h2 class="text-lg font-bold text-gray-900 dark:text-white mb-5">Booking Details</h2>
+            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
+                <div class="flex items-center gap-3">
+                    <span class="w-5 h-px bg-primary-600"></span>
+                    <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Booking Details</h2>
+                </div>
 
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                     <div>
-                        <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Check-in Date *</label>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Start Date <span class="text-rose-500">*</span></label>
                         <input type="date" wire:model.live.debounce.300ms="check_in" class="input w-full">
-                        @error('check_in') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('check_in') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
                     <div>
-                        <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Check-in Time *</label>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Start Time <span class="text-rose-500">*</span></label>
                         <input type="time" wire:model.live.debounce.300ms="check_in_time" class="input w-full">
-                        @error('check_in_time') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('check_in_time') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
                     <div>
-                        <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Check-out Date *</label>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">End Date <span class="text-rose-500">*</span></label>
                         <input type="date" wire:model.live.debounce.300ms="check_out" class="input w-full">
-                        @error('check_out') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('check_out') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
                     <div>
-                        <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Check-out Time</label>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">End Time</label>
                         <input type="text" value="{{ $check_in_time }}" readonly
                                class="input w-full bg-gray-100 dark:bg-gray-900 cursor-not-allowed text-gray-500 dark:text-gray-400">
-                        <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">Mirrors check-in time.</p>
+                        <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">Mirrors start time.</p>
                     </div>
                 </div>
 
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                <div class="pt-5 border-t border-gray-100 dark:border-gray-700/60 grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Status *</label>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Status <span class="text-rose-500">*</span></label>
                         <select wire:model="status" class="input w-full">
                             @foreach($this->allowedStatuses as $value => $label)
-                                <option value="{{ $value }}">{{ $label }}</option>
+                                <option value="{{ $value }}" wire:key="status-opt-{{ $value }}">{{ $label }}</option>
                             @endforeach
                         </select>
-                        @error('status') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        @error('status') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
                     <div>
-                        <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Booking Type</label>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Booking Type</label>
                         <select wire:model.live="booking_type" class="input w-full">
                             <option value="full">Book Now (Full Payment)</option>
                             <option value="reservation">Reserve (20% Fee)</option>
@@ -898,8 +1055,11 @@ class extends Component
             </div>
 
             {{-- Activities --}}
-            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6">
-                <h2 class="text-lg font-bold text-gray-900 dark:text-white mb-5">Select Activities</h2>
+            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
+                <div class="flex items-center gap-3">
+                    <span class="w-5 h-px bg-primary-600"></span>
+                    <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Select Activities</h2>
+                </div>
 
                 @if($this->availableProperties->isNotEmpty())
                     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -914,17 +1074,19 @@ class extends Component
                                  x-on:keydown.enter.prevent="$wire.toggleProperty({{ $property->id }})"
                                  x-on:keydown.space.prevent="$wire.toggleProperty({{ $property->id }})"
                                  wire:click="toggleProperty({{ $property->id }})"
-                                 class="relative rounded-xl border-2 transition-all duration-200 cursor-pointer
+                                 class="relative rounded-xl border-2 transition-all duration-200 cursor-pointer overflow-hidden
                                         focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
                                         {{ $isSelected ? 'border-primary-600 ring-2 ring-primary-500/30' : 'border-gray-200 dark:border-gray-700 hover:border-primary-400/50' }}">
-                                <div class="aspect-[4/3] overflow-hidden rounded-t-xl">
+                                <div class="aspect-[4/3] overflow-hidden">
                                     <img class="w-full h-full object-cover"
                                          src="{{ $firstImg ? asset('storage/' . $firstImg->image_path) : asset('images/placeholder-room.jpg') }}"
-                                         alt="{{ $property->name }}">
+                                         alt="{{ $property->name }}"
+                                         loading="lazy"
+                                         decoding="async">
                                 </div>
-                                <div class="p-4 bg-white dark:bg-gray-800 rounded-b-xl">
+                                <div class="p-4 bg-white dark:bg-gray-800">
                                     <h3 class="font-medium text-gray-900 dark:text-white truncate">{{ $property->name }}</h3>
-                                    <p class="mt-1 text-sm text-primary-600 dark:text-primary-400 font-semibold">
+                                    <p class="mt-1 text-sm text-primary-600 dark:text-primary-400 font-semibold tabular-nums">
                                         ₱{{ number_format($property->price, 2) }} <span class="text-gray-500 font-normal">/ day</span>
                                     </p>
                                     <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Capacity: {{ $property->capacity }} persons</p>
@@ -932,7 +1094,7 @@ class extends Component
                                 @if($isSelected)
                                     <div class="absolute top-3 right-3 bg-primary-600 text-white rounded-full p-1 shadow-md">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
                                         </svg>
                                     </div>
                                 @endif
@@ -941,13 +1103,19 @@ class extends Component
                     </div>
                 @else
                     <div class="text-center py-10 bg-gray-50 dark:bg-gray-900/50 rounded-xl border border-dashed border-gray-300 dark:border-gray-700">
+                        <svg class="mx-auto w-8 h-8 text-gray-400 dark:text-gray-500 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"/>
+                        </svg>
                         <p class="text-sm text-gray-500 dark:text-gray-400">No activities available for the selected dates.</p>
                     </div>
                 @endif
 
                 @if(count($selectedProperties) > 0)
-                    <div class="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700 space-y-3">
-                        <h3 class="font-medium text-gray-900 dark:text-white">Selected Properties</h3>
+                    <div class="pt-5 border-t border-gray-100 dark:border-gray-700/60 space-y-3">
+                        <div class="flex items-center gap-3">
+                            <span class="w-5 h-px bg-primary-600"></span>
+                            <h3 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Selected Activities</h3>
+                        </div>
                         @foreach($selectedProperties as $id => $item)
                             @php
                                 $prop      = $this->selectedPropertyModels->get($id);
@@ -958,19 +1126,25 @@ class extends Component
                                  class="flex items-center gap-4 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-200 dark:border-gray-700">
                                 <div class="w-14 h-14 rounded-lg overflow-hidden bg-gray-200 dark:bg-gray-600 shrink-0 shadow-sm">
                                     @if($prop && $prop->images->isNotEmpty())
-                                        <img src="{{ asset('storage/' . $prop->images->first()->image_path) }}" class="w-full h-full object-cover" alt="{{ $prop->name }}">
+                                        <img src="{{ asset('storage/' . $prop->images->first()->image_path) }}"
+                                             class="w-full h-full object-cover"
+                                             alt="{{ $prop->name }}"
+                                             loading="lazy"
+                                             decoding="async">
                                     @endif
                                 </div>
                                 <div class="flex-1 min-w-0">
                                     <p class="font-medium text-gray-900 dark:text-white truncate">{{ $prop->name ?? 'Unknown' }}</p>
-                                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 tabular-nums">
                                         ₱{{ number_format($prop->price ?? 0, 2) }} / day · {{ $days }} day{{ $days > 1 ? 's' : '' }}
                                     </p>
                                 </div>
-                                <p class="text-sm font-bold text-gray-900 dark:text-white">₱{{ number_format($roomTotal, 2) }}</p>
+                                <p class="text-sm font-bold text-gray-900 dark:text-white tabular-nums">₱{{ number_format($roomTotal, 2) }}</p>
                                 <button type="button" wire:click="toggleProperty({{ $id }})"
-                                        class="p-2 text-gray-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-500/20 dark:hover:text-red-400 rounded-full transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50"
-                                        title="Remove">
+                                        aria-label="Remove {{ $prop->name ?? 'activity' }}"
+                                        class="inline-flex items-center justify-center h-9 w-9 rounded-lg text-gray-500 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50
+                                               transition-all duration-200 active:scale-95
+                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                                     </svg>
@@ -982,8 +1156,13 @@ class extends Component
             </div>
 
             {{-- Services --}}
-            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6">
-                <h2 class="text-lg font-bold text-gray-900 dark:text-white mb-5">Add-On Services (Optional)</h2>
+            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
+                <div class="flex items-center gap-3">
+                    <span class="w-5 h-px bg-primary-600"></span>
+                    <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                        Add-On Services <span class="text-gray-400 dark:text-gray-500 font-medium normal-case tracking-normal">(optional)</span>
+                    </h2>
+                </div>
 
                 @if($this->availableServices->isNotEmpty())
                     <div class="flex flex-wrap gap-2">
@@ -992,35 +1171,42 @@ class extends Component
                             <button type="button"
                                     wire:key="svc-btn-{{ $service->id }}"
                                     wire:click="toggleService({{ $service->id }})"
-                                    class="border rounded-full px-4 py-2 text-sm font-medium transition-all duration-200 active:scale-95
+                                    class="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg border text-xs font-semibold
+                                           transition-all duration-200 active:scale-95
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
                                            {{ $isServiceSelected
-                                              ? 'bg-primary-50 dark:bg-primary-500/15 border-primary-200 dark:border-primary-500/30 text-primary-600 dark:text-primary-400 shadow-sm'
-                                              : 'border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300' }}">
-                                {{ $service->name }} (+₱{{ number_format($service->price, 2) }})
+                                              ? 'bg-primary-50 dark:bg-primary-500/15 border-primary-300 dark:border-primary-500/40 text-primary-700 dark:text-primary-300'
+                                              : 'bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700' }}">
+                                {{ $service->name }} <span class="text-gray-500 dark:text-gray-400 font-normal">(+₱{{ number_format($service->price, 2) }})</span>
                             </button>
                         @endforeach
                     </div>
                 @else
-                    <p class="text-sm text-gray-500 dark:text-gray-400">No services available for selected dates.</p>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">No services available for the selected dates.</p>
                 @endif
 
                 @if(count($selectedServices) > 0)
-                    <div class="space-y-2 mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+                    <div class="pt-5 border-t border-gray-100 dark:border-gray-700/60 space-y-3">
+                        <div class="flex items-center gap-3">
+                            <span class="w-5 h-px bg-primary-600"></span>
+                            <h3 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Selected Services</h3>
+                        </div>
                         @foreach($selectedServices as $id => $item)
                             @php $service = $this->selectedServiceModels->get($id); @endphp
                             @if($service)
                                 <div wire:key="sel-svc-{{ $id }}"
                                      class="flex items-center justify-between gap-3 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-200 dark:border-gray-700">
-                                    <div>
-                                        <p class="font-medium text-gray-900 dark:text-white">{{ $service->name }}</p>
+                                    <div class="min-w-0">
+                                        <p class="font-medium text-gray-900 dark:text-white truncate">{{ $service->name }}</p>
                                         <p class="text-xs text-gray-500 dark:text-gray-400">Fixed rate per booking</p>
                                     </div>
-                                    <div class="flex items-center gap-4">
-                                        <p class="text-sm font-bold text-gray-900 dark:text-white">₱{{ number_format($service->price, 2) }}</p>
+                                    <div class="flex items-center gap-3 shrink-0">
+                                        <p class="text-sm font-bold text-gray-900 dark:text-white tabular-nums">₱{{ number_format($service->price, 2) }}</p>
                                         <button type="button" wire:click="toggleService({{ $id }})"
-                                                class="p-2 text-gray-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-500/20 dark:hover:text-red-400 rounded-full transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/50"
-                                                title="Remove service">
+                                                aria-label="Remove {{ $service->name }}"
+                                                class="inline-flex items-center justify-center h-9 w-9 rounded-lg text-gray-500 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50
+                                                       transition-all duration-200 active:scale-95
+                                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                                             </svg>
@@ -1036,67 +1222,72 @@ class extends Component
 
         {{-- Summary --}}
         <div class="space-y-4 lg:sticky lg:top-24">
-            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5">
-                <h3 class="font-bold text-gray-900 dark:text-white mb-3">Payment Summary</h3>
+            <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 space-y-4">
+                <div class="flex items-center gap-3">
+                    <span class="w-5 h-px bg-primary-600"></span>
+                    <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Payment Summary</h2>
+                </div>
 
-                <div class="mb-4">
-                    <label class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">Discount (₱)</label>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Discount (₱)</label>
                     <input type="number" min="0" step="0.01"
                            wire:model.live.debounce.500ms="discountAmount"
                            class="input w-full">
-                    @error('discountAmount') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    @error('discountAmount') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
 
                 <div class="space-y-2 text-sm">
                     <div class="flex justify-between">
                         <span class="text-gray-600 dark:text-gray-300">Base Total</span>
-                        <span class="font-semibold text-gray-900 dark:text-white">₱{{ number_format($totalAmount, 2) }}</span>
+                        <span class="font-semibold text-gray-900 dark:text-white tabular-nums">₱{{ number_format($totalAmount, 2) }}</span>
                     </div>
                     <div class="flex justify-between">
                         <span class="text-gray-600 dark:text-gray-300">Discount</span>
-                        <span class="font-semibold text-gray-900 dark:text-white">−₱{{ number_format(min((float) $discountAmount, $totalAmount), 2) }}</span>
+                        <span class="font-semibold text-gray-900 dark:text-white tabular-nums">−₱{{ number_format(min((float) $discountAmount, $totalAmount), 2) }}</span>
                     </div>
                     <div class="flex justify-between pt-2 border-t border-gray-200 dark:border-gray-700">
                         <span class="text-gray-700 dark:text-gray-200 font-semibold">Final Total</span>
-                        <span class="font-bold text-emerald-600 dark:text-emerald-400">₱{{ number_format($finalTotal, 2) }}</span>
+                        <span class="font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">₱{{ number_format($finalTotal, 2) }}</span>
                     </div>
-
-                    <div class="flex justify-between pt-2">
+                    <div class="flex justify-between pt-2 border-t border-gray-100 dark:border-gray-700/60">
                         <span class="text-gray-600 dark:text-gray-300">Already Paid</span>
-                        <span class="font-semibold text-gray-900 dark:text-white">₱{{ number_format($this->paidAmount, 2) }}</span>
+                        <span class="font-semibold text-gray-900 dark:text-white tabular-nums">₱{{ number_format($this->paidAmount, 2) }}</span>
                     </div>
 
                     @if($booking_type === 'reservation')
                         <div class="flex justify-between pt-2 border-t border-gray-200 dark:border-gray-700">
                             <span class="text-gray-600 dark:text-gray-300">Reservation Fee (20%)</span>
-                            <span class="font-semibold text-primary-600 dark:text-primary-400">₱{{ number_format($reservationFee, 2) }}</span>
+                            <span class="font-semibold text-primary-600 dark:text-primary-400 tabular-nums">₱{{ number_format($reservationFee, 2) }}</span>
                         </div>
                         <div class="flex justify-between">
                             <span class="text-gray-600 dark:text-gray-300">Balance on Arrival</span>
-                            <span class="font-semibold text-amber-600 dark:text-amber-500">₱{{ number_format($balanceOnArrival, 2) }}</span>
+                            <span class="font-semibold text-amber-600 dark:text-amber-500 tabular-nums">₱{{ number_format($balanceOnArrival, 2) }}</span>
                         </div>
                     @endif
                 </div>
 
-                <div class="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700 space-y-3">
+                <div class="pt-4 border-t border-gray-200 dark:border-gray-700 space-y-3">
                     <button type="submit"
                             wire:loading.attr="disabled"
                             wire:target="update"
-                            class="w-full btn-primary py-3 disabled:opacity-50 disabled:cursor-not-allowed
-                                   flex justify-center items-center active:scale-95 transition-transform
-                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                            class="w-full inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                   transition-all duration-200 active:scale-95
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                                   disabled:opacity-60 disabled:cursor-not-allowed">
                         <span wire:loading.remove wire:target="update">Save Changes</span>
-                        <span wire:loading wire:target="update" class="flex items-center gap-2">
-                            <svg class="animate-spin h-5 w-5 text-white motion-reduce:animate-none" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                        <span wire:loading wire:target="update" class="inline-flex items-center gap-2">
+                            <svg class="animate-spin h-4 w-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
                                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                             </svg>
-                            Saving...
+                            Saving…
                         </span>
                     </button>
                     <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate
-                       class="w-full btn-secondary text-center py-3 block active:scale-95 transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                        Cancel
+                       class="w-full inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                              transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                        <span>Cancel</span>
                     </a>
                 </div>
             </div>
@@ -1108,17 +1299,25 @@ class extends Component
         <div class="flex items-center justify-between gap-4 max-w-7xl mx-auto">
             <div class="flex-1 min-w-0">
                 <p class="text-xs text-gray-500 dark:text-gray-400">Final Total</p>
-                <p class="text-xl font-bold text-gray-900 dark:text-white">
+                <p class="text-xl font-bold text-gray-900 dark:text-white tabular-nums">
                     ₱{{ number_format($finalTotal, 2) }}
                 </p>
             </div>
             <button type="button" wire:click="update"
                     wire:loading.attr="disabled"
                     wire:target="update"
-                    class="shrink-0 px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-full text-sm font-bold uppercase tracking-widest transition shadow-lg shadow-primary-500/30
-                           active:scale-95 disabled:opacity-60
-                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                Save
+                    class="shrink-0 inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                           disabled:opacity-60 disabled:cursor-not-allowed">
+                <span wire:loading.remove wire:target="update">Save</span>
+                <span wire:loading wire:target="update" class="inline-flex items-center gap-2">
+                    <svg class="animate-spin h-4 w-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                    </svg>
+                    Saving…
+                </span>
             </button>
         </div>
     </div>

@@ -1,6 +1,8 @@
+{{-- resources/views/public/pages/⚡register-business.blade.php --}}
 <?php
 
 use App\Models\BusinessApplication;
+use App\Models\SiteSetting;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Layout;
@@ -13,20 +15,49 @@ new
 class extends Component
 {
     /**
-     * The user's most recent KYB application, if any.
+     * The user's most relevant KYB application.
+     *
+     * Preference order:
+     *   1. An *editable* application (draft or needs_revision) — because
+     *      that's the one the user can actually act on. Even if the same
+     *      user has a `rejected` record that was touched more recently
+     *      (e.g. a reviewer added a rejection reason after the user
+     *      started a fresh draft), the editable record is what the UI
+     *      should point at — otherwise the "Continue Application" CTA
+     *      would be replaced by "Start New Application", which the
+     *      server-side RegisterBusinessController::store() would then
+     *      attach to the SAME draft anyway. That mismatch is a UX bug.
+     *   2. Otherwise the latest record of any status (submitted, approved,
+     *      rejected) — the panels for those states already handle the
+     *      "read-only" narrative correctly.
      */
     #[Computed]
     public function application(): ?BusinessApplication
     {
-        return Auth::user()
-            ?->businessApplications()
+        $user = Auth::user();
+
+        if (!$user) {
+            return null;
+        }
+
+        $editable = $user->businessApplications()
+            ->whereIn('status', [
+                BusinessApplication::STATUS_DRAFT,
+                BusinessApplication::STATUS_NEEDS_REVISION,
+            ])
+            ->latest('updated_at')
+            ->first();
+
+        if ($editable) {
+            return $editable;
+        }
+
+        return $user->businessApplications()
             ->latest('updated_at')
             ->first();
     }
 
-    /**
-     * Current state key for the panel switch.
-     */
+    /** Current state key for the panel switch. */
     #[Computed]
     public function state(): string
     {
@@ -62,126 +93,208 @@ class extends Component
     {
         return $this->state === BusinessApplication::STATUS_REJECTED;
     }
+
+    #[Computed]
+    public function siteName(): string
+    {
+        return (string) SiteSetting::getValue('site_name', config('app.name'));
+    }
+
+    #[Computed]
+    public function logoUrl(): ?string
+    {
+        $path = SiteSetting::getValue('site_logo');
+
+        return $path ? asset('storage/' . $path) : null;
+    }
+
+    #[Computed]
+    public function heroUrl(): string
+    {
+        $path = SiteSetting::getValue('hero_background_image');
+
+        return $path
+            ? asset('storage/' . $path)
+            : 'https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1600&q=80';
+    }
 };
 ?>
 
-@php
-    $siteName = \App\Models\SiteSetting::getValue('site_name', config('app.name'));
-    $logoPath = \App\Models\SiteSetting::getValue('site_logo');
-    $logoUrl  = $logoPath ? asset('storage/' . $logoPath) : null;
+<main class="min-h-[100dvh] flex flex-col lg:flex-row bg-white dark:bg-gray-950">
 
-    $heroPath = \App\Models\SiteSetting::getValue('hero_background_image');
-    $heroUrl  = $heroPath
-        ? asset('storage/' . $heroPath)
-        : 'https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1600&q=80';
-@endphp
+    {{-- ═══════════════════════════════════════════════════════════
+         LEFT — HERO
+         Sticky viewport-height sidebar on desktop, stacked panel on
+         mobile. Content is bottom-anchored with a cinematic gradient
+         for text contrast against any hero image.
+         ═══════════════════════════════════════════════════════════ --}}
+    <aside class="relative w-full shrink-0 min-h-[280px] sm:min-h-[360px] lg:min-h-0 lg:h-[100dvh] lg:w-[55%] lg:sticky lg:top-0 overflow-hidden">
 
-<main class="flex flex-col md:flex-row w-full min-h-screen">
+        <img src="{{ $this->heroUrl }}"
+             alt=""
+             loading="eager"
+             fetchpriority="high"
+             decoding="async"
+             width="1600"
+             height="900"
+             class="absolute inset-0 w-full h-full object-cover">
 
-    {{-- Left: Hero --}}
-    <div class="relative w-full md:w-3/5 min-h-[220px] md:min-h-screen order-1 md:order-1">
-        <img src="{{ $heroUrl }}"
-             alt="{{ $siteName }}"
-             class="absolute inset-0 object-cover w-full h-full">
+        {{-- Gradient overlay — stronger at the bottom for text contrast --}}
+        <div class="absolute inset-0 bg-gradient-to-t from-black/85 via-black/35 to-black/15" aria-hidden="true"></div>
 
-        <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/25 to-transparent"></div>
+        {{-- Subtle vignette --}}
+        <div class="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_40%,rgba(0,0,0,0.35)_100%)]" aria-hidden="true"></div>
 
-        <div class="absolute inset-x-0 bottom-0 p-5 sm:p-8 md:p-16 lg:p-24 text-white">
-            <span class="inline-flex items-center gap-2 px-3 py-1 text-[11px] font-bold tracking-widest text-white uppercase bg-black/40 rounded-full backdrop-blur-sm border border-white/10">
-                <span class="w-1.5 h-1.5 bg-yellow-500 rounded-full"></span>
-                {{ $siteName }}
+        {{-- Hero content --}}
+        <div class="relative z-10 flex flex-col justify-end h-full min-h-[280px] sm:min-h-[360px] lg:min-h-0 px-6 sm:px-10 lg:px-16 xl:px-24 pb-8 sm:pb-12 lg:pb-16 text-white">
+
+            {{-- Brand pill --}}
+            <span class="inline-flex w-max items-center gap-2 px-3 py-1.5 rounded-full bg-white/10 backdrop-blur-md border border-white/20 text-[11px] font-semibold tracking-wider uppercase">
+                <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                {{ $this->siteName }}
             </span>
 
-            <h1 class="mt-5 text-2xl sm:text-3xl md:text-5xl lg:text-[54px] font-extrabold tracking-tight leading-[1.1]">
-                Register your business &<br />welcome the world
+            {{-- Headline --}}
+            <h1 class="mt-5 sm:mt-6 max-w-2xl text-3xl sm:text-4xl md:text-5xl xl:text-[56px] font-extrabold tracking-tight leading-[1.05]">
+                Register your business &<br class="hidden sm:inline" />
+                welcome the world
             </h1>
 
-            <p class="max-w-2xl mt-4 text-sm font-medium leading-relaxed text-gray-200 md:text-base">
+            {{-- Subheadline --}}
+            <p class="mt-4 sm:mt-5 max-w-xl text-sm sm:text-base font-medium leading-relaxed text-white/75">
                 Put your resort, inn, eco-park, or restaurant on the map.
                 Reach more visitors and share the best of Victorias City.
             </p>
         </div>
-    </div>
+    </aside>
 
-    {{-- Right: State-aware panel --}}
-    <div class="flex items-center justify-center w-full px-4 sm:px-6 py-10 md:py-12 bg-white dark:bg-gray-900 md:w-2/5 lg:px-16 order-2 md:order-2 overflow-y-auto">
+    {{-- ═══════════════════════════════════════════════════════════
+         RIGHT — STATE-AWARE PANEL
+         ═══════════════════════════════════════════════════════════ --}}
+    <section class="relative flex-1 flex items-center justify-center px-5 sm:px-8 lg:px-16 py-10 lg:py-16">
+
+        {{-- Subtle background texture (light/dark aware) --}}
+        <div class="absolute inset-0 -z-10 opacity-[0.35] dark:opacity-[0.06] pointer-events-none" aria-hidden="true">
+            <div class="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(99,102,241,0.10),transparent_55%)]"></div>
+            <div class="absolute inset-0 bg-[radial-gradient(circle_at_bottom_left,rgba(16,185,129,0.08),transparent_55%)]"></div>
+        </div>
+
         <div class="w-full max-w-md">
 
-            {{-- Back to Home --}}
+            {{-- Back to home --}}
             <a href="{{ route('home') }}" wire:navigate
-               class="inline-flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors mb-6 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+               class="inline-flex items-center gap-1.5 text-xs font-medium text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-all duration-200 active:scale-95 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 mb-8">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                 </svg>
-                Back to Home
+                Back to home
             </a>
 
-            {{-- Brand --}}
-            <div class="flex items-center gap-3 mb-6">
-                @if($logoUrl)
-                    <img src="{{ $logoUrl }}" alt="{{ $siteName }} logo"
-                         class="w-10 h-10 object-contain rounded-lg shrink-0">
+            {{-- Brand mark --}}
+            <div class="flex items-center gap-3 mb-8">
+                @if($this->logoUrl)
+                    <img src="{{ $this->logoUrl }}"
+                         alt="{{ $this->siteName }}"
+                         loading="lazy"
+                         decoding="async"
+                         width="40"
+                         height="40"
+                         class="w-10 h-10 object-contain rounded-xl shrink-0">
                 @else
-                    <div class="w-10 h-10 rounded-xl bg-primary-600 flex items-center justify-center text-white shrink-0 font-semibold">
-                        {{ strtoupper(substr($siteName, 0, 1)) }}
+                    <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center text-white shrink-0 font-bold text-base shadow-sm">
+                        {{ strtoupper(substr($this->siteName, 0, 1)) }}
                     </div>
                 @endif
-                <span class="text-lg font-semibold text-gray-900 dark:text-white">{{ $siteName }}</span>
+                <span class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">{{ $this->siteName }}</span>
             </div>
 
-            <h2 class="text-3xl font-bold tracking-tight text-gray-900 dark:text-white mb-2">
+            {{-- Page heading --}}
+            <h2 class="text-3xl sm:text-4xl font-bold tracking-tight text-gray-900 dark:text-white leading-tight">
                 Register Your Business
             </h2>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
-                Complete our verification process to list your business on {{ $siteName }}.
+            <p class="mt-2 text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
+                Complete our verification process to list your business on {{ $this->siteName }}.
             </p>
 
-            {{-- Flash messages --}}
+            {{-- Flash: success — Rule 95 auto-dismiss + dismiss X + a11y --}}
             @if (session()->has('message'))
-                <div class="mb-5 flex items-center gap-2.5 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 border-l-4 border-l-emerald-500 p-4 rounded-xl text-xs sm:text-sm text-emerald-800 dark:text-emerald-300 font-medium shadow-sm">
-                    <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <div x-data="{ show: true }"
+                     x-init="setTimeout(() => show = false, 4000)"
+                     :class="show ? '' : 'hidden'"
+                     role="status"
+                     aria-live="polite"
+                     class="mt-6 flex items-start gap-3 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 p-3.5 text-sm">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
                     </svg>
-                    <span>{{ session('message') }}</span>
+                    <span class="flex-1 font-medium text-emerald-800 dark:text-emerald-300 leading-relaxed">{{ session('message') }}</span>
+                    <button type="button"
+                            @click="show = false"
+                            class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                                   transition-all duration-200 active:scale-95
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 shrink-0"
+                            aria-label="Dismiss message">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
                 </div>
             @endif
 
+            {{-- Flash: error — Rule 95 --}}
             @if (session()->has('error'))
-                <div class="mb-5 flex items-center gap-2.5 bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 border-l-4 border-l-rose-500 p-4 rounded-xl text-xs sm:text-sm text-rose-800 dark:text-rose-300 font-medium shadow-sm">
-                    <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <div x-data="{ show: true }"
+                     x-init="setTimeout(() => show = false, 5000)"
+                     :class="show ? '' : 'hidden'"
+                     role="alert"
+                     aria-live="polite"
+                     class="mt-6 flex items-start gap-3 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 p-3.5 text-sm">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/>
                     </svg>
-                    <span>{{ session('error') }}</span>
+                    <span class="flex-1 font-medium text-rose-800 dark:text-rose-300 leading-relaxed">{{ session('error') }}</span>
+                    <button type="button"
+                            @click="show = false"
+                            class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                                   transition-all duration-200 active:scale-95
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 shrink-0"
+                            aria-label="Dismiss error">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
                 </div>
             @endif
 
-            {{-- ──────────────────────────────────────────────────────────
+            {{-- ══════════════════════════════════════════════════════════
                  STATE-AWARE PANEL
-                 ────────────────────────────────────────────────────────── --}}
+                 ══════════════════════════════════════════════════════════ --}}
 
             @if ($this->isApproved)
-                {{-- ✅ Already approved --}}
-                <div class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl p-6 shadow-sm">
-                    <div class="flex items-start gap-3">
-                        <div class="p-2 bg-emerald-50 dark:bg-emerald-500/10 rounded-xl text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-900/50 shrink-0">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                {{-- ✅ Approved --}}
+                <div class="mt-8 rounded-2xl border border-emerald-200/70 dark:border-emerald-500/25 bg-emerald-50/40 dark:bg-emerald-500/[0.06] p-6">
+                    <div class="flex items-start gap-4">
+                        <div class="shrink-0 w-11 h-11 rounded-xl flex items-center justify-center bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
                             </svg>
                         </div>
-                        <div class="min-w-0">
+                        <div class="flex-1 min-w-0 pt-0.5">
                             <h3 class="text-base font-semibold text-gray-900 dark:text-white">
                                 Your business is approved
                             </h3>
-                            <p class="mt-1 text-xs sm:text-sm text-gray-500 dark:text-gray-400">
+                            <p class="mt-1.5 text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
                                 Your business account is live on the platform. Head to your dashboard to manage properties, services, bookings, and payments.
                             </p>
                         </div>
                     </div>
 
                     <a href="{{ route('tenant.dashboard') }}" wire:navigate
-                       class="mt-5 inline-flex w-full items-center justify-center gap-2 px-4 py-3 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                        Go to Business Dashboard
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                       class="mt-6 w-full inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold shadow-sm
+                              transition-all duration-200 active:scale-95
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-950">
+                        Go to business dashboard
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                         </svg>
                     </a>
@@ -189,22 +302,22 @@ class extends Component
 
             @elseif ($this->isSubmitted)
                 {{-- ⏳ Under review --}}
-                <div class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl p-6 shadow-sm">
-                    <div class="flex items-start gap-3">
-                        <div class="p-2 bg-amber-50 dark:bg-amber-500/10 rounded-xl text-amber-600 dark:text-amber-400 border border-amber-100 dark:border-amber-900/50 shrink-0">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <div class="mt-8 rounded-2xl border border-amber-200/70 dark:border-amber-500/25 bg-amber-50/40 dark:bg-amber-500/[0.06] p-6">
+                    <div class="flex items-start gap-4">
+                        <div class="shrink-0 w-11 h-11 rounded-xl flex items-center justify-center bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-500/30">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
                             </svg>
                         </div>
-                        <div class="min-w-0">
+                        <div class="flex-1 min-w-0 pt-0.5">
                             <h3 class="text-base font-semibold text-gray-900 dark:text-white">
                                 Application under review
                             </h3>
-                            <p class="mt-1 text-xs sm:text-sm text-gray-500 dark:text-gray-400">
+                            <p class="mt-1.5 text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
                                 Our team is reviewing your submission. We'll notify you as soon as a decision is made.
                             </p>
                             @if ($this->application?->submitted_at)
-                                <p class="mt-3 text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                                <p class="mt-3 text-[11px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
                                     Submitted {{ $this->application->submitted_at->diffForHumans() }}
                                 </p>
                             @endif
@@ -214,59 +327,78 @@ class extends Component
 
             @elseif ($this->isRejected)
                 {{-- ❌ Rejected --}}
-                <div class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl p-6 shadow-sm">
-                    <div class="flex items-start gap-3">
-                        <div class="p-2 bg-rose-50 dark:bg-rose-500/10 rounded-xl text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/50 shrink-0">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <div class="mt-8 rounded-2xl border border-rose-200/70 dark:border-rose-500/25 bg-rose-50/40 dark:bg-rose-500/[0.06] p-6">
+                    <div class="flex items-start gap-4">
+                        <div class="shrink-0 w-11 h-11 rounded-xl flex items-center justify-center bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-500/30">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/>
                             </svg>
                         </div>
-                        <div class="min-w-0">
+                        <div class="flex-1 min-w-0 pt-0.5">
                             <h3 class="text-base font-semibold text-gray-900 dark:text-white">
                                 Application not approved
                             </h3>
-                            <p class="mt-1 text-xs sm:text-sm text-gray-500 dark:text-gray-400">
+                            <p class="mt-1.5 text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
                                 Unfortunately, your previous application was rejected. You may start a new one with corrected information.
                             </p>
-
-                            @if ($this->application?->rejection_reason)
-                                <div class="mt-4 rounded-xl bg-rose-50/60 dark:bg-rose-500/5 border border-rose-100 dark:border-rose-500/20 p-3">
-                                    <p class="text-[10px] font-bold uppercase tracking-wider text-rose-600 dark:text-rose-400 mb-1">
-                                        Reason from reviewer
-                                    </p>
-                                    <p class="text-xs text-rose-800 dark:text-rose-300 leading-relaxed">
-                                        {{ $this->application->rejection_reason }}
-                                    </p>
-                                </div>
-                            @endif
                         </div>
                     </div>
 
-                    <form method="POST" action="{{ route('register_business.start') }}" class="mt-5">
+                    @if ($this->application?->rejection_reason)
+                        <div class="mt-5 rounded-xl bg-white/60 dark:bg-rose-500/[0.08] border border-rose-100 dark:border-rose-500/20 p-4">
+                            <p class="text-[10px] font-bold uppercase tracking-wider text-rose-700 dark:text-rose-400 mb-1.5">
+                                Reason from reviewer
+                            </p>
+                            <p class="text-sm text-rose-900 dark:text-rose-200 leading-relaxed">
+                                {{ $this->application->rejection_reason }}
+                            </p>
+                        </div>
+                    @endif
+
+                    <form method="POST" action="{{ route('register_business.start') }}" class="mt-6"
+                          x-data="{ loading: false }" @submit="loading = true">
                         @csrf
                         <button type="submit"
-                                class="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                            Start New Application
+                                :disabled="loading"
+                                :aria-busy="loading"
+                                class="w-full inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold shadow-sm
+                                       transition-all duration-200 active:scale-95
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-950
+                                       disabled:opacity-60 disabled:cursor-not-allowed">
+                            {{-- Rule 69: :class toggling, never x-show. --}}
+                            <span :class="loading ? 'hidden' : 'inline-flex items-center gap-2'">
+                                Start new application
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
+                                </svg>
+                            </span>
+                            <span :class="loading ? 'inline-flex items-center gap-2' : 'hidden'">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="animate-spin w-4 h-4 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                </svg>
+                                Starting…
+                            </span>
                         </button>
                     </form>
                 </div>
 
             @elseif ($this->isEditable)
                 {{-- ✏️ Draft or needs-revision --}}
-                <div class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl p-6 shadow-sm">
-                    <div class="flex items-start gap-3">
-                        <div class="p-2 bg-primary-50 dark:bg-primary-950/50 rounded-xl text-primary-600 dark:text-primary-400 border border-primary-100 dark:border-primary-900/50 shrink-0">
+                <div class="mt-8 rounded-2xl border border-indigo-200/70 dark:border-indigo-500/25 bg-indigo-50/40 dark:bg-indigo-500/[0.06] p-6">
+                    <div class="flex items-start gap-4">
+                        <div class="shrink-0 w-11 h-11 rounded-xl flex items-center justify-center bg-indigo-100 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30">
                             @if ($this->state === BusinessApplication::STATUS_NEEDS_REVISION)
-                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/>
                                 </svg>
                             @else
-                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
                                 </svg>
                             @endif
                         </div>
-                        <div class="min-w-0">
+                        <div class="flex-1 min-w-0 pt-0.5">
                             <h3 class="text-base font-semibold text-gray-900 dark:text-white">
                                 @if ($this->state === BusinessApplication::STATUS_NEEDS_REVISION)
                                     Revision requested
@@ -274,93 +406,128 @@ class extends Component
                                     Application in progress
                                 @endif
                             </h3>
-                            <p class="mt-1 text-xs sm:text-sm text-gray-500 dark:text-gray-400">
+                            <p class="mt-1.5 text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
                                 @if ($this->state === BusinessApplication::STATUS_NEEDS_REVISION)
                                     Our reviewer requested changes to your application. Review the notes, update your details, and resubmit.
                                 @else
                                     You have an unfinished KYB application. Pick up right where you left off.
                                 @endif
                             </p>
-
-                            @if ($this->state === BusinessApplication::STATUS_NEEDS_REVISION && $this->application?->revision_notes)
-                                <div class="mt-4 rounded-xl bg-amber-50/60 dark:bg-amber-500/5 border border-amber-100 dark:border-amber-500/20 p-3">
-                                    <p class="text-[10px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400 mb-1">
-                                        Reviewer notes
-                                    </p>
-                                    <p class="text-xs text-amber-900 dark:text-amber-300 leading-relaxed">
-                                        {{ $this->application->revision_notes }}
-                                    </p>
-                                </div>
-                            @endif
                         </div>
                     </div>
 
-                    <form method="POST" action="{{ route('register_business.start') }}" class="mt-5">
+                    @if ($this->state === BusinessApplication::STATUS_NEEDS_REVISION && $this->application?->revision_notes)
+                        <div class="mt-5 rounded-xl bg-white/60 dark:bg-amber-500/[0.08] border border-amber-100 dark:border-amber-500/20 p-4">
+                            <p class="text-[10px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400 mb-1.5">
+                                Reviewer notes
+                            </p>
+                            <p class="text-sm text-amber-900 dark:text-amber-200 leading-relaxed">
+                                {{ $this->application->revision_notes }}
+                            </p>
+                        </div>
+                    @endif
+
+                    <form method="POST" action="{{ route('register_business.start') }}" class="mt-6"
+                          x-data="{ loading: false }" @submit="loading = true">
                         @csrf
                         <button type="submit"
-                                class="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                            @if ($this->state === BusinessApplication::STATUS_NEEDS_REVISION)
-                                Review &amp; Update Application
-                            @else
-                                Continue Application
-                            @endif
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-                            </svg>
+                                :disabled="loading"
+                                :aria-busy="loading"
+                                class="w-full inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold shadow-sm
+                                       transition-all duration-200 active:scale-95
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-950
+                                       disabled:opacity-60 disabled:cursor-not-allowed">
+                            <span :class="loading ? 'hidden' : 'inline-flex items-center gap-2'">
+                                @if ($this->state === BusinessApplication::STATUS_NEEDS_REVISION)
+                                    Review &amp; update application
+                                @else
+                                    Continue application
+                                @endif
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                                </svg>
+                            </span>
+                            <span :class="loading ? 'inline-flex items-center gap-2' : 'hidden'">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="animate-spin w-4 h-4 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                </svg>
+                                Opening…
+                            </span>
                         </button>
                     </form>
                 </div>
 
             @else
                 {{-- 🆕 No application yet --}}
-                <div class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl p-6 shadow-sm">
-                    <div class="flex items-center gap-3 mb-5">
-                        <span class="w-5 h-px bg-primary-600"></span>
-                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                            What to expect
-                        </span>
-                    </div>
+                <div class="mt-8 rounded-2xl border border-gray-200/70 dark:border-gray-700/70 bg-white/60 dark:bg-gray-900/40 backdrop-blur-sm p-6 shadow-sm">
+
+                    <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-5">
+                        What to expect
+                    </p>
 
                     <ol class="space-y-4">
                         <li class="flex items-start gap-3">
-                            <span class="shrink-0 w-6 h-6 rounded-full bg-primary-50 dark:bg-primary-950/50 text-primary-600 dark:text-primary-400 text-[11px] font-bold flex items-center justify-center border border-primary-100 dark:border-primary-900/50">1</span>
-                            <div class="min-w-0">
+                            <span class="shrink-0 w-6 h-6 rounded-full bg-primary-50 dark:bg-primary-500/15 text-primary-700 dark:text-primary-400 text-[11px] font-bold flex items-center justify-center border border-primary-100 dark:border-primary-500/25">1</span>
+                            <div class="min-w-0 pt-0.5">
                                 <p class="text-sm font-semibold text-gray-900 dark:text-white">Business details</p>
-                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Name, type, address, and ownership information.</p>
+                                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+                                    Name, type, address, and ownership information.
+                                </p>
                             </div>
                         </li>
                         <li class="flex items-start gap-3">
-                            <span class="shrink-0 w-6 h-6 rounded-full bg-primary-50 dark:bg-primary-950/50 text-primary-600 dark:text-primary-400 text-[11px] font-bold flex items-center justify-center border border-primary-100 dark:border-primary-900/50">2</span>
-                            <div class="min-w-0">
+                            <span class="shrink-0 w-6 h-6 rounded-full bg-primary-50 dark:bg-primary-500/15 text-primary-700 dark:text-primary-400 text-[11px] font-bold flex items-center justify-center border border-primary-100 dark:border-primary-500/25">2</span>
+                            <div class="min-w-0 pt-0.5">
                                 <p class="text-sm font-semibold text-gray-900 dark:text-white">Upload documents</p>
-                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">DTI/SEC/CDA, BIR 2303, Mayor's Permit, and valid owner ID.</p>
+                                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+                                    DTI/SEC/CDA, BIR 2303, Mayor's Permit, and valid owner ID.
+                                </p>
                             </div>
                         </li>
                         <li class="flex items-start gap-3">
-                            <span class="shrink-0 w-6 h-6 rounded-full bg-primary-50 dark:bg-primary-950/50 text-primary-600 dark:text-primary-400 text-[11px] font-bold flex items-center justify-center border border-primary-100 dark:border-primary-900/50">3</span>
-                            <div class="min-w-0">
+                            <span class="shrink-0 w-6 h-6 rounded-full bg-primary-50 dark:bg-primary-500/15 text-primary-700 dark:text-primary-400 text-[11px] font-bold flex items-center justify-center border border-primary-100 dark:border-primary-500/25">3</span>
+                            <div class="min-w-0 pt-0.5">
                                 <p class="text-sm font-semibold text-gray-900 dark:text-white">Get verified</p>
-                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Our team reviews your submission and activates your business.</p>
+                                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+                                    Our team reviews your submission and activates your business.
+                                </p>
                             </div>
                         </li>
                     </ol>
 
-                    <form method="POST" action="{{ route('register_business.start') }}" class="mt-6">
+                    <form method="POST" action="{{ route('register_business.start') }}" class="mt-6"
+                          x-data="{ loading: false }" @submit="loading = true">
                         @csrf
                         <button type="submit"
-                                class="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                            Start Application
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
-                            </svg>
+                                :disabled="loading"
+                                :aria-busy="loading"
+                                class="w-full inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                       transition-all duration-200 active:scale-95
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-950
+                                       disabled:opacity-60 disabled:cursor-not-allowed">
+                            <span :class="loading ? 'hidden' : 'inline-flex items-center gap-2'">
+                                Start application
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
+                                </svg>
+                            </span>
+                            <span :class="loading ? 'inline-flex items-center gap-2' : 'hidden'">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="animate-spin w-4 h-4 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                </svg>
+                                Starting…
+                            </span>
                         </button>
                     </form>
                 </div>
             @endif
 
-            <p class="mt-6 text-center text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
-                By continuing, you agree to {{ $siteName }}'s terms and privacy policy.
+            {{-- Legal footer --}}
+            <p class="mt-8 text-center text-xs text-gray-400 dark:text-gray-500 leading-relaxed">
+                By continuing, you agree to {{ $this->siteName }}'s terms and privacy policy.
             </p>
         </div>
-    </div>
+    </section>
 </main>

@@ -7,6 +7,31 @@ use App\Traits\BelongsToTenant;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+/**
+ * @property int $id
+ * @property int $tenant_id
+ * @property int $booking_id
+ * @property int $service_id
+ * @property int $quantity
+ * @property numeric $subtotal
+ * @property \Illuminate\Support\Carbon|null $created_at
+ * @property \Illuminate\Support\Carbon|null $updated_at
+ * @property-read \App\Models\Booking $booking
+ * @property-read \App\Models\Service $service
+ * @property-read \App\Models\Tenant $tenant
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BookingService newModelQuery()
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BookingService newQuery()
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BookingService query()
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BookingService whereBookingId($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BookingService whereCreatedAt($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BookingService whereId($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BookingService whereQuantity($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BookingService whereServiceId($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BookingService whereSubtotal($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BookingService whereTenantId($value)
+ * @method static \Illuminate\Database\Eloquent\Builder<static>|BookingService whereUpdatedAt($value)
+ * @mixin \Eloquent
+ */
 class BookingService extends Model
 {
     use BelongsToTenant;

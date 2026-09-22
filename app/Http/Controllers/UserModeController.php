@@ -17,12 +17,16 @@ class UserModeController extends Controller
     {
         $user = Auth::user();
 
-        abort_unless($user, 403);
-        abort_unless($user->canSwitchModes(), 403, 'Mode switching is not available for this account.');
+        abort_unless($user instanceof User, 403);
+        abort_unless(
+            $user->canSwitchModes(),
+            403,
+            'Mode switching is not available for this account.'
+        );
 
         $target = (string) $request->input('mode');
 
-        if (!in_array($target, [User::MODE_TOURIST, User::MODE_BUSINESS], true)) {
+        if (! in_array($target, [User::MODE_TOURIST, User::MODE_BUSINESS], true)) {
             return back()->with('error', 'Invalid mode requested.');
         }
 

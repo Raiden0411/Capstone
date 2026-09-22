@@ -1,60 +1,86 @@
 {{-- resources/views/superadmin/pages/tenant/⚡view-tenant.blade.php --}}
 <?php
 
-use Livewire\Component;
-use Livewire\WithPagination;
-use Livewire\Attributes\Layout;
-use Livewire\Attributes\Title;
-use Livewire\Attributes\Computed;
+use App\Models\BusinessApplication;
 use App\Models\Tenant;
 use App\Models\TypeOfTenant;
-use Illuminate\Support\Facades\DB;
+use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Livewire\Attributes\Computed;
+use Livewire\Attributes\Layout;
+use Livewire\Attributes\Title;
+use Livewire\Component;
+use Livewire\WithPagination;
 
 new
 #[Layout('superadmin.layouts.app')]
 #[Title('Tenants')]
-class extends Component {
+class extends Component
+{
     use WithPagination;
 
-    public string $search = '';
-    public string $statusFilter = 'all';
-    public ?int $typeFilter = null;
-    public ?string $startDate = null;
-    public ?string $endDate = null;
-    public string $sortOption = 'latest';
-    public int $perPage = 12;
-    
+    public string  $search       = '';
+    public string  $statusFilter = 'all';
+    public ?int    $typeFilter   = null;
+    public ?string $startDate    = null;
+    public ?string $endDate      = null;
+    public string  $sortOption   = 'latest';
+    public int     $perPage      = 12;
+
+    /** @var array<int, string> */
     public array $selected = [];
+
     public bool $selectAll = false;
 
-    // Quick stats (reactive)
-    public int $totalCount = 0;
-    public int $activeCount = 0;
-    public int $pendingCount = 0;
+    /**
+     * Which tenant's action is currently in flight (approve / deactivate /
+     * delete). Drives per-card loading state — Livewire v4's `wire:target`
+     * cannot distinguish approve(1) from approve(2), so we track it here.
+     */
+    public ?int $processingId = null;
+
+    /** True while a bulk action (approveSelected / deleteSelected) runs. */
+    public bool $bulkProcessing = false;
+
+    // ─────────────────────────────────────────────────────
+    //  Lifecycle — defense in depth (route middleware already gates)
+    // ─────────────────────────────────────────────────────
 
     public function mount(): void
     {
-        $this->refreshStats();
+        abort_unless(Auth::check() && Auth::user()->hasRole('super-admin'), 403);
     }
 
-    public function refreshStats(): void
+    public function hydrate(): void
     {
-        $stats = Tenant::select(
-            DB::raw('COUNT(*) as total'),
-            DB::raw('COALESCE(SUM(is_active), 0) as active_count')
-        )->first();
-
-        $this->totalCount = $stats->total ?? 0;
-        $this->activeCount = $stats->active_count ?? 0;
-        $this->pendingCount = $this->totalCount - $this->activeCount;
+        abort_unless(Auth::check() && Auth::user()->hasRole('super-admin'), 403);
     }
 
-    public function updated($property): void
+    // ─────────────────────────────────────────────────────
+    //  Filter hooks
+    // ─────────────────────────────────────────────────────
+
+    public function updated(string $property): void
     {
-        // Reset pagination and selection when filters or page size change
-        $resetProperties = ['search', 'statusFilter', 'typeFilter', 'startDate', 'endDate', 'sortOption', 'perPage'];
-        if (in_array($property, $resetProperties)) {
+        $resets = [
+            'search', 'statusFilter', 'typeFilter',
+            'startDate', 'endDate', 'sortOption', 'perPage',
+        ];
+
+        if (in_array($property, $resets, true)) {
+            if (in_array($property, ['startDate', 'endDate'], true) && $this->$property !== null && $this->$property !== '') {
+                try {
+                    $this->validateOnly($property, [
+                        $property => ['nullable', 'date'],
+                    ]);
+                } catch (\Illuminate\Validation\ValidationException $e) {
+                    $this->$property = null;
+                    throw $e;
+                }
+            }
+
             $this->resetPage();
             $this->resetSelection();
         }
@@ -65,81 +91,100 @@ class extends Component {
         $this->resetSelection();
     }
 
-    public function updatedSelectAll($value): void
+    public function updatedSelectAll(bool $value): void
     {
         $this->resetSelection();
 
         if ($value) {
             $this->selected = $this->tenants
+                ->getCollection()
                 ->pluck('id')
-                ->map(fn($id) => (string) $id)
+                ->map(fn ($id) => (string) $id)
                 ->values()
                 ->all();
+
             $this->selectAll = true;
         }
     }
 
     public function updatedSelected(): void
     {
-        $this->selectAll = count($this->selected) === $this->tenants->count();
+        $pageCount = $this->tenants->count();
+        $this->selectAll = $pageCount > 0 && count($this->selected) === $pageCount;
     }
 
     private function resetSelection(): void
     {
-        $this->selected = [];
+        $this->selected  = [];
         $this->selectAll = false;
     }
 
     public function clearFilters(): void
     {
-        $this->reset(['search', 'statusFilter', 'typeFilter', 'startDate', 'endDate', 'sortOption', 'perPage']);
+        $this->reset([
+            'search', 'statusFilter', 'typeFilter',
+            'startDate', 'endDate', 'sortOption', 'perPage',
+        ]);
+
         $this->resetPage();
         $this->resetSelection();
         $this->dispatch('toast', message: 'All filters cleared.', type: 'info');
     }
 
+    // ─────────────────────────────────────────────────────
+    //  Computed
+    // ─────────────────────────────────────────────────────
+
+    #[Computed]
+    public function hasActiveFilters(): bool
+    {
+        return $this->search !== ''
+            || $this->statusFilter !== 'all'
+            || $this->typeFilter !== null
+            || $this->startDate !== null
+            || $this->endDate !== null
+            || $this->sortOption !== 'latest';
+    }
+
     #[Computed]
     public function tenantTypes()
     {
-        return TypeOfTenant::query()->select('id', 'type')->get();
+        return TypeOfTenant::query()->select('id', 'type')->orderBy('type')->get();
     }
 
-    public function getBaseQuery()
+    /**
+     * Aggregate counts for the stat cards.
+     *
+     * Uses the query builder instead of Eloquent — the result is a plain
+     * stdClass with two SUM aliases, not a Model with phantom attributes.
+     * This matters if anyone ever adds caching here: Rule 79 forbids
+     * caching Eloquent instances with the database driver.
+     */
+    #[Computed]
+    public function stats(): array
     {
-        return Tenant::with([
-                'typeOfTenant:id,type',
-                'users:id,tenant_id,name,email,is_active'
-            ])
-            ->withCount(['properties', 'bookings'])
-            ->when($this->search, function ($query) {
-                $query->where(function ($q) {
-                    $q->where('name', 'like', "%{$this->search}%")
-                      ->orWhere('email', 'like', "%{$this->search}%")
-                      ->orWhere('contact_number', 'like', "%{$this->search}%")
-                      ->orWhere('address', 'like', "%{$this->search}%")
-                      ->orWhere('slug', 'like', "%{$this->search}%");
-                });
-            })
-            ->when($this->statusFilter !== 'all', fn($q) => $q->where('is_active', $this->statusFilter === 'active'))
-            ->when($this->typeFilter, fn($q) => $q->where('type_of_tenant_id', $this->typeFilter))
-            ->when($this->startDate && $this->endDate, function ($query) {
-                $start = rescue(fn() => Carbon::parse($this->startDate)->startOfDay());
-                $end = rescue(fn() => Carbon::parse($this->endDate)->endOfDay());
-                
-                if ($start && $end) {
-                    $query->whereBetween('created_at', [$start, $end]);
-                }
-            });
+        $row = DB::table('tenants')
+            ->selectRaw('COUNT(*) as total, COALESCE(SUM(is_active), 0) as active_count')
+            ->first();
+
+        $total  = (int) ($row->total ?? 0);
+        $active = (int) ($row->active_count ?? 0);
+
+        return [
+            'total'   => $total,
+            'active'  => $active,
+            'pending' => max(0, $total - $active),
+        ];
     }
 
     #[Computed]
     public function tenants()
     {
         return $this->getBaseQuery()
-            ->when($this->sortOption === 'name_asc', fn($q) => $q->orderBy('name', 'asc'))
-            ->when($this->sortOption === 'name_desc', fn($q) => $q->orderBy('name', 'desc'))
-            ->when($this->sortOption === 'oldest', fn($q) => $q->orderBy('created_at', 'asc'))
-            ->when($this->sortOption === 'latest', fn($q) => $q->orderBy('created_at', 'desc'))
+            ->when($this->sortOption === 'name_asc',  fn ($q) => $q->orderBy('name', 'asc'))
+            ->when($this->sortOption === 'name_desc', fn ($q) => $q->orderBy('name', 'desc'))
+            ->when($this->sortOption === 'oldest',    fn ($q) => $q->orderBy('created_at', 'asc'))
+            ->when($this->sortOption === 'latest',    fn ($q) => $q->orderByDesc('created_at'))
             ->paginate($this->perPage);
     }
 
@@ -150,116 +195,248 @@ class extends Component {
             return false;
         }
 
-        return Tenant::whereIn('id', $this->selected)
-            ->where('is_active', false)
-            ->exists();
+        $selectedSet = array_flip($this->selected);
+
+        return $this->tenants
+            ->getCollection()
+            ->contains(fn (Tenant $t) => isset($selectedSet[(string) $t->id]) && ! $t->is_active);
     }
+
+    // ─────────────────────────────────────────────────────
+    //  Base query
+    // ─────────────────────────────────────────────────────
+
+    private function getBaseQuery()
+    {
+        return Tenant::query()
+            ->with([
+                'typeOfTenant:id,type',
+                // Eager-loaded so `hasRole('admin')` doesn't trigger an
+                // N+1 — the admin resolver below hits every row.
+                'users:id,tenant_id,name,email,is_active',
+                'users.roles:id,name',
+                // KYB record for the compliance badge + button. Nullable —
+                // legacy tenants created before the flow have no record.
+                'businessApplication:id,approved_tenant_id,status,source,reviewed_at',
+            ])
+            ->withCount(['properties', 'bookings'])
+            ->when($this->search !== '', function ($q): void {
+                $s = trim($this->search);
+                $q->where(function ($sub) use ($s): void {
+                    $sub->where('name', 'like', "%{$s}%")
+                        ->orWhere('email', 'like', "%{$s}%")
+                        ->orWhere('contact_number', 'like', "%{$s}%")
+                        ->orWhere('address', 'like', "%{$s}%")
+                        ->orWhere('slug', 'like', "%{$s}%");
+                });
+            })
+            ->when($this->statusFilter !== 'all', fn ($q) => $q->where('is_active', $this->statusFilter === 'active'))
+            ->when($this->typeFilter, fn ($q) => $q->where('type_of_tenant_id', $this->typeFilter))
+            ->when($this->startDate && $this->endDate, function ($q): void {
+                $s = rescue(fn () => Carbon::parse($this->startDate)->startOfDay());
+                $e = rescue(fn () => Carbon::parse($this->endDate)->endOfDay());
+
+                if ($s && $e) {
+                    $q->whereBetween('created_at', [$s, $e]);
+                }
+            });
+    }
+
+    /**
+     * Resolve the admin user of a loaded tenant.
+     * Prefers a user with the explicit `admin` role; falls back to the
+     * first user only for tenants that were created before role tagging
+     * existed.
+     */
+    public function resolveAdmin(Tenant $tenant): ?User
+    {
+        return $tenant->users->first(fn ($u) => $u->hasRole('admin'))
+            ?? $tenant->users->first();
+    }
+
+    // ─────────────────────────────────────────────────────
+    //  Single-row actions
+    // ─────────────────────────────────────────────────────
 
     public function approve(int $id): void
     {
-        $tenant = Tenant::findOrFail($id);
-        $tenant->update(['is_active' => true]);
-
-        if ($user = $tenant->users()->first()) {
-            $user->update(['is_active' => true]);
-            if (!$user->hasRole('admin')) {
-                $user->assignRole('admin');
-            }
+        if ($this->processingId !== null) {
+            return;
         }
-        $this->refreshStats();
-        $this->dispatch('toast', message: "{$tenant->name} has been approved and is now active.", type: 'success');
+
+        $this->processingId = $id;
+
+        try {
+            $tenant = Tenant::with(['users.roles'])->find($id);
+
+            if (! $tenant) {
+                $this->dispatch('toast', message: 'That tenant no longer exists.', type: 'error');
+                return;
+            }
+
+            DB::transaction(function () use ($tenant): void {
+                $tenant->update(['is_active' => true]);
+
+                // Resolve the actual admin — never blindly take the
+                // first user of the tenant (that could be an employee).
+                $admin = $this->resolveAdmin($tenant);
+
+                if ($admin) {
+                    $admin->update(['is_active' => true]);
+
+                    if (! $admin->hasRole('admin')) {
+                        $admin->assignRole('admin');
+                    }
+                }
+            });
+
+            unset($this->stats, $this->tenants);
+            $this->dispatch('toast', message: "{$tenant->name} has been approved.", type: 'success');
+        } finally {
+            $this->processingId = null;
+        }
     }
 
     public function deactivate(int $id): void
     {
-        $tenant = Tenant::findOrFail($id);
-        $tenant->update(['is_active' => false]);
-        $this->refreshStats();
-        $this->dispatch('toast', message: "{$tenant->name} has been suspended.", type: 'info');
+        if ($this->processingId !== null) {
+            return;
+        }
+
+        $this->processingId = $id;
+
+        try {
+            $tenant = Tenant::find($id);
+
+            if (! $tenant) {
+                $this->dispatch('toast', message: 'That tenant no longer exists.', type: 'error');
+                return;
+            }
+
+            $tenant->update(['is_active' => false]);
+            unset($this->stats, $this->tenants);
+            $this->dispatch('toast', message: "{$tenant->name} has been suspended.", type: 'info');
+        } finally {
+            $this->processingId = null;
+        }
     }
 
     public function deleteTenant(int $id): void
     {
-        $tenant = Tenant::findOrFail($id);
-        $tenantName = $tenant->name;
-        $tenant->delete();
-        
-        $this->refreshStats();
-        $this->dispatch('toast', message: "Business {$tenantName} successfully deleted.", type: 'success');
+        if ($this->processingId !== null) {
+            return;
+        }
+
+        $this->processingId = $id;
+
+        try {
+            $tenant = Tenant::find($id);
+
+            if (! $tenant) {
+                $this->dispatch('toast', message: 'That tenant no longer exists.', type: 'error');
+                return;
+            }
+
+            $name = $tenant->name;
+            $tenant->delete();
+
+            unset($this->stats, $this->tenants);
+            $this->dispatch('toast', message: "{$name} deleted.", type: 'success');
+        } finally {
+            $this->processingId = null;
+        }
     }
+
+    // ─────────────────────────────────────────────────────
+    //  Bulk actions
+    // ─────────────────────────────────────────────────────
 
     public function approveSelected(): void
     {
+        if ($this->bulkProcessing) {
+            return;
+        }
+
         if (empty($this->selected)) {
             $this->dispatch('toast', message: 'No businesses selected.', type: 'error');
             return;
         }
 
-        $tenants = Tenant::with('users')->whereIn('id', $this->selected)->get();
-        
-        DB::transaction(function () use ($tenants) {
-            foreach ($tenants as $tenant) {
-                $tenant->update(['is_active' => true]);
-                if ($user = $tenant->users->first()) {
-                    $user->update(['is_active' => true]);
-                    if (!$user->hasRole('admin')) {
-                        $user->assignRole('admin');
+        $this->bulkProcessing = true;
+
+        try {
+            $count = 0;
+
+            DB::transaction(function () use (&$count): void {
+                $tenants = Tenant::with(['users.roles'])
+                    ->whereIn('id', $this->selected)
+                    ->get();
+
+                foreach ($tenants as $tenant) {
+                    $tenant->update(['is_active' => true]);
+
+                    $admin = $this->resolveAdmin($tenant);
+
+                    if ($admin) {
+                        $admin->update(['is_active' => true]);
+
+                        if (! $admin->hasRole('admin')) {
+                            $admin->assignRole('admin');
+                        }
                     }
                 }
-            }
-        });
 
-        $count = $tenants->count();
-        $this->resetSelection();
-        $this->refreshStats();
-        $this->dispatch('toast', message: "{$count} business(es) approved and activated.", type: 'success');
+                $count = $tenants->count();
+            });
+
+            $this->resetSelection();
+            unset($this->stats, $this->tenants);
+            $this->dispatch('toast', message: "{$count} business(es) approved.", type: 'success');
+        } finally {
+            $this->bulkProcessing = false;
+        }
     }
 
     public function deleteSelected(): void
     {
+        if ($this->bulkProcessing) {
+            return;
+        }
+
         if (empty($this->selected)) {
             $this->dispatch('toast', message: 'No businesses selected.', type: 'error');
             return;
         }
 
-        $count = count($this->selected);
-        Tenant::whereIn('id', $this->selected)->delete();
-        
-        $this->resetSelection();
-        $this->refreshStats();
-        $this->dispatch('toast', message: "{$count} business(es) deleted.", type: 'success');
+        $this->bulkProcessing = true;
+
+        try {
+            $count = count($this->selected);
+            Tenant::whereIn('id', $this->selected)->delete();
+
+            $this->resetSelection();
+            unset($this->stats, $this->tenants);
+            $this->dispatch('toast', message: "{$count} business(es) deleted.", type: 'success');
+        } finally {
+            $this->bulkProcessing = false;
+        }
     }
 
-    public function exportCsv()
-    {
-        $filename = 'tenants-' . now()->format('Y-m-d-His') . '.csv';
+    // ─────────────────────────────────────────────────────
+    //  Export
+    // ─────────────────────────────────────────────────────
 
-        return response()->streamDownload(function () {
-            $out = fopen('php://output', 'w');
-            fputcsv($out, ['ID', 'Business', 'Type', 'Email', 'Contact', 'Address', 'Admin Name', 'Admin Email', 'Properties', 'Bookings', 'Status', 'Created']);
-            
-            $this->getBaseQuery()->chunk(200, function ($tenants) use ($out) {
-                foreach ($tenants as $t) {
-                    $admin = $t->users->first();
-                    fputcsv($out, [
-                        $t->id,
-                        $t->name,
-                        $t->typeOfTenant->type ?? '',
-                        $t->email,
-                        $t->contact_number,
-                        $t->address,
-                        $admin->name ?? '',
-                        $admin->email ?? '',
-                        $t->properties_count,
-                        $t->bookings_count,
-                        $t->is_active ? 'Active' : 'Pending',
-                        $t->created_at->format('Y-m-d'),
-                    ]);
-                }
-            });
-            
-            fclose($out);
-        }, $filename);
+    public function exportCsv(): void
+    {
+        $url = route('superadmin.tenants.export', array_filter([
+            'search' => $this->search,
+            'status' => $this->statusFilter,
+            'type'   => $this->typeFilter,
+            'start'  => $this->startDate,
+            'end'    => $this->endDate,
+        ]));
+
+        $this->dispatch('open-url', url: $url);
     }
 };
 ?>
@@ -273,8 +450,7 @@ class extends Component {
             toasts.push({ id, message: $event.detail.message, type: $event.detail.type || 'info' });
             setTimeout(() => { toasts = toasts.filter(t => t.id !== id) }, 4000);
          "
-         class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 w-full max-w-sm pointer-events-none"
-    >
+         class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 w-full max-w-sm pointer-events-none">
         <template x-for="toast in toasts" :key="toast.id">
             <div x-transition:enter="transition ease-out duration-300"
                  x-transition:enter-start="opacity-0 translate-y-4"
@@ -284,8 +460,8 @@ class extends Component {
                  x-transition:leave-end="opacity-0"
                  class="pointer-events-auto rounded-xl px-4 py-3 shadow-lg text-sm font-medium flex items-center gap-2 border"
                  :class="{
-                    'bg-green-50 border-green-200 text-green-800 dark:bg-green-500/10 dark:border-green-500/30 dark:text-green-300': toast.type === 'success',
-                    'bg-red-50 border-red-200 text-red-800 dark:bg-red-500/10 dark:border-red-500/30 dark:text-red-300': toast.type === 'error',
+                    'bg-emerald-50 border-emerald-200 text-emerald-800 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-300': toast.type === 'success',
+                    'bg-rose-50 border-rose-200 text-rose-800 dark:bg-rose-500/10 dark:border-rose-500/30 dark:text-rose-300': toast.type === 'error',
                     'bg-blue-50 border-blue-200 text-blue-800 dark:bg-blue-500/10 dark:border-blue-500/30 dark:text-blue-300': toast.type === 'info',
                  }">
                 <span x-text="toast.message"></span>
@@ -296,12 +472,16 @@ class extends Component {
     {{-- Header --}}
     <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
         <div>
+            <div class="flex items-center gap-2 mb-2">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <span class="text-[10px] tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Platform</span>
+            </div>
             <h1 class="font-display text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Tenants</h1>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Manage all businesses registered on the platform.</p>
         </div>
         <a href="{{ route('superadmin.tenants.create') }}" wire:navigate
            class="btn-primary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
             Add Tenant
         </a>
     </div>
@@ -310,15 +490,15 @@ class extends Component {
     <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
         <div class="card p-4">
             <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Total</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $totalCount }}</p>
+            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $this->stats['total'] }}</p>
         </div>
         <div class="card p-4">
             <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Active</p>
-            <p class="text-2xl font-bold text-green-600 dark:text-green-400 mt-2">{{ $activeCount }}</p>
+            <p class="text-2xl font-bold text-emerald-600 dark:text-emerald-400 mt-2">{{ $this->stats['active'] }}</p>
         </div>
         <div class="card p-4">
             <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider">Pending</p>
-            <p class="text-2xl font-bold text-amber-600 dark:text-amber-400 mt-2">{{ $pendingCount }}</p>
+            <p class="text-2xl font-bold text-amber-600 dark:text-amber-400 mt-2">{{ $this->stats['pending'] }}</p>
         </div>
     </div>
 
@@ -326,46 +506,55 @@ class extends Component {
     <div class="card p-4 space-y-4">
         <div class="flex flex-wrap gap-3 items-center">
             <div class="relative flex-1 min-w-[220px]">
-                <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                 <input type="text" wire:model.live.debounce.300ms="search"
+                       enterkeyhint="search"
+                       aria-label="Search tenants"
                        placeholder="Search tenants..."
                        class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 pl-10 pr-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
             </div>
-            
-            <select wire:model.live="statusFilter" class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
+
+            <select wire:model.live="statusFilter" aria-label="Filter by status"
+                    class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
                 <option value="all">All status</option>
                 <option value="active">Active</option>
                 <option value="inactive">Pending</option>
             </select>
-            
-            <select wire:model.live="typeFilter" class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
+
+            <select wire:model.live="typeFilter" aria-label="Filter by type"
+                    class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
                 <option value="">All types</option>
                 @foreach($this->tenantTypes as $type)
-                    <option value="{{ $type->id }}">{{ $type->type }}</option>
+                    <option wire:key="type-filter-{{ $type->id }}" value="{{ $type->id }}">{{ $type->type }}</option>
                 @endforeach
             </select>
 
+            {{-- Date inputs use .blur — typing a date manually fires one
+                 request per keystroke with .live. --}}
             <div class="flex items-center gap-2 bg-gray-50 dark:bg-gray-800/50 p-1 rounded-xl border border-gray-200 dark:border-gray-700">
-                <input type="date" wire:model.live="startDate" class="bg-transparent border-none py-1.5 px-3 text-sm text-gray-900 dark:text-white focus:ring-0">
+                <input type="date" wire:model.live.blur="startDate" aria-label="Start date" class="bg-transparent border-none py-1.5 px-3 text-sm text-gray-900 dark:text-white focus:ring-0">
                 <span class="text-gray-400 text-sm">to</span>
-                <input type="date" wire:model.live="endDate" class="bg-transparent border-none py-1.5 px-3 text-sm text-gray-900 dark:text-white focus:ring-0">
+                <input type="date" wire:model.live.blur="endDate" aria-label="End date" class="bg-transparent border-none py-1.5 px-3 text-sm text-gray-900 dark:text-white focus:ring-0">
             </div>
 
-            <select wire:model.live="sortOption" class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
+            <select wire:model.live="sortOption" aria-label="Sort order"
+                    class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
                 <option value="latest">Newest first</option>
                 <option value="oldest">Oldest first</option>
                 <option value="name_asc">Name A–Z</option>
                 <option value="name_desc">Name Z–A</option>
             </select>
-            
-            <select wire:model.live="perPage" class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
+
+            <select wire:model.live="perPage" aria-label="Rows per page"
+                    class="bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition">
                 <option value="12">12 per page</option>
                 <option value="25">25 per page</option>
                 <option value="50">50 per page</option>
             </select>
-            
+
             <button type="button" wire:click="clearFilters"
-                    class="px-4 py-2.5 rounded-xl bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                    @disabled(!$this->hasActiveFilters)
+                    class="px-4 py-2.5 rounded-xl bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50 disabled:opacity-40 disabled:cursor-not-allowed">
                 Clear
             </button>
         </div>
@@ -377,36 +566,44 @@ class extends Component {
                     <input type="checkbox" wire:model.live="selectAll" class="rounded bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500">
                     <span class="font-medium">Select All on Page</span>
                 </label>
-                
+
                 <span class="text-sm text-gray-500 dark:text-gray-400">|</span>
-                
+
                 <div class="text-sm text-gray-600 dark:text-gray-300">
                     <span class="font-semibold text-gray-900 dark:text-white">{{ $this->tenants->total() }}</span> total tenants
                 </div>
             </div>
 
             <div class="flex gap-2 flex-wrap">
-                <button type="button" wire:click="exportCsv" wire:loading.attr="disabled"
+                <button type="button" wire:click="exportCsv" wire:loading.attr="disabled" wire:target="exportCsv"
+                        title="Export the current filtered list as CSV"
                         class="px-4 py-2 rounded-xl bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50 flex items-center gap-2">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                     <span wire:loading.remove wire:target="exportCsv">Export CSV</span>
-                    <span wire:loading wire:target="exportCsv" class="inline-flex items-center gap-1">Exporting…</span>
+                    <span wire:loading wire:target="exportCsv" class="inline-flex items-center gap-1">
+                        <svg class="animate-spin h-3 w-3 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                        Preparing…
+                    </span>
                 </button>
 
                 @if(count($selected) > 0)
                     @if($this->hasInactiveSelected)
-                        <button type="button" wire:click="approveSelected" wire:confirm="Activate selected businesses?"
-                                wire:loading.attr="disabled"
-                                class="px-4 py-2 rounded-xl bg-green-100 dark:bg-green-500/15 border border-green-200 dark:border-green-500/30 text-green-700 dark:text-green-300 text-sm font-semibold hover:bg-green-200 dark:hover:bg-green-500/25 transition active:scale-95 focus-visible:ring-2 focus-visible:ring-green-500/50">
+                        <button type="button" wire:click="approveSelected"
+                                wire:confirm="Activate selected businesses?"
+                                wire:loading.attr="disabled" wire:target="approveSelected"
+                                @disabled($bulkProcessing)
+                                class="px-4 py-2 rounded-xl bg-emerald-100 dark:bg-emerald-500/15 border border-emerald-200 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-300 text-sm font-semibold hover:bg-emerald-200 dark:hover:bg-emerald-500/25 transition active:scale-95 focus-visible:ring-2 focus-visible:ring-emerald-500/50 disabled:opacity-60 disabled:cursor-wait">
                             <span wire:loading.remove wire:target="approveSelected">Activate Selected ({{ count($selected) }})</span>
-                            <span wire:loading wire:target="approveSelected">Processing...</span>
+                            <span wire:loading wire:target="approveSelected">Processing…</span>
                         </button>
                     @endif
-                    <button type="button" wire:click="deleteSelected" wire:confirm="Delete selected businesses permanently?"
-                            wire:loading.attr="disabled"
-                            class="px-4 py-2 rounded-xl bg-red-100 dark:bg-red-500/15 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-300 text-sm font-semibold hover:bg-red-200 dark:hover:bg-red-500/25 transition active:scale-95 focus-visible:ring-2 focus-visible:ring-red-500/50">
+                    <button type="button" wire:click="deleteSelected"
+                            wire:confirm="Delete selected businesses permanently?"
+                            wire:loading.attr="disabled" wire:target="deleteSelected"
+                            @disabled($bulkProcessing)
+                            class="px-4 py-2 rounded-xl bg-rose-100 dark:bg-rose-500/15 border border-rose-200 dark:border-rose-500/30 text-rose-700 dark:text-rose-300 text-sm font-semibold hover:bg-rose-200 dark:hover:bg-rose-500/25 transition active:scale-95 focus-visible:ring-2 focus-visible:ring-rose-500/50 disabled:opacity-60 disabled:cursor-wait">
                         <span wire:loading.remove wire:target="deleteSelected">Delete Selected ({{ count($selected) }})</span>
-                        <span wire:loading wire:target="deleteSelected">Deleting...</span>
+                        <span wire:loading wire:target="deleteSelected">Deleting…</span>
                     </button>
                 @endif
             </div>
@@ -414,42 +611,83 @@ class extends Component {
     </div>
 
     {{-- Tenant Cards Grid --}}
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" wire:loading.class="opacity-60" wire:target="search, statusFilter, typeFilter, startDate, endDate, sortOption, perPage, clearFilters, previousPage, nextPage, gotoPage">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
+         wire:loading.class="opacity-60"
+         wire:target="search,statusFilter,typeFilter,startDate,endDate,sortOption,perPage,clearFilters,previousPage,nextPage,gotoPage">
         @forelse($this->tenants as $tenant)
             @php
-                $admin = $tenant->users->first();
-                $coordinates = is_string($tenant->coordinates) ? json_decode($tenant->coordinates, true) : ($tenant->coordinates ?? []);
-                $markerNames = collect($coordinates)->pluck('name')->filter()->implode(', ');
-                $selectedIds = array_map('strval', $selected);
+                $admin       = $this->resolveAdmin($tenant);
+                $coords      = is_string($tenant->coordinates) ? json_decode($tenant->coordinates, true) : ($tenant->coordinates ?? []);
+                $markerNames = collect($coords)->pluck('name')->filter()->implode(', ');
+                $isSelected  = in_array((string) $tenant->id, $selected, true);
+                $isProcessing = $processingId === $tenant->id;
+
+                // KYB compliance state — a tenant with no BusinessApplication
+                // was created before the KYB flow, or was added by superadmin
+                // without documents on file.
+                $kyb    = $tenant->businessApplication;
+                $hasKyb = $kyb !== null && $kyb->status === BusinessApplication::STATUS_APPROVED;
             @endphp
-            <div class="card p-5 hover:shadow-md transition relative {{ in_array((string)$tenant->id, $selectedIds) ? 'ring-2 ring-primary-500' : '' }}" wire:key="card-{{ $tenant->id }}">
+            <div class="card p-5 hover:shadow-md transition relative {{ $isSelected ? 'ring-2 ring-primary-500' : '' }} {{ $isProcessing ? 'opacity-75 pointer-events-none' : '' }}"
+                 wire:key="card-{{ $tenant->id }}">
                 <div class="absolute top-4 left-4">
                     <input type="checkbox" wire:model.live="selected" value="{{ $tenant->id }}"
-                           class="rounded bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500 cursor-pointer">
+                           aria-label="Select {{ $tenant->name }}"
+                           @disabled($processingId !== null || $bulkProcessing)
+                           class="rounded bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
                 </div>
 
                 <div class="flex flex-col h-full">
                     <div class="flex items-start gap-3 mb-3 pl-8">
-                        <div class="w-12 h-12 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20 flex items-center justify-center shrink-0 overflow-hidden">
+                        <div class="w-12 h-12 rounded-xl bg-primary-50 dark:bg-primary-500/10 border border-primary-200 dark:border-primary-500/20 flex items-center justify-center shrink-0 overflow-hidden">
                             @if($tenant->logo)
-                                <img src="{{ asset('storage/' . $tenant->logo) }}" class="w-full h-full object-cover" alt="{{ $tenant->name }}">
+                                <img src="{{ asset('storage/' . $tenant->logo) }}"
+                                     alt="{{ $tenant->name }}"
+                                     loading="lazy"
+                                     decoding="async"
+                                     class="w-full h-full object-cover">
                             @else
-                                <span class="text-lg font-medium text-blue-700 dark:text-blue-300">{{ strtoupper(substr($tenant->name, 0, 1)) }}</span>
+                                <span class="text-lg font-medium text-primary-700 dark:text-primary-300">{{ strtoupper(substr($tenant->name, 0, 1)) }}</span>
                             @endif
                         </div>
                         <div class="flex-1 min-w-0">
-                            <h3 class="font-semibold text-gray-900 dark:text-white truncate">
-                                {{ $tenant->name }}
-                            </h3>
+                            <h3 class="font-semibold text-gray-900 dark:text-white truncate">{{ $tenant->name }}</h3>
                             <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">#{{ $tenant->id }} · {{ $tenant->typeOfTenant->type ?? 'Uncategorized' }}</p>
                         </div>
                         <div class="flex items-center gap-1">
                             @if($tenant->is_active)
-                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 dark:bg-green-500/15 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-500/30">Active</span>
+                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30">Active</span>
                             @else
                                 <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 dark:bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-500/30">Pending</span>
                             @endif
                         </div>
+                    </div>
+
+                    {{-- KYB compliance strip --}}
+                    <div class="mb-3">
+                        @if($hasKyb)
+                            <div class="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-500/[0.06] border border-emerald-200/70 dark:border-emerald-500/30 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+                                </svg>
+                                KYB on file
+                                @if($kyb->source === BusinessApplication::SOURCE_SUPERADMIN_DIRECT)
+                                    <span class="font-normal text-emerald-600/70 dark:text-emerald-400/70">· superadmin</span>
+                                @endif
+                            </div>
+                        @else
+                            <a href="{{ route('superadmin.tenants.edit', $tenant->id) }}" wire:navigate
+                               title="No approved KYB application on file. Open this tenant to add legal documents — a KYB record will be created automatically."
+                               class="inline-flex items-center gap-1.5 rounded-lg bg-amber-50 dark:bg-amber-500/[0.06] border border-amber-200/70 dark:border-amber-500/30 px-2.5 py-1 text-[11px] font-semibold text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-500/15 transition active:scale-95">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/>
+                                </svg>
+                                No KYB record
+                                <svg class="w-3 h-3 ml-0.5 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                                </svg>
+                            </a>
+                        @endif
                     </div>
 
                     <div class="space-y-2 text-sm flex-1">
@@ -463,7 +701,7 @@ class extends Component {
                         </div>
                         <div class="flex justify-between">
                             <span class="text-gray-500 dark:text-gray-400">Admin</span>
-                            <span class="text-gray-900 dark:text-white">{{ $admin ? $admin->name : 'Not assigned' }}</span>
+                            <span class="text-gray-900 dark:text-white truncate ml-4">{{ $admin ? $admin->name : 'Not assigned' }}</span>
                         </div>
                         <div class="flex justify-between">
                             <span class="text-gray-500 dark:text-gray-400">Properties</span>
@@ -478,47 +716,82 @@ class extends Component {
                             <span class="text-gray-900 dark:text-white text-xs">{{ $tenant->created_at->format('M d, Y') }}</span>
                         </div>
                         @if($markerNames)
-                        <div class="flex justify-between">
-                            <span class="text-gray-500 dark:text-gray-400">Markers</span>
-                            <span class="text-gray-900 dark:text-white text-xs truncate ml-4">{{ $markerNames }}</span>
-                        </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-500 dark:text-gray-400">Markers</span>
+                                <span class="text-gray-900 dark:text-white text-xs truncate ml-4">{{ $markerNames }}</span>
+                            </div>
                         @endif
                     </div>
 
                     <div class="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700 flex flex-wrap gap-2">
                         @if(!$tenant->is_active)
-                            <button type="button" wire:click="approve({{ $tenant->id }})" wire:loading.attr="disabled"
+                            <button type="button" wire:click="approve({{ $tenant->id }})"
                                     wire:confirm="Approve this business and activate its owner account?"
-                                    class="text-xs font-medium bg-green-100 dark:bg-green-500/15 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-500/30 hover:bg-green-200 dark:hover:bg-green-500/25 px-3 py-1.5 rounded-lg transition active:scale-95 focus-visible:ring-2 focus-visible:ring-green-500/50">
-                                <span wire:loading.remove wire:target="approve({{ $tenant->id }})">Approve</span>
-                                <span wire:loading wire:target="approve({{ $tenant->id }})">Saving...</span>
+                                    @disabled($processingId !== null || $bulkProcessing)
+                                    class="text-xs font-medium bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 hover:bg-emerald-200 dark:hover:bg-emerald-500/25 px-3 py-1.5 rounded-lg transition active:scale-95 focus-visible:ring-2 focus-visible:ring-emerald-500/50 disabled:opacity-60 disabled:cursor-wait">
+                                @if($isProcessing)
+                                    Saving…
+                                @else
+                                    Approve
+                                @endif
                             </button>
                         @else
-                            <button type="button" wire:click="deactivate({{ $tenant->id }})" wire:loading.attr="disabled"
+                            <button type="button" wire:click="deactivate({{ $tenant->id }})"
                                     wire:confirm="Suspend this business? Its owner will lose access."
-                                    class="text-xs font-medium bg-amber-100 dark:bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-500/30 hover:bg-amber-200 dark:hover:bg-amber-500/25 px-3 py-1.5 rounded-lg transition active:scale-95 focus-visible:ring-2 focus-visible:ring-amber-500/50">
-                                <span wire:loading.remove wire:target="deactivate({{ $tenant->id }})">Suspend</span>
-                                <span wire:loading wire:target="deactivate({{ $tenant->id }})">Saving...</span>
+                                    @disabled($processingId !== null || $bulkProcessing)
+                                    class="text-xs font-medium bg-amber-100 dark:bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-500/30 hover:bg-amber-200 dark:hover:bg-amber-500/25 px-3 py-1.5 rounded-lg transition active:scale-95 focus-visible:ring-2 focus-visible:ring-amber-500/50 disabled:opacity-60 disabled:cursor-wait">
+                                @if($isProcessing)
+                                    Saving…
+                                @else
+                                    Suspend
+                                @endif
                             </button>
                         @endif
                         <a href="{{ route('superadmin.tenants.edit', $tenant->id) }}" wire:navigate
                            class="text-xs font-medium text-primary-600 dark:text-primary-400 border border-primary-200 dark:border-primary-500/30 hover:bg-primary-50 dark:hover:bg-primary-500/10 px-3 py-1.5 rounded-lg transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50 text-center">
                             Edit
                         </a>
-                        <button type="button" wire:click="deleteTenant({{ $tenant->id }})" wire:loading.attr="disabled"
+                        @if($kyb)
+                            <a href="{{ route('superadmin.business-applications.show', $kyb) }}" wire:navigate
+                               title="View this tenant's KYB application and uploaded documents"
+                               class="text-xs font-medium text-primary-600 dark:text-primary-400 border border-primary-200 dark:border-primary-500/30 hover:bg-primary-50 dark:hover:bg-primary-500/10 px-3 py-1.5 rounded-lg transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50 text-center">
+                                KYB
+                            </a>
+                        @endif
+                        <button type="button" wire:click="deleteTenant({{ $tenant->id }})"
                                 wire:confirm="Delete this business permanently? This will remove all properties, bookings, and users."
-                                class="text-xs font-medium text-red-600 dark:text-red-400 border border-red-200 dark:border-red-500/30 hover:bg-red-50 dark:hover:bg-red-500/10 px-3 py-1.5 rounded-lg transition active:scale-95 focus-visible:ring-2 focus-visible:ring-red-500/50">
-                            <span wire:loading.remove wire:target="deleteTenant({{ $tenant->id }})">Delete</span>
-                            <span wire:loading wire:target="deleteTenant({{ $tenant->id }})">Deleting...</span>
+                                @disabled($processingId !== null || $bulkProcessing)
+                                class="text-xs font-medium text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-500/30 hover:bg-rose-50 dark:hover:bg-rose-500/10 px-3 py-1.5 rounded-lg transition active:scale-95 focus-visible:ring-2 focus-visible:ring-rose-500/50 disabled:opacity-60 disabled:cursor-wait">
+                            @if($isProcessing)
+                                Deleting…
+                            @else
+                                Delete
+                            @endif
                         </button>
                     </div>
                 </div>
             </div>
         @empty
             <div class="col-span-full text-center py-12 card">
-                <svg class="mx-auto h-12 w-12 text-gray-300 dark:text-gray-600 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
-                <p class="text-lg text-gray-500 dark:text-gray-400 mb-1">No tenants found</p>
-                <p class="text-xs text-gray-400 dark:text-gray-500">Try adjusting the search or filters.</p>
+                <svg class="mx-auto h-12 w-12 text-gray-300 dark:text-gray-600 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
+
+                @if($this->hasActiveFilters)
+                    <p class="text-lg text-gray-500 dark:text-gray-400 mb-1">No tenants match your filters</p>
+                    <p class="text-xs text-gray-400 dark:text-gray-500 mb-4">Try a different search or clear the filters to see everything.</p>
+                    <button type="button" wire:click="clearFilters"
+                            class="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border border-gray-300 dark:border-gray-600 text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                        Clear all filters
+                    </button>
+                @else
+                    <p class="text-lg text-gray-500 dark:text-gray-400 mb-1">No tenants yet</p>
+                    <p class="text-xs text-gray-400 dark:text-gray-500 mb-4">Onboard your first business to get started.</p>
+                    <a href="{{ route('superadmin.tenants.create') }}" wire:navigate
+                       class="btn-primary active:scale-95 transition-transform inline-flex items-center gap-1.5">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
+                        Add your first tenant
+                    </a>
+                @endif
             </div>
         @endforelse
     </div>
@@ -529,4 +802,17 @@ class extends Component {
             {{ $this->tenants->links() }}
         </div>
     @endif
+
 </div>
+
+<script>
+    // Global listener for the CSV download dispatch. Guarded against
+    // wire:navigate re-runs (Livewire v4 re-executes SFC <script> blocks).
+    if (!window.__viewTenantOpenUrlBound) {
+        window.__viewTenantOpenUrlBound = true;
+
+        window.addEventListener('open-url', (e) => {
+            window.location.href = e.detail.url;
+        });
+    }
+</script>

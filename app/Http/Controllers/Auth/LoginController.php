@@ -5,15 +5,19 @@ namespace App\Http\Controllers\Auth;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\View\View;
 
 class LoginController extends Controller
 {
     /**
      * Show the login form.
      */
-    public function showLoginForm()
+    public function showLoginForm(): View
     {
-        return view('public.auth.login-form');
+        /** @var view-string $view */
+        $view = 'public.auth.login-form';
+
+        return view($view);
     }
 
     /**
@@ -27,10 +31,12 @@ class LoginController extends Controller
         ]);
 
         if (Auth::attempt($credentials, $request->filled('remember'))) {
+            /** @var \App\Models\User|null $user */
             $user = Auth::user();
 
-            if (!$user->is_active) {
+            if ($user && ! $user->is_active) {
                 Auth::logout();
+
                 return back()->withErrors([
                     'email' => 'Your account is not yet active. Please wait for approval.',
                 ])->onlyInput('email');
@@ -44,15 +50,16 @@ class LoginController extends Controller
             }
 
             // Role-based redirect fallback
-            if ($user->hasRole('super-admin')) {
+            if ($user && $user->hasRole('super-admin')) {
                 return redirect()->route('superadmin.dashboard');
             }
-            if ($user->hasRole('admin')) {
+            if ($user && $user->hasRole('admin')) {
                 return redirect()->route('tenant.dashboard');
             }
-            if ($user->tenant_id && $user->getAllPermissions()->count() > 0) {
+            if ($user && $user->tenant_id && $user->getAllPermissions()->count() > 0) {
                 return redirect()->route('tenant.employee.dashboard');
             }
+
             return redirect()->route('home');
         }
 

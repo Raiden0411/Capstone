@@ -1,19 +1,41 @@
 <?php
 
 use App\Models\SiteSetting;
+use App\Models\User;
 use Livewire\Livewire;
+use Spatie\Permission\Models\Role;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Auth;
 
 uses(RefreshDatabase::class);
+
+beforeEach(function () {
+    Role::firstOrCreate(['name' => 'super-admin', 'guard_name' => 'web']);
+
+    /** @var User $admin */
+    $admin = User::factory()->create();
+    $admin->assignRole('super-admin');
+
+    Auth::guard('web')->login($admin);
+});
 
 it('loads existing categories from site settings', function () {
     SiteSetting::setValue('marker_categories', [
         ['key' => 'cafe', 'label' => 'Cafe', 'color' => '#ff0000', 'icon_path' => null],
     ]);
 
+    // SFC mount() normalizes each category — the assertion must match
+    // the normalized shape (includes icon_svg + is_active).
     Livewire::test('superadmin::pages.map-marker.manage-marker-categories')
         ->assertSet('categories', [
-            ['key' => 'cafe', 'label' => 'Cafe', 'color' => '#ff0000', 'icon_path' => null],
+            [
+                'key'       => 'cafe',
+                'label'     => 'Cafe',
+                'color'     => '#ff0000',
+                'icon_path' => null,
+                'icon_svg'  => null,
+                'is_active' => true,
+            ],
         ]);
 });
 

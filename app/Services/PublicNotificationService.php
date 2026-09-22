@@ -7,6 +7,7 @@ use App\Models\BusinessApplication;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Scopes\TenantScope;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\Cache;
 
 class PublicNotificationService
@@ -24,24 +25,78 @@ class PublicNotificationService
      */
     public function forUser(?User $user): array
     {
-        if (!$user) {
+        if (! $user) {
             return ['items' => [], 'count' => 0];
         }
 
         return Cache::remember(
-            "public_notifications:{$user->id}",
+            self::cacheKeyFor((int) $user->id),
             self::CACHE_TTL,
             fn () => $this->build($user)
         );
     }
 
     /**
-     * Invalidate the cache for a user — call this from observers/jobs when
-     * a booking or KYB application changes state.
+     * Invalidate the cache for a user by ID.
+     *
+     * Use this from model observers, jobs, and anywhere else that has a
+     * user_id on hand but no need (or ability) to load the full User row.
+     */
+    public function flushForUserId(int $userId): void
+    {
+        Cache::forget(self::cacheKeyFor($userId));
+    }
+
+    /**
+     * Invalidate the cache for a user — call this from observers/jobs
+     * when a booking or KYB application changes state.
+     *
+     * Thin wrapper over flushForUserId() for call sites that already hold
+     * a User instance.
      */
     public function flush(User $user): void
     {
-        Cache::forget("public_notifications:{$user->id}");
+        $this->flushForUserId((int) $user->id);
+    }
+
+    /**
+     * Invalidate the notification cache for every admin user of a tenant.
+     *
+     * Tenant admins see a "N pending bookings" badge in their header
+     * dropdown (see businessNotifications()). Any booking event that
+     * changes the tenant's pending count must flush them.
+     *
+     * The query is indexed: users.tenant_id + a subquery on the
+     * model_has_roles pivot. One row per tenant in the common case.
+     *
+     * Deliberately does NOT deduplicate against a possible own-user flush
+     * — Cache::forget() is a single DELETE on the database cache driver,
+     * and two forgets for the same key is a no-op cost. Deduping would
+     * add branching for zero behavioral gain.
+     */
+    public function flushTenantAdmins(int $tenantId): void
+    {
+        if ($tenantId <= 0) {
+            return;
+        }
+
+        User::query()
+            ->where('tenant_id', $tenantId)
+            ->whereHas('roles', fn ($q) => $q->where('name', 'admin'))
+            ->pluck('id')
+            ->each(fn ($id) => $this->flushForUserId((int) $id));
+    }
+
+    /**
+     * Single source of truth for the cache-key format.
+     *
+     * Read and write must always produce the same key for the same user;
+     * keeping the format in one place makes that impossible to break by
+     * accident.
+     */
+    private static function cacheKeyFor(int $userId): string
+    {
+        return "public_notifications:{$userId}";
     }
 
     protected function build(User $user): array
@@ -93,7 +148,7 @@ class PublicNotificationService
         foreach ($bookings as $booking) {
             $property = $booking->items->first()?->property;
             $tenant   = $property?->tenant;
-            $place    = $property?->name ?? $tenant?->name ?? 'your booking';
+            $place    = $property->name ?? $tenant->name ?? 'your booking';
 
             if ($booking->status === Booking::STATUS_PENDING) {
                 $deadline = $booking->created_at?->copy()->addMinutes(Booking::PAYMENT_DEADLINE_MINUTES);
@@ -106,10 +161,10 @@ class PublicNotificationService
                     'color'   => $isUrgent ? 'rose' : 'amber',
                     'title'   => $isUrgent ? 'Payment due soon' : 'Payment pending',
                     'message' => $isUrgent && $deadline
-                        ? 'Complete payment within ' . $deadline->diffForHumans(now(), true)
+                        ? 'Complete payment within ' . $deadline->diffForHumans(now(), CarbonInterface::DIFF_ABSOLUTE)
                         : "Complete payment for your booking at {$place}.",
                     'url'     => route('my-bookings'),
-                    'time'    => $booking->updated_at?->timestamp ?? $booking->created_at?->timestamp ?? time(),
+                    'time'    => $booking->updated_at->timestamp ?? $booking->created_at->timestamp ?? time(),
                 ];
 
                 continue;
@@ -124,7 +179,7 @@ class PublicNotificationService
                     'title'   => 'Reservation confirmed',
                     'message' => "Your reservation at {$place} is locked in. Pay the balance before check-in.",
                     'url'     => route('my-bookings'),
-                    'time'    => $booking->updated_at?->timestamp ?? time(),
+                    'time'    => $booking->updated_at->timestamp ?? time(),
                 ];
 
                 continue;
@@ -139,12 +194,13 @@ class PublicNotificationService
                     'title'   => 'Booking confirmed',
                     'message' => "Your trip to {$place} is confirmed.",
                     'url'     => route('booking.receipt', ['booking' => $booking->id]),
-                    'time'    => $booking->updated_at?->timestamp ?? time(),
+                    'time'    => $booking->updated_at->timestamp ?? time(),
                 ];
             }
         }
 
         // Own KYB application status.
+        /** @var BusinessApplication|null $application */
         $application = BusinessApplication::query()
             ->where('user_id', $user->id)
             ->whereIn('status', [
@@ -167,7 +223,7 @@ class PublicNotificationService
                     'title'   => 'Revision requested',
                     'message' => 'Your business application needs updates before review.',
                     'url'     => route('register_business.edit', ['application' => $application->id]),
-                    'time'    => $application->updated_at?->timestamp ?? time(),
+                    'time'    => $application->updated_at->timestamp ?? time(),
                 ],
                 BusinessApplication::STATUS_PENDING,
                 BusinessApplication::STATUS_UNDER_REVIEW => [
@@ -178,7 +234,7 @@ class PublicNotificationService
                     'title'   => 'Under review',
                     'message' => 'Your business application is being reviewed.',
                     'url'     => route('register_business'),
-                    'time'    => $application->updated_at?->timestamp ?? time(),
+                    'time'    => $application->updated_at->timestamp ?? time(),
                 ],
                 BusinessApplication::STATUS_APPROVED => [
                     'id'      => "kyb-approved-{$application->id}",
@@ -188,7 +244,7 @@ class PublicNotificationService
                     'title'   => 'Business approved',
                     'message' => 'Your business is now live on the platform.',
                     'url'     => route('tenant.dashboard'),
-                    'time'    => $application->updated_at?->timestamp ?? time(),
+                    'time'    => $application->updated_at->timestamp ?? time(),
                 ],
                 BusinessApplication::STATUS_REJECTED => [
                     'id'      => "kyb-rejected-{$application->id}",
@@ -198,7 +254,7 @@ class PublicNotificationService
                     'title'   => 'Application rejected',
                     'message' => $application->rejection_reason ?: 'Your business application was rejected.',
                     'url'     => route('register_business'),
-                    'time'    => $application->updated_at?->timestamp ?? time(),
+                    'time'    => $application->updated_at->timestamp ?? time(),
                 ],
                 default => null,
             };
@@ -215,7 +271,7 @@ class PublicNotificationService
 
     protected function businessNotifications(User $user): array
     {
-        if (!$user->tenant_id) {
+        if (! $user->tenant_id) {
             return [];
         }
 
@@ -228,6 +284,7 @@ class PublicNotificationService
             ->count();
 
         if ($pendingCount > 0) {
+            /** @var Booking|null $latest */
             $latest = Booking::query()
                 ->where('tenant_id', $user->tenant_id)
                 ->where('status', Booking::STATUS_PENDING)
@@ -243,15 +300,16 @@ class PublicNotificationService
                 'title'   => $pendingCount === 1
                     ? 'New booking request'
                     : "{$pendingCount} booking requests",
-                'message' => $latest?->user?->name
+                'message' => $latest->user->name
                     ? "Latest from {$latest->user->name}. Review and confirm."
                     : 'Review and confirm incoming bookings.',
                 'url'     => route('tenant.bookings.index'),
-                'time'    => $latest?->created_at?->timestamp ?? time(),
+                'time'    => $latest->created_at->timestamp ?? time(),
             ];
         }
 
         // Permit renewal.
+        /** @var Tenant|null $tenant */
         $tenant = Tenant::query()->find($user->tenant_id);
 
         if ($tenant && $tenant->permit_expires_at) {
@@ -272,7 +330,7 @@ class PublicNotificationService
                     'type'    => 'business',
                     'icon'    => 'clock',
                     'color'   => 'amber',
-                    'title'   => "Permit expires soon",
+                    'title'   => 'Permit expires soon',
                     'message' => 'Your Mayor\'s Permit expires ' . $tenant->permit_expires_at->diffForHumans() . '.',
                     'url'     => route('tenant.settings.index'),
                     'time'    => $tenant->permit_expires_at->timestamp,

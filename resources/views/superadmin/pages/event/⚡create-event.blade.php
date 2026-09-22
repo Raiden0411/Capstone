@@ -9,6 +9,7 @@ use Livewire\Attributes\Computed;
 use Livewire\Attributes\Locked;
 use App\Models\Event;
 use App\Models\Tenant;
+use App\Traits\HandlesImageUploads;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -21,6 +22,7 @@ new
 class extends Component
 {
     use WithFileUploads;
+    use HandlesImageUploads;
 
     // ── Event fields ──
     public string $name        = '';
@@ -62,6 +64,49 @@ class extends Component
         abort_unless(Auth::user()?->hasRole('super-admin'), 403, 'Super-admin access only.');
     }
 
+    /**
+     * Four-layer pattern, Layer 3 — re-verify on every Livewire update
+     * request. Route middleware only runs on the initial GET.
+     */
+    public function hydrate(): void
+    {
+        abort_unless(Auth::user()?->hasRole('super-admin'), 403, 'Super-admin access only.');
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Mapcn bridge methods (Rule 36 / bug 6.144)
+    //
+    //  The mapcn Alpine factory calls these on the parent component
+    //  during map initialization. Missing any of them → the first
+    //  POST /livewire-{hash}/update returns 500 with
+    //  MethodNotFoundException. They delegate to $mapView, which is
+    //  the SFC's source of truth for the current viewport.
+    // ─────────────────────────────────────────────────────────
+
+    public function getZoom(mixed $value = null): int
+    {
+        return (int) ($this->mapView['zoom'] ?? 13);
+    }
+
+    /** @return array{0: float, 1: float} */
+    public function getCenter(mixed $value = null): array
+    {
+        return [
+            (float) ($this->mapView['lng'] ?? 0.0),
+            (float) ($this->mapView['lat'] ?? 0.0),
+        ];
+    }
+
+    public function getBearing(mixed $value = null): float
+    {
+        return 0.0;
+    }
+
+    public function getPitch(mixed $value = null): float
+    {
+        return 0.0;
+    }
+
     // ─────────────────────────────────────────────────────────
     //  Validation
     // ─────────────────────────────────────────────────────────
@@ -77,15 +122,20 @@ class extends Component
             'tenant_id'   => ['required', 'integer', 'exists:tenants,id'],
             'is_active'   => ['boolean'],
             'featured'    => ['boolean'],
-            'image'       => ['nullable', 'image', 'mimes:jpeg,png,jpg,gif,webp', 'max:10240'],
+            // 5 MB ceiling on the raw upload, raster only. The cropped
+            // blob that arrives here is already JPEG ≤4096px on the long
+            // edge (cropModal's MAX_OUTPUT), and storeImage further
+            // compresses it against the 'event' context (≤2 MB /
+            // 2560×1440) before it lands on disk.
+            'image'       => ['nullable', 'image', 'mimes:jpeg,jpg,png,webp', 'max:5120'],
         ];
     }
 
     protected function messages(): array
     {
         return [
-            'image.max'          => 'The event photo must not exceed 10MB.',
-            'image.mimes'        => 'The event photo must be a valid image (JPEG, PNG, JPG, GIF, or WebP).',
+            'image.max'          => 'The event photo must not exceed 5MB.',
+            'image.mimes'        => 'The event photo must be a valid image (JPEG, PNG, or WebP).',
             'tenant_id.required' => 'Please choose the tourist spot this event belongs to.',
             'tenant_id.exists'   => 'The selected tourist spot no longer exists.',
         ];
@@ -235,7 +285,15 @@ class extends Component
 
         try {
             if ($this->image) {
-                $imagePath = $this->image->store('event-images', 'public');
+                // Route through HandlesImageUploads — compresses against
+                // the 'event' context (≤2 MB / 2560×1440). The cropped
+                // blob has already been JPEG-encoded by cropModal at
+                // quality 0.95; this second pass enforces the ceiling.
+                $imagePath = $this->storeImage($this->image, 'event-images', 'public', 'event');
+
+                if (!$imagePath) {
+                    throw new \RuntimeException('Failed to store the event image.');
+                }
             }
 
             DB::transaction(function () use ($tenant, $coordinates, $imagePath): void {
@@ -277,65 +335,66 @@ class extends Component
 };
 ?>
 
-<div
-    x-data="{ previewUrl: null, toasts: [] }"
-    x-on:toast.window="
-        const id = Date.now() + Math.random();
-        toasts.push({ id, message: $event.detail.message, type: $event.detail.type || 'info' });
-        setTimeout(() => { toasts = toasts.filter(t => t.id !== id) }, 4000);
-    "
-    class="p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto space-y-6"
->
-    {{-- Toast stack --}}
-    <div class="fixed bottom-4 right-4 z-[2000] flex flex-col gap-2 w-full max-w-sm pointer-events-none">
-        <template x-for="toast in toasts" :key="toast.id">
-            <div
-                x-transition:enter="transition ease-out duration-300"
-                x-transition:enter-start="opacity-0 translate-y-4"
-                x-transition:enter-end="opacity-100 translate-y-0"
-                x-transition:leave="transition ease-in duration-200"
-                x-transition:leave-start="opacity-100"
-                x-transition:leave-end="opacity-0"
-                class="pointer-events-auto rounded-xl px-4 py-3 shadow-lg text-sm font-medium flex items-center gap-2 border"
-                :class="{
-                    'bg-emerald-50 border-emerald-200 text-emerald-800 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-300': toast.type === 'success',
-                    'bg-rose-50 border-rose-200 text-rose-800 dark:bg-rose-500/10 dark:border-rose-500/30 dark:text-rose-300': toast.type === 'error',
-                    'bg-blue-50 border-blue-200 text-blue-800 dark:bg-blue-500/10 dark:border-blue-500/30 dark:text-blue-300': toast.type === 'info',
-                }"
-            >
-                <span x-text="toast.message"></span>
-            </div>
-        </template>
-    </div>
+<div class="p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto space-y-6">
 
-    {{-- Flash messages --}}
+    {{-- ═══ Flash messages ═══ --}}
     @if(session()->has('message'))
-        <div class="flex items-start gap-3 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 border-l-4 border-l-emerald-500 p-4 rounded-md">
-            <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-            </svg>
-            <p class="text-sm text-emerald-700 dark:text-emerald-300 font-medium">{{ session('message') }}</p>
-        </div>
-    @endif
-    @if(session()->has('error'))
-        <div class="flex items-start gap-3 bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 border-l-4 border-l-rose-500 p-4 rounded-md">
-            <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-            </svg>
-            <p class="text-sm text-rose-700 dark:text-rose-300 font-medium">{{ session('error') }}</p>
-        </div>
-    @endif
-    @if($errors->any())
-        <div class="bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 border-l-4 border-l-rose-500 p-4 rounded-md">
-            <div class="flex items-start gap-3">
-                <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 4000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-center justify-between bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 border-l-4 border-l-emerald-500 p-4 rounded-xl text-xs sm:text-sm text-emerald-800 dark:text-emerald-300 font-medium shadow-sm">
+            <div class="flex items-center gap-2.5">
+                <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
                 </svg>
-                <div class="text-sm text-rose-700 dark:text-rose-300">
+                <span>{{ session('message') }}</span>
+            </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+    @endif
+
+    @if(session()->has('error'))
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 5000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-center justify-between bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 border-l-4 border-l-rose-500 p-4 rounded-xl text-xs sm:text-sm text-rose-800 dark:text-rose-300 font-medium shadow-sm">
+            <div class="flex items-center gap-2.5">
+                <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                </svg>
+                <span>{{ session('error') }}</span>
+            </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+    @endif
+
+    @if($errors->any())
+        <div class="bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 border-l-4 border-l-rose-500 p-4 rounded-xl">
+            <div class="flex items-start gap-2.5">
+                <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                </svg>
+                <div class="text-xs sm:text-sm text-rose-800 dark:text-rose-300">
                     <p class="font-semibold mb-1">Please fix the following:</p>
                     <ul class="list-disc list-inside space-y-0.5">
                         @foreach($errors->all() as $err)
-                            <li>{{ $err }}</li>
+                            <li wire:key="err-{{ $loop->index }}">{{ $err }}</li>
                         @endforeach
                     </ul>
                 </div>
@@ -343,55 +402,57 @@ class extends Component
         </div>
     @endif
 
-    {{-- Header — superadmin plain pattern --}}
-    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
+    {{-- ═══ Page header ═══ --}}
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-800">
         <div>
             <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
                 Add Event
             </h1>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+            <p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1">
                 Create a new event tied to a tourist spot on the platform.
             </p>
         </div>
         <a href="{{ route('superadmin.events.index') }}" wire:navigate
-           class="btn-secondary active:scale-95 transition-transform
-                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                  inline-flex items-center justify-center gap-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+           class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                  transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
             </svg>
-            Back to Events
+            <span>Back to Events</span>
         </a>
     </div>
 
-    {{-- Form --}}
+    {{-- ═══ Form ═══ --}}
     <form wire:submit="save" class="space-y-6">
 
-        {{-- ═══════════════ EVENT DETAILS ═══════════════ --}}
+        {{-- ─────────── Event Details ─────────── --}}
         <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6 space-y-6">
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-3">
                 <span class="w-5 h-px bg-primary-600"></span>
-                <h2 class="text-base font-bold text-gray-900 dark:text-white">Event Details</h2>
+                <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    Event Details
+                </h2>
             </div>
 
             {{-- Event name with counter --}}
             <div>
                 <div class="flex justify-between items-baseline mb-1">
-                    <label for="field-event-name" class="block text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider">
-                        Event Name <span class="text-red-500">*</span>
+                    <label for="field-event-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                        Event Name <span class="text-rose-500">*</span>
                     </label>
                     <span class="text-[11px] text-gray-400 dark:text-gray-500 tabular-nums">{{ Str::length($name) }}/255</span>
                 </div>
                 <input type="text" id="field-event-name" wire:model.live.debounce.300ms="name"
                        maxlength="255" class="input w-full" placeholder="e.g. Sinulog Festival">
-                @error('name') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                @error('name') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
 
             {{-- Type + Tourist spot --}}
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                    <label for="field-event-type" class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
-                        Event Type <span class="text-red-500">*</span>
+                    <label for="field-event-type" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Event Type <span class="text-rose-500">*</span>
                     </label>
                     <input type="text" id="field-event-type" wire:model="type"
                            list="event-type-suggestions" class="input w-full"
@@ -405,21 +466,24 @@ class extends Component
                         <option value="Religious"></option>
                         <option value="Exhibition"></option>
                     </datalist>
-                    @error('type') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    @error('type') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
 
                 <div>
-                    <label for="field-event-tenant" class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
-                        Tourist Spot <span class="text-red-500">*</span>
+                    <label for="field-event-tenant" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Tourist Spot <span class="text-rose-500">*</span>
                     </label>
 
                     <div class="relative mb-2">
-                        <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <svg class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
                         </svg>
-                        <input type="text" wire:model.live.debounce.300ms="tenantSearch"
+                        <input type="text"
+                               wire:model.live.debounce.300ms="tenantSearch"
                                placeholder="Search tourist spots…"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2 pl-10 pr-4 text-sm text-gray-900 dark:text-white placeholder-gray-400
+                               aria-label="Search tourist spots"
+                               enterkeyhint="search"
+                               class="w-full h-11 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl pl-10 pr-4 text-sm text-gray-900 dark:text-white placeholder-gray-400
                                       focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                     </div>
 
@@ -429,7 +493,7 @@ class extends Component
                             <option value="{{ $t->id }}" wire:key="tenant-option-{{ $t->id }}">{{ $t->name }}</option>
                         @endforeach
                     </select>
-                    @error('tenant_id') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    @error('tenant_id') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
                         The event inherits this spot's barangay and map location.
                     </p>
@@ -439,7 +503,7 @@ class extends Component
             {{-- Description --}}
             <div>
                 <div class="flex justify-between items-baseline mb-1">
-                    <label for="field-event-description" class="block text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider">
+                    <label for="field-event-description" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
                         Description
                     </label>
                     <span class="text-[11px] text-gray-400 dark:text-gray-500 tabular-nums">{{ Str::length($description) }}/1000</span>
@@ -447,83 +511,144 @@ class extends Component
                 <textarea id="field-event-description" wire:model.live.debounce.300ms="description"
                           rows="4" class="input w-full" maxlength="1000"
                           placeholder="Describe the event…"></textarea>
-                @error('description') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                @error('description') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
             </div>
 
             {{-- Dates --}}
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                    <label for="field-event-start" class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
-                        Start Date <span class="text-red-500">*</span>
+                    <label for="field-event-start" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Start Date <span class="text-rose-500">*</span>
                     </label>
                     <input type="datetime-local" id="field-event-start" wire:model="start_date" class="input w-full">
-                    @error('start_date') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    @error('start_date') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
                 <div>
-                    <label for="field-event-end" class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
-                        End Date <span class="text-gray-400 dark:text-gray-500 font-normal normal-case">(optional)</span>
+                    <label for="field-event-end" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        End Date <span class="text-gray-400 dark:text-gray-500 font-normal">(optional)</span>
                     </label>
                     <input type="datetime-local" id="field-event-end" wire:model="end_date" class="input w-full">
-                    @error('end_date') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                    @error('end_date') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                 </div>
             </div>
 
-            {{-- Image --}}
-            <div>
-                <label for="field-event-image" class="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1.5 uppercase tracking-wider">
+            {{--
+                ═══ Event Photo ═══
+                Crop modal pipeline (Rule 87):
+                  1. User picks a file via the label's hidden input.
+                  2. imageCropper().pick() dispatches `crop:request` with
+                     a token + the File.
+                  3. The singleton <x-image-crop-modal /> (bottom of this
+                     file) catches it, opens the crop UI with aspect 16/9.
+                  4. On confirm, the modal dispatches `crop:result` with
+                     the cropped blob. The picker $wire.upload()s it.
+                  5. On upload success, the picker dispatches
+                     `event-image-preview` with an object URL of the
+                     cropped blob. avatarPreview() catches it and shows it.
+                  6. On "Remove photo", we $wire.set('image', null) and
+                     $dispatch('event-image-cleared') → avatarPreview()
+                     revokes the URL and hides the preview.
+
+                The 16/9 aspect matches the 'event' context ceiling
+                (2560×1440) and the front-end event card display.
+            --}}
+            <div
+                x-data="avatarPreview()"
+                x-on:event-image-preview.window="setUrl($event.detail.url)"
+                x-on:event-image-cleared.window="clear()"
+            >
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                     Event Photo
                 </label>
-                <input type="file" id="field-event-image" wire:model="image" accept="image/*"
-                       @change="previewUrl = $event.target.files[0] ? URL.createObjectURL($event.target.files[0]) : null"
-                       class="w-full text-sm text-gray-700 dark:text-gray-300
-                              file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0
-                              file:bg-primary-50 dark:file:bg-primary-500/20 file:text-primary-700 dark:file:text-primary-300
-                              hover:file:bg-primary-100 dark:hover:file:bg-primary-500/30
-                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition">
-                <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">Max 10MB. Supported: JPEG, PNG, JPG, GIF, WebP.</p>
-                @error('image') <span class="text-red-500 dark:text-red-400 text-xs mt-1 block">{{ $message }}</span> @enderror
 
-                <div wire:loading wire:target="image" class="mt-2 text-xs text-primary-600 dark:text-primary-400 flex items-center gap-1.5">
-                    <svg class="animate-spin w-3.5 h-3.5 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
-                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-                    </svg>
-                    Uploading…
+                <div
+                    x-data="imageCropper({
+                        wireProperty: 'image',
+                        aspect: 16 / 9,
+                        title: 'Crop event photo',
+                        description: 'Wide 16:9 crop works best',
+                        previewEvent: 'event-image-preview',
+                    })"
+                    x-init="init()"
+                    class="flex flex-wrap items-center gap-2"
+                >
+                    <label for="event-image-upload"
+                           class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm cursor-pointer
+                                  transition-all duration-200 active:scale-95
+                                  focus-within:outline-none focus-within:ring-2 focus-within:ring-primary-500/50 focus-within:ring-offset-2 dark:focus-within:ring-offset-gray-900">
+                        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                        </svg>
+                        <span>Upload photo</span>
+                        <input type="file"
+                               id="event-image-upload"
+                               x-ref="input"
+                               x-on:change="pick($event)"
+                               accept="image/jpeg,image/png,image/webp"
+                               class="sr-only">
+                    </label>
+
+                    <div wire:loading wire:target="image" class="inline-flex items-center gap-1.5 text-xs text-primary-600 dark:text-primary-400">
+                        <svg class="animate-spin w-3.5 h-3.5 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                        </svg>
+                        Uploading…
+                    </div>
                 </div>
 
-                <div x-show="previewUrl" x-cloak class="mt-3 flex items-center gap-3">
-                    <img :src="previewUrl"
-                         class="h-24 w-24 object-cover rounded-lg border border-gray-200 dark:border-gray-700"
-                         alt="Event preview">
+                <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-2">
+                    Max 5 MB. JPEG, PNG, or WebP. Auto-cropped to 16:9 and compressed on upload.
+                </p>
+
+                @error('image') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+
+                {{-- Preview — visible only when a picker has produced an object URL --}}
+                <div
+                    :class="previewUrl ? 'flex' : 'hidden'"
+                    class="mt-3 items-start gap-3"
+                >
+                    <img :src="previewUrl || ''"
+                         alt="Event photo preview"
+                         class="w-full max-w-md aspect-video object-cover rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm"
+                         loading="lazy"
+                         decoding="async">
+
                     <button type="button"
-                            @click="previewUrl = null; $wire.set('image', null)"
-                            class="text-xs font-semibold text-rose-500 hover:text-rose-700 active:scale-95 transition-transform
-                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 rounded">
-                        Remove photo
+                            @click="$wire.set('image', null); $dispatch('event-image-cleared')"
+                            class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg border border-rose-300 dark:border-rose-500/40 bg-white dark:bg-gray-800 text-rose-700 dark:text-rose-300 text-xs font-semibold shrink-0
+                                   transition-all duration-200 active:scale-95 hover:bg-rose-50 dark:hover:bg-rose-500/10
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                        <span>Remove</span>
                     </button>
                 </div>
             </div>
 
             {{-- Toggles --}}
-            <div class="flex flex-wrap items-center gap-6 pt-2 border-t border-gray-100 dark:border-gray-700">
+            <div class="flex flex-wrap items-center gap-6 pt-4 border-t border-gray-100 dark:border-gray-700">
                 <label class="inline-flex items-center gap-2 cursor-pointer">
                     <input type="checkbox" wire:model="is_active"
-                           class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary-600 focus:ring-primary-500">
+                           class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary-600 focus:ring-primary-500 cursor-pointer">
                     <span class="text-sm text-gray-700 dark:text-gray-300">Active</span>
                 </label>
                 <label class="inline-flex items-center gap-2 cursor-pointer">
                     <input type="checkbox" wire:model="featured"
-                           class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary-600 focus:ring-primary-500">
+                           class="rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary-600 focus:ring-primary-500 cursor-pointer">
                     <span class="text-sm text-gray-700 dark:text-gray-300">Featured</span>
                 </label>
             </div>
         </div>
 
-        {{-- ═══════════════ LOCATION PREVIEW ═══════════════ --}}
+        {{-- ─────────── Location Preview ─────────── --}}
         <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-6 space-y-5">
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-3">
                 <span class="w-5 h-px bg-primary-600"></span>
-                <h2 class="text-base font-bold text-gray-900 dark:text-white">Location Preview</h2>
+                <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    Location Preview
+                </h2>
             </div>
 
             @if($this->selectedTenant)
@@ -531,8 +656,6 @@ class extends Component
 
                 {{-- Info card --}}
                 <div class="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/60 overflow-hidden">
-
-                    {{-- Header row --}}
                     <div class="flex items-start gap-3 px-4 py-3.5 border-b border-gray-200 dark:border-gray-700">
                         <div class="p-2 rounded-lg bg-primary-50 dark:bg-primary-500/10 text-primary-600 dark:text-primary-400 shrink-0">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -548,9 +671,7 @@ class extends Component
                         </span>
                     </div>
 
-                    {{-- Detail rows --}}
                     <dl class="divide-y divide-gray-200 dark:divide-gray-700">
-                        {{-- Barangay --}}
                         <div class="flex items-start gap-3 px-4 py-3">
                             <div class="p-1.5 rounded-md bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5">
                                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -565,7 +686,6 @@ class extends Component
                             </div>
                         </div>
 
-                        {{-- Full address --}}
                         <div class="flex items-start gap-3 px-4 py-3">
                             <div class="p-1.5 rounded-md bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5">
                                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -581,7 +701,6 @@ class extends Component
                             </div>
                         </div>
 
-                        {{-- Coordinates --}}
                         <div class="flex items-start gap-3 px-4 py-3">
                             <div class="p-1.5 rounded-md bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5">
                                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -598,7 +717,6 @@ class extends Component
                             </div>
                         </div>
 
-                        {{-- Contact --}}
                         @if($tenant->contact_number || $tenant->email)
                             <div class="flex items-start gap-3 px-4 py-3">
                                 <div class="p-1.5 rounded-md bg-purple-50 dark:bg-purple-500/10 text-purple-600 dark:text-purple-400 shrink-0 mt-0.5">
@@ -622,22 +740,19 @@ class extends Component
                     </dl>
                 </div>
 
-                {{-- Map (read-only) --}}
                 @if($this->selectedTenantHasLocation)
-                    <div class="flex items-center justify-between">
+                    <div class="flex items-center justify-between gap-3">
                         <p class="text-xs text-gray-500 dark:text-gray-400">
                             The marker is fixed to the tourist spot's location.
                         </p>
                         <button type="button" wire:click="toggleSatellite"
-                                class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg
-                                       bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700
-                                       text-xs font-medium text-gray-700 dark:text-gray-300 shadow-sm
-                                       hover:bg-gray-50 dark:hover:bg-gray-800 transition active:scale-95
+                                class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-xs font-semibold
+                                       transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/>
                             </svg>
-                            {{ $satellite ? 'Street View' : 'Satellite' }}
+                            <span>{{ $satellite ? 'Street View' : 'Satellite' }}</span>
                         </button>
                     </div>
 
@@ -675,7 +790,8 @@ class extends Component
                                         :draggable="false"
                                     >
                                         <x-marker-content>
-                                            <div class="relative flex items-center justify-center transform-gpu will-change-transform transition-transform duration-200">
+                                            {{-- No transition-transform — see bug 6.143. --}}
+                                            <div class="relative flex items-center justify-center transform-gpu will-change-transform">
                                                 <svg class="h-11 w-11 drop-shadow-lg" viewBox="0 0 24 24" fill="#ef4444" stroke="white" stroke-width="1.5" aria-hidden="true">
                                                     <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
                                                     <circle cx="12" cy="9" r="2.5" fill="white"/>
@@ -720,16 +836,18 @@ class extends Component
                     </div>
                 @endif
 
-                {{-- Clear selection --}}
                 <div class="flex justify-end pt-1">
                     <button type="button" wire:click="clearTenant"
-                            class="inline-flex items-center gap-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400
-                                   hover:text-rose-600 dark:hover:text-rose-400 active:scale-95 transition
-                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 rounded">
+                            class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-xs font-semibold
+                                   transition-all duration-200 active:scale-95
+                                   hover:bg-rose-50 dark:hover:bg-rose-500/10
+                                   hover:text-rose-700 dark:hover:text-rose-300
+                                   hover:border-rose-300 dark:hover:border-rose-500/40
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                         </svg>
-                        Change tourist spot
+                        <span>Change tourist spot</span>
                     </button>
                 </div>
             @else
@@ -748,30 +866,34 @@ class extends Component
             @endif
         </div>
 
-        {{-- ═══════════════ ACTIONS ═══════════════ --}}
-        <div class="flex flex-col sm:flex-row gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
+        {{-- ─────────── Actions ─────────── --}}
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-3 pt-5 border-t border-gray-200 dark:border-gray-700">
+            <a href="{{ route('superadmin.events.index') }}" wire:navigate
+               class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                      transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                <span>Cancel</span>
+            </a>
+
             <button type="submit"
                     wire:loading.attr="disabled"
                     wire:target="save"
-                    class="btn-primary w-full sm:w-auto active:scale-95 transition-transform
-                           inline-flex items-center justify-center gap-2
+                    class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                           transition-all duration-200 active:scale-95
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                            disabled:opacity-60 disabled:cursor-not-allowed">
                 <span wire:loading.remove wire:target="save">Save Event</span>
                 <span wire:loading wire:target="save" class="inline-flex items-center gap-2">
                     <svg class="animate-spin h-4 w-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                     </svg>
                     Saving…
                 </span>
             </button>
-            <a href="{{ route('superadmin.events.index') }}" wire:navigate
-               class="btn-secondary w-full sm:w-auto active:scale-95 transition-transform
-                      inline-flex items-center justify-center gap-2
-                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                Cancel
-            </a>
         </div>
     </form>
+
+    {{-- Image crop modal — singleton for this page (Rule 87) --}}
+    <x-image-crop-modal />
 </div>

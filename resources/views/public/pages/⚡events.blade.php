@@ -28,10 +28,6 @@ class extends Component
     public function updatingTypeFilter(): void     { $this->resetPage(); }
     public function updatingStatusFilter(): void   { $this->resetPage(); }
 
-    // ─────────────────────────────────────────────────────────
-    //  Queries
-    // ─────────────────────────────────────────────────────────
-
     #[Computed]
     public function events()
     {
@@ -67,16 +63,10 @@ class extends Component
             ->get();
     }
 
-    /**
-     * Distinct barangays for the filter dropdown.
-     *
-     * Restricted to active events so options never yield zero results.
-     */
     #[Computed]
     public function barangays()
     {
         return Event::withoutGlobalScope(TenantScope::class)
-            ->select('barangay')
             ->where('is_active', true)
             ->whereNotNull('barangay')
             ->where('barangay', '!=', '')
@@ -85,16 +75,10 @@ class extends Component
             ->pluck('barangay');
     }
 
-    /**
-     * Distinct types for the filter dropdown.
-     *
-     * Restricted to active events so options never yield zero results.
-     */
     #[Computed]
     public function types()
     {
         return Event::withoutGlobalScope(TenantScope::class)
-            ->select('type')
             ->where('is_active', true)
             ->whereNotNull('type')
             ->where('type', '!=', '')
@@ -103,12 +87,6 @@ class extends Component
             ->pluck('type');
     }
 
-    /**
-     * The currently opened event (from `?event=`).
-     *
-     * Public visibility: active only. This prevents enumeration of
-     * inactive events by guessing IDs in the query string.
-     */
     #[Computed]
     public function selectedEvent(): ?Event
     {
@@ -130,10 +108,6 @@ class extends Component
             || $this->typeFilter !== '';
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Helpers
-    // ─────────────────────────────────────────────────────────
-
     private function publicEventQuery()
     {
         return Event::withoutGlobalScope(TenantScope::class)
@@ -143,8 +117,6 @@ class extends Component
                 'is_active', 'featured', 'tenant_id',
             ])
             ->when($this->search !== '', function ($q) {
-                // Whole OR-group must live in its own closure so it can't
-                // leak past the outer filters.
                 $search = '%' . $this->search . '%';
                 $q->where(function ($sub) use ($search) {
                     $sub->where('name', 'like', $search)
@@ -156,10 +128,6 @@ class extends Component
             ->when($this->barangayFilter !== '', fn ($q) => $q->where('barangay', $this->barangayFilter))
             ->when($this->typeFilter     !== '', fn ($q) => $q->where('type',     $this->typeFilter));
     }
-
-    // ─────────────────────────────────────────────────────────
-    //  Actions
-    // ─────────────────────────────────────────────────────────
 
     public function openEvent(int $eventId): void
     {
@@ -180,10 +148,44 @@ class extends Component
 };
 ?>
 
+@push('styles')
+    @once
+        <style>
+            .hide-scrollbar::-webkit-scrollbar { display: none; }
+            .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+            .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+            .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+            .custom-scrollbar::-webkit-scrollbar-thumb {
+                background-color: #cbd5e1;
+                border-radius: 20px;
+            }
+            .dark .custom-scrollbar::-webkit-scrollbar-thumb {
+                background-color: #475569;
+            }
+
+            /* Rule 69 replacements — CSS animations instead of x-transition. */
+            @keyframes eventModalBackdropIn {
+                from { opacity: 0 }
+                to   { opacity: 1 }
+            }
+            @keyframes eventModalPanelIn {
+                from { opacity: 0; transform: translateY(24px) scale(.96); }
+                to   { opacity: 1; transform: translateY(0) scale(1); }
+            }
+            .event-modal-backdrop { animation: eventModalBackdropIn .25s ease-out; }
+            .event-modal-panel    { animation: eventModalPanelIn .3s cubic-bezier(.16,1,.3,1); }
+            @media (prefers-reduced-motion: reduce) {
+                .event-modal-backdrop, .event-modal-panel { animation: none; }
+            }
+        </style>
+    @endonce
+@endpush
+
 <div x-data="{ filtersOpen: false, isDesktop: window.innerWidth >= 768 }"
      @resize.window="isDesktop = window.innerWidth >= 768"
      @keydown.escape.window="if ($wire.selectedEventId) $wire.closeEvent()"
-     class="min-h-screen bg-gray-50 dark:bg-gray-900 pb-20">
+     class="min-h-screen pb-20">
 
     {{-- ═══════════════ HERO ═══════════════ --}}
     <div class="relative bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
@@ -203,18 +205,19 @@ class extends Component
     {{-- ═══════════════ MAIN CONTENT ═══════════════ --}}
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 -mt-8 relative z-10">
 
-        {{-- Unified control panel --}}
         <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-100 dark:border-gray-700 p-4 sm:p-6 mb-10">
 
-            {{-- Mobile filter toggle --}}
             <div class="md:hidden mb-4">
                 <button type="button" @click="filtersOpen = !filtersOpen"
-                        class="w-full flex items-center justify-between px-4 py-3
+                        :aria-expanded="filtersOpen.toString()"
+                        aria-controls="events-filters-panel"
+                        class="w-full flex items-center justify-between px-4 h-11
                                bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl
-                               text-sm font-semibold text-gray-700 dark:text-gray-200 transition active:scale-95
+                               text-sm font-semibold text-gray-700 dark:text-gray-200
+                               transition-all duration-200 active:scale-95
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                     <span>Search &amp; Filters</span>
-                    <svg class="w-4 h-4 transition-transform duration-200"
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 transition-transform duration-200"
                          :class="filtersOpen ? 'rotate-180' : ''"
                          fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
@@ -222,73 +225,95 @@ class extends Component
                 </button>
             </div>
 
-            <div x-show="filtersOpen || isDesktop" x-cloak x-collapse class="space-y-6">
+            {{-- Rule 69 replacement — CSS grid-template-rows collapse instead of
+                 x-show + x-collapse. The outer wrapper always renders; the inner
+                 content clips at 0fr for a smooth height transition. --}}
+            <div id="events-filters-panel"
+                 :class="(filtersOpen || isDesktop) ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'"
+                 class="grid transition-[grid-template-rows] duration-300 ease-out">
+                <div class="overflow-hidden">
+                    <div class="space-y-6 pt-0 md:pt-0">
 
-                {{-- Search + selects --}}
-                <div class="flex flex-col md:flex-row gap-4 items-center justify-between">
-                    <div class="relative w-full md:flex-1">
-                        <svg class="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-                        </svg>
-                        <input type="text" wire:model.live.debounce.300ms="search"
-                               placeholder="Search events or descriptions..."
-                               class="w-full bg-gray-50 dark:bg-gray-900 border-0 rounded-xl pl-12 pr-4 py-3.5
-                                      text-gray-900 dark:text-white placeholder-gray-500
-                                      focus:ring-2 focus:ring-primary-500 transition-shadow">
-                    </div>
+                        <div class="flex flex-col md:flex-row gap-4 items-center justify-between">
+                            <div class="relative w-full md:flex-1">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                                </svg>
+                                <input type="text"
+                                       wire:model.live.debounce.300ms="search"
+                                       enterkeyhint="search"
+                                       autocomplete="off"
+                                       placeholder="Search events or descriptions..."
+                                       aria-label="Search events"
+                                       style="padding-left: 3rem;"
+                                       class="w-full bg-gray-50 dark:bg-gray-900 border-0 rounded-xl pr-4 py-3.5
+                                              text-gray-900 dark:text-white placeholder-gray-500
+                                              focus:ring-2 focus:ring-primary-500 transition-shadow">
+                            </div>
 
-                    <div class="flex flex-col sm:flex-row w-full md:w-auto gap-4">
-                        <select wire:model.live="barangayFilter"
-                                class="w-full sm:w-48 bg-gray-50 dark:bg-gray-900 border-0 rounded-xl py-3.5 px-4
-                                       text-sm text-gray-900 dark:text-white
-                                       focus:ring-2 focus:ring-primary-500 transition-shadow">
-                            <option value="">All Locations</option>
-                            @foreach($this->barangays as $b)
-                                <option value="{{ $b }}" wire:key="barangay-opt-{{ \Illuminate\Support\Str::slug($b) }}">{{ $b }}</option>
+                            <div class="flex flex-col sm:flex-row w-full md:w-auto gap-4">
+                                <select wire:model.live="barangayFilter"
+                                        aria-label="Filter by location"
+                                        class="w-full sm:w-48 bg-gray-50 dark:bg-gray-900 border-0 rounded-xl py-3.5 px-4
+                                               text-sm text-gray-900 dark:text-white
+                                               focus:ring-2 focus:ring-primary-500 transition-shadow">
+                                    <option value="">All Locations</option>
+                                    @foreach($this->barangays as $b)
+                                        <option value="{{ $b }}">{{ $b }}</option>
+                                    @endforeach
+                                </select>
+
+                                <select wire:model.live="typeFilter"
+                                        aria-label="Filter by event type"
+                                        class="w-full sm:w-48 bg-gray-50 dark:bg-gray-900 border-0 rounded-xl py-3.5 px-4
+                                               text-sm text-gray-900 dark:text-white
+                                               focus:ring-2 focus:ring-primary-500 transition-shadow">
+                                    <option value="">All Types</option>
+                                    @foreach($this->types as $type)
+                                        <option value="{{ $type }}">{{ ucfirst($type) }}</option>
+                                    @endforeach
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="flex gap-2 overflow-x-auto pb-2 hide-scrollbar items-center
+                                    border-t border-gray-100 dark:border-gray-700 pt-5 mt-2">
+                            <span class="text-sm text-gray-500 dark:text-gray-400 font-medium mr-2 shrink-0">Show:</span>
+                            @foreach(['upcoming' => 'Upcoming', 'past' => 'Past', 'featured' => 'Featured', 'all' => 'All'] as $val => $label)
+                                @php $isActive = $statusFilter === $val; @endphp
+                                <button type="button"
+                                        wire:key="status-pill-{{ $val }}"
+                                        wire:click="$set('statusFilter', '{{ $val }}')"
+                                        aria-pressed="{{ $isActive ? 'true' : 'false' }}"
+                                        class="shrink-0 inline-flex items-center justify-center h-9 px-4 rounded-full text-sm font-medium
+                                               transition-all duration-200 active:scale-95
+                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                                               {{ $isActive
+                                                  ? 'bg-primary-600 text-white shadow-md'
+                                                  : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600' }}">
+                                    {{ $label }}
+                                </button>
                             @endforeach
-                        </select>
 
-                        <select wire:model.live="typeFilter"
-                                class="w-full sm:w-48 bg-gray-50 dark:bg-gray-900 border-0 rounded-xl py-3.5 px-4
-                                       text-sm text-gray-900 dark:text-white
-                                       focus:ring-2 focus:ring-primary-500 transition-shadow">
-                            <option value="">All Types</option>
-                            @foreach($this->types as $type)
-                                <option value="{{ $type }}" wire:key="type-opt-{{ \Illuminate\Support\Str::slug($type) }}">{{ ucfirst($type) }}</option>
-                            @endforeach
-                        </select>
+                            @if($this->hasActiveFilters)
+                                <button type="button"
+                                        wire:click="clearFilters"
+                                        wire:loading.attr="disabled"
+                                        wire:target="clearFilters"
+                                        class="shrink-0 inline-flex items-center justify-center gap-1.5 h-9 px-4 rounded-full text-sm font-medium
+                                               border border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400
+                                               hover:border-rose-400 hover:text-rose-600 dark:hover:text-rose-400
+                                               transition-all duration-200 active:scale-95
+                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
+                                               disabled:opacity-60 disabled:cursor-not-allowed">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                    </svg>
+                                    Clear filters
+                                </button>
+                            @endif
+                        </div>
                     </div>
-                </div>
-
-                {{-- Status pills + Clear --}}
-                <div class="flex gap-2 overflow-x-auto pb-2 hide-scrollbar items-center
-                            border-t border-gray-100 dark:border-gray-700 pt-5 mt-2">
-                    <span class="text-sm text-gray-500 dark:text-gray-400 font-medium mr-2 shrink-0">Show:</span>
-                    @foreach(['upcoming' => 'Upcoming', 'past' => 'Past', 'featured' => 'Featured', 'all' => 'All'] as $val => $label)
-                        <button type="button"
-                                wire:key="status-pill-{{ $val }}"
-                                wire:click="$set('statusFilter', '{{ $val }}')"
-                                class="shrink-0 rounded-full px-5 py-2 text-sm font-medium transition-all duration-200 active:scale-95
-                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                                       {{ $statusFilter === $val
-                                          ? 'bg-primary-600 text-white shadow-md'
-                                          : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600' }}">
-                            {{ $label }}
-                        </button>
-                    @endforeach
-
-                    @if($this->hasActiveFilters)
-                        <button type="button" wire:click="clearFilters"
-                                class="shrink-0 inline-flex items-center gap-1 rounded-full px-4 py-2 text-sm font-medium
-                                       border border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400
-                                       hover:border-rose-400 hover:text-rose-600 dark:hover:text-rose-400
-                                       transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
-                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                            </svg>
-                            Clear filters
-                        </button>
-                    @endif
                 </div>
             </div>
         </div>
@@ -298,7 +323,7 @@ class extends Component
             <div class="mb-12">
                 <div class="flex items-center gap-2 mb-6">
                     <div class="p-2 bg-amber-100 dark:bg-amber-500/20 rounded-lg">
-                        <svg class="w-5 h-5 text-amber-600 dark:text-amber-400" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-amber-600 dark:text-amber-400" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
                             <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
                         </svg>
                     </div>
@@ -317,11 +342,12 @@ class extends Component
                             <div class="relative h-52 w-full overflow-hidden">
                                 @if($event->image_path)
                                     <img src="{{ asset('storage/' . $event->image_path) }}"
-                                         alt="{{ $event->name }}" loading="lazy"
+                                         alt="{{ $event->name }}"
+                                         loading="lazy" decoding="async"
                                          class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500">
                                 @else
                                     <div class="w-full h-full bg-gradient-to-br from-amber-50 to-orange-50 dark:from-gray-800 dark:to-gray-700 flex items-center justify-center">
-                                        <svg class="w-12 h-12 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                                         </svg>
                                     </div>
@@ -333,7 +359,7 @@ class extends Component
                                 <div class="absolute bottom-4 left-4 right-4">
                                     <h3 class="text-xl font-bold text-white mb-1 line-clamp-1">{{ $event->name }}</h3>
                                     <p class="text-amber-300 text-sm font-medium flex items-center gap-1.5">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                                         </svg>
                                         {{ $event->start_date?->format('M d, Y') ?? '—' }}
@@ -349,8 +375,10 @@ class extends Component
         {{-- ═══════════════ MAIN GRID ═══════════════ --}}
         <h2 class="text-xl font-bold text-gray-900 dark:text-white mb-6">Explore Events</h2>
 
+        {{-- Rule 108: wire:target scoped so opening a modal doesn't dim the grid. --}}
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 lg:gap-8 transition-opacity duration-200"
-             wire:loading.class="opacity-50">
+             wire:loading.class="opacity-50"
+             wire:target="search,barangayFilter,typeFilter,statusFilter,gotoPage,nextPage,previousPage,clearFilters">
             @forelse($this->events as $event)
                 <button type="button"
                         wire:key="event-{{ $event->id }}"
@@ -364,11 +392,12 @@ class extends Component
                     <div class="relative h-48 w-full overflow-hidden">
                         @if($event->image_path)
                             <img src="{{ asset('storage/' . $event->image_path) }}"
-                                 alt="{{ $event->name }}" loading="lazy"
+                                 alt="{{ $event->name }}"
+                                 loading="lazy" decoding="async"
                                  class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500">
                         @else
                             <div class="w-full h-full bg-gray-50 dark:bg-gray-700 flex items-center justify-center">
-                                <svg class="w-12 h-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                                 </svg>
                             </div>
@@ -393,14 +422,14 @@ class extends Component
 
                         <div class="mt-auto pt-4 border-t border-gray-100 dark:border-gray-700 flex items-center justify-between">
                             <p class="text-sm text-gray-500 dark:text-gray-400 flex items-center gap-1.5 truncate pr-2">
-                                <svg class="w-4 h-4 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
                                 </svg>
                                 <span class="truncate">{{ $event->barangay }}</span>
                             </p>
                             <span class="text-primary-600 dark:text-primary-400">
-                                <svg class="w-5 h-5 transform group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 transform group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
                                 </svg>
                             </span>
@@ -410,7 +439,7 @@ class extends Component
             @empty
                 <div class="col-span-full bg-white dark:bg-gray-800 rounded-3xl border border-gray-100 dark:border-gray-700 p-12 text-center shadow-sm">
                     <div class="mx-auto h-20 w-20 rounded-full bg-gray-50 dark:bg-gray-900 flex items-center justify-center mb-6">
-                        <svg class="h-10 w-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                         </svg>
                     </div>
@@ -434,24 +463,24 @@ class extends Component
                     </p>
                     <div class="flex flex-wrap gap-2 justify-center">
                         @if($this->hasActiveFilters)
-                            <button type="button" wire:click="clearFilters"
-                                    class="inline-flex items-center gap-2 px-5 py-2.5 rounded-full
-                                           border border-gray-300 dark:border-gray-600
-                                           text-gray-700 dark:text-gray-200 text-sm font-semibold
-                                           hover:bg-gray-50 dark:hover:bg-gray-700
-                                           transition active:scale-95
-                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                            <button type="button"
+                                    wire:click="clearFilters"
+                                    wire:loading.attr="disabled"
+                                    wire:target="clearFilters"
+                                    class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                                           transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                                           disabled:opacity-60 disabled:cursor-not-allowed">
                                 Clear Filters
                             </button>
                         @endif
 
                         @if($statusFilter === 'featured')
-                            <button type="button" wire:click="$set('statusFilter', 'upcoming')"
-                                    class="inline-flex items-center gap-2 px-5 py-2.5 rounded-full
-                                           bg-primary-600 hover:bg-primary-700 text-white
-                                           text-sm font-semibold shadow-md shadow-primary-600/20
-                                           transition active:scale-95
-                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                            <button type="button"
+                                    wire:click="$set('statusFilter', 'upcoming')"
+                                    class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                           transition-all duration-200 active:scale-95
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                                 Browse Upcoming Events
                             </button>
                         @endif
@@ -466,30 +495,21 @@ class extends Component
     </div>
 
     {{-- ═══════════════ EVENT DETAIL MODAL ═══════════════ --}}
-    <div x-show="$wire.selectedEventId !== null"
+    {{-- Rule 69: :class toggling + CSS keyframes replace x-show + x-transition.
+         x-trap removed — Alpine Focus is not registered in app.js; replaced
+         with an x-effect that locks body scroll while the modal is open. --}}
+    <div x-effect="document.body.style.overflow = $wire.selectedEventId !== null ? 'hidden' : ''"
          x-cloak
-         x-transition:enter="transition ease-out duration-300"
-         x-transition:enter-start="opacity-0"
-         x-transition:enter-end="opacity-100"
-         x-transition:leave="transition ease-in duration-200"
-         x-transition:leave-start="opacity-100"
-         x-transition:leave-end="opacity-0"
-         x-trap.inert.noscroll="$wire.selectedEventId !== null"
-         class="fixed inset-0 z-1000 flex items-center justify-center p-4 sm:p-6 bg-gray-900/60"
+         :class="$wire.selectedEventId !== null ? 'event-modal-backdrop flex' : 'hidden'"
+         class="fixed inset-0 z-[1000] items-center justify-center p-4 sm:p-6 bg-gray-900/60"
          role="dialog"
          aria-modal="true"
          aria-labelledby="event-modal-title"
          @click="$wire.closeEvent()">
 
-        <div x-show="$wire.selectedEventId !== null"
-             x-transition:enter="transition ease-out duration-300 delay-75"
-             x-transition:enter-start="opacity-0 translate-y-8 scale-95"
-             x-transition:enter-end="opacity-100 translate-y-0 scale-100"
-             x-transition:leave="transition ease-in duration-200"
-             x-transition:leave-start="opacity-100 translate-y-0 scale-100"
-             x-transition:leave-end="opacity-0 translate-y-8 scale-95"
+        <div :class="$wire.selectedEventId !== null ? 'event-modal-panel flex flex-col' : 'hidden'"
              class="bg-white dark:bg-gray-800 rounded-3xl overflow-hidden w-full max-w-2xl max-h-[90vh]
-                    flex flex-col relative shadow-2xl border border-gray-100 dark:border-gray-700"
+                    relative shadow-2xl border border-gray-100 dark:border-gray-700"
              @click.stop>
 
             @if($this->selectedEvent)
@@ -505,7 +525,7 @@ class extends Component
                         class="absolute top-4 right-4 size-10 rounded-full bg-black/40 hover:bg-black/70 backdrop-blur-md
                                text-white flex items-center justify-center transition-colors z-10
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-95">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                     </svg>
                 </button>
@@ -514,10 +534,11 @@ class extends Component
                     @if($event->image_path)
                         <img src="{{ asset('storage/' . $event->image_path) }}"
                              alt="{{ $event->name }}"
+                             loading="lazy" decoding="async"
                              class="w-full h-full object-cover">
                     @else
                         <div class="w-full h-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center">
-                            <svg class="w-16 h-16 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-16 h-16 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                             </svg>
                         </div>
@@ -530,7 +551,7 @@ class extends Component
                             </span>
                             @if($event->featured)
                                 <span class="px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-amber-500 text-white shadow-sm flex items-center gap-1">
-                                    <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
                                         <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
                                     </svg>
                                     Featured
@@ -544,11 +565,10 @@ class extends Component
                 </div>
 
                 <div class="p-6 md:p-8 space-y-8 overflow-y-auto custom-scrollbar">
-                    {{-- Date & location --}}
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
                         <div class="flex items-start gap-4">
                             <div class="size-12 rounded-2xl bg-primary-50 dark:bg-primary-900/30 border border-primary-100 dark:border-primary-800 flex items-center justify-center shrink-0">
-                                <svg class="w-6 h-6 text-primary-600 dark:text-primary-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6 text-primary-600 dark:text-primary-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                                 </svg>
                             </div>
@@ -572,7 +592,7 @@ class extends Component
 
                         <div class="flex items-start gap-4">
                             <div class="size-12 rounded-2xl bg-primary-50 dark:bg-primary-900/30 border border-primary-100 dark:border-primary-800 flex items-center justify-center shrink-0">
-                                <svg class="w-6 h-6 text-primary-600 dark:text-primary-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6 text-primary-600 dark:text-primary-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
                                 </svg>
@@ -587,7 +607,6 @@ class extends Component
                         </div>
                     </div>
 
-                    {{-- Description --}}
                     <div>
                         <h3 class="text-lg font-bold text-gray-900 dark:text-white mb-3">About this event</h3>
                         <p class="text-gray-600 dark:text-gray-300 leading-relaxed whitespace-pre-line">
@@ -604,10 +623,11 @@ class extends Component
                                     <div class="size-10 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center shrink-0 overflow-hidden">
                                         @if($tenant->logo)
                                             <img src="{{ asset('storage/' . $tenant->logo) }}"
-                                                 class="w-full h-full object-cover"
-                                                 alt="{{ $tenant->name }}">
+                                                 alt="{{ $tenant->name }}"
+                                                 loading="lazy" decoding="async"
+                                                 class="w-full h-full object-cover">
                                         @else
-                                            <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
                                             </svg>
                                         @endif
@@ -624,16 +644,20 @@ class extends Component
                                 </div>
                             @endif
 
+                            {{-- View on Map: pass ?event= so explore-map can
+                                 focus the specific event marker. We intentionally
+                                 drop ?lat=&lng= to avoid showing the user puck
+                                 on top of the event pin. --}}
                             @if($hasMap)
-                                <a href="{{ route('explore.map', ['lat' => $coords['lat'], 'lng' => $coords['lng']]) }}"
+                                <a href="{{ route('explore.map', ['event' => $event->id]) }}"
                                    wire:navigate
-                                   class="w-full sm:w-auto inline-flex items-center justify-center gap-2
-                                          py-3 px-6 rounded-xl bg-gray-900 dark:bg-white
+                                   class="w-full sm:w-auto inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl
+                                          bg-gray-900 dark:bg-white
                                           hover:bg-gray-800 dark:hover:bg-gray-100
-                                          text-white dark:text-gray-900 text-sm font-bold
-                                          transition shadow-sm active:scale-95
-                                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                          text-white dark:text-gray-900 text-sm font-semibold
+                                          transition-all duration-200 shadow-sm active:scale-95
+                                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
                                     </svg>
@@ -647,18 +671,3 @@ class extends Component
         </div>
     </div>
 </div>
-
-<style>
-    .hide-scrollbar::-webkit-scrollbar { display: none; }
-    .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-
-    .custom-scrollbar::-webkit-scrollbar { width: 6px; }
-    .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-    .custom-scrollbar::-webkit-scrollbar-thumb {
-        background-color: #cbd5e1;
-        border-radius: 20px;
-    }
-    .dark .custom-scrollbar::-webkit-scrollbar-thumb {
-        background-color: #475569;
-    }
-</style>

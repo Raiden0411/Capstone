@@ -12,6 +12,7 @@ class BookingReceiptController extends Controller
 {
     public function show(Request $request, $bookingId)
     {
+        /** @var Booking $booking */
         $booking = Booking::withoutGlobalScope(TenantScope::class)->findOrFail($bookingId);
 
         abort_unless(Auth::id() === $booking->user_id, 403);

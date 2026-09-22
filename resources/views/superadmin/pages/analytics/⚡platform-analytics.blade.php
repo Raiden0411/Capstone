@@ -10,7 +10,10 @@ use Illuminate\Support\Facades\DB;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Models\Booking;
+use App\Models\Event;
+use App\Models\TypeOfTenant;
 use App\Scopes\TenantScope;
+use App\Services\SuperadminNotificationService;
 use Carbon\Carbon;
 use Carbon\CarbonPeriod;
 
@@ -62,7 +65,6 @@ class extends Component
                 break;
 
             case 'custom':
-                // Leave dates untouched.
                 break;
         }
     }
@@ -78,12 +80,10 @@ class extends Component
     }
 
     // ─────────────────────────────────────────────────────────
-    //  Computed
+    //  Computed — core stats
     // ─────────────────────────────────────────────────────────
 
-    /**
-     * @return array<string, int>
-     */
+    /** @return array<string, int> */
     #[Computed]
     public function stats(): array
     {
@@ -109,6 +109,13 @@ class extends Component
             ', [$startOfMonth])
             ->first();
 
+        $eventStats = Event::query()
+            ->selectRaw('
+                COUNT(*) as total,
+                COALESCE(SUM(CASE WHEN start_date >= ? AND is_active = 1 THEN 1 ELSE 0 END), 0) as upcoming
+            ', [$now])
+            ->first();
+
         return [
             'total_tenants'        => (int) ($tenantStats?->total ?? 0),
             'active_tenants'       => (int) ($tenantStats?->active ?? 0),
@@ -118,69 +125,153 @@ class extends Component
             'total_users'          => (int) ($userStats?->total ?? 0),
             'active_users'         => (int) ($userStats?->active ?? 0),
             'new_users_this_month' => (int) ($userStats?->new_this_month ?? 0),
+            'total_events'         => (int) ($eventStats?->total ?? 0),
+            'upcoming_events'      => (int) ($eventStats?->upcoming ?? 0),
         ];
     }
 
     /**
-     * @return array{labels: array<int, string>, tenants: array<int, int>, users: array<int, int>, isDaily: bool}
+     * Hero KPI metrics — revenue, bookings, and their deltas vs the
+     * equivalent preceding period. Deltas are null when there is no
+     * baseline (avoids displaying a misleading "+∞%").
+     *
+     * @return array{
+     *     revenue: float, revenue_delta: ?float,
+     *     bookings: int, bookings_delta: ?float,
+     *     period_start: Carbon, period_end: Carbon, period_days: int
+     * }
      */
     #[Computed]
-    public function chartData(): array
+    public function kpiMetrics(): array
     {
         $start = $this->startDate ? Carbon::parse($this->startDate)->startOfDay() : now()->startOfYear();
         $end   = $this->endDate   ? Carbon::parse($this->endDate)->endOfDay()     : now()->endOfYear();
 
-        $isDaily = $start->diffInDays($end) <= 31;
+        $span = max(1, $start->diffInDays($end) + 1);
 
-        $phpFormat   = $isDaily ? 'Y-m-d' : 'Y-m';
-        $sqlFormat   = $isDaily ? '%Y-%m-%d' : '%Y-%m';
-        $labelFormat = $isDaily ? 'M d' : 'M Y';
+        $prevStart = $start->copy()->subDays($span);
+        $prevEnd   = $start->copy()->subSecond();
 
-        $period = CarbonPeriod::create(
-            $isDaily ? $start : $start->copy()->startOfMonth(),
-            $isDaily ? '1 day' : '1 month',
-            $isDaily ? $end   : $end->copy()->endOfMonth(),
-        );
-
-        $labels = [];
-        $keys   = [];
-
-        foreach ($period as $dt) {
-            $keys[]   = $dt->format($phpFormat);
-            $labels[] = $dt->format($labelFormat);
-        }
-
-        $tenantGrowth = Tenant::query()
+        // Current period
+        $revenue = (float) Booking::withoutGlobalScope(TenantScope::class)
             ->whereBetween('created_at', [$start, $end])
-            ->selectRaw("DATE_FORMAT(created_at, '{$sqlFormat}') as period, COUNT(*) as total")
-            ->groupBy('period')
-            ->pluck('total', 'period');
+            ->whereIn('status', [Booking::STATUS_CONFIRMED, Booking::STATUS_COMPLETED])
+            ->sum('total_amount');
 
-        $userGrowth = User::query()
+        $bookings = (int) Booking::withoutGlobalScope(TenantScope::class)
             ->whereBetween('created_at', [$start, $end])
-            ->selectRaw("DATE_FORMAT(created_at, '{$sqlFormat}') as period, COUNT(*) as total")
-            ->groupBy('period')
-            ->pluck('total', 'period');
+            ->count();
 
-        $tenants = [];
-        $users   = [];
+        // Previous period (same length, immediately before)
+        $prevRevenue = (float) Booking::withoutGlobalScope(TenantScope::class)
+            ->whereBetween('created_at', [$prevStart, $prevEnd])
+            ->whereIn('status', [Booking::STATUS_CONFIRMED, Booking::STATUS_COMPLETED])
+            ->sum('total_amount');
 
-        foreach ($keys as $key) {
-            $tenants[] = (int) $tenantGrowth->get($key, 0);
-            $users[]   = (int) $userGrowth->get($key, 0);
-        }
+        $prevBookings = (int) Booking::withoutGlobalScope(TenantScope::class)
+            ->whereBetween('created_at', [$prevStart, $prevEnd])
+            ->count();
 
         return [
-            'labels'  => $labels,
-            'tenants' => $tenants,
-            'users'   => $users,
-            'isDaily' => $isDaily,
+            'revenue'        => $revenue,
+            'revenue_delta'  => $prevRevenue > 0 ? round((($revenue - $prevRevenue) / $prevRevenue) * 100, 1) : null,
+            'bookings'       => $bookings,
+            'bookings_delta' => $prevBookings > 0 ? round((($bookings - $prevBookings) / $prevBookings) * 100, 1) : null,
+            'period_start'   => $start,
+            'period_end'     => $end,
+            'period_days'    => $span,
         ];
     }
 
     /**
-     * @return array{labels: array<int, string>, values: array<int, int>, colors: array<int, string>}
+     * Pending review-queue counts.
+     * Reads cached scalars from SuperadminNotificationService — no new DB cost.
+     *
+     * @return array{applications: int, deletions: int, tenants: int, total: int}
      */
+    #[Computed]
+    public function reviewQueue(): array
+    {
+        $notifications = app(SuperadminNotificationService::class);
+
+        $apps      = $notifications->pendingCount();
+        $deletions = $notifications->deletionRequestCount();
+        $tenants   = (int) Tenant::query()->where('is_active', false)->count();
+
+        return [
+            'applications' => $apps,
+            'deletions'    => $deletions,
+            'tenants'      => $tenants,
+            'total'        => $apps + $deletions + $tenants,
+        ];
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Computed — chart data
+    // ─────────────────────────────────────────────────────────
+
+    /**
+     * @return array{labels: array<int, string>, values: array<int, int|null>}
+     */
+    #[Computed]
+    public function tenantAcquisition(): array
+    {
+        $start = now()->subMonths(5)->startOfMonth();
+        $end   = now()->endOfMonth();
+
+        $labels = [];
+        $values = [];
+
+        $period = CarbonPeriod::create($start, '1 month', $end);
+
+        foreach ($period as $dt) {
+            $mStart = $dt->copy()->startOfMonth();
+            $mEnd   = $dt->copy()->endOfMonth();
+
+            $labels[] = $dt->format('M');
+
+            $count = (int) Tenant::query()
+                ->whereBetween('created_at', [$mStart, $mEnd])
+                ->count();
+
+            $values[] = $count === 0 ? null : $count;
+        }
+
+        return ['labels' => $labels, 'values' => $values];
+    }
+
+    /**
+     * @return array{labels: array<int, string>, values: array<int, int|null>}
+     */
+    #[Computed]
+    public function userGrowth(): array
+    {
+        $start = now()->subMonths(5)->startOfMonth();
+        $end   = now()->endOfMonth();
+
+        $labels = [];
+        $values = [];
+
+        $period = CarbonPeriod::create($start, '1 month', $end);
+
+        foreach ($period as $dt) {
+            $mStart = $dt->copy()->startOfMonth();
+            $mEnd   = $dt->copy()->endOfMonth();
+
+            $labels[] = $dt->format('M');
+
+            $count = (int) User::query()
+                ->whereDoesntHave('roles', fn ($q) => $q->where('name', 'super-admin'))
+                ->whereBetween('created_at', [$mStart, $mEnd])
+                ->count();
+
+            $values[] = $count === 0 ? null : $count;
+        }
+
+        return ['labels' => $labels, 'values' => $values];
+    }
+
+    /** @return array{labels: array<int, string>, values: array<int, int>, colors: array<int, string>} */
     #[Computed]
     public function tenantStatusData(): array
     {
@@ -194,9 +285,11 @@ class extends Component
     }
 
     /**
-     * Top 3 most-booked tourist spots — the "Top Picks" chart.
-     *
-     * @return array{labels: array<int, string>, values: array<int, int>, colors: array<int, string>}
+     * @return array{
+     *     labels: array<int, string>,
+     *     values: array<int, int>,
+     *     colors: array<int, string>
+     * }
      */
     #[Computed]
     public function topSpotsData(): array
@@ -216,14 +309,48 @@ class extends Component
             )
             ->groupBy('tenants.id', 'tenants.name')
             ->orderByDesc('total_bookings')
-            ->limit(3)
+            ->limit(5)
             ->get();
+
+        $ramp = ['#1e3a8a', '#2563eb', '#3b82f6', '#60a5fa', '#93c5fd'];
 
         return [
             'labels' => $topSpots->pluck('name')->all(),
             'values' => $topSpots->pluck('total_bookings')->map(fn ($v) => (int) $v)->all(),
-            // Gold / silver / bronze — reinforces the podium feel for 3 bars.
-            'colors' => ['#f59e0b', '#94a3b8', '#b45309'],
+            'colors' => array_slice($ramp, 0, $topSpots->count()),
+        ];
+    }
+
+    /**
+     * @return array{
+     *     labels: array<int, string>,
+     *     values: array<int, int>,
+     *     colors: array<int, string>
+     * }
+     */
+    #[Computed]
+    public function categoryDistribution(): array
+    {
+        $types = TypeOfTenant::query()
+            ->withCount('tenants')
+            ->having('tenants_count', '>', 0)
+            ->orderByDesc('tenants_count')
+            ->limit(6)
+            ->get();
+
+        $palette = [
+            'rgba(16, 185, 129, 0.75)',
+            'rgba(59, 130, 246, 0.75)',
+            'rgba(139, 92, 246, 0.75)',
+            'rgba(245, 158, 11, 0.75)',
+            'rgba(244, 63, 94, 0.75)',
+            'rgba(100, 116, 139, 0.75)',
+        ];
+
+        return [
+            'labels' => $types->pluck('type')->all(),
+            'values' => $types->pluck('tenants_count')->map(fn ($v) => (int) $v)->all(),
+            'colors' => array_slice($palette, 0, $types->count()),
         ];
     }
 
@@ -239,321 +366,853 @@ class extends Component
         return (int) round(($stats['active_tenants'] / $stats['total_tenants']) * 100);
     }
 
-    public function exportCsv()
+    public function exportCsv(): void
     {
         abort_unless(Auth::user()?->hasRole('super-admin'), 403);
 
-        $data     = $this->chartData;
-        $filename = 'platform-analytics-' . now()->format('Y-m-d-His') . '.csv';
+        $url = route('superadmin.analytics.export', array_filter([
+            'start' => $this->startDate,
+            'end'   => $this->endDate,
+        ]));
 
-        return response()->streamDownload(function () use ($data): void {
-            $out = fopen('php://output', 'w');
-            fputcsv($out, ['Period', 'New Tenants', 'New Users']);
-
-            foreach ($data['labels'] as $i => $label) {
-                fputcsv($out, [$label, $data['tenants'][$i], $data['users'][$i]]);
-            }
-
-            fclose($out);
-        }, $filename, ['Content-Type' => 'text/csv']);
+        $this->dispatch('open-url', url: $url);
     }
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto space-y-8" wire:poll.60s>
+@php
+    $s           = $this->stats;
+    $kpi         = $this->kpiMetrics;
+    $rq          = $this->reviewQueue;
+    $tenantAcq   = $this->tenantAcquisition;
+    $userGrowth  = $this->userGrowth;
+    $topSpots    = $this->topSpotsData;
+    $categories  = $this->categoryDistribution;
+    $statusData  = $this->tenantStatusData;
 
+    $revenueDelta  = $kpi['revenue_delta'];
+    $bookingsDelta = $kpi['bookings_delta'];
+
+    // Empty-state detection — if the source has no data, skip the chart
+    // canvas and render a placeholder instead.
+    $tenantAcqHasData   = !empty(array_filter($tenantAcq['values'],  fn ($v) => $v !== null));
+    $userGrowthHasData  = !empty(array_filter($userGrowth['values'], fn ($v) => $v !== null));
+    $statusHasData      = array_sum($statusData['values']) > 0;
+    $categoriesHasData  = !empty($categories['labels']);
+    $topSpotsHasData    = !empty($topSpots['labels']);
+@endphp
+
+@push('scripts')
+    @once
+        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
+    @endonce
+@endpush
+
+<div class="analytics-page p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-4 sm:space-y-6" wire:poll.60s>
+
+    {{-- ═══ Hidden data bridge for charts ═══ --}}
     <div id="analytics-data"
-         data-chart="{{ json_encode($this->chartData, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
-         data-status="{{ json_encode($this->tenantStatusData, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
-         data-topspots="{{ json_encode($this->topSpotsData, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
+         data-tenant-acq="{{ json_encode($tenantAcq, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
+         data-user-growth="{{ json_encode($userGrowth, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
+         data-status="{{ json_encode($statusData, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
+         data-topspots="{{ json_encode($topSpots, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
+         data-categories="{{ json_encode($categories, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
+         data-review="{{ json_encode($rq, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
          hidden
          aria-hidden="true"></div>
 
-    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 pb-2 border-b border-gray-200/80 dark:border-gray-800">
-        <div>
-            <div class="flex items-center gap-2">
-                <h1 class="text-2xl sm:text-3xl font-extrabold tracking-tight text-gray-900 dark:text-white">
-                    Platform Analytics
-                </h1>
-                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider
-                             bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-400
-                             border border-emerald-200 dark:border-emerald-800">
-                    <span class="w-1.5 h-1.5 mr-1.5 rounded-full bg-emerald-500 animate-pulse motion-reduce:animate-none"></span>
-                    Live · 60s
+    {{-- ═══ Page header ═══ --}}
+    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6">
+        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
+
+            {{-- Left: brand block --}}
+            <div class="flex items-center gap-4 min-w-0">
+                <div class="hidden sm:flex w-12 h-12 rounded-xl bg-primary-600 text-white items-center justify-center shrink-0 shadow-md shadow-primary-500/30">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M3 21h18M5 21V8l7-5 7 5v13M9 21v-5h6v5M9 11h.01M15 11h.01"/>
+                    </svg>
+                </div>
+                <div class="min-w-0">
+                    <div class="flex items-center gap-2 mb-1">
+                        <span class="w-5 h-px bg-primary-600"></span>
+                        <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Platform</span>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <h1 class="font-display text-2xl sm:text-3xl font-semibold text-gray-900 dark:text-white tracking-tight leading-tight">
+                            Analytics <em class="italic text-primary-600 dark:text-primary-400">Dashboard</em>
+                        </h1>
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider
+                                     bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300
+                                     border border-emerald-200 dark:border-emerald-500/30">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse motion-reduce:animate-none"></span>
+                            Live · 60s
+                        </span>
+                    </div>
+                    <p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1">
+                        Platform-wide tourism metrics, onboarding growth, and usage overview.
+                    </p>
+                </div>
+            </div>
+
+            {{-- Right: period + actions --}}
+            <div class="flex flex-wrap items-center gap-2 shrink-0 no-print">
+
+                {{-- Period segmented control --}}
+                <div class="inline-flex items-center gap-0.5 p-1 bg-gray-100 dark:bg-gray-900/60 rounded-xl border border-gray-200/70 dark:border-gray-700/70 max-w-full overflow-x-auto">
+                    @foreach([
+                        'today'      => 'Today',
+                        '7d'         => '7D',
+                        '30d'        => '30D',
+                        'this_month' => 'Month',
+                        'this_year'  => 'Year',
+                        'custom'     => 'Custom',
+                    ] as $val => $label)
+                        @php $isActive = $preset === $val; @endphp
+                        <button type="button"
+                                wire:key="preset-{{ $val }}"
+                                wire:click="applyPreset('{{ $val }}')"
+                                aria-pressed="{{ $isActive ? 'true' : 'false' }}"
+                                class="inline-flex items-center justify-center h-9 px-3 rounded-lg text-xs font-semibold whitespace-nowrap
+                                       transition-all duration-150 active:scale-95
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                                       {{ $isActive
+                                          ? 'bg-white dark:bg-gray-700 text-primary-600 dark:text-primary-300 shadow-sm border border-gray-200/60 dark:border-gray-600'
+                                          : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white border border-transparent' }}">
+                            {{ $label }}
+                        </button>
+                    @endforeach
+                </div>
+
+                {{-- Refresh --}}
+                <button type="button"
+                        wire:click="$refresh"
+                        wire:loading.attr="disabled"
+                        wire:target="$refresh"
+                        aria-label="Refresh analytics data"
+                        class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                               transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                               disabled:opacity-60 disabled:cursor-not-allowed">
+                    <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h5M4 9a9 9 0 0014.5 4.5M20 20v-5h-5M20 15a9 9 0 00-14.5-4.5"/>
+                    </svg>
+                    <span class="hidden sm:inline">Refresh</span>
+                </button>
+
+                {{-- Export --}}
+                <button type="button"
+                        wire:click="exportCsv"
+                        wire:loading.attr="disabled"
+                        wire:target="exportCsv"
+                        class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                               transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                               disabled:opacity-60 disabled:cursor-not-allowed">
+                    <span wire:loading.remove wire:target="exportCsv" class="inline-flex items-center gap-2">
+                        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                        </svg>
+                        <span class="hidden sm:inline">Export</span>
+                    </span>
+                    <span wire:loading wire:target="exportCsv" class="inline-flex items-center gap-2">
+                        <svg class="animate-spin h-4 w-4 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                        </svg>
+                        <span class="hidden sm:inline">Preparing…</span>
+                    </span>
+                </button>
+
+                {{-- Print --}}
+                <button type="button"
+                        onclick="window.print()"
+                        aria-label="Print analytics report"
+                        class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                               transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                    <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2m-6-4h.01M6 18v4h12v-4"/>
+                    </svg>
+                    <span class="hidden sm:inline">Print</span>
+                </button>
+            </div>
+        </div>
+
+        {{-- Custom date range row — only when Custom is active --}}
+        @if($preset === 'custom')
+            <div class="flex flex-wrap items-center gap-3 mt-4 pt-4 border-t border-gray-100 dark:border-gray-700/60 no-print">
+                <div class="flex items-center gap-2">
+                    <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Custom range</span>
+                </div>
+                <input type="date"
+                       wire:model.live="startDate"
+                       aria-label="Start date"
+                       class="h-11 px-3 text-sm font-medium bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded-xl
+                              focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:border-primary-500">
+                <span class="text-gray-400 dark:text-gray-500 text-xs font-medium">to</span>
+                <input type="date"
+                       wire:model.live="endDate"
+                       aria-label="End date"
+                       class="h-11 px-3 text-sm font-medium bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded-xl
+                              focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:border-primary-500">
+                <span class="ml-auto text-[11px] text-gray-500 dark:text-gray-400 tabular-nums">
+                    {{ $kpi['period_start']->format('M j, Y') }} – {{ $kpi['period_end']->format('M j, Y') }}
+                    · {{ $kpi['period_days'] }} day{{ $kpi['period_days'] === 1 ? '' : 's' }}
                 </span>
             </div>
-            <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                Real-time system metrics, onboarding growth, and usage overview.
+        @endif
+    </div>
+
+    {{-- ═══ Hero KPI cards ═══ --}}
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+
+        {{-- 1: Platform Revenue --}}
+        <div class="bg-white dark:bg-gray-800/90 p-5 sm:p-6 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm hover:shadow-md transition-shadow duration-200 group">
+            <div class="flex justify-between items-start mb-4">
+                <div class="w-12 h-12 bg-emerald-50 dark:bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform duration-200">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+                    </svg>
+                </div>
+                @if($revenueDelta !== null)
+                    @php $positive = $revenueDelta >= 0; @endphp
+                    <span class="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider rounded-full inline-flex items-center gap-1 tabular-nums
+                                 {{ $positive
+                                    ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'
+                                    : 'bg-rose-50 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300' }}">
+                        <svg class="w-2.5 h-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            @if($positive)
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+                            @else
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M13 17h8m0 0v-8m0 8l-8-8-4 4-6-6"/>
+                            @endif
+                        </svg>
+                        {{ abs($revenueDelta) }}%
+                    </span>
+                @else
+                    <span class="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider rounded-full
+                                 bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+                        No baseline
+                    </span>
+                @endif
+            </div>
+            <h3 class="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
+                Platform Revenue
+            </h3>
+            <div class="text-3xl font-bold text-gray-900 dark:text-white tabular-nums leading-none">
+                ₱{{ number_format($kpi['revenue'], 0) }}
+            </div>
+            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-2">
+                Confirmed + completed bookings
             </p>
         </div>
 
-        <div class="flex items-center gap-3">
-            <button type="button" wire:click="exportCsv"
-                    wire:loading.attr="disabled"
-                    wire:target="exportCsv"
-                    class="btn-secondary text-sm active:scale-95 transition-transform
-                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                           inline-flex items-center gap-2 disabled:opacity-60">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-                </svg>
-                <span wire:loading.remove wire:target="exportCsv">Export CSV</span>
-                <span wire:loading wire:target="exportCsv" class="inline-flex items-center gap-1.5">
-                    <svg class="animate-spin h-4 w-4 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
-                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+        {{-- 2: Total Bookings --}}
+        <div class="bg-white dark:bg-gray-800/90 p-5 sm:p-6 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm hover:shadow-md transition-shadow duration-200 group">
+            <div class="flex justify-between items-start mb-4">
+                <div class="w-12 h-12 bg-blue-50 dark:bg-blue-500/15 text-blue-600 dark:text-blue-400 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform duration-200">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
                     </svg>
-                    Exporting…
-                </span>
-            </button>
+                </div>
+                @if($bookingsDelta !== null)
+                    @php $positive = $bookingsDelta >= 0; @endphp
+                    <span class="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider rounded-full inline-flex items-center gap-1 tabular-nums
+                                 {{ $positive
+                                    ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'
+                                    : 'bg-rose-50 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300' }}">
+                        <svg class="w-2.5 h-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            @if($positive)
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+                            @else
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M13 17h8m0 0v-8m0 8l-8-8-4 4-6-6"/>
+                            @endif
+                        </svg>
+                        {{ abs($bookingsDelta) }}%
+                    </span>
+                @else
+                    <span class="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider rounded-full
+                                 bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+                        No baseline
+                    </span>
+                @endif
+            </div>
+            <h3 class="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
+                Total Bookings
+            </h3>
+            <div class="text-3xl font-bold text-gray-900 dark:text-white tabular-nums leading-none">
+                {{ number_format($kpi['bookings']) }}
+            </div>
+            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-2">
+                Created this period
+            </p>
+        </div>
 
-            <button type="button" onclick="window.print()"
-                    class="btn-secondary text-sm active:scale-95 transition-transform
-                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                           inline-flex items-center gap-2">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2m-6-4h.01M6 18v4h12v-4"/>
-                </svg>
-                Print
-            </button>
+        {{-- 3: Active Tenants --}}
+        <div class="bg-white dark:bg-gray-800/90 p-5 sm:p-6 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm hover:shadow-md transition-shadow duration-200 group">
+            <div class="flex justify-between items-start mb-4">
+                <div class="w-12 h-12 bg-purple-50 dark:bg-purple-500/15 text-purple-600 dark:text-purple-400 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform duration-200">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
+                    </svg>
+                </div>
+                @php
+                    $tenantStatus = $s['pending_tenants'] > 0 ? 'Needs review' : 'Stable';
+                    $tenantBadge = $s['pending_tenants'] > 0
+                        ? 'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300'
+                        : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300';
+                @endphp
+                <span class="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider rounded-full {{ $tenantBadge }}">
+                    {{ $tenantStatus }}
+                </span>
+            </div>
+            <h3 class="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
+                Active Tourist Spots
+            </h3>
+            <div class="text-3xl font-bold text-gray-900 dark:text-white tabular-nums leading-none">
+                {{ number_format($s['active_tenants']) }}
+                <span class="text-sm text-gray-400 dark:text-gray-500 font-medium ml-1">
+                    / {{ number_format($s['total_tenants']) }}
+                </span>
+            </div>
+            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-2">
+                {{ number_format($s['total_users']) }} users · {{ number_format($s['total_events']) }} events
+            </p>
+        </div>
+
+        {{-- 4: Pending Approvals — Action Required --}}
+        @if($rq['total'] > 0)
+            <a href="{{ route('superadmin.business-applications.index') }}" wire:navigate
+               aria-label="Review pending approvals"
+               class="bg-amber-50/70 dark:bg-amber-500/[0.08] p-5 sm:p-6 rounded-2xl border border-amber-300 dark:border-amber-500/40 shadow-sm hover:shadow-md transition-all duration-200 group
+                      active:scale-[0.99]
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                <div class="flex justify-between items-start mb-4">
+                    <div class="w-12 h-12 bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform duration-200">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z"/>
+                        </svg>
+                    </div>
+                    <span class="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider rounded-full
+                                 bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300
+                                 inline-flex items-center gap-1">
+                        <span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse motion-reduce:animate-none"></span>
+                        Action Required
+                    </span>
+                </div>
+                <h3 class="text-xs font-bold uppercase tracking-wider text-amber-800 dark:text-amber-300 mb-1">
+                    Pending Approvals
+                </h3>
+                <div class="text-3xl font-bold text-amber-900 dark:text-amber-200 tabular-nums leading-none">
+                    {{ $rq['total'] }}
+                </div>
+                <p class="text-[11px] text-amber-700 dark:text-amber-300/80 mt-2">
+                    {{ $rq['applications'] }} KYB · {{ $rq['deletions'] }} deletion · {{ $rq['tenants'] }} tenant
+                </p>
+            </a>
+        @else
+            <div class="bg-white dark:bg-gray-800/90 p-5 sm:p-6 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm">
+                <div class="flex justify-between items-start mb-4">
+                    <div class="w-12 h-12 bg-emerald-50 dark:bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 rounded-xl flex items-center justify-center">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M5 13l4 4L19 7"/>
+                        </svg>
+                    </div>
+                    <span class="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider rounded-full
+                                 bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">
+                        All Clear
+                    </span>
+                </div>
+                <h3 class="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
+                    Pending Approvals
+                </h3>
+                <div class="text-3xl font-bold text-gray-900 dark:text-white tabular-nums leading-none">
+                    0
+                </div>
+                <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-2">
+                    Nothing in the review queue
+                </p>
+            </div>
+        @endif
+    </div>
+
+    {{-- ═══ Review queue — chart + tiles (only when there's work) ═══ --}}
+    @if($rq['total'] > 0)
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm overflow-hidden">
+            <div class="px-5 py-4 border-b border-gray-100 dark:border-gray-700/60 flex items-center justify-between gap-3">
+                <div class="flex items-center gap-3">
+                    <span class="w-5 h-px bg-amber-500"></span>
+                    <div>
+                        <h2 class="text-sm font-bold text-gray-900 dark:text-white">Review Queue</h2>
+                        <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">Workload distribution across pending reviews.</p>
+                    </div>
+                </div>
+                <span class="inline-flex items-center gap-1.5 h-6 px-2.5 rounded-full text-[10px] font-bold uppercase tracking-wider
+                             bg-amber-100 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300
+                             border border-amber-200 dark:border-amber-500/30 tabular-nums shrink-0">
+                    <span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse motion-reduce:animate-none" aria-hidden="true"></span>
+                    {{ $rq['total'] }} pending
+                </span>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-0 divide-y lg:divide-y-0 lg:divide-x divide-gray-100 dark:divide-gray-700/60">
+
+                <div class="p-5">
+                    <div class="w-full h-40 sm:h-44 relative" wire:ignore>
+                        <canvas id="reviewChart"
+                                role="img"
+                                aria-label="Bar chart: pending reviews by category"></canvas>
+                    </div>
+                </div>
+
+                <div class="p-5 space-y-2">
+                    <a href="{{ route('superadmin.business-applications.index') }}" wire:navigate
+                       class="group flex items-center gap-3 p-3 rounded-xl border transition-all duration-200 active:scale-[0.98]
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50
+                              {{ $rq['applications'] > 0
+                                 ? 'border-amber-200 dark:border-amber-500/40 bg-amber-50/70 dark:bg-amber-500/[0.06] hover:bg-amber-100 dark:hover:bg-amber-500/[0.12]'
+                                 : 'border-gray-200/80 dark:border-gray-700/60 bg-gray-50 dark:bg-gray-900/40 hover:border-amber-300 dark:hover:border-amber-500/40' }}">
+                        <span class="w-7 h-7 rounded-lg shrink-0 flex items-center justify-center
+                                     {{ $rq['applications'] > 0 ? 'bg-amber-500 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400' }}">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                            </svg>
+                        </span>
+                        <div class="flex-1 min-w-0">
+                            <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">KYB Applications</p>
+                            <p class="text-base font-bold text-gray-900 dark:text-white tabular-nums leading-none mt-0.5">{{ $rq['applications'] }}</p>
+                        </div>
+                        <svg class="w-3.5 h-3.5 shrink-0 text-gray-400 group-hover:text-amber-500 transition-transform duration-200 group-hover:translate-x-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                        </svg>
+                    </a>
+
+                    <a href="{{ route('superadmin.deletion-requests.index') }}" wire:navigate
+                       class="group flex items-center gap-3 p-3 rounded-xl border transition-all duration-200 active:scale-[0.98]
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
+                              {{ $rq['deletions'] > 0
+                                 ? 'border-rose-200 dark:border-rose-500/40 bg-rose-50/70 dark:bg-rose-500/[0.06] hover:bg-rose-100 dark:hover:bg-rose-500/[0.12]'
+                                 : 'border-gray-200/80 dark:border-gray-700/60 bg-gray-50 dark:bg-gray-900/40 hover:border-rose-300 dark:hover:border-rose-500/40' }}">
+                        <span class="w-7 h-7 rounded-lg shrink-0 flex items-center justify-center
+                                     {{ $rq['deletions'] > 0 ? 'bg-rose-500 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400' }}">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                            </svg>
+                        </span>
+                        <div class="flex-1 min-w-0">
+                            <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Deletion Requests</p>
+                            <p class="text-base font-bold text-gray-900 dark:text-white tabular-nums leading-none mt-0.5">{{ $rq['deletions'] }}</p>
+                        </div>
+                        <svg class="w-3.5 h-3.5 shrink-0 text-gray-400 group-hover:text-rose-500 transition-transform duration-200 group-hover:translate-x-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                        </svg>
+                    </a>
+
+                    <a href="{{ route('superadmin.tenants.index') }}" wire:navigate
+                       class="group flex items-center gap-3 p-3 rounded-xl border transition-all duration-200 active:scale-[0.98]
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                              {{ $rq['tenants'] > 0
+                                 ? 'border-primary-200 dark:border-primary-500/40 bg-primary-50/70 dark:bg-primary-500/[0.06] hover:bg-primary-100 dark:hover:bg-primary-500/[0.12]'
+                                 : 'border-gray-200/80 dark:border-gray-700/60 bg-gray-50 dark:bg-gray-900/40 hover:border-primary-300 dark:hover:border-primary-500/40' }}">
+                        <span class="w-7 h-7 rounded-lg shrink-0 flex items-center justify-center
+                                     {{ $rq['tenants'] > 0 ? 'bg-primary-600 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400' }}">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
+                            </svg>
+                        </span>
+                        <div class="flex-1 min-w-0">
+                            <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Pending Tenants</p>
+                            <p class="text-base font-bold text-gray-900 dark:text-white tabular-nums leading-none mt-0.5">{{ $rq['tenants'] }}</p>
+                        </div>
+                        <svg class="w-3.5 h-3.5 shrink-0 text-gray-400 group-hover:text-primary-500 transition-transform duration-200 group-hover:translate-x-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                        </svg>
+                    </a>
+                </div>
+            </div>
+        </div>
+    @endif
+
+    {{-- ═══ Row 1 — Tenant Acquisition (2/3) + Tenant Distribution (1/3) ═══ --}}
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+        {{-- Tenant Acquisition --}}
+        <div class="lg:col-span-2 bg-white dark:bg-gray-800/90 p-5 sm:p-6 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm">
+            <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 mb-5">
+                <div class="min-w-0">
+                    <div class="flex items-center gap-2">
+                        <span class="w-4 h-px bg-primary-600"></span>
+                        <h2 class="text-base font-bold text-gray-900 dark:text-white">Tenant Acquisition</h2>
+                    </div>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">New registered tenants per month over the last 6 months.</p>
+                </div>
+                <div class="flex items-center gap-2 text-xs font-semibold text-purple-600 dark:text-purple-400 shrink-0">
+                    <span class="w-2.5 h-2.5 rounded-sm bg-purple-500" aria-hidden="true"></span>
+                    New Tenants
+                </div>
+            </div>
+
+            @if($tenantAcqHasData)
+                <div class="w-full h-56 sm:h-64 relative" wire:ignore>
+                    <canvas id="tenantAcqChart"
+                            role="img"
+                            aria-label="Bar chart: new tenants per month over the last 6 months"></canvas>
+                </div>
+            @else
+                <div class="w-full h-56 sm:h-64 flex flex-col items-center justify-center text-center rounded-xl border border-dashed border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40">
+                    <div class="p-3 rounded-2xl bg-white dark:bg-gray-800 text-gray-400 dark:text-gray-500 shadow-sm">
+                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                        </svg>
+                    </div>
+                    <p class="mt-3 text-sm font-semibold text-gray-900 dark:text-white">No new tenants yet</p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Data appears here as new businesses register on the platform.</p>
+                </div>
+            @endif
+        </div>
+
+        {{-- Tenant Distribution --}}
+        <div class="bg-white dark:bg-gray-800/90 p-5 sm:p-6 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm flex flex-col">
+            <div>
+                <div class="flex items-center gap-2">
+                    <span class="w-4 h-px bg-primary-600"></span>
+                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Tenant Distribution</h2>
+                </div>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Active vs pending tenant accounts.</p>
+            </div>
+
+            @if($statusHasData)
+                <div class="relative flex-1 min-h-[200px] sm:min-h-[220px] flex justify-center items-center mt-3" wire:ignore>
+                    <canvas id="statusChart"
+                            role="img"
+                            aria-label="Doughnut chart: active versus pending tenant distribution"></canvas>
+                    <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                        <span class="text-4xl font-bold text-gray-900 dark:text-white tabular-nums leading-none">{{ $this->activeRate }}%</span>
+                        <span class="mt-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-gray-500 dark:text-gray-400">Active Rate</span>
+                    </div>
+                </div>
+            @else
+                <div class="flex-1 min-h-[200px] sm:min-h-[220px] mt-3 flex flex-col items-center justify-center text-center rounded-xl border border-dashed border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40">
+                    <div class="p-3 rounded-2xl bg-white dark:bg-gray-800 text-gray-400 dark:text-gray-500 shadow-sm">
+                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle cx="12" cy="12" r="9" stroke-width="2"/>
+                            <path d="M12 3v9h9" stroke-width="2"/>
+                        </svg>
+                    </div>
+                    <p class="mt-3 text-sm font-semibold text-gray-900 dark:text-white">No tenants yet</p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Distribution appears once businesses are live.</p>
+                </div>
+            @endif
+
+            <div class="flex items-center justify-center gap-6 mt-4 pt-4 border-t border-gray-100 dark:border-gray-700/60">
+                <div class="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-gray-600 dark:text-gray-300">
+                    <span class="w-2.5 h-2.5 rounded-full bg-emerald-500" aria-hidden="true"></span>
+                    Active
+                </div>
+                <div class="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-gray-600 dark:text-gray-300">
+                    <span class="w-2.5 h-2.5 rounded-full bg-amber-500" aria-hidden="true"></span>
+                    Pending
+                </div>
+            </div>
         </div>
     </div>
 
-    <div class="p-2.5 bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm">
-        <div class="flex flex-wrap items-center justify-between gap-3">
-            <div class="flex items-center gap-1.5 overflow-x-auto p-1 bg-gray-100/80 dark:bg-gray-900/60 rounded-xl border border-gray-200/50 dark:border-gray-800">
-                @foreach([
-                    'today' => 'Today',
-                    '7d' => '7 Days',
-                    '30d' => '30 Days',
-                    'this_month' => 'This Month',
-                    'this_year' => 'This Year',
-                ] as $val => $label)
-                    <button type="button"
-                            wire:key="preset-{{ $val }}"
-                            wire:click="applyPreset('{{ $val }}')"
-                            class="px-3.5 py-1.5 rounded-lg text-xs font-semibold tracking-wide whitespace-nowrap
-                                   transition-all duration-150 active:scale-95
-                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                                   {{ $preset === $val
-                                      ? 'bg-white dark:bg-gray-800 text-primary-600 dark:text-primary-400 shadow-sm border border-gray-200/60 dark:border-gray-700'
-                                      : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white' }}">
-                        {{ $label }}
-                    </button>
-                @endforeach
+    {{-- ═══ Row 2 — User Growth (2/3) + Attraction Categories (1/3) ═══ --}}
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
-                <button type="button" wire:click="applyPreset('custom')"
-                        wire:key="preset-custom"
-                        class="px-3.5 py-1.5 rounded-lg text-xs font-semibold tracking-wide whitespace-nowrap
-                               transition-all duration-150 active:scale-95
-                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                               {{ $preset === 'custom'
-                                  ? 'bg-white dark:bg-gray-800 text-primary-600 dark:text-primary-400 shadow-sm border border-gray-200/60 dark:border-gray-700'
-                                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white' }}">
-                    Custom Range
-                </button>
+        {{-- User Growth --}}
+        <div class="lg:col-span-2 bg-white dark:bg-gray-800/90 p-5 sm:p-6 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm">
+            <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 mb-5">
+                <div class="min-w-0">
+                    <div class="flex items-center gap-2">
+                        <span class="w-4 h-px bg-primary-600"></span>
+                        <h2 class="text-base font-bold text-gray-900 dark:text-white">User Growth</h2>
+                    </div>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Platform end-user registrations per month over the last 6 months.</p>
+                </div>
+                <div class="flex items-center gap-2 text-xs font-semibold text-blue-600 dark:text-blue-400 shrink-0">
+                    <span class="w-2.5 h-2.5 rounded-sm bg-blue-500" aria-hidden="true"></span>
+                    New Users
+                </div>
             </div>
 
-            @if($preset === 'custom')
-                <div class="flex items-center gap-2 px-2">
-                    <input type="date" wire:model.live="startDate"
-                           class="px-3 py-1.5 text-xs font-medium bg-gray-50 dark:bg-gray-900
-                                  text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700
-                                  rounded-lg focus:ring-2 focus:ring-primary-500 focus:outline-none">
-                    <span class="text-gray-400 text-xs font-medium">to</span>
-                    <input type="date" wire:model.live="endDate"
-                           class="px-3 py-1.5 text-xs font-medium bg-gray-50 dark:bg-gray-900
-                                  text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700
-                                  rounded-lg focus:ring-2 focus:ring-primary-500 focus:outline-none">
+            @if($userGrowthHasData)
+                <div class="w-full h-56 sm:h-64 relative" wire:ignore>
+                    <canvas id="userGrowthChart"
+                            role="img"
+                            aria-label="Bar chart: new end-user registrations per month over the last 6 months"></canvas>
+                </div>
+            @else
+                <div class="w-full h-56 sm:h-64 flex flex-col items-center justify-center text-center rounded-xl border border-dashed border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40">
+                    <div class="p-3 rounded-2xl bg-white dark:bg-gray-800 text-gray-400 dark:text-gray-500 shadow-sm">
+                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+                        </svg>
+                    </div>
+                    <p class="mt-3 text-sm font-semibold text-gray-900 dark:text-white">No user registrations yet</p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Data appears as users sign up for the platform.</p>
+                </div>
+            @endif
+        </div>
+
+        {{-- Attraction Categories --}}
+        <div class="bg-white dark:bg-gray-800/90 p-5 sm:p-6 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm">
+            <div>
+                <div class="flex items-center gap-2">
+                    <span class="w-4 h-px bg-primary-600"></span>
+                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Attraction Categories</h2>
+                </div>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Distribution of tenants by business type.</p>
+            </div>
+
+            @if($categoriesHasData)
+                <div class="h-56 sm:h-64 relative w-full mt-3 flex justify-center items-center" wire:ignore>
+                    <canvas id="categoriesChart"
+                            role="img"
+                            aria-label="Polar area chart: tenant distribution by business category"></canvas>
+                </div>
+            @else
+                <div class="h-56 sm:h-64 mt-3 flex flex-col items-center justify-center text-center rounded-xl border border-dashed border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40">
+                    <div class="p-3 rounded-2xl bg-white dark:bg-gray-800 text-gray-400 dark:text-gray-500 shadow-sm">
+                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l5 5a2 2 0 01.586 1.414V19a2 2 0 01-2 2H7a2 2 0 01-2-2V5a2 2 0 012-2z"/>
+                        </svg>
+                    </div>
+                    <p class="mt-3 text-sm font-semibold text-gray-900 dark:text-white">No categories yet</p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Category breakdown appears when tenants are assigned types.</p>
                 </div>
             @endif
         </div>
     </div>
 
-    @php $s = $this->stats; @endphp
-    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-        @php
-            $kpi = [
-                [
-                    'label' => 'Total Tenants',
-                    'value' => $s['total_tenants'],
-                    'sub'   => $s['active_tenants'] . ' active',
-                    'sub_color' => 'text-emerald-600 dark:text-emerald-400',
-                    'icon_bg' => 'bg-primary-50 dark:bg-primary-950/50',
-                    'icon_color' => 'text-primary-600 dark:text-primary-400',
-                    'icon' => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>',
-                ],
-                [
-                    'label' => 'Active',
-                    'value' => $s['active_tenants'],
-                    'sub'   => 'Operational',
-                    'sub_color' => 'text-gray-500 dark:text-gray-400',
-                    'icon_bg' => 'bg-emerald-50 dark:bg-emerald-950/50',
-                    'icon_color' => 'text-emerald-600 dark:text-emerald-400',
-                    'icon' => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>',
-                ],
-                [
-                    'label' => 'Pending',
-                    'value' => $s['pending_tenants'],
-                    'sub'   => 'Awaiting action',
-                    'sub_color' => 'text-gray-500 dark:text-gray-400',
-                    'icon_bg' => 'bg-amber-50 dark:bg-amber-950/50',
-                    'icon_color' => 'text-amber-600 dark:text-amber-400',
-                    'icon' => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>',
-                    'value_color' => 'text-amber-600 dark:text-amber-400',
-                ],
-                [
-                    'label' => 'Total Users',
-                    'value' => $s['total_users'],
-                    'sub'   => $s['active_users'] . ' active',
-                    'sub_color' => 'text-emerald-600 dark:text-emerald-400',
-                    'icon_bg' => 'bg-indigo-50 dark:bg-indigo-950/50',
-                    'icon_color' => 'text-indigo-600 dark:text-indigo-400',
-                    'icon' => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>',
-                ],
-                [
-                    'label' => 'New (Month)',
-                    'value' => $s['new_this_month'],
-                    'sub'   => $s['new_users_this_month'] . ' new users',
-                    'sub_color' => 'text-gray-500 dark:text-gray-400',
-                    'icon_bg' => 'bg-sky-50 dark:bg-sky-950/50',
-                    'icon_color' => 'text-sky-600 dark:text-sky-400',
-                    'icon' => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>',
-                ],
-                [
-                    'label' => 'New (Week)',
-                    'value' => $s['new_this_week'],
-                    'sub'   => 'Onboarded',
-                    'sub_color' => 'text-gray-500 dark:text-gray-400',
-                    'icon_bg' => 'bg-purple-50 dark:bg-purple-950/50',
-                    'icon_color' => 'text-purple-600 dark:text-purple-400',
-                    'icon' => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>',
-                ],
-            ];
-        @endphp
-        @foreach($kpi as $i => $card)
-            <div wire:key="kpi-{{ $i }}"
-                 class="bg-white dark:bg-gray-800/90 p-5 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm
-                        hover:shadow-md transition-shadow duration-200">
-                <div class="flex items-center justify-between">
-                    <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">{{ $card['label'] }}</p>
-                    <div class="p-2 {{ $card['icon_bg'] }} rounded-xl {{ $card['icon_color'] }}">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                            {!! $card['icon'] !!}
-                        </svg>
-                    </div>
+    {{-- ═══ Row 3 — Top Performing Spots ═══ --}}
+    <div class="bg-white dark:bg-gray-800/90 p-5 sm:p-6 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm">
+        <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 mb-5">
+            <div class="min-w-0">
+                <div class="flex items-center gap-2">
+                    <span class="w-4 h-px bg-primary-600"></span>
+                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Top Performing Spots</h2>
                 </div>
-                <p class="text-2xl font-bold {{ $card['value_color'] ?? 'text-gray-900 dark:text-white' }} mt-2 tabular-nums">
-                    {{ number_format($card['value']) }}
-                </p>
-                <p class="text-xs font-medium {{ $card['sub_color'] }} mt-2">{{ $card['sub'] }}</p>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Ranked by total successful bookings in the selected period.</p>
             </div>
-        @endforeach
-    </div>
-
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div class="bg-white dark:bg-gray-800/90 p-6 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm lg:col-span-2">
-            <div class="flex items-center justify-between mb-6">
-                <div>
-                    <h2 class="text-lg font-bold text-gray-900 dark:text-white">Tenant Acquisition Growth</h2>
-                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">New registered tenant accounts over the selected timeframe.</p>
-                </div>
-                <div class="hidden sm:flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-                    <span class="w-3 h-3 rounded-full bg-cyan-500 inline-block"></span>
-                    New Tenants
-                </div>
-            </div>
-            <div class="w-full h-80 relative" wire:ignore>
-                <canvas id="tenantChart"></canvas>
-            </div>
+            <a href="{{ route('superadmin.tenants.index') }}" wire:navigate
+               class="inline-flex items-center gap-1 text-xs font-semibold text-primary-600 dark:text-primary-400 hover:text-primary-800 dark:hover:text-primary-300
+                      transition-all duration-200 active:scale-95
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded shrink-0">
+                View Full List
+                <svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                </svg>
+            </a>
         </div>
 
-        <div class="bg-white dark:bg-gray-800/90 p-6 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm">
-            <div class="flex items-center justify-between mb-6">
-                <div>
-                    <h2 class="text-lg font-bold text-gray-900 dark:text-white">User Growth</h2>
-                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Registration trajectory for platform end-users.</p>
-                </div>
-                <div class="hidden sm:flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-                    <span class="w-3 h-3 rounded-full bg-indigo-500 inline-block"></span>
-                    New Users
-                </div>
+        @if($topSpotsHasData)
+            <div class="w-full h-56 sm:h-64 relative" wire:ignore>
+                <canvas id="topSpotsChart"
+                        role="img"
+                        aria-label="Horizontal bar chart: top performing spots by total bookings"></canvas>
             </div>
-            <div class="w-full h-80 relative" wire:ignore>
-                <canvas id="userChart"></canvas>
-            </div>
-        </div>
-
-        <div class="bg-white dark:bg-gray-800/90 p-6 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm">
-            <div class="flex items-center justify-between mb-6">
-                <div>
-                    <h2 class="text-lg font-bold text-gray-900 dark:text-white">Tenant Distribution</h2>
-                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Active operational vs pending tenant accounts.</p>
-                </div>
-            </div>
-            <div class="w-full h-80 relative flex items-center justify-center" wire:ignore>
-                <canvas id="statusChart"></canvas>
-                <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                    <span class="text-xs text-gray-400 font-medium uppercase tracking-wider">Active Rate</span>
-                    <span class="text-xl font-bold text-gray-900 dark:text-white mt-0.5 tabular-nums">
-                        {{ $this->activeRate }}%
-                    </span>
-                </div>
-            </div>
-        </div>
-
-        {{-- ══════════════════════════════════════════════════════════
-             TOP PICKS — Top 3 most-booked tourist spots
-             ══════════════════════════════════════════════════════════ --}}
-        <div class="bg-white dark:bg-gray-800/90 p-6 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm lg:col-span-2">
-            <div class="flex items-center justify-between mb-6">
-                <div>
-                    <h2 class="text-lg font-bold text-gray-900 dark:text-white">
-                        Top Picks
-                    </h2>
-                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                        The 3 most-booked destinations across the platform for the selected period.
-                    </p>
-                </div>
-                <span class="hidden sm:inline-flex items-center gap-1.5 rounded-full
-                             bg-amber-100 dark:bg-amber-950/60
-                             text-amber-700 dark:text-amber-300
-                             border border-amber-200 dark:border-amber-800
-                             px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider">
-                    <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
-                        <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
+        @else
+            <div class="w-full h-56 sm:h-64 flex flex-col items-center justify-center text-center rounded-xl border border-dashed border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40">
+                <div class="p-3 rounded-2xl bg-white dark:bg-gray-800 text-gray-400 dark:text-gray-500 shadow-sm">
+                    <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/>
                     </svg>
-                    Top 3
-                </span>
+                </div>
+                <p class="mt-3 text-sm font-semibold text-gray-900 dark:text-white">No bookings this period</p>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Rankings populate once bookings are created in the selected date range.</p>
             </div>
-            <div class="w-full h-80 relative" wire:ignore>
-                <canvas id="topSpotsChart"></canvas>
-            </div>
-        </div>
+        @endif
     </div>
+
+    {{-- ═══ open-url bridge ═══ --}}
+    <script>
+        if (! window.__analyticsExportUrlBound) {
+            window.__analyticsExportUrlBound = true;
+            window.addEventListener('open-url', (e) => { window.location.href = e.detail.url; });
+        }
+    </script>
 </div>
 
+{{-- ═══════════════════════════════════════════════════════════════════════
+     PRINT SUPPORT
+     ─────────────────────────────────────────────────────────────────────
+     On print, hide the layout chrome (sidebar/header) via a beforeprint
+     JS handler that applies inline `display: none` to non-ancestor
+     children of <body>. The `.analytics-page` wrapper is then pinned to
+     the top-left of the paper.
+     ═══════════════════════════════════════════════════════════════════════ --}}
+<style>
+    @media print {
+        @page { size: auto; margin: 12mm; }
+
+        html, body {
+            background: #fff !important;
+            color: #000 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            min-height: 0 !important;
+            height: auto !important;
+        }
+
+        .analytics-page { padding: 0 !important; margin: 0 !important; }
+
+        /* Interactive-only elements hidden from paper */
+        .no-print { display: none !important; }
+
+        /* Preserve chart canvas colors where the browser allows it */
+        canvas { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+
+        /* Keep each card on one page */
+        .analytics-page > * {
+            break-inside: avoid;
+            page-break-inside: avoid;
+        }
+
+        /* Force KPI strip to 4-col on paper regardless of viewport */
+        .analytics-page > .grid {
+            display: grid !important;
+            grid-template-columns: repeat(4, 1fr) !important;
+            gap: 3mm !important;
+        }
+    }
+</style>
+
+<script>
+    (function () {
+        if (window.__analyticsPrintScopeInstalled) return;
+        window.__analyticsPrintScopeInstalled = true;
+
+        function applyPrintScope() {
+            const root = document.querySelector('.analytics-page');
+            if (!root) return;
+
+            const ancestors = new Set();
+            let el = root;
+            while (el && el !== document.body) {
+                ancestors.add(el);
+                el = el.parentElement;
+            }
+
+            Array.from(document.body.children).forEach(function (child) {
+                if (!ancestors.has(child)) {
+                    if (child.dataset.printHidden !== '1') {
+                        child.dataset.printHidden = '1';
+                        child.dataset.printOldDisplay = child.style.display || '';
+                    }
+                    child.style.setProperty('display', 'none', 'important');
+                }
+            });
+
+            ancestors.forEach(function (node) {
+                if (node === root) return;
+                if (node.dataset.printReset !== '1') {
+                    node.dataset.printReset = '1';
+                    node.dataset.printOldPadding = node.style.padding || '';
+                    node.dataset.printOldMargin = node.style.margin || '';
+                    node.dataset.printOldBackground = node.style.background || '';
+                }
+                node.style.setProperty('padding', '0', 'important');
+                node.style.setProperty('margin', '0', 'important');
+                node.style.setProperty('background', 'transparent', 'important');
+            });
+        }
+
+        function restorePrintScope() {
+            document.querySelectorAll('[data-print-hidden="1"]').forEach(function (node) {
+                node.style.removeProperty('display');
+                if (node.dataset.printOldDisplay) {
+                    node.style.display = node.dataset.printOldDisplay;
+                }
+                delete node.dataset.printHidden;
+                delete node.dataset.printOldDisplay;
+            });
+
+            document.querySelectorAll('[data-print-reset="1"]').forEach(function (node) {
+                node.style.removeProperty('padding');
+                node.style.removeProperty('margin');
+                node.style.removeProperty('background');
+                if (node.dataset.printOldPadding) node.style.padding = node.dataset.printOldPadding;
+                if (node.dataset.printOldMargin)  node.style.margin  = node.dataset.printOldMargin;
+                if (node.dataset.printOldBackground) node.style.background = node.dataset.printOldBackground;
+                delete node.dataset.printReset;
+                delete node.dataset.printOldPadding;
+                delete node.dataset.printOldMargin;
+                delete node.dataset.printOldBackground;
+            });
+        }
+
+        window.addEventListener('beforeprint', applyPrintScope);
+        window.addEventListener('afterprint', restorePrintScope);
+    })();
+</script>
+
+{{-- ═══════════════════════════════════════════════════════════════════════
+     CHART.JS WIRING — unchanged from prior delivery.
+     All logic preserved: growth bar charts, doughnut, horizontal bars,
+     polar area, plugin registration deferred until Chart is available,
+     morph hook for Livewire updates, dark-mode observer.
+     ═══════════════════════════════════════════════════════════════════════ --}}
 <script>
 (function () {
     'use strict';
 
     const state = window.__analyticsState = window.__analyticsState || {
-        tenant: null,
-        user: null,
-        status: null,
-        spots: null,
-        hooked: false,
+        tenantAcq:  null,
+        userGrowth: null,
+        status:     null,
+        topSpots:   null,
+        categories: null,
+        review:     null,
+        hooked:     false,
+        pluginsReady: false,
     };
+
+    if (typeof state.pluginsReady !== 'boolean') state.pluginsReady = false;
+
+    const barValueLabel = {
+        id: 'barValueLabel',
+        afterDatasetsDraw(chart, args, opts) {
+            if (!opts || !opts.enabled) return;
+            const ctx = chart.ctx;
+            const isDark = document.documentElement.classList.contains('dark');
+            ctx.save();
+            ctx.font = '700 11px Inter, system-ui, sans-serif';
+            ctx.fillStyle = isDark ? '#e5e7eb' : '#111827';
+            ctx.textBaseline = 'middle';
+            ctx.textAlign = 'left';
+            chart.data.datasets.forEach((ds, di) => {
+                const meta = chart.getDatasetMeta(di);
+                if (meta.hidden) return;
+                meta.data.forEach((bar, i) => {
+                    const v = ds.data[i];
+                    if (v === undefined || v === null) return;
+                    const pos = bar.tooltipPosition();
+                    ctx.fillText(String(v), pos.x + 8, pos.y);
+                });
+            });
+            ctx.restore();
+        },
+    };
+
+    function ensurePluginsRegistered() {
+        if (state.pluginsReady) return;
+        if (typeof Chart === 'undefined') return;
+        Chart.register(barValueLabel);
+        state.pluginsReady = true;
+    }
 
     function getData() {
         const el = document.getElementById('analytics-data');
         if (!el) return null;
-
         try {
             return {
-                chart:    JSON.parse(el.dataset.chart    || '{}'),
-                status:   JSON.parse(el.dataset.status   || '{}'),
-                topspots: JSON.parse(el.dataset.topspots || '{}'),
+                tenantAcq:  JSON.parse(el.dataset.tenantAcq  || '{}'),
+                userGrowth: JSON.parse(el.dataset.userGrowth || '{}'),
+                status:     JSON.parse(el.dataset.status     || '{}'),
+                topspots:   JSON.parse(el.dataset.topspots   || '{}'),
+                categories: JSON.parse(el.dataset.categories || '{}'),
+                review:     JSON.parse(el.dataset.review     || '{}'),
             };
         } catch (e) {
             console.error('Analytics data parse failed', e);
@@ -561,129 +1220,165 @@ class extends Component
         }
     }
 
-    function getTheme() {
+    function theme() {
         const isDark = document.documentElement.classList.contains('dark');
         return {
             isDark,
-            textColor:     isDark ? '#9ca3af' : '#6b7280',
-            gridColor:     isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.05)',
-            tooltipBg:     isDark ? '#1f2937' : '#ffffff',
-            tooltipText:   isDark ? '#f3f4f6' : '#111827',
-            tooltipBorder: isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.08)',
-            tenantColor:   '#06b6d4',
-            userColor:     '#6366f1',
+            text:      isDark ? '#9ca3af' : '#6b7280',
+            textBold:  isDark ? '#f3f4f6' : '#111827',
+            grid:      isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)',
+            gridLight: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.04)',
+            tooltipBg: '#111827',
+            tooltipText: '#f9fafb',
+            doughnutBorder: isDark ? '#111827' : '#ffffff',
         };
     }
 
-    function tooltipOptions(theme) {
+    function tooltipConfig(t) {
         return {
-            backgroundColor: theme.tooltipBg,
-            titleColor:      theme.tooltipText,
-            bodyColor:       theme.textColor,
-            borderColor:     theme.tooltipBorder,
+            backgroundColor: t.tooltipBg,
+            titleColor:      t.tooltipText,
+            bodyColor:       t.tooltipText,
+            borderColor:     'rgba(255,255,255,0.08)',
             borderWidth:     1,
             padding:         12,
-            boxPadding:      6,
-            usePointStyle:   true,
-            cornerRadius:    12,
-            titleFont: { family: 'Inter, sans-serif', size: 13, weight: 'bold' },
-            bodyFont:  { family: 'Inter, sans-serif', size: 12 },
+            cornerRadius:    10,
+            displayColors:   true,
+            boxWidth:        8,
+            boxHeight:       8,
+            boxPadding:      4,
+            titleFont: { family: 'Inter, system-ui, sans-serif', size: 12, weight: '700' },
+            bodyFont:  { family: 'Inter, system-ui, sans-serif', size: 12, weight: '500' },
         };
     }
 
-    function areaGradient(ctx, hexColor) {
-        const g = ctx.createLinearGradient(0, 0, 0, 300);
-        g.addColorStop(0, hexColor + '33');
-        g.addColorStop(1, hexColor + '00');
-        return g;
+    function scaleX(t) {
+        return {
+            grid:   { display: false },
+            border: { display: false },
+            ticks:  { color: t.text, font: { size: 11, weight: '600' }, padding: 6, maxRotation: 0, autoSkipPadding: 12 },
+        };
     }
 
-    function createLineChart(canvasId, labels, values, label, hexColor, theme) {
+    function scaleY(t, { dashed = true, position = 'left' } = {}) {
+        return {
+            type: 'linear',
+            position,
+            beginAtZero: true,
+            grid: {
+                color: dashed ? t.grid : 'transparent',
+                borderDash: dashed ? [4, 4] : undefined,
+                drawTicks: false,
+            },
+            border: { display: false },
+            ticks:  { color: t.text, precision: 0, font: { size: 11, weight: '600' }, padding: 8 },
+        };
+    }
+
+    function hexToRgba(hex, alpha) {
+        const h = hex.replace('#', '');
+        const n = parseInt(h.length === 3 ? h.split('').map(c => c + c).join('') : h, 16);
+        const r = (n >> 16) & 255;
+        const g = (n >> 8)  & 255;
+        const b = n         & 255;
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+
+    function buildGrowthBar(canvasId, labels, values, color, t) {
         const canvas = document.getElementById(canvasId);
         if (!canvas) return null;
 
         const ctx = canvas.getContext('2d');
+        const H   = canvas.clientHeight || 260;
+
+        const gradient = ctx.createLinearGradient(0, 0, 0, H);
+        gradient.addColorStop(0, hexToRgba(color, 1.00));
+        gradient.addColorStop(1, hexToRgba(color, 0.55));
+
         return new Chart(ctx, {
-            type: 'line',
+            type: 'bar',
             data: {
                 labels,
                 datasets: [{
-                    label,
                     data: values,
-                    borderColor: hexColor,
-                    backgroundColor: areaGradient(ctx, hexColor),
-                    tension: 0.35,
-                    fill: true,
-                    borderWidth: 2.5,
-                    pointRadius: 3,
-                    pointHoverRadius: 6,
-                    pointBackgroundColor: hexColor,
-                    pointBorderColor: '#ffffff',
-                    pointBorderWidth: 2,
+                    backgroundColor: gradient,
+                    hoverBackgroundColor: color,
+                    borderRadius: { topLeft: 8, topRight: 8, bottomLeft: 0, bottomRight: 0 },
+                    borderSkipped: false,
+                    maxBarThickness: 48,
+                    barPercentage: 0.65,
+                    categoryPercentage: 0.75,
                 }],
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                animation: { duration: 700, easing: 'easeOutQuart' },
                 interaction: { mode: 'index', intersect: false },
+                layout: { padding: { top: 8, right: 8, bottom: 0, left: 0 } },
                 plugins: {
-                    legend:  { display: false },
-                    tooltip: tooltipOptions(theme),
+                    legend: { display: false },
+                    tooltip: {
+                        ...tooltipConfig(t),
+                        callbacks: {
+                            label(ctx) {
+                                const v = ctx.parsed.y;
+                                if (v === null || v === undefined) return ' —';
+                                return ' ' + Number(v).toLocaleString();
+                            },
+                        },
+                    },
                 },
                 scales: {
+                    x: scaleX(t),
                     y: {
+                        ...scaleY(t, { dashed: true, position: 'left' }),
                         beginAtZero: true,
-                        ticks: { color: theme.textColor, precision: 0, font: { size: 11 } },
-                        grid:  { color: theme.gridColor },
-                    },
-                    x: {
-                        ticks: { color: theme.textColor, font: { size: 11 } },
-                        grid:  { display: false },
+                        grace: '15%',
+                        ticks: {
+                            color: t.text,
+                            precision: 0,
+                            font: { size: 11, weight: '600' },
+                            padding: 8,
+                        },
                     },
                 },
             },
         });
     }
 
-    function createDoughnut(canvasId, data, theme) {
-        const canvas = document.getElementById(canvasId);
+    function buildStatus(status, t) {
+        const canvas = document.getElementById('statusChart');
         if (!canvas) return null;
 
         return new Chart(canvas.getContext('2d'), {
             type: 'doughnut',
             data: {
-                labels: data.labels,
+                labels: status.labels || [],
                 datasets: [{
-                    data: data.values,
-                    backgroundColor: data.colors,
-                    borderWidth: 0,
+                    data: status.values || [],
+                    backgroundColor: status.colors || ['#10b981', '#f59e0b'],
+                    borderWidth: 3,
+                    borderColor: t.doughnutBorder,
                     hoverOffset: 6,
                     borderRadius: 6,
-                    spacing: 4,
+                    spacing: 2,
                 }],
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                cutout: '78%',
+                cutout: '76%',
+                animation: { animateRotate: true, duration: 800, easing: 'easeOutQuart' },
                 plugins: {
-                    legend: {
-                        position: 'bottom',
-                        labels: {
-                            color: theme.textColor,
-                            padding: 20,
-                            usePointStyle: true,
-                            pointStyle: 'circle',
-                            font: { size: 12, weight: '500' },
-                        },
-                    },
-                    tooltip: tooltipOptions(theme),
+                    legend:  { display: false },
+                    tooltip: tooltipConfig(t),
                 },
             },
         });
     }
 
-    function createBarChart(canvasId, labels, values, label, colors, theme) {
+    function buildHBar(canvasId, labels, values, colors, t, { showLabels = true, thickness = 22 } = {}) {
         const canvas = document.getElementById(canvasId);
         if (!canvas) return null;
 
@@ -692,30 +1387,89 @@ class extends Component
             data: {
                 labels,
                 datasets: [{
-                    label,
                     data: values,
                     backgroundColor: colors,
-                    borderRadius: 8,
+                    borderRadius: 6,
                     borderSkipped: false,
-                    maxBarThickness: 60,
+                    maxBarThickness: thickness,
+                }],
+            },
+            options: {
+                indexAxis: 'y',
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 700, easing: 'easeOutQuart' },
+                layout: { padding: { right: showLabels ? 40 : 8 } },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: tooltipConfig(t),
+                    barValueLabel: { enabled: showLabels },
+                },
+                scales: {
+                    x: {
+                        beginAtZero: true,
+                        grid:   { color: t.gridLight, drawTicks: false },
+                        border: { display: false },
+                        ticks:  { color: t.text, precision: 0, font: { size: 10, weight: '600' }, padding: 4 },
+                    },
+                    y: {
+                        grid:   { display: false },
+                        border: { display: false },
+                        ticks: {
+                            color: t.textBold,
+                            font: { size: 11, weight: '600' },
+                            autoSkip: false,
+                            padding: 4,
+                            callback: function (v) {
+                                const label = this.getLabelForValue(v);
+                                return label.length > 28 ? label.slice(0, 26) + '…' : label;
+                            },
+                        },
+                    },
+                },
+            },
+        });
+    }
+
+    function buildPolar(categories, t) {
+        const canvas = document.getElementById('categoriesChart');
+        if (!canvas) return null;
+
+        return new Chart(canvas.getContext('2d'), {
+            type: 'polarArea',
+            data: {
+                labels: categories.labels || [],
+                datasets: [{
+                    data: categories.values || [],
+                    backgroundColor: categories.colors || [],
+                    borderWidth: 2,
+                    borderColor: t.doughnutBorder,
                 }],
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                animation: { duration: 700, easing: 'easeOutQuart' },
                 plugins: {
-                    legend:  { display: false },
-                    tooltip: tooltipOptions(theme),
+                    legend: {
+                        position: 'right',
+                        labels: {
+                            color: t.text,
+                            boxWidth: 10,
+                            boxHeight: 10,
+                            usePointStyle: true,
+                            pointStyle: 'circle',
+                            padding: 10,
+                            font: { size: 10, weight: '600' },
+                        },
+                    },
+                    tooltip: tooltipConfig(t),
                 },
                 scales: {
-                    y: {
-                        beginAtZero: true,
-                        ticks: { color: theme.textColor, precision: 0, font: { size: 11 } },
-                        grid:  { color: theme.gridColor },
-                    },
-                    x: {
-                        ticks: { color: theme.textColor, font: { size: 11 } },
-                        grid:  { display: false },
+                    r: {
+                        grid:  { color: t.grid, circular: true },
+                        ticks: { display: false, backdropColor: 'transparent' },
+                        angleLines: { color: t.gridLight },
                     },
                 },
             },
@@ -723,11 +1477,8 @@ class extends Component
     }
 
     function destroyAll() {
-        ['tenant', 'user', 'status', 'spots'].forEach(key => {
-            if (state[key]) {
-                try { state[key].destroy(); } catch (e) { /* noop */ }
-                state[key] = null;
-            }
+        ['tenantAcq', 'userGrowth', 'status', 'topSpots', 'categories', 'review'].forEach(k => {
+            if (state[k]) { try { state[k].destroy(); } catch (e) {} state[k] = null; }
         });
     }
 
@@ -737,47 +1488,92 @@ class extends Component
             return;
         }
 
+        ensurePluginsRegistered();
+
         const data = getData();
         if (!data) return;
 
-        const theme = getTheme();
+        const t = theme();
+        if (force) destroyAll();
 
-        if (force) {
-            destroyAll();
+        if (!state.tenantAcq && document.getElementById('tenantAcqChart')) {
+            state.tenantAcq = buildGrowthBar(
+                'tenantAcqChart',
+                data.tenantAcq.labels || [],
+                data.tenantAcq.values || [],
+                '#8b5cf6',
+                t
+            );
         }
-
-        if (!state.tenant && document.getElementById('tenantChart')) {
-            state.tenant = createLineChart('tenantChart', data.chart.labels || [], data.chart.tenants || [], 'New Tenants', theme.tenantColor, theme);
-        }
-        if (!state.user && document.getElementById('userChart')) {
-            state.user = createLineChart('userChart', data.chart.labels || [], data.chart.users || [], 'New Users', theme.userColor, theme);
+        if (!state.userGrowth && document.getElementById('userGrowthChart')) {
+            state.userGrowth = buildGrowthBar(
+                'userGrowthChart',
+                data.userGrowth.labels || [],
+                data.userGrowth.values || [],
+                '#3b82f6',
+                t
+            );
         }
         if (!state.status && document.getElementById('statusChart')) {
-            state.status = createDoughnut('statusChart', data.status, theme);
+            state.status = buildStatus(data.status, t);
         }
-        if (!state.spots && document.getElementById('topSpotsChart')) {
-            state.spots = createBarChart('topSpotsChart', data.topspots.labels || [], data.topspots.values || [], 'Bookings', data.topspots.colors || [], theme);
+        if (!state.topSpots && document.getElementById('topSpotsChart')) {
+            state.topSpots = buildHBar(
+                'topSpotsChart',
+                data.topspots.labels || [],
+                data.topspots.values || [],
+                data.topspots.colors || ['#1e3a8a', '#2563eb', '#3b82f6', '#60a5fa', '#93c5fd'],
+                t,
+                { showLabels: true, thickness: 22 }
+            );
+        }
+        if (!state.categories && document.getElementById('categoriesChart')) {
+            state.categories = buildPolar(data.categories, t);
+        }
+        if (!state.review && document.getElementById('reviewChart')) {
+            const rq = data.review || {};
+            state.review = buildHBar(
+                'reviewChart',
+                ['KYB Applications', 'Deletion Requests', 'Pending Tenants'],
+                [rq.applications || 0, rq.deletions || 0, rq.tenants || 0],
+                ['#f59e0b', '#f43f5e', '#3b82f6'],
+                t,
+                { showLabels: true, thickness: 20 }
+            );
         }
 
-        if (state.tenant && data.chart.labels) {
-            state.tenant.data.labels = data.chart.labels;
-            state.tenant.data.datasets[0].data = data.chart.tenants;
-            state.tenant.update('none');
+        if (state.tenantAcq && data.tenantAcq.labels) {
+            state.tenantAcq.data.labels = data.tenantAcq.labels;
+            state.tenantAcq.data.datasets[0].data = data.tenantAcq.values;
+            state.tenantAcq.update('none');
         }
-        if (state.user && data.chart.labels) {
-            state.user.data.labels = data.chart.labels;
-            state.user.data.datasets[0].data = data.chart.users;
-            state.user.update('none');
+        if (state.userGrowth && data.userGrowth.labels) {
+            state.userGrowth.data.labels = data.userGrowth.labels;
+            state.userGrowth.data.datasets[0].data = data.userGrowth.values;
+            state.userGrowth.update('none');
         }
         if (state.status && data.status.labels) {
             state.status.data.labels = data.status.labels;
             state.status.data.datasets[0].data = data.status.values;
             state.status.update('none');
         }
-        if (state.spots && data.topspots.labels) {
-            state.spots.data.labels = data.topspots.labels;
-            state.spots.data.datasets[0].data = data.topspots.values;
-            state.spots.update('none');
+        if (state.topSpots && data.topspots.labels) {
+            state.topSpots.data.labels = data.topspots.labels;
+            state.topSpots.data.datasets[0].data = data.topspots.values;
+            state.topSpots.update('none');
+        }
+        if (state.categories && data.categories.labels) {
+            state.categories.data.labels = data.categories.labels;
+            state.categories.data.datasets[0].data = data.categories.values;
+            state.categories.update('none');
+        }
+        if (state.review && data.review) {
+            state.review.data.datasets[0].data = [
+                data.review.applications || 0,
+                data.review.deletions || 0,
+                data.review.tenants || 0,
+            ];
+            state.review.update('none');
         }
     };
 

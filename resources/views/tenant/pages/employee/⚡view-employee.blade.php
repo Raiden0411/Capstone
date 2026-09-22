@@ -6,36 +6,79 @@ use Livewire\WithPagination;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
+use Livewire\Attributes\Url;
 use App\Models\Employee;
 use App\Scopes\TenantScope;
+use App\Traits\ChecksTenantPermissions;
 use Illuminate\Support\Facades\Auth;
 
-new 
+new
 #[Layout('tenant.layouts.app')]
 #[Title('Employees')]
 class extends Component {
     use WithPagination;
+    use ChecksTenantPermissions;
 
-    public string $search = '';
-    public string $roleFilter = '';
+    #[Url(keep: true)] public string $search       = '';
+    #[Url(keep: true)] public string $roleFilter   = '';
+    #[Url(keep: true)] public string $statusFilter = '';
 
-    public function updatingSearch() { $this->resetPage(); }
-    public function updatingRoleFilter() { $this->resetPage(); }
+    // ─────────────────────────────────────────────────────────
+    //  Lifecycle
+    // ─────────────────────────────────────────────────────────
 
-    public function toggleActive(int $id)
+    public function mount(): void
     {
+        abort_unless(Auth::user()?->tenant_id, 403);
+        abort_unless($this->tenantCan('view employees'), 403);
+    }
+
+    /**
+     * Four-layer pattern, Layer 3 — re-verify on every Livewire update
+     * request. Route middleware only runs on the initial GET.
+     */
+    public function hydrate(): void
+    {
+        abort_unless(Auth::user()?->tenant_id, 403);
+        abort_unless($this->tenantCan('view employees'), 403);
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Filters
+    // ─────────────────────────────────────────────────────────
+
+    public function updatingSearch(): void       { $this->resetPage(); }
+    public function updatingRoleFilter(): void   { $this->resetPage(); }
+    public function updatingStatusFilter(): void { $this->resetPage(); }
+
+    public function clearFilters(): void
+    {
+        $this->reset(['search', 'roleFilter', 'statusFilter']);
+        $this->resetPage();
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Actions
+    // ─────────────────────────────────────────────────────────
+
+    public function toggleActive(int $id): void
+    {
+        $this->requirePermission('manage employees');
+
         $employee = Employee::withoutGlobalScope(TenantScope::class)
             ->where('id', $id)
             ->where('tenant_id', Auth::user()->tenant_id)
             ->firstOrFail();
 
-        $employee->update(['is_active' => !$employee->is_active]);
+        $employee->update(['is_active' => ! $employee->is_active]);
 
         session()->flash('message', "{$employee->name} " . ($employee->is_active ? 'activated' : 'deactivated') . '.');
     }
 
-    public function delete(int $id)
+    public function delete(int $id): void
     {
+        $this->requirePermission('manage employees');
+
         $employee = Employee::withoutGlobalScope(TenantScope::class)
             ->where('id', $id)
             ->where('tenant_id', Auth::user()->tenant_id)
@@ -47,18 +90,16 @@ class extends Component {
         session()->flash('message', "{$name} deleted.");
     }
 
-    public function clearFilters()
-    {
-        $this->reset(['search', 'roleFilter']);
-        $this->resetPage();
-    }
+    // ─────────────────────────────────────────────────────────
+    //  Computed
+    // ─────────────────────────────────────────────────────────
 
     #[Computed]
     public function employees()
     {
         return Employee::withoutGlobalScope(TenantScope::class)
             ->where('tenant_id', Auth::user()->tenant_id)
-            ->with(['user.roles']) // eager load roles to avoid N+1 in table
+            ->with(['user.roles'])
             ->when($this->search, function ($q) {
                 $q->where(function ($sq) {
                     $sq->where('name', 'like', '%'.$this->search.'%')
@@ -70,10 +111,11 @@ class extends Component {
                        });
                 });
             })
-            ->when($this->roleFilter, fn($q) => $q->where('role', $this->roleFilter))
+            ->when($this->roleFilter, fn ($q) => $q->where('role', $this->roleFilter))
+            ->when($this->statusFilter !== '', fn ($q) => $q->where('is_active', $this->statusFilter === 'active'))
             ->orderByRaw("CASE WHEN LOWER(role) = 'manager' THEN 0 ELSE 1 END")
             ->orderBy('name')
-            ->paginate(10);
+            ->paginate(12);
     }
 
     #[Computed]
@@ -88,170 +130,403 @@ class extends Component {
     }
 
     #[Computed]
-    public function stats()
+    public function stats(): array
     {
         $tid = Auth::user()->tenant_id;
+
         return [
             'total'    => Employee::where('tenant_id', $tid)->count(),
             'active'   => Employee::where('tenant_id', $tid)->where('is_active', true)->count(),
             'inactive' => Employee::where('tenant_id', $tid)->where('is_active', false)->count(),
         ];
     }
+
+    #[Computed]
+    public function hasActiveFilters(): bool
+    {
+        return $this->search !== ''
+            || $this->roleFilter !== ''
+            || $this->statusFilter !== '';
+    }
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-8 max-w-[1440px] mx-auto space-y-6">
+<div class="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
 
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
-        <div>
-            <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Employees</h1>
-        </div>
-        <a href="{{ route('tenant.employees.create') }}" wire:navigate
-           class="btn-primary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center justify-center gap-2">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-            Add Employee
-        </a>
-    </div>
-
+    {{-- ═══ Flash messages ═══ --}}
     @if (session()->has('message'))
-        <div class="bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 border-l-4 border-l-green-500 p-4 rounded-md text-sm text-green-700 dark:text-green-300 font-medium flex items-center gap-2">
-            <svg class="w-4 h-4 text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-            {{ session('message') }}
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 4000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-center justify-between bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 border-l-4 border-l-emerald-500 p-4 rounded-xl text-xs sm:text-sm text-emerald-800 dark:text-emerald-300 font-medium shadow-sm">
+            <div class="flex items-center gap-2.5">
+                <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <span>{{ session('message') }}</span>
+            </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
         </div>
     @endif
 
-    {{-- Stats --}}
-    @php $s = $this->stats; @endphp
-    <div class="grid grid-cols-3 gap-4">
-        <div class="card p-4">
-            <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Total</p>
-            <p class="text-2xl font-bold text-gray-900 dark:text-white mt-2">{{ $s['total'] }}</p>
+    @if (session()->has('error'))
+        <div x-data="{ show: true }"
+             x-init="setTimeout(() => show = false, 5000)"
+             :class="show ? '' : 'hidden'"
+             class="flex items-center justify-between bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 border-l-4 border-l-rose-500 p-4 rounded-xl text-xs sm:text-sm text-rose-800 dark:text-rose-300 font-medium shadow-sm">
+            <div class="flex items-center gap-2.5">
+                <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                </svg>
+                <span>{{ session('error') }}</span>
+            </div>
+            <button type="button" @click="show = false"
+                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                           transition-all duration-200 active:scale-95
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
+                    aria-label="Dismiss">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
         </div>
-        <div class="card p-4">
-            <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Active</p>
-            <p class="text-2xl font-bold text-green-600 dark:text-green-400 mt-2">{{ $s['active'] }}</p>
+    @endif
+
+    {{-- ═══ Page header ═══ --}}
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-800">
+        <div>
+            <div class="flex items-center gap-2 mb-2">
+                <span class="w-5 h-px bg-primary-600"></span>
+                <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Team</span>
+            </div>
+            <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
+                Employees
+            </h1>
+            <p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1">
+                Manage your team members and their system access.
+            </p>
         </div>
-        <div class="card p-4">
-            <p class="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Inactive</p>
-            <p class="text-2xl font-bold text-gray-400 dark:text-gray-500 mt-2">{{ $s['inactive'] }}</p>
-        </div>
+        @if($this->tenantCan('manage employees'))
+            <a href="{{ route('tenant.employees.create') }}" wire:navigate
+               class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                      transition-all duration-200 active:scale-95
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                </svg>
+                <span>Add Employee</span>
+            </a>
+        @endif
     </div>
 
-    {{-- Filters --}}
-    <div class="flex flex-col md:flex-row gap-4 items-start md:items-center">
-        <div class="relative flex-1 w-full">
-            <input type="text" wire:model.live.debounce.300ms="search" placeholder="Search by name, email, phone, or code..."
-                   class="input pl-10">
-            <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-            </svg>
-        </div>
-        <div class="flex flex-wrap gap-2 w-full md:w-auto">
-            <select wire:model.live="roleFilter" class="select w-full sm:w-auto">
+    {{-- ═══ Filter card ═══
+         Row 1: search + role select
+         Row 2: three status pills with inline counts
+    --}}
+    @php $s = $this->stats; @endphp
+    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4 space-y-3">
+
+        <div class="flex flex-wrap gap-2 items-center">
+            <div class="relative flex-1 min-w-[200px]">
+                <svg class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                </svg>
+                <input type="text"
+                       wire:model.live.debounce.300ms="search"
+                       placeholder="Search by name, email, phone, or code…"
+                       enterkeyhint="search"
+                       aria-label="Search employees"
+                       class="w-full h-11 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl pl-10 pr-4 text-sm text-gray-900 dark:text-white placeholder-gray-400
+                              focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+            </div>
+
+            <select wire:model.live="roleFilter"
+                    aria-label="Filter by job title"
+                    class="h-11 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl px-3 text-sm text-gray-900 dark:text-white
+                           focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                 <option value="">All Roles</option>
                 @foreach($this->roles as $role)
-                    <option value="{{ $role }}">{{ $role }}</option>
+                    <option value="{{ $role }}" wire:key="role-opt-{{ \Illuminate\Support\Str::slug($role) }}">{{ $role }}</option>
                 @endforeach
             </select>
-            @if($search || $roleFilter)
-                <button wire:click="clearFilters"
-                        class="btn-secondary text-xs active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50 inline-flex items-center gap-1">
-                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                    Clear
+        </div>
+
+        <div class="flex flex-wrap gap-2 items-center">
+            @php
+                $pills = [
+                    ['value' => '',         'label' => 'All',      'count' => $s['total'],    'active' => 'bg-primary-600 border-primary-600 text-white shadow-sm shadow-primary-600/20', 'rest' => 'bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:border-gray-400 dark:hover:border-gray-600'],
+                    ['value' => 'active',   'label' => 'Active',   'count' => $s['active'],   'active' => 'bg-emerald-600 border-emerald-600 text-white shadow-sm shadow-emerald-600/20', 'rest' => 'bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:border-emerald-400 dark:hover:border-emerald-500/60'],
+                    ['value' => 'inactive', 'label' => 'Inactive', 'count' => $s['inactive'], 'active' => 'bg-gray-600 border-gray-600 text-white shadow-sm shadow-gray-600/20',          'rest' => 'bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:border-gray-400 dark:hover:border-gray-600'],
+                ];
+            @endphp
+
+            @foreach($pills as $pill)
+                @php $isActive = $statusFilter === $pill['value']; @endphp
+                <button type="button"
+                        wire:click="$set('statusFilter', '{{ $pill['value'] }}')"
+                        wire:key="pill-{{ $pill['value'] !== '' ? $pill['value'] : 'all' }}"
+                        aria-pressed="{{ $isActive ? 'true' : 'false' }}"
+                        class="inline-flex items-center gap-2 h-9 pl-3.5 pr-1.5 rounded-full text-xs font-semibold uppercase tracking-wide border
+                               transition-all duration-200 active:scale-95 shrink-0
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                               {{ $isActive ? $pill['active'] : $pill['rest'] }}">
+                    <span>{{ $pill['label'] }}</span>
+                    <span class="inline-flex items-center justify-center min-w-[22px] h-5 px-1.5 rounded-full text-[10px] font-bold tabular-nums
+                                 {{ $isActive ? 'bg-white/20 text-white' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300' }}">
+                        {{ $pill['count'] }}
+                    </span>
+                </button>
+            @endforeach
+
+            @if($this->hasActiveFilters)
+                <button type="button"
+                        wire:click="clearFilters"
+                        class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-full text-xs font-semibold uppercase tracking-wide
+                               border border-rose-300 dark:border-rose-500/40
+                               bg-white dark:bg-gray-800
+                               text-rose-700 dark:text-rose-300
+                               transition-all duration-200 active:scale-95 shrink-0
+                               hover:bg-rose-50 dark:hover:bg-rose-500/10
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                    <span>Clear</span>
                 </button>
             @endif
         </div>
     </div>
 
-    {{-- Table --}}
-    <div class="card overflow-hidden">
-        <div class="overflow-x-auto">
-            <table class="w-full text-left">
-                <thead class="border-b border-gray-200 dark:border-gray-700">
-                    <tr>
-                        <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Employee</th>
-                        <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase hidden sm:table-cell">Code</th>
-                        <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase hidden sm:table-cell">Job Title</th>
-                        <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase hidden lg:table-cell">Account</th>
-                        <th class="px-4 sm:px-6 py-4 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Status</th>
-                        <th class="px-4 sm:px-6 py-4 text-right text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Actions</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-100 dark:divide-gray-700 text-gray-700 dark:text-gray-200">
-                    @forelse($this->employees as $employee)
-                        <tr class="hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
-                            <td class="px-4 sm:px-6 py-4">
-                                <div class="flex items-center gap-3">
-                                    <div class="h-10 w-10 rounded-lg bg-primary-50 dark:bg-primary-500/10 flex items-center justify-center text-primary-600 dark:text-primary-400 font-semibold text-sm shrink-0 overflow-hidden">
-                                        @if($employee->avatar)
-                                            <img src="{{ asset('storage/'. $employee->avatar) }}" alt="{{ $employee->name }}" class="h-full w-full object-cover">
-                                        @else
-                                            {{ strtoupper(substr($employee->name, 0, 1)) }}
-                                        @endif
-                                    </div>
-                                    <div>
-                                        <div class="flex items-center gap-2">
-                                            <p class="font-medium text-gray-900 dark:text-white">{{ $employee->name }}</p>
-                                            @if(strtolower($employee->role ?? '') === 'manager')
-                                                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-primary-100 dark:bg-primary-500/15 text-primary-700 dark:text-primary-300 border border-primary-200 dark:border-primary-500/30">
-                                                    <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2l2 4h4l-3 3 1 4-4-2-4 2 1-4-3-3h4l2-4z"/></svg>
-                                                    Manager
-                                                </span>
-                                            @endif
-                                        </div>
-                                        <p class="text-xs text-gray-500 dark:text-gray-400">{{ $employee->phone ?? '—' }}</p>
-                                    </div>
-                                </div>
-                            </td>
-                            <td class="px-4 sm:px-6 py-4 hidden sm:table-cell font-mono text-xs text-gray-500 dark:text-gray-400">{{ $employee->code ?? '—' }}</td>
-                            <td class="px-4 sm:px-6 py-4 hidden sm:table-cell">{{ $employee->role ?? '—' }}</td>
-                            <td class="px-4 sm:px-6 py-4 hidden lg:table-cell">
-                                @if($employee->user)
-                                    <div>
-                                        <p class="text-sm text-gray-700 dark:text-gray-300">{{ $employee->user->email }}</p>
-                                        <p class="text-xs text-gray-500 dark:text-gray-400">
-                                            {{ $employee->user->getRoleNames()->join(', ') ?: 'No roles' }}
-                                        </p>
-                                    </div>
-                                @else
-                                    <span class="text-xs text-gray-400 dark:text-gray-500">No account</span>
-                                @endif
-                            </td>
-                            <td class="px-4 sm:px-6 py-4">
-                                <button wire:click="toggleActive({{ $employee->id }})"
-                                        class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium transition-all duration-200 active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50
-                                               {{ $employee->is_active ? 'bg-green-100 dark:bg-green-500/15 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-500/30 hover:bg-green-200 dark:hover:bg-green-500/25' : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 border border-gray-300 dark:border-gray-600 hover:bg-gray-200 dark:hover:bg-gray-600' }}">
-                                    {{ $employee->is_active ? 'Active' : 'Inactive' }}
-                                </button>
-                            </td>
-                            <td class="px-4 sm:px-6 py-4 text-right">
-                                <div class="flex items-center justify-end gap-2">
-                                    <a href="{{ route('tenant.employees.edit', $employee->id) }}" wire:navigate
-                                       class="p-1.5 text-primary-600 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-500/10 rounded-lg transition active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50" title="Edit">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                                    </a>
-                                    <button wire:click="delete({{ $employee->id }})" wire:confirm="Delete this employee?"
-                                            class="p-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-lg transition active:scale-95 focus-visible:ring-2 focus-visible:ring-red-500/50" title="Delete">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                                    </button>
-                                </div>
-                            </td>
-                        </tr>
-                    @empty
-                        <tr>
-                            <td colspan="6" class="px-6 py-12 text-center text-gray-500 dark:text-gray-400">
-                                <svg class="mx-auto h-12 w-12 text-gray-300 dark:text-gray-600 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
-                                <span class="text-sm">No employees found{{ $search || $roleFilter ? ' matching your filters' : '' }}.</span>
-                            </td>
-                        </tr>
-                    @endforelse
-                </tbody>
-            </table>
+    {{-- ═══ Employee grid ═══ --}}
+    @if($this->employees->isEmpty())
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-12">
+            <div class="flex flex-col items-center max-w-md mx-auto text-center">
+                <div class="p-4 rounded-2xl bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 mb-4">
+                    <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+                    </svg>
+                </div>
+                <p class="text-base font-semibold text-gray-900 dark:text-white">
+                    No employees found
+                </p>
+                <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                    @if($this->hasActiveFilters)
+                        No employees match your current filters. Try adjusting or clearing them.
+                    @else
+                        Get started by adding your first team member.
+                    @endif
+                </p>
+                <div class="mt-6 flex flex-wrap gap-2 justify-center">
+                    @if($this->hasActiveFilters)
+                        <button type="button"
+                                wire:click="clearFilters"
+                                class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                                       transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                            <span>Clear Filters</span>
+                        </button>
+                    @endif
+                    @if($this->tenantCan('manage employees'))
+                        <a href="{{ route('tenant.employees.create') }}" wire:navigate
+                           class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                  transition-all duration-200 active:scale-95
+                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                            </svg>
+                            <span>Add Employee</span>
+                        </a>
+                    @endif
+                </div>
+            </div>
         </div>
+    @else
+        <div wire:loading.class="opacity-40 pointer-events-none"
+             wire:target="search,roleFilter,statusFilter,gotoPage,nextPage,previousPage"
+             class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 transition-opacity duration-200">
+            @foreach($this->employees as $employee)
+                @php
+                    $isManager  = strtolower($employee->role ?? '') === 'manager';
+                    $canManage  = $this->tenantCan('manage employees');
+                @endphp
+                <article wire:key="employee-{{ $employee->id }}"
+                         class="group bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm
+                                hover:shadow-md hover:border-primary-300 dark:hover:border-primary-500/40
+                                overflow-hidden flex flex-col transition-all duration-200">
+
+                    {{-- ── Body ── --}}
+                    <div class="p-4 flex-1 flex flex-col gap-3">
+
+                        {{-- Avatar + name row --}}
+                        <div class="flex items-start gap-3">
+                            <div class="w-14 h-14 rounded-xl bg-primary-50 dark:bg-primary-500/10 border border-primary-200/50 dark:border-primary-500/20 flex items-center justify-center text-primary-700 dark:text-primary-300 font-bold text-lg shrink-0 overflow-hidden
+                                        {{ !$employee->is_active ? 'grayscale-[0.7] opacity-70' : '' }}">
+                                @if($employee->avatar)
+                                    <img src="{{ asset('storage/' . $employee->avatar) }}"
+                                         alt="{{ $employee->name }}"
+                                         class="w-full h-full object-cover"
+                                         loading="lazy"
+                                         decoding="async">
+                                @else
+                                    {{ strtoupper(substr($employee->name, 0, 1)) }}
+                                @endif
+                            </div>
+
+                            <div class="min-w-0 flex-1">
+                                <div class="flex items-center gap-2 flex-wrap">
+                                    <h3 class="font-semibold text-gray-900 dark:text-white text-base leading-tight truncate">
+                                        {{ $employee->name }}
+                                    </h3>
+                                    @if($isManager)
+                                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider
+                                                     bg-primary-100 dark:bg-primary-500/15 text-primary-700 dark:text-primary-300 border border-primary-200 dark:border-primary-500/30">
+                                            <svg class="w-2.5 h-2.5" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+                                                <path d="M10 2l2 4h4l-3 3 1 4-4-2-4 2 1-4-3-3h4l2-4z"/>
+                                            </svg>
+                                            Manager
+                                        </span>
+                                    @endif
+                                </div>
+                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 truncate">
+                                    {{ $employee->role ?: 'No job title' }}
+                                </p>
+                                @if($employee->code)
+                                    <p class="text-[10px] font-mono text-gray-400 dark:text-gray-500 mt-1 tabular-nums">{{ $employee->code }}</p>
+                                @endif
+                            </div>
+                        </div>
+
+                        {{-- Contact + account --}}
+                        <div class="space-y-1.5 text-xs text-gray-600 dark:text-gray-400">
+                            @if($employee->phone)
+                                <div class="flex items-center gap-1.5 min-w-0">
+                                    <svg class="w-3.5 h-3.5 shrink-0 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/>
+                                    </svg>
+                                    <span class="truncate">{{ $employee->phone }}</span>
+                                </div>
+                            @endif
+
+                            @if($employee->user)
+                                <div class="flex items-center gap-1.5 min-w-0">
+                                    <svg class="w-3.5 h-3.5 shrink-0 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                                    </svg>
+                                    <span class="truncate">{{ $employee->user->email }}</span>
+                                </div>
+                                <div class="flex flex-wrap gap-1 pt-0.5">
+                                    @forelse($employee->user->roles as $r)
+                                        <span wire:key="emp-role-{{ $employee->id }}-{{ $r->id }}"
+                                              class="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium
+                                                     {{ in_array($r->name, ['admin', 'super-admin'], true)
+                                                        ? 'bg-purple-100 dark:bg-purple-500/15 text-purple-700 dark:text-purple-300'
+                                                        : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300' }}">
+                                            {{ \Illuminate\Support\Str::headline($r->name) }}
+                                        </span>
+                                    @empty
+                                        <span class="text-[10px] text-gray-400 dark:text-gray-500 italic">No roles assigned</span>
+                                    @endforelse
+                                </div>
+                            @else
+                                <div class="flex items-center gap-1.5">
+                                    <svg class="w-3.5 h-3.5 shrink-0 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
+                                    </svg>
+                                    <span class="text-gray-400 dark:text-gray-500 italic">No user account</span>
+                                </div>
+                            @endif
+                        </div>
+
+                        {{-- Status pill + actions --}}
+                        <div class="mt-auto pt-3 border-t border-gray-100 dark:border-gray-700/60 flex items-center justify-between gap-2">
+                            @if($canManage)
+                                <button type="button"
+                                        wire:click="toggleActive({{ $employee->id }})"
+                                        wire:loading.attr="disabled"
+                                        wire:target="toggleActive"
+                                        aria-label="{{ $employee->is_active ? 'Deactivate' : 'Activate' }} {{ $employee->name }}"
+                                        class="inline-flex items-center justify-center rounded-full transition-all duration-200 active:scale-95
+                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                                               disabled:opacity-60 disabled:cursor-not-allowed">
+                                    @if($employee->is_active)
+                                        <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold
+                                                     bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300
+                                                     border border-emerald-200 dark:border-emerald-500/30
+                                                     hover:bg-emerald-200 dark:hover:bg-emerald-500/25 transition">
+                                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1.5" aria-hidden="true"></span> Active
+                                        </span>
+                                    @else
+                                        <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold
+                                                     bg-rose-100 dark:bg-rose-500/15 text-rose-700 dark:text-rose-300
+                                                     border border-rose-200 dark:border-rose-500/30
+                                                     hover:bg-rose-200 dark:hover:bg-rose-500/25 transition">
+                                            <span class="w-1.5 h-1.5 rounded-full bg-rose-500 mr-1.5" aria-hidden="true"></span> Inactive
+                                        </span>
+                                    @endif
+                                </button>
+                            @else
+                                @if($employee->is_active)
+                                    <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30">
+                                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1.5" aria-hidden="true"></span> Active
+                                    </span>
+                                @else
+                                    <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-100 dark:bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-500/30">
+                                        <span class="w-1.5 h-1.5 rounded-full bg-rose-500 mr-1.5" aria-hidden="true"></span> Inactive
+                                    </span>
+                                @endif
+                            @endif
+
+                            <div class="flex items-center gap-2">
+                                @if($canManage)
+                                    <a href="{{ route('tenant.employees.edit', $employee->id) }}" wire:navigate
+                                       aria-label="Edit {{ $employee->name }}"
+                                       title="Edit"
+                                       class="inline-flex items-center justify-center h-9 w-9 rounded-lg
+                                              text-gray-500 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-950/50
+                                              transition-all duration-200 active:scale-95
+                                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                                        </svg>
+                                    </a>
+                                    <button type="button"
+                                            wire:click="delete({{ $employee->id }})"
+                                            wire:confirm="Delete this employee?"
+                                            wire:loading.attr="disabled"
+                                            wire:target="delete"
+                                            aria-label="Delete {{ $employee->name }}"
+                                            title="Delete"
+                                            class="inline-flex items-center justify-center h-9 w-9 rounded-lg
+                                                   text-gray-500 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50
+                                                   transition-all duration-200 active:scale-95
+                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
+                                                   disabled:opacity-60 disabled:cursor-not-allowed">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                        </svg>
+                                    </button>
+                                @else
+                                    <span class="text-xs text-gray-400 dark:text-gray-500 italic">View only</span>
+                                @endif
+                            </div>
+                        </div>
+                    </div>
+                </article>
+            @endforeach
+        </div>
+
         @if($this->employees->hasPages())
-            <div class="px-4 sm:px-6 py-4 border-t border-gray-200 dark:border-gray-700">
+            <div class="pt-2">
                 {{ $this->employees->links() }}
             </div>
         @endif
-    </div>
+    @endif
 </div>
