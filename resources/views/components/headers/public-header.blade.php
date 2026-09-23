@@ -4,21 +4,42 @@
 
     // Cached site settings.
     $logoPath = \App\Models\SiteSetting::getValue('site_logo');
-    $siteName = \App\Models\SiteSetting::getValue('site_name', 'Tourism Management');
+    $siteName = \App\Models\SiteSetting::getValue('site_name', 'Victorias City Tourism');
 
+    /*
+     * Logo URL — only build a URL when the file is actually on disk.
+     *
+     * WHY THE `file_exists` GUARD:
+     *   The previous implementation fell back to `time()` when the
+     *   file was missing. That produced a unique URL on every request,
+     *   defeating browser caching for a resource that would 404 anyway.
+     *   Returning null (so the initial-letter fallback renders instead)
+     *   is both faster and more honest — no broken-image icon, no
+     *   repeated 404s.
+     *
+     * WHY THE `?v=` CACHE-BUSTER:
+     *   When the admin swaps the logo via the homepage editor, the
+     *   path stays the same. Without a version query, browsers keep
+     *   serving the old image. filemtime() gives a stable fingerprint
+     *   that only changes when the file itself changes.
+     */
     $logoUrl = null;
     if ($logoPath) {
         $fullPath = public_path('storage/' . $logoPath);
-        $logoUrl  = asset('storage/' . $logoPath)
-            . '?v=' . (file_exists($fullPath) ? filemtime($fullPath) : time());
+        if (file_exists($fullPath)) {
+            $logoUrl = asset('storage/' . $logoPath) . '?v=' . filemtime($fullPath);
+        }
     }
 
-    $authUser      = Auth::user();
-    $avatarUrl     = null;
+    $authUser = Auth::user();
+
+    $avatarUrl = null;
     if ($authUser?->avatar) {
         $avatarFullPath = public_path('storage/' . $authUser->avatar);
-        $avatarUrl      = asset('storage/' . $authUser->avatar)
-            . '?v=' . (file_exists($avatarFullPath) ? filemtime($avatarFullPath) : time());
+        if (file_exists($avatarFullPath)) {
+            $avatarUrl = asset('storage/' . $authUser->avatar)
+                . '?v=' . filemtime($avatarFullPath);
+        }
     }
     $avatarInitial = $authUser ? strtoupper(substr($authUser->name, 0, 1)) : '';
 
@@ -149,18 +170,23 @@
                         <span class="text-base md:text-lg font-bold">{{ strtoupper(substr($siteName, 0, 1)) }}</span>
                     </div>
                 @endif
-                <span class="text-base sm:text-lg md:text-2xl font-bold text-primary-700 dark:text-white
+                <span class="font-display text-base sm:text-lg md:text-2xl font-bold text-primary-700 dark:text-white
                              leading-none tracking-tight truncate">
                     {{ $siteName }}
                 </span>
             </a>
 
-            {{-- Desktop Nav — discovery links first, "About" last --}}
+            {{-- Desktop Nav — discovery links first, "About" last.
+                 aria-current="page" tells screen readers which link is
+                 the current page. The routeIs() check already drives
+                 the visual active state; this exposes it semantically. --}}
             <div class="hidden lg:flex items-center gap-8 shrink-0">
                 @foreach($navLinks as $link)
+                    @php $isActive = request()->routeIs($link['route']); @endphp
                     <a wire:key="desktop-{{ $link['route'] }}"
                        href="{{ route($link['route']) }}" wire:navigate
-                       class="text-[15px] transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-md px-1 {{ request()->routeIs($link['route']) ? 'text-primary-600 dark:text-primary-400 font-bold' : 'font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white' }}">
+                       @if($isActive) aria-current="page" @endif
+                       class="text-[15px] transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-md px-1 {{ $isActive ? 'text-primary-600 dark:text-primary-400 font-bold' : 'font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white' }}">
                         {{ $link['label'] }}
                     </a>
                 @endforeach
@@ -195,7 +221,9 @@
                     </form>
                 @endif
 
-                {{-- Notifications (Livewire SFC — auto-refreshes) --}}
+                {{-- Notifications (Livewire SFC — auto-refreshes).
+                     Auth-gated: the component reads Auth::user()->id, so
+                     rendering it for a guest would throw. --}}
                 @auth
                     <livewire:public::partials.notification-bell />
                 @endauth
@@ -387,6 +415,7 @@
                                     <a wire:key="dropdown-{{ $link['route'] }}"
                                        class="flex items-center gap-3 py-2 px-3 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-primary-600 dark:hover:text-white transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                                        href="{{ route($link['route']) }}" wire:navigate
+                                       @if(request()->routeIs($link['route'])) aria-current="page" @endif
                                        @click="userDropdownOpen = false">
                                         <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657 13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
@@ -451,8 +480,10 @@
 
             {{-- Nav links — same discovery-first order as desktop --}}
             @foreach($navLinks as $link)
+                @php $isActive = request()->routeIs($link['route']); @endphp
                 <a wire:key="mobile-{{ $link['route'] }}"
-                   class="block text-base font-medium active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 {{ request()->routeIs($link['route']) ? 'text-primary-600 dark:text-primary-400 font-bold bg-primary-50 dark:bg-primary-500/10' : 'text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50' }}"
+                   @if($isActive) aria-current="page" @endif
+                   class="block text-base font-medium active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 {{ $isActive ? 'text-primary-600 dark:text-primary-400 font-bold bg-primary-50 dark:bg-primary-500/10' : 'text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50' }}"
                    href="{{ route($link['route']) }}" wire:navigate
                    @click="mobileOpen = false">
                     {{ $link['label'] }}

@@ -443,9 +443,6 @@ class extends Component
      * listens for a `request-geolocation` window event, calls
      * navigator.geolocation.getCurrentPosition, and on success calls back
      * into the SFC via `setBusinessLocation(lat, lng)`.
-     *
-     * The button on the map was previously dead — it referenced this
-     * method, which didn't exist. Added.
      */
     public function useMyLocation(): void
     {
@@ -1058,13 +1055,16 @@ class extends Component
 @endpush
 
 <main
-    x-data="{ toasts: [] }"
+    x-data="{
+        toasts: [],
+        reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    }"
     x-on:toast.window="
         const id = Date.now() + Math.random();
         toasts.push({ id, message: $event.detail.message, type: $event.detail.type || 'info' });
         setTimeout(() => { toasts = toasts.filter(t => t.id !== id) }, 3500);
     "
-    x-on:scroll-to-top.window="window.scrollTo({ top: 0, behavior: 'smooth' })"
+    x-on:scroll-to-top.window="window.scrollTo({ top: 0, behavior: reducedMotion ? 'auto' : 'smooth' })"
     class="min-h-screen">
 
     {{-- Toast container — Rule 69: no x-transition, CSS animation carries
@@ -1220,7 +1220,7 @@ class extends Component
              ═══════════════════════════════════════════════════════════ --}}
         @if ($step === 1)
 
-            {{-- Cover photo — cropper-wrapped --}}
+            {{-- Cover photo --}}
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm overflow-hidden mb-5">
                 <div class="px-6 pt-5 pb-3 flex items-center justify-between">
                     <div class="flex items-center gap-3">
@@ -1272,11 +1272,10 @@ class extends Component
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
                             </svg>
                             {{ $cover_photo_path ? 'Replace cover' : 'Upload cover photo' }}
-                            <input type="file" id="cover-upload" x-ref="input" x-on:change="pick($event)" accept="image/jpeg,image/png,image/webp" class="sr-only">
+                            <input type="file" id="cover-upload" x-on:change="pick($event)" accept="image/jpeg,image/png,image/webp" class="sr-only">
                         </label>
 
                         @if($cover_photo_path)
-                            {{-- Rule 19: Alpine confirm() replaces wire:confirm. --}}
                             <button type="button"
                                     x-on:click="if (confirm('Remove the cover photo?')) $wire.removeCoverPhoto()"
                                     wire:loading.attr="disabled"
@@ -1300,7 +1299,7 @@ class extends Component
                 </div>
             </section>
 
-            {{-- Business logo — cropper-wrapped, aspect 1:1 --}}
+            {{-- Business logo --}}
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mb-5">
                 <div class="flex items-center gap-3 mb-5">
                     <span class="w-5 h-px bg-primary-600"></span>
@@ -1339,7 +1338,7 @@ class extends Component
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
                                 </svg>
                                 {{ $logo_path ? 'Replace logo' : 'Upload logo' }}
-                                <input type="file" id="logo-upload" x-ref="input" x-on:change="pick($event)" accept="image/jpeg,image/png,image/webp" class="sr-only">
+                                <input type="file" id="logo-upload" x-on:change="pick($event)" accept="image/jpeg,image/png,image/webp" class="sr-only">
                             </label>
 
                             @if($logo_path)
@@ -1384,7 +1383,7 @@ class extends Component
                         <input type="text" id="business_name" wire:model="business_name"
                                placeholder="e.g. Gawahon Eco Park"
                                maxlength="255"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                         @error('business_name') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
                     </div>
 
@@ -1394,7 +1393,7 @@ class extends Component
                                 Registration Type <span class="text-rose-500">*</span>
                             </label>
                             <select id="business_type" wire:model.live="business_type"
-                                    class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                                    class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                                 <option value="">— Select —</option>
                                 @foreach($this->businessTypeLabels as $key => $label)
                                     <option value="{{ $key }}">{{ $label }}</option>
@@ -1408,10 +1407,10 @@ class extends Component
                                 Category <span class="text-rose-500">*</span>
                             </label>
                             <select id="type_of_tenant_id" wire:model="type_of_tenant_id"
-                                    class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                                    class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                                 <option value="">— Select —</option>
                                 @foreach($this->tenantTypes as $type)
-                                    <option wire:key="t-{{ $type->id }}" value="{{ $type->id }}">{{ $type->type }}</option>
+                                    <option value="{{ $type->id }}">{{ $type->type }}</option>
                                 @endforeach
                             </select>
                             @error('type_of_tenant_id') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
@@ -1427,7 +1426,7 @@ class extends Component
                                   rows="3"
                                   maxlength="500"
                                   placeholder="A short introduction to your business"
-                                  class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition resize-none"></textarea>
+                                  class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition resize-none"></textarea>
                         @error('business_description') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
                     </div>
                 </div>
@@ -1453,7 +1452,7 @@ class extends Component
                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                        disabled:opacity-60 disabled:cursor-not-allowed">
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657 13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
                             </svg>
                             Use my location
@@ -1545,7 +1544,7 @@ class extends Component
                 </div>
 
                 @if($this->hasCoordinates)
-                    <p class="mt-2 text-[10px] font-mono text-gray-400 dark:text-gray-500">
+                    <p class="mt-2 text-[10px] font-mono text-gray-400 dark:text-gray-500 tabular-nums">
                         {{ number_format($businessLat, 6) }}, {{ number_format($businessLng, 6) }}
                     </p>
                 @endif
@@ -1559,25 +1558,29 @@ class extends Component
                             Street Address
                         </label>
                         <input type="text" id="address" wire:model="address"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                               autocomplete="street-address"
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                     </div>
 
                     <div>
                         <label for="barangay" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Barangay</label>
                         <input type="text" id="barangay" wire:model="barangay"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                               autocomplete="address-level3"
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                     </div>
 
                     <div>
                         <label for="city" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">City / Municipality</label>
                         <input type="text" id="city" wire:model="city"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                               autocomplete="address-level2"
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                     </div>
 
                     <div class="sm:col-span-2">
                         <label for="province" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Province</label>
                         <input type="text" id="province" wire:model="province"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                               autocomplete="address-level1"
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                     </div>
                 </div>
             </section>
@@ -1614,7 +1617,7 @@ class extends Component
                                        $event.target.dispatchEvent(new Event('input', { bubbles: true }));
                                    }
                                "
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition font-mono">
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition font-mono">
                         @error('business_registration_number') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
                     </div>
 
@@ -1642,7 +1645,7 @@ class extends Component
                                        $event.target.dispatchEvent(new Event('input', { bubbles: true }));
                                    }
                                "
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition font-mono">
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition font-mono">
                         @error('tin_number') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
                     </div>
                 </div>
@@ -1716,7 +1719,6 @@ class extends Component
                                                 View
                                             </a>
                                             <span class="w-px h-3 bg-gray-300 dark:bg-gray-700"></span>
-                                            {{-- Rule 19: Alpine confirm() replaces wire:confirm. --}}
                                             <button type="button"
                                                     x-on:click="if (confirm('Remove this document? You can upload a new one after.')) $wire.deleteDocument({{ $existing->id }})"
                                                     wire:loading.attr="disabled"
@@ -1850,7 +1852,6 @@ class extends Component
              ═══════════════════════════════════════════════════════════ --}}
         @if ($step === 3)
 
-            {{-- Owner photo — cropper-wrapped, aspect 1:1 --}}
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mb-5">
                 <div class="flex items-center gap-3 mb-5">
                     <span class="w-5 h-px bg-primary-600"></span>
@@ -1889,7 +1890,7 @@ class extends Component
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
                                 </svg>
                                 {{ $owner_avatar_path ? 'Replace photo' : 'Upload photo' }}
-                                <input type="file" id="avatar-upload" x-ref="input" x-on:change="pick($event)" accept="image/jpeg,image/png,image/webp" class="sr-only">
+                                <input type="file" id="avatar-upload" x-on:change="pick($event)" accept="image/jpeg,image/png,image/webp" class="sr-only">
                             </label>
 
                             @if($owner_avatar_path)
@@ -1932,7 +1933,8 @@ class extends Component
                         </label>
                         <input type="text" id="owner_full_name" wire:model="owner_full_name"
                                placeholder="Juan dela Cruz"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                               autocomplete="name"
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                         @error('owner_full_name') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
                     </div>
 
@@ -1942,10 +1944,10 @@ class extends Component
                                 Type of Government ID <span class="text-rose-500">*</span>
                             </label>
                             <select id="owner_id_type" wire:model.live="owner_id_type"
-                                    class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                                    class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                                 <option value="">— Select an accepted ID —</option>
                                 @foreach($this->ownerIdTypes as $key => $label)
-                                    <option wire:key="id-{{ $key }}" value="{{ $key }}">{{ $label }}</option>
+                                    <option value="{{ $key }}">{{ $label }}</option>
                                 @endforeach
                             </select>
                             @error('owner_id_type') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
@@ -1958,7 +1960,7 @@ class extends Component
                             <input type="text" id="owner_id_number" wire:model="owner_id_number"
                                    placeholder="Number as printed on your ID"
                                    autocomplete="off"
-                                   class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                                   class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                             @error('owner_id_number') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
                         </div>
 
@@ -1967,7 +1969,9 @@ class extends Component
                                 Date of Birth <span class="text-[10px] font-normal text-gray-400">(optional)</span>
                             </label>
                             <input type="date" id="owner_birthdate" wire:model="owner_birthdate"
-                                   class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                                   autocomplete="bday"
+                                   max="{{ now()->subDay()->format('Y-m-d') }}"
+                                   class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                         </div>
                     </div>
                 </div>
@@ -1987,7 +1991,8 @@ class extends Component
                             Email <span class="text-rose-500">*</span>
                         </label>
                         <input type="email" id="contact_email" wire:model="contact_email"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                               autocomplete="email"
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                         @error('contact_email') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
                     </div>
 
@@ -1995,9 +2000,12 @@ class extends Component
                         <label for="contact_phone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                             Phone <span class="text-rose-500">*</span>
                         </label>
-                        <input type="text" id="contact_phone" wire:model="contact_phone"
+                        <input type="tel" id="contact_phone" wire:model="contact_phone"
                                placeholder="09xxxxxxxxx"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                               autocomplete="tel"
+                               inputmode="numeric"
+                               maxlength="13"
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                         @error('contact_phone') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
                     </div>
                 </div>
@@ -2075,7 +2083,7 @@ class extends Component
                     </div>
                     <div class="min-w-0">
                         <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Registration No.</dt>
-                        <dd class="mt-0.5 text-sm font-mono font-medium text-gray-900 dark:text-white truncate">{{ $business_registration_number ?: '—' }}</dd>
+                        <dd class="mt-0.5 text-sm font-mono font-medium text-gray-900 dark:text-white truncate tabular-nums">{{ $business_registration_number ?: '—' }}</dd>
                     </div>
                     <div class="min-w-0">
                         <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Owner Name</dt>
@@ -2083,7 +2091,7 @@ class extends Component
                     </div>
                     <div class="min-w-0">
                         <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">TIN</dt>
-                        <dd class="mt-0.5 text-sm font-mono font-medium text-gray-900 dark:text-white truncate">{{ $tin_number ?: '—' }}</dd>
+                        <dd class="mt-0.5 text-sm font-mono font-medium text-gray-900 dark:text-white truncate tabular-nums">{{ $tin_number ?: '—' }}</dd>
                     </div>
                     <div class="min-w-0">
                         <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Location Pinned</dt>
@@ -2093,7 +2101,7 @@ class extends Component
                     </div>
                     <div class="min-w-0">
                         <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Documents</dt>
-                        <dd class="mt-0.5 text-sm font-medium {{ $this->isReadyToSubmit ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400' }}">
+                        <dd class="mt-0.5 text-sm font-medium tabular-nums {{ $this->isReadyToSubmit ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400' }}">
                             {{ $this->uploadedRequiredCount }} / {{ count($this->requiredDocuments) }}
                             {{ $this->isReadyToSubmit ? '✓' : '(incomplete)' }}
                         </dd>

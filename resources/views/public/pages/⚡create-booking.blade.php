@@ -1,9 +1,10 @@
-{{-- resources/views/livewire/booking/⚡create.blade.php --}}
+{{-- resources/views/public/pages/⚡create-booking.blade.php --}}
 <?php
 
 use Livewire\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
+use Livewire\Attributes\Locked;
 use Livewire\Attributes\Computed;
 use App\Models\Property;
 use App\Models\Service;
@@ -24,7 +25,26 @@ new
 #[Title('Complete Your Booking')]
 class extends Component
 {
-    public Property $property;
+    /**
+     * The Property row this booking is for.
+     *
+     * NOT typed as non-nullable `Property` because Livewire v4's
+     * typed-model binding re-fetches the row on hydrate WITHOUT
+     * `withoutGlobalScope(TenantScope::class)` and WITHOUT the mount()
+     * eager loads. For an authenticated tourist (`tenant_id === null`)
+     * the TenantScope's `whereRaw('1 = 0')` filters the property out
+     * and a non-nullable binding throws ModelNotFoundException before
+     * the `hydrate()` hook can intervene.
+     *
+     * Approach: pin the ID on a Locked scalar (the client can't change
+     * it), make the model nullable so Livewire can null it during its
+     * own rehydrate pass, and re-fetch explicitly in `hydrate()` with
+     * the tenant-scope bypass and the mount-time eager loads.
+     */
+    #[Locked]
+    public int $propertyId;
+
+    public ?Property $property = null;
 
     // ── Guest ──
     public string $customerName  = '';
@@ -56,9 +76,11 @@ class extends Component
 
     public function mount($publicproperty): void
     {
-        $this->property = Property::with(['tenant', 'images', 'propertyType'])
-            ->withoutGlobalScope(TenantScope::class)
-            ->findOrFail($publicproperty);
+        $this->propertyId = (int) $publicproperty;
+
+        $this->property = Property::withoutGlobalScope(TenantScope::class)
+            ->with(['tenant', 'images', 'propertyType'])
+            ->findOrFail($this->propertyId);
 
         $this->assertPropertyIsBookable();
 
@@ -79,19 +101,25 @@ class extends Component
     }
 
     /**
-     * Livewire re-hydrates the bound Property by ID on every subsequent
-     * request. The row could have been deactivated, unassigned from its
-     * tenant, or deleted while the page was open. Re-verify.
+     * Livewire v4 re-fetches typed model properties on hydrate WITHOUT
+     * the mount-time eager loads. Re-fetch here — with the tenant-scope
+     * bypass AND the eager loads — so the template and every availability
+     * check don't trigger lazy-load queries on each action.
      */
     public function hydrate(): void
     {
+        $this->property = Property::withoutGlobalScope(TenantScope::class)
+            ->with(['tenant', 'images', 'propertyType'])
+            ->find($this->propertyId);
+
         $this->assertPropertyIsBookable();
     }
 
     protected function assertPropertyIsBookable(): void
     {
         if (
-            !$this->property->tenant_id
+            !$this->property
+            || !$this->property->tenant_id
             || !$this->property->is_active
             || !$this->property->tenant
         ) {
@@ -413,7 +441,31 @@ class extends Component
             ->all();
     }
 
-    /** @return array<int, string> */
+    /**
+     * Explode the booked ranges into individual dates.
+     *
+     * NOTE ON SEMANTICS — currently INCLUSIVE of `check_out`:
+     *   A booking Oct 1 → Oct 3 marks Oct 1, Oct 2, and Oct 3 as taken.
+     *   That means no same-day turnover: a new guest cannot check in on
+     *   the same day another checks out. The `submit()` conflict check
+     *   uses EXCLUSIVE comparisons (`E_out > N_in`), so it would accept
+     *   that turnover. The two are inconsistent by design here — the
+     *   frontend is stricter, which is the safe side of the mismatch.
+     *
+     *   If you want standard hotel-style same-day turnover (check_out
+     *   morning is free for the next arrival), change the loop below to
+     *   include `check_in` only, then walk up to but NOT including
+     *   `check_out`:
+     *
+     *     $dates[] = $start->format('Y-m-d');
+     *     for ($d = $start->copy()->addDay(); $d->lt($end); $d->addDay()) {
+     *         $dates[] = $d->format('Y-m-d');
+     *     }
+     *
+     *   That also requires matching changes in `validateDateRange()`
+     *   below and the `submit()` conflict query. Pick one semantic and
+     *   apply it in all three places.
+     */
     #[Computed]
     public function bookedDatesArray(): array
     {
@@ -1156,7 +1208,7 @@ class extends Component
                                                        {{ $isAdded ? 'hidden' : 'flex' }}">
                                             <span class="min-w-0 flex-1">
                                                 <span class="block text-sm font-semibold text-gray-900 dark:text-white truncate">{{ $service->name }}</span>
-                                                <span class="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">₱{{ number_format($service->price, 2) }}</span>
+                                                <span class="block text-xs text-gray-500 dark:text-gray-400 mt-0.5 tabular-nums">₱{{ number_format($service->price, 2) }}</span>
                                             </span>
                                             <span class="shrink-0 inline-flex items-center gap-1 h-8 px-3 rounded-full bg-primary-600 hover:bg-primary-700 text-white text-[10px] font-bold uppercase tracking-wider transition">
                                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v16m8-8H4"/></svg>
@@ -1167,7 +1219,7 @@ class extends Component
                                         <div class="items-center justify-between gap-3 px-4 py-3 {{ $isAdded ? 'flex' : 'hidden' }}">
                                             <div class="min-w-0 flex-1">
                                                 <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">{{ $service->name }}</p>
-                                                <p class="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
+                                                <p class="text-xs text-gray-600 dark:text-gray-400 mt-0.5 tabular-nums">
                                                     ₱{{ number_format($service->price, 2) }} × {{ $qty }} =
                                                     <span class="font-bold text-primary-600 dark:text-primary-400">₱{{ number_format($service->price * $qty, 2) }}</span>
                                                 </p>
@@ -1368,7 +1420,7 @@ class extends Component
                             {{ $property->propertyType->name ?? 'Activity' }} · {{ $property->tenant->name }}
                         </p>
                         <div class="flex items-baseline gap-1.5 mt-3">
-                            <span class="font-display text-3xl text-primary-600 dark:text-primary-400">₱{{ number_format($property->price, 2) }}</span>
+                            <span class="font-display text-3xl text-primary-600 dark:text-primary-400 tabular-nums">₱{{ number_format($property->price, 2) }}</span>
                             <span class="text-xs text-gray-500 dark:text-gray-400">per unit</span>
                         </div>
                     </div>
@@ -1377,7 +1429,7 @@ class extends Component
                         @if($check_in && $check_out)
                             <div class="flex justify-between items-center text-xs text-gray-500 dark:text-gray-400">
                                 <span>Dates</span>
-                                <span class="font-medium text-gray-900 dark:text-white text-right">
+                                <span class="font-medium text-gray-900 dark:text-white text-right tabular-nums">
                                     {{ \Carbon\Carbon::parse($check_in)->format('M d') }} – {{ \Carbon\Carbon::parse($check_out)->format('M d') }}
                                 </span>
                             </div>
@@ -1394,7 +1446,7 @@ class extends Component
                                 <dt class="text-gray-600 dark:text-gray-300">
                                     {{ $totalDays }} day{{ $totalDays > 1 ? 's' : '' }} × ₱{{ number_format($property->price, 2) }}
                                 </dt>
-                                <dd class="font-semibold text-gray-900 dark:text-white">
+                                <dd class="font-semibold text-gray-900 dark:text-white tabular-nums">
                                     ₱{{ number_format($property->price * $totalDays, 2) }}
                                 </dd>
                             </div>
@@ -1404,7 +1456,7 @@ class extends Component
                                 @if($svc)
                                     <div class="flex justify-between items-center text-sm mt-2" wire:key="summary-service-{{ $serviceId }}">
                                         <dt class="text-gray-600 dark:text-gray-300 truncate max-w-[160px]">{{ $svc->name }} ×{{ $qty }}</dt>
-                                        <dd class="font-semibold text-gray-900 dark:text-white shrink-0">₱{{ number_format($svc->price * $qty, 2) }}</dd>
+                                        <dd class="font-semibold text-gray-900 dark:text-white shrink-0 tabular-nums">₱{{ number_format($svc->price * $qty, 2) }}</dd>
                                     </div>
                                 @endif
                             @endforeach
@@ -1415,20 +1467,20 @@ class extends Component
                         @if($bookingMode === 'reservation')
                             <div class="flex justify-between items-center">
                                 <span class="text-xs font-bold uppercase tracking-widest text-gray-500 dark:text-gray-400">Pay Now (20%)</span>
-                                <span class="font-display text-2xl font-semibold text-primary-600 dark:text-primary-400">
+                                <span class="font-display text-2xl font-semibold text-primary-600 dark:text-primary-400 tabular-nums">
                                     ₱{{ number_format($reservationFee, 2) }}
                                 </span>
                             </div>
                             <div class="flex justify-between items-center mt-2">
                                 <span class="text-xs font-bold uppercase tracking-widest text-gray-500 dark:text-gray-400">Balance on Arrival</span>
-                                <span class="font-display text-lg font-semibold text-gray-900 dark:text-white">
+                                <span class="font-display text-lg font-semibold text-gray-900 dark:text-white tabular-nums">
                                     ₱{{ number_format($balanceOnArrival, 2) }}
                                 </span>
                             </div>
                         @else
                             <div class="flex justify-between items-center">
                                 <span class="text-xs font-bold uppercase tracking-widest text-gray-500 dark:text-gray-400">Total Due</span>
-                                <span class="font-display text-3xl font-semibold text-primary-600 dark:text-primary-400">
+                                <span class="font-display text-3xl font-semibold text-primary-600 dark:text-primary-400 tabular-nums">
                                     ₱{{ number_format($totalAmount, 2) }}
                                 </span>
                             </div>
@@ -1449,11 +1501,11 @@ class extends Component
                 <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                     {{ $bookingMode === 'reservation' ? 'Pay now (20%)' : 'Total due' }}
                 </p>
-                <p class="font-display text-xl font-bold text-gray-900 dark:text-white leading-tight">
+                <p class="font-display text-xl font-bold text-gray-900 dark:text-white leading-tight tabular-nums">
                     ₱{{ number_format($bookingMode === 'reservation' ? $reservationFee : $totalAmount, 2) }}
                 </p>
                 @if($check_in && $check_out)
-                    <p class="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5 truncate">
+                    <p class="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5 truncate tabular-nums">
                         {{ \Carbon\Carbon::parse($check_in)->format('M d') }} → {{ \Carbon\Carbon::parse($check_out)->format('M d') }}
                         · {{ $totalDays }} day{{ $totalDays > 1 ? 's' : '' }}
                     </p>

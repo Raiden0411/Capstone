@@ -112,22 +112,34 @@ new class extends Component
 };
 ?>
 
-{{-- Livewire polls here; Alpine owns the open/close state AND the
-     mobile positioning. On viewports < 640px the dropdown is not
-     anchored to the bell (which sits ~150px from the viewport's right
-     edge because of the dark-mode toggle, user dropdown, and mobile
-     hamburger to its right). Anchoring `right-0` to the bell would push
-     a 320px-wide panel ~85px off the left edge of a 375px screen.
-     Instead we compute width and left-offset from the wrapper's
-     viewport rect and write them as an inline style. On sm+ the
-     override is cleared and Tailwind's w-80 sm:w-96 apply as normal.
+{{--
+    Livewire polls here; Alpine owns the open/close state AND the
+    mobile positioning. On viewports < 640px the dropdown is not
+    anchored to the bell (which sits ~150px from the viewport's right
+    edge because of the dark-mode toggle, user dropdown, and mobile
+    hamburger to its right). Anchoring `right-0` to the bell would push
+    a 320px-wide panel ~85px off the left edge of a 375px screen.
+    Instead we compute width and left-offset from the wrapper's
+    viewport rect and write them as an inline style. On sm+ the
+    override is cleared and Tailwind's w-80 sm:w-96 apply as normal.
 
-     Visibility uses :class toggling — NOT x-show. Livewire v4's morph
-     engine can call Alpine's show() handler on a detached node and
-     crash with cloneNode on undefined (Rule 69). The dropdown also
-     carries wire:ignore.self so Livewire doesn't strip Alpine's
-     applied classes on the next poll — while still morphing the
-     CHILDREN so @foreach ($this->items) keeps updating. --}}
+    Visibility uses :class toggling — NOT x-show. Livewire v4's morph
+    engine can call Alpine's show() handler on a detached node and
+    crash with cloneNode on undefined (Rule 69). The dropdown also
+    carries wire:ignore.self so Livewire doesn't strip Alpine's
+    applied classes on the next poll — while still morphing the
+    CHILDREN so @foreach ($this->items) keeps updating.
+--}}
+
+@php
+    // Aria-label for the bell button. The count appears in the label
+    // when there are notifications, so screen-reader users get the
+    // same signal that sighted users get from the badge.
+    $bellAriaLabel = $this->count > 0
+        ? "Notifications ({$this->count})"
+        : 'Notifications';
+@endphp
+
 <div
     @if ($pollInterval > 0) wire:poll.{{ $pollInterval }}s @endif
     x-data="{
@@ -164,22 +176,28 @@ new class extends Component
     class="relative">
 
     {{-- Bell button.
-         size-11 (44px) on mobile meets the Apple HIG minimum tap target.
-         size-10 (40px) on desktop matches the sibling controls in the
-         public header (dark-mode toggle, hamburger). --}}
+         size-9 md:size-10 matches the dark-mode toggle and the mobile
+         hamburger exactly, so all three controls in the header cluster
+         read as one visual group. The Apple HIG minimum of 44px is
+         intentionally traded off here for header consistency — if you
+         ever want to bump all three to 44px on mobile, change the
+         class to `size-11 md:size-10` HERE **and** in the header's
+         dark-mode toggle and hamburger together. Do them as a set or
+         not at all. --}}
     <button type="button"
             @click="open = !open; if (open) $nextTick(() => reposition())"
             :aria-expanded="open.toString()"
             aria-haspopup="true"
-            aria-label="Notifications"
-            class="relative flex items-center justify-center size-11 md:size-10 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition-all duration-200 active:scale-95">
+            aria-label="{{ $bellAriaLabel }}"
+            class="relative flex items-center justify-center size-9 md:size-10 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition-all duration-200 active:scale-95">
 
-        <svg xmlns="http://www.w3.org/2000/svg" class="shrink-0 size-5 md:size-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+        <svg xmlns="http://www.w3.org/2000/svg" class="shrink-0 size-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
             <path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
         </svg>
 
         @if ($this->count > 0)
-            <span class="absolute -top-1 -right-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-bold text-white ring-2 ring-white dark:ring-gray-900">
+            <span class="absolute -top-1 -right-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-bold text-white ring-2 ring-white dark:ring-gray-900 tabular-nums"
+                  aria-hidden="true">
                 {{ $this->count > 9 ? '9+' : $this->count }}
             </span>
         @endif
@@ -201,7 +219,7 @@ new class extends Component
             <p class="text-sm font-semibold text-gray-900 dark:text-white">Notifications</p>
             @if ($this->count > 0)
                 <span class="text-xs text-gray-500 dark:text-gray-400">
-                    {{ $this->count }} active
+                    {{ $this->count }} {{ \Illuminate\Support\Str::plural('notification', $this->count) }}
                 </span>
             @endif
         </div>
@@ -222,6 +240,7 @@ new class extends Component
                     @php
                         $colors   = $this->colorClasses($notification['color'] ?? 'gray');
                         $iconPath = $this->iconPath($notification['icon'] ?? 'bell');
+                        $ts       = $notification['time'] ?? null;
                     @endphp
                     <a href="{{ $notification['url'] }}"
                        wire:navigate
@@ -240,10 +259,15 @@ new class extends Component
                             <p class="mt-0.5 text-xs text-gray-600 dark:text-gray-400 leading-relaxed line-clamp-2">
                                 {{ $notification['message'] }}
                             </p>
-                            @if (!empty($notification['time']))
-                                <p class="mt-1 text-[10px] font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500">
-                                    {{ \Carbon\Carbon::createFromTimestamp($notification['time'])->diffForHumans() }}
-                                </p>
+                            @if ($ts)
+                                {{-- <time> is the semantic element for a machine-
+                                     generated timestamp. datetime carries the ISO
+                                     representation; the human-readable relative
+                                     string is the visible text. --}}
+                                <time datetime="{{ \Carbon\Carbon::createFromTimestamp($ts)->toIso8601String() }}"
+                                      class="mt-1 block text-[10px] font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                                    {{ \Carbon\Carbon::createFromTimestamp($ts)->diffForHumans() }}
+                                </time>
                             @endif
                         </div>
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0 text-gray-300 dark:text-gray-600 mt-2.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">

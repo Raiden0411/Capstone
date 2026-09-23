@@ -105,8 +105,7 @@ class extends Component
     /**
      * Batched, cached read of every image URL this page manages. One
      * cache entry instead of ~30 individual reads spread across the
-     * view (each `getStoredImageUrl()` call used to hit the cache layer
-     * twice: once for the version token, once for the value).
+     * view.
      *
      * @return array<string, string|null>
      */
@@ -124,6 +123,15 @@ class extends Component
         return $urls;
     }
 
+    /**
+     * Persist every field on this screen.
+     *
+     * On success, redirect back to this same route. Rationale is
+     * unchanged from the previous version — the short version is: a
+     * redirect re-mounts the component, recomputes imageUrls(), and
+     * renders fresh src attributes on first paint. Sidesteps the
+     * stale-preview bug entirely (Rule 133).
+     */
     public function save()
     {
         // Livewire update requests bypass route middleware — re-check
@@ -186,20 +194,16 @@ class extends Component
             SiteSetting::setValue($key, $this->{$property} ?? '');
         }
 
+        // Clear the uploaded-file properties so the redirected re-mount
+        // starts from a clean slate with no stale upload handles.
         $this->reset([
             'heroImage', 'storyImage1', 'storyImage2', 'storyImage3',
             'highlight1Image', 'highlight2Image', 'highlight3Image', 'ctaBackgroundImage',
         ]);
 
-        // Cache was bumped by the writes above — clear the memoized
-        // image URLs so the next render fetches fresh values.
-        unset($this->imageUrls);
-
-        // Clear client-side file previews so the DOM falls back to
-        // the freshly-saved server thumbnails.
-        $this->dispatch('preview-reset');
-
         session()->flash('message', 'About page updated successfully.');
+
+        return $this->redirect(route('superadmin.about.editor'), navigate: true);
     }
 
     /**
@@ -226,8 +230,6 @@ class extends Component
 
             SiteSetting::setValue($key, $newPath);
         } catch (\Throwable $e) {
-            // Clean up the newly stored file — the DB write rolled back
-            // or was never attempted.
             if ($newPath && Storage::disk('public')->exists($newPath)) {
                 Storage::disk('public')->delete($newPath);
             }
@@ -235,12 +237,6 @@ class extends Component
             throw $e;
         }
 
-        // Delete the old file AFTER the DB write succeeded — only if a
-        // new file actually replaced it. This closes the disk-leak that
-        // existed before: replacing an image never removed the old one.
-        // Guard against the (theoretical) case where the storage layer
-        // returns the same path twice — otherwise we'd delete the file
-        // we just wrote.
         if ($oldPath
             && $oldPath !== $newPath
             && Storage::disk('public')->exists($oldPath)) {
@@ -259,6 +255,10 @@ class extends Component
     Root element carries the initial live-preview state via a data-* attribute
     encoded with JSON_HEX_* flags, so quotes inside the values can never break
     the HTML attribute.
+
+    The Alpine factory `aboutEditor()` is defined in resources/js/app.js
+    (Rule 119). It is NOT in an @script/@endscript block here — that wrapper
+    is dead syntax in Livewire v4 (Rule 120).
 --}}
 <div
     x-data="aboutEditor()"
@@ -739,74 +739,3 @@ class extends Component
         </div>
     </form>
 </div>
-
-{{--
-    Alpine component factory.
-    Runs before Alpine boots (Livewire v4 `@script` semantics) so
-    `x-data="aboutEditor()"` resolves at init.
---}}
-@script
-<script>
-    window.aboutEditor = function () {
-        return {
-            preview: {},
-            filePreviews: {
-                heroImage:          null,
-                storyImage1:        null,
-                storyImage2:        null,
-                storyImage3:        null,
-                highlight1Image:    null,
-                highlight2Image:    null,
-                highlight3Image:    null,
-                ctaBackgroundImage: null,
-            },
-            draggingKey: null,
-
-            init() {
-                try {
-                    this.preview = JSON.parse(this.$el.dataset.preview || '{}');
-                } catch (e) {
-                    this.preview = {};
-                }
-
-                window.addEventListener('preview-reset', () => {
-                    this.filePreviews = {
-                        heroImage:          null,
-                        storyImage1:        null,
-                        storyImage2:        null,
-                        storyImage3:        null,
-                        highlight1Image:    null,
-                        highlight2Image:    null,
-                        highlight3Image:    null,
-                        ctaBackgroundImage: null,
-                    };
-                });
-            },
-
-            handleDrop(event, key) {
-                this.draggingKey = null;
-                const input = this.$refs['file-' + key];
-                if (!input || !event.dataTransfer.files.length) return;
-                input.files = event.dataTransfer.files;
-                input.dispatchEvent(new Event('change', { bubbles: true }));
-            },
-
-            previewFile(event, key) {
-                const file = event.target.files?.[0];
-                this.filePreviews[key] = file ? URL.createObjectURL(file) : null;
-            },
-
-            clearFile(key) {
-                this.filePreviews[key] = null;
-                // Reset the underlying Livewire property so the pending
-                // upload is discarded on save.
-                try { this.$wire.set(key, null); } catch (e) { /* noop */ }
-            },
-
-            bindField(event, field) {
-                this.preview[field] = event.target.value;
-            },
-        };
-    };
-</script>
-@endscript

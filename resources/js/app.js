@@ -7,6 +7,27 @@ window.axios.defaults.headers.common['X-Requested-With'] = 'XMLHttpRequest';
 
 /*
 |--------------------------------------------------------------------------
+| Chart.js — bundled via Vite
+|--------------------------------------------------------------------------
+| Used by the tenant analytics page.
+|
+| Loading it from the Vite bundle instead of a CDN <script> tag means:
+|
+|   • No dependency on the tenant layout having a @stack('scripts') slot.
+|     Any layout, any theme, works.
+|   • No CSP issues (no external script source).
+|   • No network round-trip on cold load; works offline and on local dev.
+|
+| `chart.js/auto` registers every controller, scale, and plugin, so any
+| <canvas> element works with any chart type without further imports.
+| We expose it as `window.Chart` because the analytics SFC's @script
+| block reaches for the global.
+*/
+import Chart from 'chart.js/auto';
+window.Chart = Chart;
+
+/*
+|--------------------------------------------------------------------------
 | Alpine plugins
 |--------------------------------------------------------------------------
 | Livewire v4 bundles Alpine core but does NOT bundle Collapse. We import
@@ -1703,6 +1724,204 @@ window.dateSelector = function () {
             this.checkOut = target;
             this.error    = '';
             try { this.$wire.setDates(target, target); } catch (e) { /* noop */ }
+        },
+    };
+};
+
+/*
+|==========================================================================
+| HOMEPAGE EDITOR — Alpine factory
+|==========================================================================
+|
+| Used by the superadmin homepage editor SFC at:
+|   resources/views/superadmin/pages/homepage/⚡homepage-editor.blade.php
+|
+| WHY THIS LIVES IN app.js AND NOT IN THE SFC <script> TAG:
+|
+| Livewire v4 extracts <script> tags from view-based components and
+| serves them as separate, async-loaded, cached files. By the time those
+| files execute, Alpine has already walked the DOM and evaluated
+| `x-data="homepageEditor()"` — producing "homepageEditor is not defined"
+| on a cold load.
+|
+| Vite loads app.js as a module script. Module scripts run after HTML
+| parsing completes but BEFORE DOMContentLoaded — which is when Livewire
+| boots Alpine. So the factory below is guaranteed to exist in time.
+|
+| STATE SHAPE:
+|   preview      — object mirrored from `data-preview` on the root element.
+|                  Keys: heroTitle, heroSubtitle, heroDescription,
+|                        discoverTitle, discoverDescription,
+|                        ctaEyebrow, ctaTitle, ctaDescription,
+|                        ctaButtonText
+|   filePreviews — object holding ObjectURL strings for images the user
+|                  picked but hasn't saved yet. Null when no pick.
+|                  Keys match the Livewire image properties:
+|                        heroBackgroundImage, heroSideImage1..4,
+|                        ctaBackgroundImage
+|   draggingKey  — tracking the currently-hovered drop target's key.
+|                  Only used for the visual drag state on the uploader.
+|
+| NOTE: after a successful save() the SFC redirects (Rule 133), so
+| this factory is disposed and re-created on the fresh page load. The
+| 'preview-reset' event listener below is defensive only — no current
+| code path dispatches it.
+|==========================================================================
+*/
+window.homepageEditor = function () {
+    return {
+        preview: {},
+        filePreviews: {
+            heroBackgroundImage: null,
+            heroSideImage1:      null,
+            heroSideImage2:      null,
+            heroSideImage3:      null,
+            heroSideImage4:      null,
+            ctaBackgroundImage:  null,
+        },
+        draggingKey: null,
+
+        init() {
+            try {
+                this.preview = JSON.parse(this.$el.dataset.preview || '{}');
+            } catch (e) {
+                this.preview = {};
+            }
+
+            window.addEventListener('preview-reset', () => {
+                this.filePreviews = {
+                    heroBackgroundImage: null,
+                    heroSideImage1:      null,
+                    heroSideImage2:      null,
+                    heroSideImage3:      null,
+                    heroSideImage4:      null,
+                    ctaBackgroundImage:  null,
+                };
+            });
+        },
+
+        handleDrop(event, key) {
+            this.draggingKey = null;
+            const input = this.$refs['file-' + key];
+            if (!input || !event.dataTransfer.files.length) return;
+            input.files = event.dataTransfer.files;
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        },
+
+        previewFile(event, key) {
+            const file = event.target.files?.[0];
+            this.filePreviews[key] = file ? URL.createObjectURL(file) : null;
+        },
+
+        bindField(event, field) {
+            this.preview[field] = event.target.value;
+        },
+    };
+};
+
+/*
+|==========================================================================
+| ABOUT EDITOR — Alpine factory
+|==========================================================================
+|
+| Used by the superadmin About page editor SFC at:
+|   resources/views/superadmin/pages/homepage/⚡about-editor.blade.php
+|
+| WHY THIS LIVES IN app.js AND NOT IN THE SFC <script> TAG:
+|
+| Livewire v4 extracts <script> tags from view-based components and
+| serves them as separate, async-loaded, cached files. By the time those
+| files execute, Alpine has already walked the DOM and evaluated
+| `x-data="aboutEditor()"` — producing "aboutEditor is not defined" on a
+| cold load.
+|
+| Vite loads app.js as a module script. Module scripts run after HTML
+| parsing completes but BEFORE DOMContentLoaded — which is when Livewire
+| boots Alpine. So the factory below is guaranteed to exist in time.
+|
+| STATE SHAPE:
+|   preview      — object mirrored from `data-preview` on the root element.
+|                  Keys: heroSubheading, heroHeading, heroDescription,
+|                        storyHeading, storyText1, storyText2,
+|                        highlight1Title/Text, highlight2Title/Text,
+|                        highlight3Title/Text,
+|                        ctaHeading, ctaText
+|   filePreviews — object holding ObjectURL strings for images the user
+|                  picked but hasn't saved yet. Null when no pick.
+|                  Keys match the Livewire image properties:
+|                        heroImage, storyImage1..3,
+|                        highlight1..3Image, ctaBackgroundImage
+|   draggingKey  — tracking the currently-hovered drop target's key.
+|                  Only used for the visual drag state on the uploader.
+|
+| NOTE: after a successful save() the SFC redirects (Rule 133), so this
+| factory is disposed and re-created on the fresh page load. The
+| 'preview-reset' event listener is defensive only — no current code path
+| dispatches it. `clearFile()` IS used by the shared image-uploader
+| partial to discard a pending upload from the "Remove" button in the
+| preview tile.
+|==========================================================================
+*/
+window.aboutEditor = function () {
+    return {
+        preview: {},
+        filePreviews: {
+            heroImage:          null,
+            storyImage1:        null,
+            storyImage2:        null,
+            storyImage3:        null,
+            highlight1Image:    null,
+            highlight2Image:    null,
+            highlight3Image:    null,
+            ctaBackgroundImage: null,
+        },
+        draggingKey: null,
+
+        init() {
+            try {
+                this.preview = JSON.parse(this.$el.dataset.preview || '{}');
+            } catch (e) {
+                this.preview = {};
+            }
+
+            // Defensive only — save() now redirects (Rule 133), so
+            // filePreviews is refreshed by a full re-mount.
+            window.addEventListener('preview-reset', () => {
+                this.filePreviews = {
+                    heroImage:          null,
+                    storyImage1:        null,
+                    storyImage2:        null,
+                    storyImage3:        null,
+                    highlight1Image:    null,
+                    highlight2Image:    null,
+                    highlight3Image:    null,
+                    ctaBackgroundImage: null,
+                };
+            });
+        },
+
+        handleDrop(event, key) {
+            this.draggingKey = null;
+            const input = this.$refs['file-' + key];
+            if (!input || !event.dataTransfer.files.length) return;
+            input.files = event.dataTransfer.files;
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        },
+
+        previewFile(event, key) {
+            const file = event.target.files?.[0];
+            this.filePreviews[key] = file ? URL.createObjectURL(file) : null;
+        },
+
+        clearFile(key) {
+            this.filePreviews[key] = null;
+            // Reset the underlying Livewire property so the pending
+            // upload is discarded on save.
+            try { this.$wire.set(key, null); } catch (e) { /* noop */ }
+        },
+
+        bindField(event, field) {
+            this.preview[field] = event.target.value;
         },
     };
 };

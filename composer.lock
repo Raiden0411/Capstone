@@ -2310,16 +2310,16 @@
         },
         {
             "name": "livewire/livewire",
-            "version": "v4.2.2",
+            "version": "v4.4.6",
             "source": {
                 "type": "git",
                 "url": "https://github.com/livewire/livewire.git",
-                "reference": "71c28888f99b4bfdaad89a07a104adbc3f98c04b"
+                "reference": "c6b7db7a92103ac2738e8fdc926cecc93eb67853"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/livewire/livewire/zipball/71c28888f99b4bfdaad89a07a104adbc3f98c04b",
-                "reference": "71c28888f99b4bfdaad89a07a104adbc3f98c04b",
+                "url": "https://api.github.com/repos/livewire/livewire/zipball/c6b7db7a92103ac2738e8fdc926cecc93eb67853",
+                "reference": "c6b7db7a92103ac2738e8fdc926cecc93eb67853",
                 "shasum": ""
             },
             "require": {
@@ -2374,7 +2374,7 @@
             "description": "A front-end framework for Laravel.",
             "support": {
                 "issues": "https://github.com/livewire/livewire/issues",
-                "source": "https://github.com/livewire/livewire/tree/v4.2.2"
+                "source": "https://github.com/livewire/livewire/tree/v4.4.6"
             },
             "funding": [
                 {
@@ -2382,7 +2382,7 @@
                     "type": "github"
                 }
             ],
-            "time": "2026-03-25T23:19:23+00:00"
+            "time": "2026-09-21T18:51:23+00:00"
         },
         {
             "name": "luigel/laravel-paymongo",

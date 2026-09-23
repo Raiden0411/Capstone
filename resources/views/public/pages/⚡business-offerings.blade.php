@@ -431,102 +431,104 @@ class extends Component
 ?>
 
 @push('styles')
-<style>
-    .reveal {
-        opacity: 0;
-        transform: translateY(22px);
-        transition: opacity .65s cubic-bezier(.16,1,.3,1), transform .65s cubic-bezier(.16,1,.3,1);
-    }
-    .reveal.in {
-        opacity: 1;
-        transform: translateY(0);
-    }
-    @media (prefers-reduced-motion: reduce) {
-        .reveal { opacity: 1; transform: none; transition: none; }
-    }
-    .gal-overlay {
-        position: fixed;
-        inset: 0;
-        z-index: 99999;
-        background: rgba(0,0,0,0.97);
-        display: flex;
-        flex-direction: column;
-        padding-top: 64px;
-        box-sizing: border-box;
-        animation: galFadeIn .25s ease;
-    }
-    @keyframes galFadeIn {
-        from { opacity: 0 }
-        to   { opacity: 1 }
-    }
-    @media (prefers-reduced-motion: reduce) {
-        .gal-overlay { animation: none; }
-    }
-    .gal-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-        grid-auto-rows: 180px;
-        gap: 6px;
-    }
-    @media (min-width: 768px) {
-        .gal-grid { grid-template-columns: repeat(4, 1fr); }
-        .gal-item:nth-child(1) { grid-column: span 2; grid-row: span 2; }
-        .gal-item:nth-child(5) { grid-column: span 2; }
-        .gal-item:nth-child(9) { grid-column: span 2; grid-row: span 2; }
-    }
-    .lb-wrap {
-        position: fixed;
-        inset: 0;
-        z-index: 999999;
-        background: rgba(0,0,0,0.96);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        animation: fadeIn .18s ease;
-    }
-    @media (prefers-reduced-motion: reduce) {
-        .lb-wrap { animation: none; }
-    }
-    @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
-    .lb-img {
-        max-width: 90vw;
-        max-height: 88vh;
-        object-fit: contain;
-        border-radius: 10px;
-        box-shadow: 0 40px 80px rgba(0,0,0,.6);
-    }
-    .lb-nav {
-        position: absolute;
-        top: 50%;
-        transform: translateY(-50%);
-        width: 48px;
-        height: 48px;
-        border-radius: 50%;
-        background: rgba(255,255,255,.07);
-        border: 1px solid rgba(255,255,255,.12);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: rgba(255,255,255,.6);
-        cursor: pointer;
-        transition: all .2s;
-    }
-    .lb-nav:hover {
-        background: rgba(255,255,255,.15);
-        color: #fff;
-    }
-    @keyframes floatPill { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-4px) } }
-    .gallery-pill { animation: floatPill 3s ease-in-out infinite; }
-    @media (prefers-reduced-motion: reduce) {
-        .gallery-pill { animation: none; }
-    }
-    .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
-    .hero-radial {
-        background:
-            radial-gradient(ellipse 80% 60% at 15% 20%, rgba(59,130,246,.22) 0%, transparent 55%),
-            radial-gradient(ellipse 70% 50% at 85% 80%, rgba(16,185,129,.15) 0%, transparent 55%);
-    }
-</style>
+    @once
+        <style>
+            .reveal {
+                opacity: 0;
+                transform: translateY(22px);
+                transition: opacity .65s cubic-bezier(.16,1,.3,1), transform .65s cubic-bezier(.16,1,.3,1);
+            }
+            .reveal.in {
+                opacity: 1;
+                transform: translateY(0);
+            }
+            @media (prefers-reduced-motion: reduce) {
+                .reveal { opacity: 1; transform: none; transition: none; }
+            }
+            .gal-overlay {
+                position: fixed;
+                inset: 0;
+                z-index: 99999;
+                background: rgba(0,0,0,0.97);
+                display: flex;
+                flex-direction: column;
+                padding-top: 64px;
+                box-sizing: border-box;
+                animation: galFadeIn .25s ease;
+            }
+            @keyframes galFadeIn {
+                from { opacity: 0 }
+                to   { opacity: 1 }
+            }
+            @media (prefers-reduced-motion: reduce) {
+                .gal-overlay { animation: none; }
+            }
+            .gal-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+                grid-auto-rows: 180px;
+                gap: 6px;
+            }
+            @media (min-width: 768px) {
+                .gal-grid { grid-template-columns: repeat(4, 1fr); }
+                .gal-item:nth-child(1) { grid-column: span 2; grid-row: span 2; }
+                .gal-item:nth-child(5) { grid-column: span 2; }
+                .gal-item:nth-child(9) { grid-column: span 2; grid-row: span 2; }
+            }
+            .lb-wrap {
+                position: fixed;
+                inset: 0;
+                z-index: 999999;
+                background: rgba(0,0,0,0.96);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                animation: fadeIn .18s ease;
+            }
+            @media (prefers-reduced-motion: reduce) {
+                .lb-wrap { animation: none; }
+            }
+            @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+            .lb-img {
+                max-width: 90vw;
+                max-height: 88vh;
+                object-fit: contain;
+                border-radius: 10px;
+                box-shadow: 0 40px 80px rgba(0,0,0,.6);
+            }
+            .lb-nav {
+                position: absolute;
+                top: 50%;
+                transform: translateY(-50%);
+                width: 48px;
+                height: 48px;
+                border-radius: 50%;
+                background: rgba(255,255,255,.07);
+                border: 1px solid rgba(255,255,255,.12);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                color: rgba(255,255,255,.6);
+                cursor: pointer;
+                transition: all .2s;
+            }
+            .lb-nav:hover {
+                background: rgba(255,255,255,.15);
+                color: #fff;
+            }
+            @keyframes floatPill { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-4px) } }
+            .gallery-pill { animation: floatPill 3s ease-in-out infinite; }
+            @media (prefers-reduced-motion: reduce) {
+                .gallery-pill { animation: none; }
+            }
+            .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+            .hero-radial {
+                background:
+                    radial-gradient(ellipse 80% 60% at 15% 20%, rgba(59,130,246,.22) 0%, transparent 55%),
+                    radial-gradient(ellipse 70% 50% at 85% 80%, rgba(16,185,129,.15) 0%, transparent 55%);
+            }
+        </style>
+    @endonce
 @endpush
 
 <div
@@ -538,6 +540,12 @@ class extends Component
         lbStartX: 0,
         galleryImages: JSON.parse($el.dataset.galleryImages || '[]'),
         previousFocus: null,
+
+        // Observer handles stored on the Alpine instance so they can be
+        // disconnected in destroy(). Without this, wire:navigate away
+        // leaves the observers holding references to removed DOM.
+        _revealObserver: null,
+        _stickyObserver: null,
 
         openGallery() {
             this.previousFocus = document.activeElement;
@@ -553,9 +561,22 @@ class extends Component
             this.previousFocus = null;
         },
 
-        openLb(src, idx) { this.lbSrc = src; this.lbIndex = idx; },
-        prevLb() { this.lbIndex = (this.lbIndex - 1 + this.galleryImages.length) % this.galleryImages.length; this.lbSrc = this.galleryImages[this.lbIndex]; },
-        nextLb() { this.lbIndex = (this.lbIndex + 1) % this.galleryImages.length; this.lbSrc = this.galleryImages[this.lbIndex]; },
+        // Index-only signature: the URL is read from `galleryImages[idx]`
+        // rather than embedded as a literal in the Alpine directive.
+        // Avoids a class of breakage if a filename ever contained a
+        // character that would need escaping in a JS string literal.
+        openLb(idx) {
+            this.lbIndex = idx;
+            this.lbSrc   = this.galleryImages[idx] ?? null;
+        },
+        prevLb() {
+            this.lbIndex = (this.lbIndex - 1 + this.galleryImages.length) % this.galleryImages.length;
+            this.lbSrc   = this.galleryImages[this.lbIndex];
+        },
+        nextLb() {
+            this.lbIndex = (this.lbIndex + 1) % this.galleryImages.length;
+            this.lbSrc   = this.galleryImages[this.lbIndex];
+        },
 
         touchStart(e) { this.lbStartX = e.changedTouches[0].clientX; },
         touchEnd(e) {
@@ -575,11 +596,16 @@ class extends Component
                 return;
             }
 
-            const obs = new IntersectionObserver(entries => {
-                entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); obs.unobserve(e.target); } });
+            this._revealObserver = new IntersectionObserver(entries => {
+                entries.forEach(e => {
+                    if (e.isIntersecting) {
+                        e.target.classList.add('in');
+                        this._revealObserver.unobserve(e.target);
+                    }
+                });
             }, { threshold: .08 });
 
-            els.forEach(el => obs.observe(el));
+            els.forEach(el => this._revealObserver.observe(el));
         },
 
         stickyVisible: false,
@@ -591,8 +617,22 @@ class extends Component
             // pre-existing behaviour, but without throwing).
             if (!('IntersectionObserver' in window)) return;
 
-            const obs = new IntersectionObserver(([e]) => { this.stickyVisible = !e.isIntersecting; }, { threshold: .1 });
-            obs.observe(hero);
+            this._stickyObserver = new IntersectionObserver(
+                ([e]) => { this.stickyVisible = !e.isIntersecting; },
+                { threshold: .1 },
+            );
+            this._stickyObserver.observe(hero);
+        },
+
+        destroy() {
+            if (this._revealObserver) {
+                this._revealObserver.disconnect();
+                this._revealObserver = null;
+            }
+            if (this._stickyObserver) {
+                this._stickyObserver.disconnect();
+                this._stickyObserver = null;
+            }
         },
     }"
     data-gallery-images="{{ $this->galleryImageUrlsJson }}"
@@ -626,7 +666,12 @@ class extends Component
                 </h2>
             </div>
             <div class="flex items-center gap-4">
-                <span class="text-xs text-white/25 hidden sm:block">{{ count($galleryImages) }} photos</span>
+                @php $galleryCount = count($galleryImages); @endphp
+                @if($galleryCount > 0)
+                    <span class="text-xs text-white/25 hidden sm:block">
+                        {{ $galleryCount }} {{ $galleryCount === 1 ? 'photo' : 'photos' }}
+                    </span>
+                @endif
                 <button type="button" @click="closeGallery()"
                         x-ref="galleryCloseBtn"
                         class="w-9 h-9 rounded-full border border-white/12 flex items-center justify-center text-white/40 hover:text-white hover:border-white/35 hover:bg-white/[0.07] transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
@@ -642,7 +687,7 @@ class extends Component
                     @foreach($galleryImages as $idx => $imgPath)
                         <div class="gal-item relative overflow-hidden rounded-xl cursor-pointer group"
                              wire:key="gal-{{ $idx }}"
-                             @click="openLb('{{ asset('storage/'.$imgPath) }}', {{ $idx }})">
+                             @click="openLb({{ $idx }})">
                             <img src="{{ asset('storage/'.$imgPath) }}"
                                  class="w-full h-full object-cover"
                                  alt="{{ $tenant->name }} photo {{ $idx + 1 }}"
@@ -684,7 +729,7 @@ class extends Component
         <div class="relative">
             <img :src="lbSrc || ''" class="lb-img" alt="Gallery photo" decoding="async">
             <div class="absolute bottom-0 left-0 right-0 flex justify-between items-center px-4 py-3 bg-gradient-to-t from-black/80 to-transparent rounded-b-xl">
-                <span class="text-xs text-white/40" x-text="(lbIndex+1)+' / '+galleryImages.length"></span>
+                <span class="text-xs text-white/40 tabular-nums" x-text="(lbIndex+1)+' / '+galleryImages.length"></span>
                 <button type="button" @click="lbSrc=null" class="text-[10px] text-white/35 hover:text-white uppercase tracking-widest transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50 inline-flex items-center gap-1">
                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                     Close
@@ -796,18 +841,18 @@ class extends Component
                     <div class="mt-8 md:mt-10 pt-6 border-t border-white/10">
                         <div class="flex flex-wrap items-center gap-5 sm:gap-7 md:gap-10">
                             <div>
-                                <div class="font-display text-3xl sm:text-4xl font-medium text-primary-300">{{ $this->properties->count() }}</div>
+                                <div class="font-display text-3xl sm:text-4xl font-medium text-primary-300 tabular-nums">{{ $this->properties->count() }}</div>
                                 <div class="text-[10px] tracking-[0.18em] uppercase text-white/35 mt-1">Activities</div>
                             </div>
                             <div class="w-px h-12 bg-white/10"></div>
                             <div>
-                                <div class="font-display text-3xl sm:text-4xl font-medium text-primary-300">{{ $this->services->count() }}</div>
+                                <div class="font-display text-3xl sm:text-4xl font-medium text-primary-300 tabular-nums">{{ $this->services->count() }}</div>
                                 <div class="text-[10px] tracking-[0.18em] uppercase text-white/35 mt-1">Services</div>
                             </div>
                             @if($this->heroThumbCount)
                                 <div class="w-px h-12 bg-white/10"></div>
                                 <div>
-                                    <div class="font-display text-3xl sm:text-4xl font-medium text-primary-300">{{ $this->heroThumbCount }}</div>
+                                    <div class="font-display text-3xl sm:text-4xl font-medium text-primary-300 tabular-nums">{{ $this->heroThumbCount }}</div>
                                     <div class="text-[10px] tracking-[0.18em] uppercase text-white/35 mt-1">Photos</div>
                                 </div>
                             @endif
@@ -1003,7 +1048,7 @@ class extends Component
                             <div class="hidden lg:block border-t border-white/[0.06] px-6 md:px-7 py-4">
                                 <div class="flex items-center justify-between mb-3">
                                     <p class="text-[10px] tracking-[0.22em] uppercase text-white/40 font-bold">Gallery</p>
-                                    <span class="text-[10px] text-white/30">{{ $this->heroThumbCount }} photos</span>
+                                    <span class="text-[10px] text-white/30 tabular-nums">{{ $this->heroThumbCount }} photos</span>
                                 </div>
                                 <div class="flex gap-2 cursor-pointer group" @click="openGallery()">
                                     @foreach($this->heroThumbs as $i => $img)
@@ -1015,7 +1060,7 @@ class extends Component
                                     @endforeach
                                     @if($this->heroThumbCount > 4)
                                         <div class="flex-1 aspect-square rounded-lg bg-white/[0.06] border border-white/10 flex items-center justify-center">
-                                            <span class="text-white/70 text-xs font-bold">+{{ $this->heroThumbCount - 4 }}</span>
+                                            <span class="text-white/70 text-xs font-bold tabular-nums">+{{ $this->heroThumbCount - 4 }}</span>
                                         </div>
                                     @endif
                                 </div>
@@ -1035,7 +1080,7 @@ class extends Component
                     </div>
 
                     @if($this->coordinates)
-                        <p class="mt-3 text-center text-[10px] font-mono text-white/25 tracking-tight">
+                        <p class="mt-3 text-center text-[10px] font-mono text-white/25 tracking-tight tabular-nums">
                             {{ number_format($this->coordinates['lat'], 6) }}, {{ number_format($this->coordinates['lng'], 6) }}
                         </p>
                     @endif
@@ -1141,7 +1186,7 @@ class extends Component
 
                             <div class="flex flex-col sm:flex-row sm:items-center justify-between pt-4 mt-auto border-t border-gray-200 dark:border-gray-700 gap-3">
                                 <div>
-                                    <span class="font-display text-2xl font-semibold text-primary-600 dark:text-primary-400">₱{{ number_format($property->price, 2) }}</span>
+                                    <span class="font-display text-2xl font-semibold text-primary-600 dark:text-primary-400 tabular-nums">₱{{ number_format($property->price, 2) }}</span>
                                     <span class="text-[10px] text-gray-500 dark:text-gray-400 ml-1 uppercase tracking-wider">/ unit</span>
                                 </div>
                                 @auth
@@ -1198,7 +1243,7 @@ class extends Component
                         <div class="flex-1 mb-5"></div>
 
                         <div class="flex items-center justify-between pt-4 mt-auto border-t border-gray-200 dark:border-gray-700">
-                            <span class="font-display text-2xl font-semibold text-gray-900 dark:text-white">₱{{ number_format($service->price, 2) }}</span>
+                            <span class="font-display text-2xl font-semibold text-gray-900 dark:text-white tabular-nums">₱{{ number_format($service->price, 2) }}</span>
                             @auth
                                 <span class="text-[10px] font-bold uppercase tracking-widest text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-full px-3 py-1">
                                     Add at checkout
@@ -1229,7 +1274,7 @@ class extends Component
                     <span class="text-[10px] tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Photo Gallery</span>
                 </div>
                 <p class="text-gray-600 dark:text-gray-400 text-sm">
-                    Explore all <span class="text-gray-900 dark:text-white font-semibold">{{ count($galleryImages) }} photos</span> of {{ $tenant->name }}
+                    Explore all <span class="text-gray-900 dark:text-white font-semibold tabular-nums">{{ count($galleryImages) }} photos</span> of {{ $tenant->name }}
                     @if($gallerySubtitle) — <em class="italic text-gray-500 dark:text-gray-400">{{ $gallerySubtitle }}</em> @endif
                 </p>
             </div>
@@ -1249,7 +1294,7 @@ class extends Component
         <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
             <div class="flex-1 min-w-0">
                 <p class="text-gray-900 dark:text-white font-semibold text-sm truncate">{{ $tenant->name }}</p>
-                <p class="text-gray-500 dark:text-gray-400 text-xs">
+                <p class="text-gray-500 dark:text-gray-400 text-xs tabular-nums">
                     @if($this->properties->count())
                         From ₱{{ number_format($this->properties->min('price'), 0) }} / unit
                     @else

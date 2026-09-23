@@ -25,6 +25,23 @@ class extends Component
     #[Url(as: 'view', history: true)]
     public string $viewMode = 'grid'; // grid | list
 
+    #[Url(as: 'sort', history: true)]
+    public string $sortBy = 'name';   // name | newest | popular | price_asc | price_desc
+
+    /**
+     * Sorts that require the bookings_count aggregate. Used to add the
+     * withCount() only when needed — avoids a wasted subquery on the
+     * default alphabetical sort.
+     */
+    private const SORTS_NEEDING_BOOKINGS = ['popular'];
+
+    /**
+     * All non-default sort keys. Anything else falls through to the
+     * default alphabetical ordering. Guards against a malicious or
+     * typo'd URL parameter.
+     */
+    private const SORTS_NON_DEFAULT = ['newest', 'popular', 'price_asc', 'price_desc'];
+
     /**
      * JSON payload for the Alpine hero carousel.
      * Encoded with JSON_HEX_* flags so it can safely sit inside an
@@ -55,6 +72,16 @@ class extends Component
         // tenant admins) will see zero counts and null prices. Guests
         // happen to work because TenantScope short-circuits on Auth::check()
         // — that masked the bug in manual testing.
+        //
+        // SORTING:
+        //   Each non-default branch appends `->orderBy('name')` as a
+        //   deterministic tiebreaker. Without it, two tenants with the
+        //   same booking count could swap positions between requests.
+        //
+        //   For price sorts, `IS NULL ASC` pushes tenants with no
+        //   properties to the bottom. MySQL sorts NULL first by default,
+        //   which would put the "no price yet" cards at the top of a
+        //   "Price: low → high" list — visually broken.
         return Tenant::query()
             ->where('is_active', true)
             ->with(['typeOfTenant:id,type'])
@@ -63,6 +90,11 @@ class extends Component
                 'services'   => fn ($q) => $q->withoutGlobalScope(TenantScope::class),
             ])
             ->withMin('properties', 'price', fn ($q) => $q->withoutGlobalScope(TenantScope::class))
+            ->when(in_array($this->sortBy, self::SORTS_NEEDING_BOOKINGS, true), fn ($q) => $q->withCount([
+                'bookings' => fn ($sub) => $sub
+                    ->withoutGlobalScope(TenantScope::class)
+                    ->whereNotIn('status', [Booking::STATUS_CANCELLED]),
+            ]))
             ->when($term, fn ($q) => $q->where(fn ($s) =>
                 $s->where('name', 'like', "%$term%")
                   ->orWhere('address', 'like', "%$term%")
@@ -71,7 +103,11 @@ class extends Component
             ->when($this->categoryFilter, fn ($q) =>
                 $q->whereHas('typeOfTenant', fn ($s) => $s->where('type', $this->categoryFilter))
             )
-            ->orderBy('name')
+            ->when($this->sortBy === 'newest',     fn ($q) => $q->orderByDesc('created_at')->orderBy('name'))
+            ->when($this->sortBy === 'popular',    fn ($q) => $q->orderByDesc('bookings_count')->orderBy('name'))
+            ->when($this->sortBy === 'price_asc',  fn ($q) => $q->orderByRaw('properties_min_price IS NULL ASC, properties_min_price ASC')->orderBy('name'))
+            ->when($this->sortBy === 'price_desc', fn ($q) => $q->orderByRaw('properties_min_price IS NULL ASC, properties_min_price DESC')->orderBy('name'))
+            ->when(! in_array($this->sortBy, self::SORTS_NON_DEFAULT, true), fn ($q) => $q->orderBy('name'))
             ->get(['id', 'name', 'slug', 'logo', 'address', 'type_of_tenant_id', 'created_at']);
     }
 
@@ -135,6 +171,7 @@ class extends Component
 
     public function resetFilters(): void
     {
+        // Sort is a preference, not a filter — deliberately preserved.
         $this->reset(['search', 'categoryFilter']);
     }
 };
@@ -161,11 +198,14 @@ class extends Component
             if (this.prefersReduced) return;
             if (this.heroImages.length <= 1) return;
 
-            this.startTimer();
+            // Only start the interval when the tab is actually visible.
+            // Previously this fired unconditionally — a page opened in a
+            // background tab (middle-click, bookmark, restore-session)
+            // would advance heroIndex while the user wasn't looking, so
+            // they'd land on a mid-cycle slide when they finally switched.
+            if (!document.hidden) this.startTimer();
 
-            // Pause when the tab is hidden; resume when it returns. Without
-            // this, background-tab throttling silently advances the index
-            // and the user returns to a mid-cycle slide.
+            // Pause when the tab is hidden; resume when it returns.
             this.onVisibilityChange = () => {
                 if (document.hidden) this.stopTimer();
                 else this.startTimer();
@@ -202,7 +242,11 @@ class extends Component
 
         {{-- Rule 69: no <template x-if>. The carousel wrapper is always in
              the DOM; visibility is toggled with :class. The inner
-             <template x-for> is safe (no x-transition modifiers). --}}
+             <template x-for> is safe (no x-transition modifiers).
+
+             Images are decorative (background slides behind the hero
+             text) — alt="" + aria-hidden="true" so screen readers skip
+             them and don't read the same generic phrase five times. --}}
         <div class="absolute inset-0"
              :class="heroImages.length > 0 ? '' : 'hidden'">
             <template x-for="(img, index) in heroImages" :key="img">
@@ -210,7 +254,8 @@ class extends Component
                      class="absolute inset-0 h-full w-full object-cover transition-opacity duration-1000"
                      :class="index === heroIndex ? 'opacity-40' : 'opacity-0'"
                      decoding="async"
-                     alt="Tourist spot background" />
+                     alt=""
+                     aria-hidden="true" />
             </template>
         </div>
         <div class="absolute inset-0 bg-gradient-to-br from-gray-900 to-gray-800"
@@ -234,17 +279,17 @@ class extends Component
 
             <div class="flex items-center gap-4 sm:gap-6 rounded-2xl border border-primary-500/20 bg-primary-500/10 p-6 backdrop-blur md:flex-col md:gap-4">
                 <div>
-                    <div class="font-display text-3xl font-medium text-primary-300">{{ $this->totalCount }}</div>
+                    <div class="font-display text-3xl font-medium text-primary-300 tabular-nums">{{ $this->totalCount }}</div>
                     <div class="text-xs font-semibold uppercase tracking-wider text-white/50">Destinations</div>
                 </div>
                 <div class="h-10 w-px bg-primary-500/20 md:h-px md:w-10"></div>
                 <div>
-                    <div class="font-display text-3xl font-medium text-primary-300">{{ $this->categories->count() }}</div>
+                    <div class="font-display text-3xl font-medium text-primary-300 tabular-nums">{{ $this->categories->count() }}</div>
                     <div class="text-xs font-semibold uppercase tracking-wider text-white/50">Categories</div>
                 </div>
                 <div class="h-10 w-px bg-primary-500/20 md:h-px md:w-10"></div>
                 <div>
-                    <div class="font-display text-3xl font-medium text-primary-300">{{ $this->featured->count() }}</div>
+                    <div class="font-display text-3xl font-medium text-primary-300 tabular-nums">{{ $this->featured->count() }}</div>
                     <div class="text-xs font-semibold uppercase tracking-wider text-white/50">Top Picks</div>
                 </div>
             </div>
@@ -321,32 +366,59 @@ class extends Component
                 @endforeach
             </div>
 
-            {{-- View Toggle --}}
-            <div class="flex shrink-0 overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
-                <button type="button"
-                        wire:click="$set('viewMode','grid')"
-                        wire:key="view-toggle-grid"
-                        aria-pressed="{{ $viewMode === 'grid' ? 'true' : 'false' }}"
-                        class="flex h-9 w-9 items-center justify-center transition active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                               {{ $viewMode === 'grid'
-                                    ? 'bg-primary-600 text-white'
-                                    : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800' }}"
-                        title="Grid view"
-                        aria-label="Grid view">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>
-                </button>
-                <button type="button"
-                        wire:click="$set('viewMode','list')"
-                        wire:key="view-toggle-list"
-                        aria-pressed="{{ $viewMode === 'list' ? 'true' : 'false' }}"
-                        class="flex h-9 w-9 items-center justify-center transition active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                               {{ $viewMode === 'list'
-                                    ? 'bg-primary-600 text-white'
-                                    : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800' }}"
-                        title="List view"
-                        aria-label="List view">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>
-                </button>
+            {{-- Sort + View toggle --}}
+            <div class="flex shrink-0 items-center gap-2">
+
+                {{-- Sort dropdown. `wire:model.live` because changing sort
+                     re-queries the server — the result must reflect
+                     immediately, not on the next user action. --}}
+                <div class="relative">
+                    <select wire:model.live="sortBy"
+                            wire:key="sort-select"
+                            aria-label="Sort destinations"
+                            class="appearance-none h-9 pl-3 pr-8 rounded-lg border border-gray-200 dark:border-gray-700
+                                   bg-white dark:bg-gray-900
+                                   text-xs font-semibold text-gray-700 dark:text-gray-300
+                                   focus:outline-none focus:ring-2 focus:ring-primary-500/50
+                                   transition cursor-pointer">
+                        <option value="name">Alphabetical</option>
+                        <option value="newest">Newest first</option>
+                        <option value="popular">Most booked</option>
+                        <option value="price_asc">Price: low → high</option>
+                        <option value="price_desc">Price: high → low</option>
+                    </select>
+                    <svg xmlns="http://www.w3.org/2000/svg" class="pointer-events-none absolute right-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-gray-500 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="m6 9 6 6 6-6"/>
+                    </svg>
+                </div>
+
+                {{-- View toggle --}}
+                <div class="flex shrink-0 overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
+                    <button type="button"
+                            wire:click="$set('viewMode','grid')"
+                            wire:key="view-toggle-grid"
+                            aria-pressed="{{ $viewMode === 'grid' ? 'true' : 'false' }}"
+                            class="flex h-9 w-9 items-center justify-center transition active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                                   {{ $viewMode === 'grid'
+                                        ? 'bg-primary-600 text-white'
+                                        : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800' }}"
+                            title="Grid view"
+                            aria-label="Grid view">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>
+                    </button>
+                    <button type="button"
+                            wire:click="$set('viewMode','list')"
+                            wire:key="view-toggle-list"
+                            aria-pressed="{{ $viewMode === 'list' ? 'true' : 'false' }}"
+                            class="flex h-9 w-9 items-center justify-center transition active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                                   {{ $viewMode === 'list'
+                                        ? 'bg-primary-600 text-white'
+                                        : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800' }}"
+                            title="List view"
+                            aria-label="List view">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -365,7 +437,7 @@ class extends Component
                         </p>
                         <h2 class="font-display text-2xl font-semibold text-gray-900 dark:text-white md:text-3xl">Popular <em class="italic text-primary-600 dark:text-primary-400">Picks</em></h2>
                     </div>
-                    <div class="font-display text-5xl font-light text-gray-200 dark:text-gray-800">{{ str_pad($this->featured->count(), 2, '0', STR_PAD_LEFT) }}</div>
+                    <div class="font-display text-5xl font-light text-gray-200 dark:text-gray-800 tabular-nums">{{ str_pad($this->featured->count(), 2, '0', STR_PAD_LEFT) }}</div>
                 </div>
 
                 <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
@@ -440,13 +512,16 @@ class extends Component
                             Clear
                         </button>
                     @endif
-                    <div class="font-display text-5xl font-light text-gray-200 dark:text-gray-800">{{ str_pad($this->tenants->count(), 2, '0', STR_PAD_LEFT) }}</div>
+                    <div class="font-display text-5xl font-light text-gray-200 dark:text-gray-800 tabular-nums">{{ str_pad($this->tenants->count(), 2, '0', STR_PAD_LEFT) }}</div>
                 </div>
             </div>
 
-            <div class="grid gap-6 {{ $viewMode === 'list' ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4' }}"
+            {{-- `transition-opacity duration-200` on the container smooths
+                 the wire:loading fade — previously the opacity change was
+                 instant and read as a flash. --}}
+            <div class="grid gap-6 transition-opacity duration-200 {{ $viewMode === 'list' ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4' }}"
                  wire:loading.class="opacity-50"
-                 wire:target="search,categoryFilter,viewMode,resetFilters">
+                 wire:target="search,categoryFilter,viewMode,resetFilters,sortBy">
                 @forelse($this->tenants as $tenant)
                     @php
                         $img  = $tenant->logo ? asset('storage/' . $tenant->logo) : null;
@@ -479,7 +554,7 @@ class extends Component
                             <div class="mt-auto flex items-center justify-between border-t border-gray-100 pt-3 dark:border-gray-800">
                                 <div>
                                     @if($minP !== null)
-                                        <div class="font-display text-lg font-semibold text-gray-900 dark:text-white">₱{{ number_format($minP, 0) }}</div>
+                                        <div class="font-display text-lg font-semibold text-gray-900 dark:text-white tabular-nums">₱{{ number_format($minP, 0) }}</div>
                                         <div class="text-[10px] uppercase tracking-wider text-gray-400">from / unit</div>
                                     @else
                                         <div class="text-xs text-gray-500 dark:text-gray-400">{{ $tenant->properties_count + $tenant->services_count }} offering{{ ($tenant->properties_count + $tenant->services_count) !== 1 ? 's' : '' }}</div>
@@ -515,7 +590,7 @@ class extends Component
             </div>
 
             {{-- Loading indicator --}}
-            <div wire:loading.block wire:target="search,categoryFilter,viewMode,resetFilters" class="py-8 text-center">
+            <div wire:loading.block wire:target="search,categoryFilter,viewMode,resetFilters,sortBy" class="py-8 text-center">
                 <div class="inline-block h-8 w-8 animate-spin rounded-full border-2 border-primary-600 border-t-transparent motion-reduce:animate-none"></div>
             </div>
         </section>

@@ -443,12 +443,6 @@ class extends Component
 };
 ?>
 
-@push('scripts')
-    @once
-        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
-    @endonce
-@endpush
-
 @php
     $s             = $this->stats;
     $propPerf      = $this->propertyPerformance;
@@ -936,11 +930,27 @@ class extends Component
 
 {{-- ═══════════════════════════════════════════════════════════════════════
      CHART.JS WIRING
-     ─────────────────────────────────────────────────────────────────────
-     Slimmer bars: maxBarThickness 24, barPercentage 0.4.
-     Three new charts: propertyPerformance (h-bar), status (doughnut),
-     guest (doughnut). Empty state handled by Blade — if the canvas
-     isn't in the DOM the build function returns null and no chart renders.
+
+     Chart is now provided by the Vite bundle (see resources/js/app.js).
+     No CDN script, no @stack('scripts') dependency.
+
+     Bug fixes preserved from the previous revision:
+
+     1. DETACHED CANVAS AFTER SPA NAVIGATION
+        When the user navigates away and back via wire:navigate, Livewire
+        morphs in new <canvas> elements. `state.revenue`, `state.payment`,
+        etc. may still point at detached canvases from the previous visit.
+        `chart.update()` on a detached chart is a silent no-op, leaving
+        the fresh canvas blank. isChartAlive() detects this and rebuilds.
+
+     2. livewire:init HAD ALREADY FIRED
+        `@script` blocks run AFTER Livewire boots, so attaching a listener
+        to `livewire:init` inside one is a no-op. We hook morph.updated
+        directly if Livewire is already present.
+
+     3. SPA arrivals also re-render
+        livewire:navigated fires on every wire:navigate arrival. This is
+        the safety net for the "first visit after SPA nav" case.
      ═══════════════════════════════════════════════════════════════════════ --}}
 @script
 <script>
@@ -964,6 +974,21 @@ class extends Component
             };
 
             const MAX_CHART_RETRIES = 30;
+
+            const STATUS_ORDER = ['pending', 'confirmed', 'reserved', 'checked_in', 'completed', 'cancelled'];
+
+            const STATUS_COLORS = {
+                pending:    '#f59e0b',
+                confirmed:  '#6366f1',
+                reserved:   '#3b82f6',
+                checked_in: '#8b5cf6',
+                completed:  '#10b981',
+                cancelled:  '#ef4444',
+            };
+
+            function isChartAlive(chart) {
+                return !!(chart && chart.canvas && chart.canvas.isConnected);
+            }
 
             function getChartData() {
                 const el = document.getElementById('analytics-chart-data');
@@ -1015,6 +1040,13 @@ class extends Component
                 });
             }
 
+            function destroyOne(key) {
+                if (state[key]) {
+                    try { state[key].destroy(); } catch (e) { /* noop */ }
+                    state[key] = null;
+                }
+            }
+
             function gradient(ctx, rgb, opacity) {
                 const g = ctx.createLinearGradient(0, 0, 0, 300);
                 g.addColorStop(0, `rgba(${rgb}, ${opacity})`);
@@ -1035,7 +1067,6 @@ class extends Component
                 };
             }
 
-            // Slim vertical bar chart — used for Revenue Trend
             function barChart(canvasId, labels, values, label, color) {
                 const canvas = document.getElementById(canvasId);
                 if (!canvas) return null;
@@ -1085,7 +1116,6 @@ class extends Component
                 });
             }
 
-            // Horizontal bar chart — used for Property Performance
             function horizontalBarChart(canvasId, labels, values, colors) {
                 const canvas = document.getElementById(canvasId);
                 if (!canvas) return null;
@@ -1145,7 +1175,6 @@ class extends Component
                 });
             }
 
-            // Line chart — Booking Activity + Occupancy History
             function lineChart(canvasId, labels, values, label, color, rgb) {
                 const canvas = document.getElementById(canvasId);
                 if (!canvas) return null;
@@ -1196,7 +1225,6 @@ class extends Component
                 });
             }
 
-            // Doughnut chart
             function doughnutChart(canvasId, labels, values, colors, legendPosition) {
                 const canvas = document.getElementById(canvasId);
                 if (!canvas) return null;
@@ -1263,125 +1291,126 @@ class extends Component
 
                 const theme = getTheme();
 
-                // ── Revenue Trend ──
-                if (!state.revenue && document.getElementById('revenueChart')) {
-                    state.revenue = barChart(
-                        'revenueChart',
-                        Object.keys(data.revenue),
-                        Object.values(data.revenue),
-                        'Revenue',
-                        theme.barColor,
-                    );
+                if (document.getElementById('revenueChart')) {
+                    if (!isChartAlive(state.revenue)) {
+                        destroyOne('revenue');
+                        state.revenue = barChart(
+                            'revenueChart',
+                            Object.keys(data.revenue),
+                            Object.values(data.revenue),
+                            'Revenue',
+                            theme.barColor,
+                        );
+                    } else {
+                        state.revenue.data.labels = Object.keys(data.revenue);
+                        state.revenue.data.datasets[0].data = Object.values(data.revenue);
+                        state.revenue.update('none');
+                    }
                 }
 
-                // ── Payment Methods ──
-                if (!state.payment && document.getElementById('paymentChart')) {
-                    state.payment = doughnutChart(
-                        'paymentChart',
-                        data.payment.map(p => p.method.charAt(0).toUpperCase() + p.method.slice(1)),
-                        data.payment.map(p => p.total),
-                        null,
-                        'bottom',
-                    );
+                if (document.getElementById('paymentChart')) {
+                    if (!isChartAlive(state.payment)) {
+                        destroyOne('payment');
+                        state.payment = doughnutChart(
+                            'paymentChart',
+                            data.payment.map(p => p.method.charAt(0).toUpperCase() + p.method.slice(1)),
+                            data.payment.map(p => p.total),
+                            null,
+                            'bottom',
+                        );
+                    } else {
+                        state.payment.data.labels = data.payment.map(p => p.method.charAt(0).toUpperCase() + p.method.slice(1));
+                        state.payment.data.datasets[0].data = data.payment.map(p => p.total);
+                        state.payment.update('none');
+                    }
                 }
 
-                // ── Booking Activity ──
-                if (!state.booking && document.getElementById('bookingChart')) {
-                    state.booking = lineChart(
-                        'bookingChart',
-                        Object.keys(data.bookings),
-                        Object.values(data.bookings),
-                        'Bookings',
-                        theme.lineBooking,
-                        isDark() ? '59, 130, 246' : '37, 99, 235',
-                    );
+                if (document.getElementById('bookingChart')) {
+                    if (!isChartAlive(state.booking)) {
+                        destroyOne('booking');
+                        state.booking = lineChart(
+                            'bookingChart',
+                            Object.keys(data.bookings),
+                            Object.values(data.bookings),
+                            'Bookings',
+                            theme.lineBooking,
+                            isDark() ? '59, 130, 246' : '37, 99, 235',
+                        );
+                    } else {
+                        state.booking.data.labels = Object.keys(data.bookings);
+                        state.booking.data.datasets[0].data = Object.values(data.bookings);
+                        state.booking.update('none');
+                    }
                 }
 
-                // ── Occupancy History ──
-                if (!state.occupancy && document.getElementById('occupancyChart')) {
-                    state.occupancy = lineChart(
-                        'occupancyChart',
-                        Object.keys(data.occupancy),
-                        Object.values(data.occupancy),
-                        'Occupancy %',
-                        theme.lineOccupancy,
-                        isDark() ? '245, 158, 11' : '217, 119, 6',
-                    );
+                if (document.getElementById('occupancyChart')) {
+                    if (!isChartAlive(state.occupancy)) {
+                        destroyOne('occupancy');
+                        state.occupancy = lineChart(
+                            'occupancyChart',
+                            Object.keys(data.occupancy),
+                            Object.values(data.occupancy),
+                            'Occupancy %',
+                            theme.lineOccupancy,
+                            isDark() ? '245, 158, 11' : '217, 119, 6',
+                        );
+                    } else {
+                        state.occupancy.data.labels = Object.keys(data.occupancy);
+                        state.occupancy.data.datasets[0].data = Object.values(data.occupancy);
+                        state.occupancy.update('none');
+                    }
                 }
 
-                // ── Property Performance ──
-                if (!state.propPerf && document.getElementById('propertyPerformanceChart')) {
-                    const ramp = ['#1e3a8a', '#2563eb', '#3b82f6', '#60a5fa', '#93c5fd'];
-                    state.propPerf = horizontalBarChart(
-                        'propertyPerformanceChart',
-                        data.propPerf.map(p => p.name),
-                        data.propPerf.map(p => p.revenue),
-                        ramp.slice(0, data.propPerf.length),
-                    );
+                if (document.getElementById('propertyPerformanceChart')) {
+                    if (!isChartAlive(state.propPerf)) {
+                        destroyOne('propPerf');
+                        const ramp = ['#1e3a8a', '#2563eb', '#3b82f6', '#60a5fa', '#93c5fd'];
+                        state.propPerf = horizontalBarChart(
+                            'propertyPerformanceChart',
+                            data.propPerf.map(p => p.name),
+                            data.propPerf.map(p => p.revenue),
+                            ramp.slice(0, data.propPerf.length),
+                        );
+                    } else {
+                        state.propPerf.data.labels = data.propPerf.map(p => p.name);
+                        state.propPerf.data.datasets[0].data = data.propPerf.map(p => p.revenue);
+                        state.propPerf.update('none');
+                    }
                 }
 
-                // ── Booking Status ──
-                if (!state.status && document.getElementById('statusChart')) {
-                    const statusOrder = ['pending', 'confirmed', 'reserved', 'checked_in', 'completed', 'cancelled'];
-                    const statusColors = {
-                        pending:    '#f59e0b',
-                        confirmed:  '#6366f1',
-                        reserved:   '#3b82f6',
-                        checked_in: '#8b5cf6',
-                        completed:  '#10b981',
-                        cancelled:  '#ef4444',
-                    };
-                    const present = statusOrder.filter(k => (data.status[k] || 0) > 0);
+                if (document.getElementById('statusChart')) {
+                    const present = STATUS_ORDER.filter(k => (data.status[k] || 0) > 0);
+                    const labels  = present.map(k => k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()));
+                    const values  = present.map(k => data.status[k]);
+                    const colors  = present.map(k => STATUS_COLORS[k]);
 
-                    state.status = doughnutChart(
-                        'statusChart',
-                        present.map(k => k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())),
-                        present.map(k => data.status[k]),
-                        present.map(k => statusColors[k]),
-                        'bottom',
-                    );
+                    if (!isChartAlive(state.status)) {
+                        destroyOne('status');
+                        state.status = doughnutChart('statusChart', labels, values, colors, 'bottom');
+                    } else {
+                        state.status.data.labels = labels;
+                        state.status.data.datasets[0].data = values;
+                        state.status.data.datasets[0].backgroundColor = colors;
+                        state.status.update('none');
+                    }
                 }
 
-                // ── Guest Composition ──
-                if (!state.guest && document.getElementById('guestChart')) {
-                    state.guest = doughnutChart(
-                        'guestChart',
-                        ['New Guests', 'Repeat Guests'],
-                        [data.guests.new || 0, data.guests.repeat || 0],
-                        ['#3b82f6', '#8b5cf6'],
-                        'bottom',
-                    );
-                }
+                if (document.getElementById('guestChart')) {
+                    const guestValues = [data.guests.new || 0, data.guests.repeat || 0];
 
-                // ── Update-in-place ──
-                if (state.revenue && data.revenue) {
-                    state.revenue.data.labels = Object.keys(data.revenue);
-                    state.revenue.data.datasets[0].data = Object.values(data.revenue);
-                    state.revenue.update('none');
-                }
-                if (state.payment && data.payment) {
-                    state.payment.data.labels = data.payment.map(p => p.method.charAt(0).toUpperCase() + p.method.slice(1));
-                    state.payment.data.datasets[0].data = data.payment.map(p => p.total);
-                    state.payment.update('none');
-                }
-                if (state.booking && data.bookings) {
-                    state.booking.data.labels = Object.keys(data.bookings);
-                    state.booking.data.datasets[0].data = Object.values(data.bookings);
-                    state.booking.update('none');
-                }
-                if (state.occupancy && data.occupancy) {
-                    state.occupancy.data.labels = Object.keys(data.occupancy);
-                    state.occupancy.data.datasets[0].data = Object.values(data.occupancy);
-                    state.occupancy.update('none');
-                }
-                if (state.propPerf && data.propPerf) {
-                    state.propPerf.data.labels = data.propPerf.map(p => p.name);
-                    state.propPerf.data.datasets[0].data = data.propPerf.map(p => p.revenue);
-                    state.propPerf.update('none');
-                }
-                if (state.guest && data.guests) {
-                    state.guest.data.datasets[0].data = [data.guests.new || 0, data.guests.repeat || 0];
-                    state.guest.update('none');
+                    if (!isChartAlive(state.guest)) {
+                        destroyOne('guest');
+                        state.guest = doughnutChart(
+                            'guestChart',
+                            ['New Guests', 'Repeat Guests'],
+                            guestValues,
+                            ['#3b82f6', '#8b5cf6'],
+                            'bottom',
+                        );
+                    } else {
+                        state.guest.data.datasets[0].data = guestValues;
+                        state.guest.update('none');
+                    }
                 }
             };
 
@@ -1390,12 +1419,28 @@ class extends Component
             if (!state.hooked) {
                 state.hooked = true;
 
-                document.addEventListener('livewire:init', () => {
-                    Livewire.hook('morph.updated', ({ el }) => {
+                const registerMorphHook = () => {
+                    if (!window.Livewire || typeof window.Livewire.hook !== 'function') {
+                        return false;
+                    }
+
+                    window.Livewire.hook('morph.updated', ({ el }) => {
                         if (el && el.id === 'analytics-chart-data') {
                             setTimeout(() => window.renderTenantAnalytics(false), 30);
                         }
                     });
+
+                    return true;
+                };
+
+                if (!registerMorphHook()) {
+                    document.addEventListener('livewire:init', registerMorphHook, { once: true });
+                }
+
+                document.addEventListener('livewire:navigated', () => {
+                    if (document.getElementById('analytics-chart-data')) {
+                        setTimeout(() => window.renderTenantAnalytics(false), 60);
+                    }
                 });
 
                 new MutationObserver(() => {

@@ -2,6 +2,7 @@
 <?php
 
 use App\Models\SiteSetting;
+use App\Models\Tenant;
 use App\Models\User;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
@@ -65,8 +66,6 @@ class extends Component
         // ═══════════════════════════════════════════════════════════
         // 2. EMAIL + IP LIMITER — targeted per-email protection
         // ═══════════════════════════════════════════════════════════
-        // Prevents someone from repeatedly bombing a single user's
-        // inbox with reset emails.
         $emailKey = 'password-reset:' . $email . '|' . $ip;
 
         if (RateLimiter::tooManyAttempts($emailKey, 3)) {
@@ -83,8 +82,6 @@ class extends Component
         // ═══════════════════════════════════════════════════════════
         // 3. EXPLICIT EMAIL CHECK
         // ═══════════════════════════════════════════════════════════
-        // Per the user's request: tell them plainly when no account
-        // exists instead of a generic "check your inbox" message.
         $user = User::query()->where('email', $email)->first();
 
         if (!$user) {
@@ -109,8 +106,6 @@ class extends Component
         }
 
         if ($status !== Password::RESET_LINK_SENT) {
-            // Laravel's broker can reject with its own throttle status
-            // (Password::RESET_THROTTLED) — surface it gracefully.
             $this->addError('email', match ($status) {
                 Password::RESET_THROTTLED => 'A reset link was requested recently. Please wait a minute and check your inbox.',
                 default                   => 'Could not send the reset email. Please try again in a moment.',
@@ -157,64 +152,173 @@ class extends Component
             ? asset('storage/' . $path)
             : 'https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1600&q=80';
     }
+
+    /**
+     * A real, active destination from the platform — shown as a
+     * floating card in the hero on md+ screens. Matches the login
+     * and register pages.
+     *
+     * @return array{name: string, slug: string, type: string, logo: string, url: string}|null
+     */
+    #[Computed]
+    public function featuredTenant(): ?array
+    {
+        $tenant = Tenant::query()
+            ->where('is_active', true)
+            ->whereNotNull('logo')
+            ->whereNotNull('slug')
+            ->with('typeOfTenant:id,type')
+            ->orderByDesc('is_recommended')
+            ->orderByDesc('verified_at')
+            ->orderBy('name')
+            ->first(['id', 'name', 'slug', 'logo', 'type_of_tenant_id']);
+
+        if (!$tenant || !$tenant->logo) {
+            return null;
+        }
+
+        return [
+            'name' => (string) $tenant->name,
+            'slug' => (string) $tenant->slug,
+            'type' => (string) ($tenant->typeOfTenant?->type ?? 'Destination'),
+            'logo' => asset('storage/' . $tenant->logo),
+            'url'  => route('business.offerings', $tenant->slug),
+        ];
+    }
 };
 ?>
 
+@push('styles')
+    @once
+        <style>
+            /* Ambient glow on the form panel. */
+            .login-form-panel {
+                background-image:
+                    radial-gradient(ellipse 70% 50% at 50% 0%, rgba(245,158,11,.05) 0%, transparent 55%),
+                    radial-gradient(ellipse 60% 60% at 100% 100%, rgba(59,130,246,.04) 0%, transparent 55%);
+            }
+            .dark .login-form-panel {
+                background-image:
+                    radial-gradient(ellipse 70% 50% at 50% 0%, rgba(245,158,11,.09) 0%, transparent 55%),
+                    radial-gradient(ellipse 60% 60% at 100% 100%, rgba(59,130,246,.07) 0%, transparent 55%);
+            }
+
+            /* Featured-spot card entrance. */
+            .login-featured-card {
+                animation: loginFeaturedIn .5s cubic-bezier(.16,1,.3,1) .25s both;
+            }
+            @keyframes loginFeaturedIn {
+                from { opacity: 0; transform: translateY(-6px); }
+                to   { opacity: 1; transform: translateY(0); }
+            }
+            @media (prefers-reduced-motion: reduce) {
+                .login-featured-card { animation: none; }
+            }
+        </style>
+    @endonce
+@endpush
+
 <div class="min-h-screen flex flex-col md:flex-row bg-white dark:bg-gray-900">
 
-    {{-- Left Side: Hero Image & Text --}}
-    <div class="relative w-full md:w-3/5 min-h-[220px] md:min-h-screen order-1 md:order-1">
-        <img src="{{ $this->heroUrl }}" alt="{{ $this->siteName }}"
-             loading="eager" fetchpriority="high" decoding="async"
-             width="1600" height="900"
+    {{-- ═══════════════ LEFT: HERO ═══════════════ --}}
+    <div class="relative w-full md:w-3/5 min-h-[240px] sm:min-h-[280px] md:min-h-screen order-1 md:order-1 overflow-hidden">
+        <img src="{{ $this->heroUrl }}"
+             alt=""
+             aria-hidden="true"
+             loading="eager"
+             fetchpriority="high"
+             decoding="async"
+             width="1600"
+             height="900"
              class="absolute inset-0 object-cover w-full h-full">
 
-        <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent"></div>
+        <div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/45 to-black/15"></div>
 
-        <div class="absolute inset-x-0 bottom-0 p-5 sm:p-8 md:p-16 lg:p-24 text-white">
-            <span class="inline-flex items-center gap-2 px-3 py-1 text-[11px] font-bold tracking-widest text-white uppercase bg-black/40 rounded-full backdrop-blur-sm border border-white/10">
-                <span class="w-1.5 h-1.5 bg-yellow-500 rounded-full"></span>
-                {{ $this->siteName }}
+        {{-- Featured-spot card — top-right corner. Desktop only. --}}
+        @if($this->featuredTenant)
+            @php $ft = $this->featuredTenant; @endphp
+            <a href="{{ $ft['url'] }}"
+               wire:navigate
+               class="login-featured-card hidden md:flex absolute top-6 right-6 lg:top-10 lg:right-10
+                      items-center gap-3 w-[280px]
+                      rounded-2xl p-3 pr-3.5
+                      bg-white/[0.08] hover:bg-white/[0.14] backdrop-blur-md
+                      border border-white/15 hover:border-white/30
+                      transition-all duration-300 active:scale-[0.97]
+                      group
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50">
+                <img src="{{ $ft['logo'] }}"
+                     alt=""
+                     width="44" height="44"
+                     loading="lazy" decoding="async"
+                     class="w-11 h-11 rounded-xl object-cover bg-white/10 shrink-0">
+                <div class="min-w-0 flex-1">
+                    <p class="text-[9px] font-bold uppercase tracking-[0.18em] text-amber-300/90 mb-0.5">
+                        Featured Spot
+                    </p>
+                    <p class="text-sm font-semibold text-white leading-tight truncate">
+                        {{ $ft['name'] }}
+                    </p>
+                    <p class="text-[11px] text-white/55 truncate mt-0.5">
+                        {{ $ft['type'] }}
+                    </p>
+                </div>
+                <svg xmlns="http://www.w3.org/2000/svg"
+                     class="w-4 h-4 text-white/50 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0"
+                     fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/>
+                </svg>
+            </a>
+        @endif
+
+        {{-- Copy container — anchored to the bottom --}}
+        <div class="absolute inset-x-0 bottom-0 p-5 sm:p-8 md:p-16 lg:p-20 text-white">
+            <span class="inline-flex max-w-full items-center gap-2 px-3 py-1 text-[11px] font-bold tracking-widest text-white uppercase bg-black/40 rounded-full backdrop-blur-sm border border-white/15">
+                <span class="w-1.5 h-1.5 bg-amber-400 rounded-full shrink-0" aria-hidden="true"></span>
+                <span class="truncate">{{ $this->siteName }}</span>
             </span>
 
-            <h1 class="mt-5 text-2xl sm:text-3xl md:text-5xl lg:text-[54px] font-extrabold tracking-tight leading-[1.1]">
-                Forgotten passwords<br />are easily fixed
-            </h1>
+            {{-- Headline — plain Inter Bold. Rendered as <p> not <h1>:
+                 the page's real <h1> is the form title. --}}
+            <p class="mt-6 text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight leading-[1.08] break-words text-white max-w-3xl">
+                Forgotten passwords are easily fixed
+            </p>
 
-            <p class="max-w-2xl mt-4 text-sm font-medium leading-relaxed text-gray-200 md:text-base">
+            <p class="max-w-2xl mt-4 sm:mt-5 text-sm sm:text-base font-normal leading-relaxed text-gray-200/85">
                 Enter the email address you used to create your account and we'll send you a secure link to choose a new password.
             </p>
         </div>
     </div>
 
-    {{-- Right Side: Form --}}
-    <div class="flex items-start justify-center w-full px-4 sm:px-6 py-10 md:py-12 bg-white dark:bg-gray-900 md:w-2/5 lg:px-16 order-2 md:order-2">
-        <div class="w-full max-w-md">
+    {{-- ═══════════════ RIGHT: FORM ═══════════════ --}}
+    <div class="login-form-panel flex items-start md:items-center justify-center w-full min-w-0 px-4 sm:px-6 py-10 md:py-12 bg-white dark:bg-gray-900 md:w-2/5 lg:px-16 order-2 md:order-2">
+        <div class="w-full max-w-md min-w-0">
 
             <a href="{{ route('login') }}" wire:navigate
-               class="inline-flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-all duration-200 active:scale-95 mb-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
-                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+               class="inline-flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-all duration-200 active:scale-95 mb-8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                 </svg>
                 Back to Login
             </a>
 
-            <div class="flex items-center gap-3 mb-6">
+            <div class="flex items-center gap-3 mb-8 min-w-0">
                 @if($this->logoUrl)
                     <img src="{{ $this->logoUrl }}" alt="{{ $this->siteName }} logo"
                          width="40" height="40" decoding="async"
                          class="w-10 h-10 object-contain rounded-lg shrink-0">
                 @else
-                    <div class="w-10 h-10 rounded-xl bg-primary-600 flex items-center justify-center text-white shrink-0 font-semibold">
+                    <div class="w-10 h-10 rounded-xl bg-primary-600 flex items-center justify-center text-white shrink-0 font-bold text-lg"
+                         aria-hidden="true">
                         {{ strtoupper(substr($this->siteName, 0, 1)) }}
                     </div>
                 @endif
-                <span class="text-lg font-semibold text-gray-900 dark:text-white">{{ $this->siteName }}</span>
+                <span class="text-base font-semibold text-gray-900 dark:text-white truncate">{{ $this->siteName }}</span>
             </div>
 
             @if($submitted)
 
-                {{-- ── Success state ─────────────────────────────── --}}
+                {{-- ── Success state ── --}}
                 <div class="flex items-center justify-center w-14 h-14 rounded-2xl
                             bg-emerald-100 dark:bg-emerald-500/15
                             text-emerald-600 dark:text-emerald-400 mb-6">
@@ -223,14 +327,14 @@ class extends Component
                     </svg>
                 </div>
 
-                <h2 class="text-2xl font-bold text-gray-900 dark:text-white mb-2">
+                <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-2 break-words leading-tight tracking-tight">
                     Check your inbox
-                </h2>
+                </h1>
                 <p class="text-sm text-gray-600 dark:text-gray-400 leading-relaxed mb-6">
-                    We've sent a password reset link to <strong class="text-gray-900 dark:text-white">{{ $email }}</strong>. The link expires in 60 minutes.
+                    We've sent a password reset link to <strong class="text-gray-900 dark:text-white break-all">{{ $email }}</strong>. The link expires in 60 minutes.
                 </p>
 
-                <div class="rounded-xl border border-blue-200/70 dark:border-blue-500/30 bg-blue-50/60 dark:bg-blue-500/[0.06] px-3 py-2.5 text-xs text-blue-800 dark:text-blue-300 mb-6 flex items-start gap-2.5">
+                <div class="rounded-xl border border-blue-200/70 dark:border-blue-500/30 bg-blue-50/60 dark:bg-blue-500/[0.06] px-3.5 py-3 text-xs text-blue-800 dark:text-blue-300 mb-6 flex items-start gap-2.5">
                     <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                     </svg>
@@ -251,21 +355,21 @@ class extends Component
 
             @else
 
-                {{-- ── Form state ────────────────────────────────── --}}
-                <h2 class="text-3xl font-bold text-gray-900 dark:text-white mb-2">
+                {{-- ── Form state ── --}}
+                <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-2 break-words leading-tight tracking-tight">
                     Forgot your password?
-                </h2>
-                <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
+                </h1>
+                <p class="text-sm text-gray-500 dark:text-gray-400 mb-8">
                     No problem — enter your email and we'll send you a reset link.
                 </p>
 
                 @if ($errors->any())
                     <div role="alert" aria-live="polite"
-                         class="mb-5 flex items-start gap-3 bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 border-l-4 border-l-rose-500 rounded-md p-3.5">
+                         class="mb-5 flex items-start gap-3 bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 border-l-4 border-l-rose-500 rounded-xl p-3.5">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                         </svg>
-                        <ul class="space-y-0.5 text-sm text-rose-700 dark:text-rose-300">
+                        <ul class="space-y-0.5 text-sm text-rose-700 dark:text-rose-300 min-w-0 break-words">
                             @foreach ($errors->all() as $error)
                                 <li>{{ $error }}</li>
                             @endforeach
@@ -276,20 +380,18 @@ class extends Component
                 <form wire:submit="sendResetLink" class="space-y-5">
 
                     <div>
-                        <label for="email" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                        <label for="email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             Email Address <span class="text-rose-500">*</span>
                         </label>
-                        <div class="mt-1.5">
-                            <input id="email"
-                                   type="email"
-                                   wire:model="email"
-                                   autofocus
-                                   autocomplete="email"
-                                   placeholder="example@email.com"
-                                   class="block w-full px-4 py-3 text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500 @error('email') border-rose-400/60 @enderror">
-                        </div>
+                        <input id="email"
+                               type="email"
+                               wire:model="email"
+                               autofocus
+                               autocomplete="email"
+                               placeholder="example@email.com"
+                               class="block w-full px-4 py-3 text-base sm:text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500 @error('email') border-rose-400/60 @enderror">
                         @error('email')
-                            <p class="mt-1 text-xs text-rose-500">{{ $message }}</p>
+                            <p class="mt-1.5 text-xs text-rose-500 break-words">{{ $message }}</p>
                         @enderror
                     </div>
 
@@ -316,13 +418,31 @@ class extends Component
 
             @endif
 
-            <p class="mt-8 text-sm font-medium text-center text-gray-500 dark:text-gray-400">
+            <p class="mt-8 text-sm text-center text-gray-600 dark:text-gray-400">
                 Remembered it after all?
                 <a href="{{ route('login') }}" wire:navigate
-                   class="text-primary-600 hover:underline ml-1 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                   class="text-primary-600 dark:text-primary-400 font-medium hover:underline ml-1 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
                     Back to Login
                 </a>
             </p>
+
+            {{-- Footer row — copyright left, "Continue browsing" right.
+                 Matches the login and register pages. --}}
+            <div class="mt-10 pt-5 border-t border-gray-100 dark:border-gray-800
+                        flex items-center justify-between gap-3
+                        text-[11px] text-gray-400 dark:text-gray-600">
+                <span class="truncate">© {{ date('Y') }} {{ $this->siteName }}</span>
+                <a href="{{ route('home') }}" wire:navigate
+                   class="inline-flex items-center gap-1 shrink-0
+                          hover:text-primary-600 dark:hover:text-primary-400
+                          transition-all duration-200 active:scale-95
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                    Continue browsing
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
+                    </svg>
+                </a>
+            </div>
 
         </div>
     </div>

@@ -154,6 +154,23 @@ class extends Component
         return array_values(array_map(fn ($img) => asset('storage/' . $img), $images));
     }
 
+    /**
+     * JSON-encoded gallery URLs for the Alpine carousel.
+     *
+     * Encoded with JSON_HEX_* flags so the payload is safe to embed in
+     * an HTML data-* attribute. This is the pattern established across
+     * every carousel in the codebase — see the header comment on the
+     * tourist-spots SFC for why `@js()` inside `x-data` is a trap.
+     */
+    #[Computed]
+    public function galleryImagesJson(): string
+    {
+        return (string) json_encode(
+            $this->galleryImages,
+            JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG,
+        );
+    }
+
     #[Computed]
     public function highlights(): array
     {
@@ -250,7 +267,8 @@ class extends Component
     {{-- 1. Hero Section --}}
     <section class="relative flex items-center justify-center w-full min-h-[420px] md:min-h-[520px] overflow-hidden">
         <img src="{{ $this->heroImageUrl }}"
-             alt="{{ $this->heroHeading }}"
+             alt=""
+             aria-hidden="true"
              class="absolute inset-0 object-cover w-full h-full"
              loading="eager"
              fetchpriority="high"
@@ -261,13 +279,21 @@ class extends Component
         <div class="absolute inset-0 bg-gradient-to-b from-black/60 via-black/40 to-black/70"></div>
 
         <div class="relative z-10 flex flex-col items-center text-center px-4 py-16">
-            <h1 class="text-xl md:text-3xl font-bold tracking-widest text-white uppercase">
-                {{ $this->heroSubheading }}
-            </h1>
+            {{--
+                Eyebrow — rendered as <p> not <h1>.
 
-            <h2 class="mt-3 text-4xl md:text-6xl font-display font-bold tracking-wide text-amber-300">
+                WHY: The page's real <h1> is the main title below
+                ("KADALAG-AN"). Screen readers walking the heading tree
+                should land on the page's actual subject, not the
+                decorative kicker above it.
+            --}}
+            <p class="text-xl md:text-3xl font-bold tracking-widest text-white uppercase">
+                {{ $this->heroSubheading }}
+            </p>
+
+            <h1 class="mt-3 text-4xl md:text-6xl font-display font-bold tracking-wide text-amber-300">
                 {{ $this->heroHeading }}
-            </h2>
+            </h1>
 
             @if($this->heroDescription)
                 <p class="mt-5 max-w-2xl text-sm md:text-base text-white/90 leading-relaxed">
@@ -288,9 +314,9 @@ class extends Component
             <div>
                 <div class="flex items-center gap-3 mb-5">
                     <span class="w-5 h-5 bg-amber-400 rounded-full shadow-sm" aria-hidden="true"></span>
-                    <h3 class="text-xl md:text-2xl font-bold tracking-wider text-gray-900 dark:text-white uppercase">
+                    <h2 class="text-xl md:text-2xl font-bold tracking-wider text-gray-900 dark:text-white uppercase">
                         {{ $this->storyHeading }}
-                    </h3>
+                    </h2>
                 </div>
 
                 <div class="space-y-4 text-gray-600 dark:text-gray-300 leading-relaxed text-sm md:text-base">
@@ -315,12 +341,25 @@ class extends Component
     </section>
 
     {{-- 3. Gallery / Carousel Section --}}
-    {{-- `overflow-hidden` clips the outer carousel slides whose
-         `translate(±20%)` would otherwise extend past the section
-         edge and create horizontal document overflow. --}}
-    <section class="w-full py-12 md:py-16 overflow-hidden bg-white dark:bg-gray-900"
+    {{--
+        `wire:ignore` isolates the Alpine carousel state from Livewire
+        morphs. No Livewire actions exist on this page today, but the
+        pattern matches the homepage carousel and keeps the section
+        safe if an action is added later.
+
+        `overflow-hidden` clips the outer carousel slides whose
+        `translate(±20%)` would otherwise extend past the section
+        edge and create horizontal document overflow.
+
+        The `items` payload is read from `$el.dataset.galleryImages`
+        rather than embedded as a JS literal inside `x-data`. See
+        `galleryImagesJson()` above for the why.
+    --}}
+    <section wire:ignore
+             class="w-full py-12 md:py-16 overflow-hidden bg-white dark:bg-gray-900"
+             data-gallery-images="{{ $this->galleryImagesJson }}"
              x-data="{
-                 items: @js($this->galleryImages),
+                 items: JSON.parse($el.dataset.galleryImages || '[]'),
                  active: 0,
                  interval: null,
                  observer: null,
@@ -467,14 +506,19 @@ class extends Component
              }"
              @mouseenter="stopAutoPlay()"
              @mouseleave="startAutoPlay()"
-             @touchstart="handleTouchStart($event)"
+             @touchstart.passive="handleTouchStart($event)"
              @touchend="handleTouchEnd($event)">
 
         <div class="relative flex items-center justify-center max-w-6xl mx-auto h-[280px] sm:h-[350px] md:h-[450px] px-4 sm:px-6 lg:px-8">
             <template x-for="(item, index) in items" :key="index">
                 <div class="absolute rounded-3xl overflow-hidden shadow-xl"
                      :style="getPositionStyle(index)">
-                    <img :src="item" alt="Gallery image" class="object-cover w-full h-full" loading="lazy" decoding="async">
+                    <img :src="item"
+                         alt=""
+                         aria-hidden="true"
+                         class="object-cover w-full h-full"
+                         loading="lazy"
+                         decoding="async">
                 </div>
             </template>
         </div>
@@ -490,6 +534,7 @@ class extends Component
                 <template x-for="(item, index) in items" :key="`dot-${index}`">
                     <button type="button" @click="goTo(index)"
                             :aria-label="'Go to slide ' + (index + 1)"
+                            :aria-current="index === active ? 'true' : 'false'"
                             :class="index === active ? 'w-3 h-3 bg-primary-600' : 'w-2 h-2 bg-gray-300 dark:bg-gray-600 hover:bg-gray-400'"
                             class="rounded-full transition-all duration-300 active:scale-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"></button>
                 </template>
