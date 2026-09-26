@@ -36,9 +36,6 @@ class extends Component
 
     public function mount($slug): void
     {
-        // NOTE: Tenant does NOT use BelongsToTenant (it is the root of the
-        // tenant system), so withoutGlobalScope() here is a no-op kept for
-        // forward-compat if TenantScope is ever applied to Tenant.
         $this->tenant = Tenant::withoutGlobalScope(TenantScope::class)
             ->with([
                 'typeOfTenant:id,type,description',
@@ -125,10 +122,6 @@ class extends Component
         }
     }
 
-    /**
-     * Rule 17 — Typed Eloquent property binding re-runs on hydrate
-     * WITHOUT the TenantScope bypass. Re-apply the bypass here.
-     */
     public function hydrate(): void
     {
         $this->tenant = Tenant::withoutGlobalScope(TenantScope::class)
@@ -140,10 +133,6 @@ class extends Component
             ->firstOrFail();
     }
 
-    // ─────────────────────────────────────────────────────
-    //  Media
-    // ─────────────────────────────────────────────────────
-
     #[Computed]
     public function galleryImageUrls(): array
     {
@@ -153,7 +142,6 @@ class extends Component
         ));
     }
 
-    /** Pre-encoded JSON for the data-attribute (HTML-entity safe). */
     #[Computed]
     public function galleryImageUrlsJson(): string
     {
@@ -163,7 +151,6 @@ class extends Component
         );
     }
 
-    /** First 4 gallery thumbs shown in the hero mini-strip. */
     #[Computed]
     public function heroThumbs(): array
     {
@@ -187,10 +174,6 @@ class extends Component
     {
         return $this->tenant->logo ? asset('storage/' . $this->tenant->logo) : null;
     }
-
-    // ─────────────────────────────────────────────────────
-    //  Business info computeds
-    // ─────────────────────────────────────────────────────
 
     #[Computed]
     public function description(): ?string
@@ -284,14 +267,6 @@ class extends Component
         ];
     }
 
-    /**
-     * Deep-link into OUR map with the tenant pre-focused and the routing
-     * flow pre-armed (`?marker=X&directions=1`). The explore-map SFC
-     * hydrates those params on mount, calls OsrmDistanceService server-
-     * side, and animates the user in. Previously this pointed at Google
-     * Maps — which broke the immersive map experience for users who
-     * were already inside our platform.
-     */
     #[Computed]
     public function directionsUrl(): ?string
     {
@@ -314,10 +289,6 @@ class extends Component
 
         return route('explore.map', ['marker' => $this->tenant->id]);
     }
-
-    // ─────────────────────────────────────────────────────
-    //  Owner / trust
-    // ─────────────────────────────────────────────────────
 
     #[Computed]
     public function ownerAvatarUrl(): ?string
@@ -370,16 +341,6 @@ class extends Component
             && ! $this->tenant->permit_expires_at->isPast();
     }
 
-    // ─────────────────────────────────────────────────────
-    //  Properties / Services
-    // ─────────────────────────────────────────────────────
-
-    /**
-     * Step 2 of the optimization protocol — only columns actually used
-     * in the template are selected. `capacity`, `quantity`, and the
-     * filter-only `is_active` are dropped from the SELECT. `tenant_id`
-     * is kept for model integrity on downstream consumers.
-     */
     #[Computed]
     public function properties()
     {
@@ -433,18 +394,13 @@ class extends Component
 @push('styles')
     @once
         <style>
-            .reveal {
-                opacity: 0;
-                transform: translateY(22px);
-                transition: opacity .65s cubic-bezier(.16,1,.3,1), transform .65s cubic-bezier(.16,1,.3,1);
-            }
-            .reveal.in {
-                opacity: 1;
-                transform: translateY(0);
-            }
-            @media (prefers-reduced-motion: reduce) {
-                .reveal { opacity: 1; transform: none; transition: none; }
-            }
+            /* ── Gallery modal overlay ──
+               padding-top was hardcoded 64px, which clears the public
+               header (h-16 = 64px) on non-notched devices but sits
+               under the notch / Dynamic Island on notched iPhones.
+               max(64px, safe-area + 12px buffer) keeps the previous
+               64px floor on every device, and grows on notched
+               devices so the modal header isn't obscured. */
             .gal-overlay {
                 position: fixed;
                 inset: 0;
@@ -452,7 +408,7 @@ class extends Component
                 background: rgba(0,0,0,0.97);
                 display: flex;
                 flex-direction: column;
-                padding-top: 64px;
+                padding-top: max(64px, calc(env(safe-area-inset-top) + 12px));
                 box-sizing: border-box;
                 animation: galFadeIn .25s ease;
             }
@@ -483,12 +439,12 @@ class extends Component
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                animation: fadeIn .18s ease;
+                animation: lbFadeIn .18s ease;
             }
             @media (prefers-reduced-motion: reduce) {
                 .lb-wrap { animation: none; }
             }
-            @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+            @keyframes lbFadeIn { from { opacity: 0 } to { opacity: 1 } }
             .lb-img {
                 max-width: 90vw;
                 max-height: 88vh;
@@ -516,11 +472,6 @@ class extends Component
                 background: rgba(255,255,255,.15);
                 color: #fff;
             }
-            @keyframes floatPill { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-4px) } }
-            .gallery-pill { animation: floatPill 3s ease-in-out infinite; }
-            @media (prefers-reduced-motion: reduce) {
-                .gallery-pill { animation: none; }
-            }
             .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
             .hero-radial {
                 background:
@@ -531,783 +482,823 @@ class extends Component
     @endonce
 @endpush
 
-<div
-    class="relative z-10 min-h-screen"
-    x-data="{
-        galleryOpen: false,
-        lbSrc: null,
-        lbIndex: 0,
-        lbStartX: 0,
-        galleryImages: JSON.parse($el.dataset.galleryImages || '[]'),
-        previousFocus: null,
+<div x-data="revealOnScroll">
 
-        // Observer handles stored on the Alpine instance so they can be
-        // disconnected in destroy(). Without this, wire:navigate away
-        // leaves the observers holding references to removed DOM.
-        _revealObserver: null,
-        _stickyObserver: null,
+    <div
+        class="relative z-10 min-h-screen"
+        x-data="{
+            galleryOpen: false,
+            lbSrc: null,
+            lbIndex: 0,
+            lbStartX: 0,
+            galleryImages: JSON.parse($el.dataset.galleryImages || '[]'),
+            previousFocus: null,
 
-        openGallery() {
-            this.previousFocus = document.activeElement;
-            this.galleryOpen = true;
-            document.body.style.overflow = 'hidden';
-            this.$nextTick(() => this.$refs.galleryCloseBtn?.focus());
-        },
-        closeGallery() {
-            this.galleryOpen = false;
-            this.lbSrc = null;
-            document.body.style.overflow = '';
-            this.previousFocus?.focus();
-            this.previousFocus = null;
-        },
+            _stickyObserver: null,
 
-        // Index-only signature: the URL is read from `galleryImages[idx]`
-        // rather than embedded as a literal in the Alpine directive.
-        // Avoids a class of breakage if a filename ever contained a
-        // character that would need escaping in a JS string literal.
-        openLb(idx) {
-            this.lbIndex = idx;
-            this.lbSrc   = this.galleryImages[idx] ?? null;
-        },
-        prevLb() {
-            this.lbIndex = (this.lbIndex - 1 + this.galleryImages.length) % this.galleryImages.length;
-            this.lbSrc   = this.galleryImages[this.lbIndex];
-        },
-        nextLb() {
-            this.lbIndex = (this.lbIndex + 1) % this.galleryImages.length;
-            this.lbSrc   = this.galleryImages[this.lbIndex];
-        },
+            openGallery() {
+                this.previousFocus = document.activeElement;
+                this.galleryOpen = true;
+                document.body.style.overflow = 'hidden';
+                this.$nextTick(() => this.$refs.galleryCloseBtn?.focus());
+            },
+            closeGallery() {
+                this.galleryOpen = false;
+                this.lbSrc = null;
+                document.body.style.overflow = '';
+                this.previousFocus?.focus();
+                this.previousFocus = null;
+            },
 
-        touchStart(e) { this.lbStartX = e.changedTouches[0].clientX; },
-        touchEnd(e) {
-            const dx = e.changedTouches[0].clientX - this.lbStartX;
-            if (Math.abs(dx) > 50) { dx < 0 ? this.nextLb() : this.prevLb(); }
-        },
+            openLb(idx) {
+                this.lbIndex = idx;
+                this.lbSrc   = this.galleryImages[idx] ?? null;
+            },
+            prevLb() {
+                this.lbIndex = (this.lbIndex - 1 + this.galleryImages.length) % this.galleryImages.length;
+                this.lbSrc   = this.galleryImages[this.lbIndex];
+            },
+            nextLb() {
+                this.lbIndex = (this.lbIndex + 1) % this.galleryImages.length;
+                this.lbSrc   = this.galleryImages[this.lbIndex];
+            },
 
-        setupReveal() {
-            if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+            touchStart(e) { this.lbStartX = e.changedTouches[0].clientX; },
+            touchEnd(e) {
+                const dx = e.changedTouches[0].clientX - this.lbStartX;
+                if (Math.abs(dx) > 50) { dx < 0 ? this.nextLb() : this.prevLb(); }
+            },
 
-            const els = document.querySelectorAll('.reveal');
+            stickyVisible: false,
+            setupSticky() {
+                const hero = document.getElementById('offerings-hero');
+                if (!hero) return;
+                if (!('IntersectionObserver' in window)) return;
 
-            // No IntersectionObserver — reveal everything immediately so
-            // content is never permanently hidden.
-            if (!('IntersectionObserver' in window)) {
-                els.forEach(el => el.classList.add('in'));
-                return;
-            }
+                this._stickyObserver = new IntersectionObserver(
+                    ([e]) => { this.stickyVisible = !e.isIntersecting; },
+                    { threshold: .1 },
+                );
+                this._stickyObserver.observe(hero);
+            },
 
-            this._revealObserver = new IntersectionObserver(entries => {
-                entries.forEach(e => {
-                    if (e.isIntersecting) {
-                        e.target.classList.add('in');
-                        this._revealObserver.unobserve(e.target);
-                    }
-                });
-            }, { threshold: .08 });
+            destroy() {
+                if (this._stickyObserver) {
+                    this._stickyObserver.disconnect();
+                    this._stickyObserver = null;
+                }
+            },
+        }"
+        data-gallery-images="{{ $this->galleryImageUrlsJson }}"
+        x-init="setupSticky();"
+        @keydown.escape.window="lbSrc ? lbSrc=null : closeGallery()"
+        @keydown.arrow-left.window="lbSrc && prevLb()"
+        @keydown.arrow-right.window="lbSrc && nextLb()"
+    >
 
-            els.forEach(el => this._revealObserver.observe(el));
-        },
+        {{-- ═══════════════ GALLERY MODAL ═══════════════ --}}
+        <div x-cloak
+             :class="galleryOpen ? 'gal-overlay' : 'hidden'"
+             role="dialog"
+             aria-modal="true">
 
-        stickyVisible: false,
-        setupSticky() {
-            const hero = document.getElementById('offerings-hero');
-            if (!hero) return;
-
-            // No IntersectionObserver — leave the bar hidden (matches the
-            // pre-existing behaviour, but without throwing).
-            if (!('IntersectionObserver' in window)) return;
-
-            this._stickyObserver = new IntersectionObserver(
-                ([e]) => { this.stickyVisible = !e.isIntersecting; },
-                { threshold: .1 },
-            );
-            this._stickyObserver.observe(hero);
-        },
-
-        destroy() {
-            if (this._revealObserver) {
-                this._revealObserver.disconnect();
-                this._revealObserver = null;
-            }
-            if (this._stickyObserver) {
-                this._stickyObserver.disconnect();
-                this._stickyObserver = null;
-            }
-        },
-    }"
-    data-gallery-images="{{ $this->galleryImageUrlsJson }}"
-    x-init="setupReveal(); setupSticky();"
-    @keydown.escape.window="lbSrc ? lbSrc=null : closeGallery()"
-    @keydown.arrow-left.window="lbSrc && prevLb()"
-    @keydown.arrow-right.window="lbSrc && nextLb()"
->
-
-    {{-- ═══════════════ GALLERY MODAL ═══════════════ --}}
-    {{-- Rule 69: no `x-show`, no `x-transition`. Visibility is driven by
-         :class toggling between the `.gal-overlay` class (with its own
-         CSS fade-in animation) and Tailwind's `.hidden`. --}}
-    <div x-cloak
-         :class="galleryOpen ? 'gal-overlay' : 'hidden'"
-         role="dialog"
-         aria-modal="true">
-
-        <div class="flex-none flex items-center justify-between px-6 md:px-10 py-4 border-b border-white/[0.07]">
-            <div>
-                <div class="flex items-center gap-2 mb-0.5">
-                    <span class="w-3 h-px bg-primary-600"></span>
-                    <span class="text-[10px] tracking-[0.22em] uppercase text-primary-400 font-bold">Photo Gallery</span>
+            <div class="flex-none flex items-center justify-between px-6 md:px-10 py-4 border-b border-white/[0.07]">
+                <div>
+                    <div class="flex items-center gap-2 mb-0.5">
+                        <span class="w-4 h-px bg-amber-400" aria-hidden="true"></span>
+                        <span class="text-[10px] tracking-[0.22em] uppercase text-amber-300 font-bold">Photo Gallery</span>
+                    </div>
+                    <h2 class="font-display text-lg font-semibold text-white">
+                        {{ $tenant->name }}
+                        @if($galleryTitle)
+                            <span class="text-white/30 mx-2 font-normal">·</span>
+                            <em class="italic text-primary-400 text-base font-normal">{{ $galleryTitle }}</em>
+                        @endif
+                    </h2>
                 </div>
-                <h2 class="font-display text-lg font-semibold text-white">
-                    {{ $tenant->name }}
-                    @if($galleryTitle)
-                        <span class="text-white/30 mx-2 font-normal">·</span>
-                        <em class="italic text-primary-400 text-base font-normal">{{ $galleryTitle }}</em>
+                <div class="flex items-center gap-4">
+                    @php $galleryCount = count($galleryImages); @endphp
+                    @if($galleryCount > 0)
+                        <span class="text-xs text-white/25 hidden sm:block tabular-nums">
+                            {{ $galleryCount }} {{ $galleryCount === 1 ? 'photo' : 'photos' }}
+                        </span>
                     @endif
-                </h2>
+                    <button type="button" @click="closeGallery()"
+                            x-ref="galleryCloseBtn"
+                            class="w-11 h-11 rounded-full border border-white/12 flex items-center justify-center text-white/40 hover:text-white hover:border-white/35 hover:bg-white/[0.07] transition-all active:scale-95
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
+                            aria-label="Close gallery">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
+                </div>
             </div>
-            <div class="flex items-center gap-4">
-                @php $galleryCount = count($galleryImages); @endphp
-                @if($galleryCount > 0)
-                    <span class="text-xs text-white/25 hidden sm:block">
-                        {{ $galleryCount }} {{ $galleryCount === 1 ? 'photo' : 'photos' }}
-                    </span>
-                @endif
-                <button type="button" @click="closeGallery()"
-                        x-ref="galleryCloseBtn"
-                        class="w-9 h-9 rounded-full border border-white/12 flex items-center justify-center text-white/40 hover:text-white hover:border-white/35 hover:bg-white/[0.07] transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
-                        aria-label="Close gallery">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                </button>
-            </div>
-        </div>
 
-        <div class="flex-1 overflow-y-auto p-4 md:p-6">
-            @if(!empty($galleryImages))
-                <div class="gal-grid max-w-7xl mx-auto">
-                    @foreach($galleryImages as $idx => $imgPath)
-                        <div class="gal-item relative overflow-hidden rounded-xl cursor-pointer group"
-                             wire:key="gal-{{ $idx }}"
-                             @click="openLb({{ $idx }})">
-                            <img src="{{ asset('storage/'.$imgPath) }}"
-                                 class="w-full h-full object-cover"
-                                 alt="{{ $tenant->name }} photo {{ $idx + 1 }}"
-                                 loading="lazy" decoding="async">
-                            <div class="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-end p-3">
-                                <div class="w-7 h-7 rounded-full bg-white/10 border border-white/20 flex items-center justify-center ml-auto">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v6m3-3H7"/></svg>
+            <div class="flex-1 overflow-y-auto p-4 md:p-6">
+                @if(!empty($galleryImages))
+                    <div class="gal-grid max-w-7xl mx-auto">
+                        @foreach($galleryImages as $idx => $imgPath)
+                            <div class="gal-item relative overflow-hidden rounded-xl cursor-pointer group"
+                                 wire:key="gal-{{ $idx }}"
+                                 @click="openLb({{ $idx }})">
+                                <img src="{{ asset('storage/'.$imgPath) }}"
+                                     class="w-full h-full object-cover"
+                                     alt="{{ $tenant->name }} photo {{ $idx + 1 }}"
+                                     loading="lazy" decoding="async">
+                                <div class="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-end p-3">
+                                    <div class="w-8 h-8 rounded-full bg-white/10 border border-white/20 flex items-center justify-center ml-auto">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v6m3-3H7"/></svg>
+                                    </div>
                                 </div>
                             </div>
-                        </div>
-                    @endforeach
-                </div>
-            @else
-                <div class="flex flex-col items-center justify-center h-64 text-white/25">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="w-10 h-10 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                    <p class="text-sm">No photos yet</p>
-                </div>
+                        @endforeach
+                    </div>
+                @else
+                    <div class="flex flex-col items-center justify-center h-64 text-white/25">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-10 h-10 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                        <p class="text-sm">No photos yet</p>
+                    </div>
+                @endif
+            </div>
+
+            @if($gallerySubtitle)
+                <div class="flex-none border-t border-white/[0.06] px-8 py-3 text-xs text-white/25 italic">{{ $gallerySubtitle }}</div>
             @endif
         </div>
 
-        @if($gallerySubtitle)
-            <div class="flex-none border-t border-white/[0.06] px-8 py-3 text-xs text-white/25 italic">{{ $gallerySubtitle }}</div>
-        @endif
-    </div>
-
-    {{-- ═══════════════ LIGHTBOX ═══════════════ --}}
-    {{-- Rule 69: `:class` toggle. The `.lb-wrap` class carries the
-         fade-in animation via CSS. --}}
-    <div x-cloak
-         :class="lbSrc ? 'lb-wrap' : 'hidden'"
-         @click.self="lbSrc=null"
-         @touchstart="touchStart($event)"
-         @touchend="touchEnd($event)"
-         role="dialog"
-         aria-modal="true">
-        <button type="button" @click="prevLb()" class="lb-nav" style="left:16px" aria-label="Previous">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
-        </button>
-        <div class="relative">
-            <img :src="lbSrc || ''" class="lb-img" alt="Gallery photo" decoding="async">
-            <div class="absolute bottom-0 left-0 right-0 flex justify-between items-center px-4 py-3 bg-gradient-to-t from-black/80 to-transparent rounded-b-xl">
-                <span class="text-xs text-white/40 tabular-nums" x-text="(lbIndex+1)+' / '+galleryImages.length"></span>
-                <button type="button" @click="lbSrc=null" class="text-[10px] text-white/35 hover:text-white uppercase tracking-widest transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50 inline-flex items-center gap-1">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                    Close
-                </button>
+        {{-- ═══════════════ LIGHTBOX ═══════════════ --}}
+        <div x-cloak
+             :class="lbSrc ? 'lb-wrap' : 'hidden'"
+             @click.self="lbSrc=null"
+             @touchstart="touchStart($event)"
+             @touchend="touchEnd($event)"
+             role="dialog"
+             aria-modal="true">
+            <button type="button" @click="prevLb()" class="lb-nav" style="left:16px" aria-label="Previous">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+            </button>
+            <div class="relative">
+                <img :src="lbSrc || ''" class="lb-img" alt="Gallery photo" decoding="async">
+                <div class="absolute bottom-0 left-0 right-0 flex justify-between items-center px-4 py-3 bg-gradient-to-t from-black/80 to-transparent rounded-b-xl">
+                    <span class="text-xs text-white/40 tabular-nums" x-text="(lbIndex+1)+' / '+galleryImages.length"></span>
+                    <button type="button" @click="lbSrc=null" class="text-[10px] text-white/35 hover:text-white uppercase tracking-widest transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50 inline-flex items-center gap-1">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                        Close
+                    </button>
+                </div>
             </div>
+            <button type="button" @click="nextLb()" class="lb-nav" style="right:16px" aria-label="Next">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+            </button>
         </div>
-        <button type="button" @click="nextLb()" class="lb-nav" style="right:16px" aria-label="Next">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-        </button>
-    </div>
 
-    {{-- ═══════════════ HERO ═══════════════ --}}
-    <section id="offerings-hero" class="relative overflow-hidden bg-neutral-950">
+        {{-- ═══════════════ HERO ═══════════════
+             pt trimmed from pt-10 md:pt-16 → pt-8 md:pt-12. The layout
+             <main> already offsets by pt-[calc(4rem+env(safe-area-inset-
+             top))], so the hero's own top padding was stacking an extra
+             ~40–64px of dead space above the fold. Trimming recovers
+             above-the-fold room without changing the vertical rhythm. --}}
+        <section id="offerings-hero" class="relative overflow-hidden bg-neutral-950">
 
-        {{-- Background priority: tenant logo → cover photo → gradient fallback.
-             The logo is usually a small square image; scaling it to full-bleed
-             requires a heavy blur to hide pixelation, which reads as an
-             "ambient brand color" hero. The cover photo (if present) gets a
-             lighter treatment since it's already designed for wide display. --}}
-        @if($this->logoUrl)
-            <img src="{{ $this->logoUrl }}"
-                 class="absolute inset-0 w-full h-full object-cover scale-125"
-                 style="filter:brightness(.28) saturate(1.25) blur(14px)" alt="" loading="eager" decoding="async">
+            {{-- Background priority: COVER → logo wash → gradient.
+                 The cover photo fills the section as a full-bleed
+                 background. The gradient overlay is left-heavy so the
+                 copy column is guaranteed contrast while the right side
+                 (brand card) sees more of the photo. --}}
+            @if($this->coverPhotoUrl)
+                <img src="{{ $this->coverPhotoUrl }}"
+                     class="absolute inset-0 w-full h-full object-cover"
+                     style="filter:brightness(.7) saturate(1.1)"
+                     alt="" loading="eager" decoding="async" fetchpriority="high">
 
-            <div class="absolute inset-0 bg-gradient-to-tr from-primary-950/85 via-neutral-950/70 to-transparent"></div>
-            <div class="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/40 to-transparent"></div>
-        @elseif($this->coverPhotoUrl)
-            <img src="{{ $this->coverPhotoUrl }}"
-                 class="absolute inset-0 w-full h-full object-cover scale-105"
-                 style="filter:brightness(.3) saturate(1.15)" alt="" loading="eager" decoding="async">
+                {{-- Left-heavy horizontal gradient: dense over the copy,
+                     lighter towards the brand card. --}}
+                <div class="absolute inset-0 bg-gradient-to-r from-neutral-950/95 via-neutral-950/70 to-neutral-950/40"></div>
+                {{-- Bottom wash: anchors the section into the page. --}}
+                <div class="absolute inset-0 bg-gradient-to-t from-neutral-950 via-transparent to-neutral-950/20"></div>
+            @elseif($this->logoUrl)
+                <img src="{{ $this->logoUrl }}"
+                     class="absolute inset-0 w-full h-full object-cover scale-125"
+                     style="filter:brightness(.28) saturate(1.25) blur(14px)"
+                     alt="" loading="eager" decoding="async">
 
-            <div class="absolute inset-0 bg-gradient-to-tr from-primary-950/85 via-neutral-950/70 to-transparent"></div>
-            <div class="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/40 to-transparent"></div>
-        @else
-            <div class="absolute inset-0 bg-gradient-to-br from-primary-900 via-neutral-950 to-neutral-950"></div>
-            <div class="absolute inset-0 hero-radial"></div>
-            <div class="absolute inset-0 opacity-[0.04]"
-                 style="background-image: linear-gradient(rgba(255,255,255,.6) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.6) 1px, transparent 1px); background-size: 48px 48px;"></div>
-        @endif
+                <div class="absolute inset-0 bg-gradient-to-tr from-primary-950/85 via-neutral-950/70 to-transparent"></div>
+                <div class="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/40 to-transparent"></div>
+            @else
+                <div class="absolute inset-0 bg-gradient-to-br from-primary-900 via-neutral-950 to-neutral-950"></div>
+                <div class="absolute inset-0 hero-radial"></div>
+                <div class="absolute inset-0 opacity-[0.04]"
+                     style="background-image: linear-gradient(rgba(255,255,255,.6) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.6) 1px, transparent 1px); background-size: 48px 48px;"></div>
+            @endif
 
-        <div class="relative z-10 max-w-7xl mx-auto px-6 md:px-16 pt-10 md:pt-16 pb-16 md:pb-20">
+            <div class="relative z-10 max-w-7xl mx-auto px-6 md:px-16 pt-8 md:pt-12 pb-16 md:pb-20">
 
-            <div class="mb-10 md:mb-14">
-                <a href="{{ route('tenant.show', $tenant->slug) }}" wire:navigate
-                   class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/[0.05] border border-white/10 hover:bg-white/10 hover:border-white/20 text-[10px] tracking-[0.22em] uppercase text-white/70 hover:text-white transition-all group active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 group-hover:-translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 12H5m7-7l-7 7 7 7"/></svg>
-                    Back to {{ $tenant->name }}
-                </a>
-            </div>
-
-            {{--
-                On mobile:  content column first (heading, description, stats,
-                            quick-action pills), brand card second.
-                On desktop: brand card on the right via `lg:order-2` on the
-                            brand card and default source order for the content.
-                Result — mobile users reach "What We Offer" and the offers
-                teaser immediately instead of scrolling past a tall brand
-                card first.
-            --}}
-            <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-start">
-
-                {{-- ─────────── CONTENT (mobile-first) ─────────── --}}
-                <div class="lg:col-span-7 lg:order-1">
-
-                    <div class="flex flex-wrap items-center gap-2 mb-5">
-                        @if($this->businessTypeLabel)
-                            <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary-500/15 border border-primary-400/30 text-[10px] tracking-[0.18em] uppercase text-primary-200 font-bold backdrop-blur-sm">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
-                                </svg>
-                                {{ $this->businessTypeLabel }}
-                            </span>
-                        @endif
-
-                        @if($this->isVerified)
-                            <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-400/30 text-[10px] tracking-[0.18em] uppercase text-emerald-200 font-bold backdrop-blur-sm">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
-                                </svg>
-                                Verified
-                            </span>
-                        @endif
-
-                        @if($this->isRecommended)
-                            <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/15 border border-amber-400/30 text-[10px] tracking-[0.18em] uppercase text-amber-200 font-bold backdrop-blur-sm">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
-                                    <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
-                                </svg>
-                                Recommended
-                            </span>
-                        @endif
-                    </div>
-
-                    <h1 class="font-display text-5xl sm:text-6xl md:text-7xl lg:text-[5.5rem] font-semibold text-white leading-[0.92] tracking-tight">
-                        What<br>
-                        <em class="italic bg-gradient-to-r from-blue-300 via-cyan-300 to-emerald-300 bg-clip-text text-transparent">We Offer</em>
-                    </h1>
-
-                    @if($this->description)
-                        <p class="mt-6 max-w-xl text-sm md:text-base text-white/65 leading-relaxed">
-                            {{ $this->description }}
-                        </p>
-                    @else
-                        <p class="mt-6 max-w-xl text-sm md:text-base text-white/55 leading-relaxed">
-                            Discover everything {{ $tenant->name }} has to offer — from bookable activities to add-on services that make your visit unforgettable.
-                        </p>
-                    @endif
-
-                    <div class="mt-8 md:mt-10 pt-6 border-t border-white/10">
-                        <div class="flex flex-wrap items-center gap-5 sm:gap-7 md:gap-10">
-                            <div>
-                                <div class="font-display text-3xl sm:text-4xl font-medium text-primary-300 tabular-nums">{{ $this->properties->count() }}</div>
-                                <div class="text-[10px] tracking-[0.18em] uppercase text-white/35 mt-1">Activities</div>
-                            </div>
-                            <div class="w-px h-12 bg-white/10"></div>
-                            <div>
-                                <div class="font-display text-3xl sm:text-4xl font-medium text-primary-300 tabular-nums">{{ $this->services->count() }}</div>
-                                <div class="text-[10px] tracking-[0.18em] uppercase text-white/35 mt-1">Services</div>
-                            </div>
-                            @if($this->heroThumbCount)
-                                <div class="w-px h-12 bg-white/10"></div>
-                                <div>
-                                    <div class="font-display text-3xl sm:text-4xl font-medium text-primary-300 tabular-nums">{{ $this->heroThumbCount }}</div>
-                                    <div class="text-[10px] tracking-[0.18em] uppercase text-white/35 mt-1">Photos</div>
-                                </div>
-                            @endif
-                        </div>
-                    </div>
-
-                    @php
-                        $hasAnyPill = $this->directionsUrl
-                            || $tenant->email
-                            || !empty($this->socialLinks['website']);
-                    @endphp
-
-                    @if($hasAnyPill)
-                        <div class="mt-8 flex flex-wrap items-center gap-2.5">
-                            @if($this->directionsUrl)
-                                <a href="{{ $this->directionsUrl }}" wire:navigate
-                                   class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-primary-600 hover:bg-primary-700 border border-primary-500/40 hover:border-primary-400 text-xs font-bold text-white transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
-                                    </svg>
-                                    Get Directions
-                                </a>
-                            @endif
-
-                            @if($tenant->email)
-                                <a href="mailto:{{ $tenant->email }}"
-                                   class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/[0.06] border border-white/15 hover:bg-white/[0.12] hover:border-white/25 text-xs font-semibold text-white/80 hover:text-white transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
-                                    </svg>
-                                    Email
-                                </a>
-                            @endif
-
-                            @if(!empty($this->socialLinks['website']))
-                                <a href="{{ $this->socialLinks['website'] }}" target="_blank" rel="noopener noreferrer"
-                                   class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/[0.06] border border-white/15 hover:bg-white/[0.12] hover:border-white/25 text-xs font-semibold text-white/80 hover:text-white transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                        <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/>
-                                    </svg>
-                                    Website
-                                </a>
-                            @endif
-                        </div>
-                    @endif
+                <div data-reveal class="mb-10 md:mb-14">
+                    {{-- Back pill — returns to the Tourist Spots grid, which
+                         is the primary discovery surface users arrive from.
+                         Tap target expanded to 44×44 via a transparent
+                         pseudo-element (before:-inset-2.5 = -10px on every
+                         side). Visual stays compact; the click area changed. --}}
+                    <a href="{{ route('tourist-spots.index') }}" wire:navigate
+                       class="relative inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/[0.06] border border-white/12 hover:bg-white/12 hover:border-white/25 text-[10px] tracking-[0.22em] uppercase text-white/80 hover:text-white transition-all group active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50
+                              before:absolute before:content-[''] before:-inset-2.5 before:rounded-full
+                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 group-hover:-translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 12H5m7-7l-7 7 7 7"/></svg>
+                        Back to Tourist Spots
+                    </a>
                 </div>
 
-                {{-- ─────────── BRAND CARD (mobile-second) ─────────── --}}
-                <div class="lg:col-span-5 lg:order-2">
-                    <div class="relative rounded-3xl bg-white/[0.05] backdrop-blur-xl border border-white/10 shadow-2xl shadow-black/40 overflow-hidden">
+                <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-start">
 
-                        <div class="h-1 bg-gradient-to-r from-primary-500 via-cyan-400 to-emerald-400"></div>
+                    {{-- ─────────── CONTENT (mobile-first) ─────────── --}}
+                    <div data-reveal class="lg:col-span-7 lg:order-1">
 
-                        <div class="p-6 md:p-7 flex items-center gap-4">
-                            <div class="shrink-0 w-20 h-20 md:w-24 md:h-24 rounded-2xl bg-white shadow-xl ring-1 ring-black/5 overflow-hidden flex items-center justify-center">
-                                @if($this->logoUrl)
-                                    <img src="{{ $this->logoUrl }}"
-                                         alt="{{ $tenant->name }}"
-                                         class="w-full h-full object-contain p-2" decoding="async">
-                                @else
-                                    <span class="font-display text-3xl font-bold text-primary-600">
-                                        {{ strtoupper(substr($tenant->name, 0, 1)) }}
-                                    </span>
-                                @endif
-                            </div>
+                        <div class="flex flex-wrap items-center gap-2 mb-5">
+                            @if($this->businessTypeLabel)
+                                <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary-500/20 border border-primary-400/40 text-[10px] tracking-[0.18em] uppercase text-primary-100 font-bold backdrop-blur-sm">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
+                                    </svg>
+                                    {{ $this->businessTypeLabel }}
+                                </span>
+                            @endif
 
-                            <div class="min-w-0 flex-1">
-                                <p class="text-[10px] tracking-[0.22em] uppercase text-white/40 font-bold mb-1">
-                                    @if($this->isVerified) Verified Business @else Business @endif
-                                </p>
-                                <h2 class="font-display text-xl md:text-2xl font-semibold text-white leading-tight truncate">
-                                    {{ $tenant->name }}
-                                </h2>
-                                @if($this->businessTypeLabel)
-                                    <p class="text-xs text-white/50 mt-1 truncate">{{ $this->businessTypeLabel }}</p>
+                            @if($this->isVerified)
+                                <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/20 border border-emerald-400/40 text-[10px] tracking-[0.18em] uppercase text-emerald-100 font-bold backdrop-blur-sm">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+                                    </svg>
+                                    Verified
+                                </span>
+                            @endif
+
+                            @if($this->isRecommended)
+                                <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/20 border border-amber-400/40 text-[10px] tracking-[0.18em] uppercase text-amber-100 font-bold backdrop-blur-sm">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+                                        <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
+                                    </svg>
+                                    Recommended
+                                </span>
+                            @endif
+                        </div>
+
+                        <h1 class="font-display text-5xl sm:text-6xl md:text-7xl lg:text-[5.5rem] font-semibold text-white leading-[0.92] tracking-tight">
+                            What<br>
+                            <em class="italic bg-gradient-to-r from-blue-300 via-cyan-300 to-emerald-300 bg-clip-text text-transparent">We Offer</em>
+                        </h1>
+
+                        @if($this->description)
+                            <p class="mt-6 max-w-xl text-sm md:text-base text-white/80 leading-relaxed drop-shadow-[0_1px_3px_rgba(0,0,0,0.6)]">
+                                {{ $this->description }}
+                            </p>
+                        @else
+                            <p class="mt-6 max-w-xl text-sm md:text-base text-white/70 leading-relaxed drop-shadow-[0_1px_3px_rgba(0,0,0,0.6)]">
+                                Discover everything {{ $tenant->name }} has to offer — from bookable activities to add-on services that make your visit unforgettable.
+                            </p>
+                        @endif
+
+                        <div class="mt-8 md:mt-10 pt-6 border-t border-white/15">
+                            <div class="flex flex-wrap items-center gap-5 sm:gap-7 md:gap-10">
+                                <div>
+                                    <div class="font-display text-3xl sm:text-4xl font-medium text-primary-300 tabular-nums drop-shadow-[0_1px_3px_rgba(0,0,0,0.6)]">{{ $this->properties->count() }}</div>
+                                    <div class="text-[10px] tracking-[0.18em] uppercase text-white/60 mt-1">Activities</div>
+                                </div>
+                                <div class="w-px h-12 bg-white/20" aria-hidden="true"></div>
+                                <div>
+                                    <div class="font-display text-3xl sm:text-4xl font-medium text-primary-300 tabular-nums drop-shadow-[0_1px_3px_rgba(0,0,0,0.6)]">{{ $this->services->count() }}</div>
+                                    <div class="text-[10px] tracking-[0.18em] uppercase text-white/60 mt-1">Services</div>
+                                </div>
+                                @if($this->heroThumbCount)
+                                    <div class="w-px h-12 bg-white/20" aria-hidden="true"></div>
+                                    <div>
+                                        <div class="font-display text-3xl sm:text-4xl font-medium text-primary-300 tabular-nums drop-shadow-[0_1px_3px_rgba(0,0,0,0.6)]">{{ $this->heroThumbCount }}</div>
+                                        <div class="text-[10px] tracking-[0.18em] uppercase text-white/60 mt-1">Photos</div>
+                                    </div>
                                 @endif
                             </div>
                         </div>
-
-                        <dl class="divide-y divide-white/[0.06] border-t border-white/[0.06]">
-                            @if($this->fullAddress)
-                                <div class="flex items-start gap-3 px-6 md:px-7 py-3.5">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-primary-300 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
-                                    </svg>
-                                    <span class="text-xs text-white/70 leading-snug">{{ $this->fullAddress }}</span>
-                                </div>
-                            @endif
-
-                            @if($this->hoursLabel)
-                                <div class="flex items-center gap-3 px-6 md:px-7 py-3.5">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-primary-300 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                                    </svg>
-                                    <span class="text-xs text-white/70">{{ $this->hoursLabel }}</span>
-                                </div>
-                            @endif
-
-                            @if($this->owner)
-                                <div class="flex items-center gap-3 px-6 md:px-7 py-3.5">
-                                    <div class="shrink-0 w-6 h-6 rounded-full overflow-hidden bg-white/10 flex items-center justify-center ring-1 ring-white/15">
-                                        @if($this->ownerAvatarUrl)
-                                            <img src="{{ $this->ownerAvatarUrl }}" alt="{{ $this->owner['name'] }}" class="w-full h-full object-cover" decoding="async">
-                                        @else
-                                            <span class="text-[9px] font-bold text-white/60">
-                                                {{ strtoupper(substr($this->owner['name'], 0, 1)) }}
-                                            </span>
-                                        @endif
-                                    </div>
-                                    <span class="text-xs text-white/70">Operated by <span class="font-semibold text-white">{{ $this->owner['name'] }}</span></span>
-                                </div>
-                            @endif
-                        </dl>
-
-                        {{-- Trust strip — hidden on mobile to keep the card compact.
-                             Still visible on lg: where the two-column layout gives
-                             it room. --}}
-                        @if($this->hasKyb || $this->isPermitValid || $memberSince)
-                            <div class="hidden lg:block border-t border-white/[0.06] px-6 md:px-7 py-4 space-y-2">
-                                @if($this->hasKyb)
-                                    <div class="flex items-center gap-2 text-[11px]">
-                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
-                                        </svg>
-                                        <span class="text-white/50">KYB</span>
-                                        <span class="text-emerald-300 font-semibold">Approved</span>
-                                    </div>
-                                @endif
-
-                                @if($this->isPermitValid)
-                                    <div class="flex items-center gap-2 text-[11px]">
-                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-primary-300 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z"/>
-                                        </svg>
-                                        <span class="text-white/50">Mayor's Permit</span>
-                                        <span class="text-white/85 font-semibold">valid until {{ $permitExpiresAt }}</span>
-                                    </div>
-                                @endif
-
-                                @if($memberSince)
-                                    <div class="flex items-center gap-2 text-[11px]">
-                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-primary-300 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                                        </svg>
-                                        <span class="text-white/50">On platform since</span>
-                                        <span class="text-white/85 font-semibold">{{ $memberSince }}</span>
-                                    </div>
-                                @endif
-                            </div>
-                        @endif
 
                         @php
-                            $socialIcons = array_filter([
-                                'facebook'  => $this->socialLinks['facebook']  ?? null,
-                                'instagram' => $this->socialLinks['instagram'] ?? null,
-                            ]);
+                            $hasAnyPill = $this->directionsUrl
+                                || $tenant->email
+                                || !empty($this->socialLinks['website']);
                         @endphp
 
-                        @if(!empty($socialIcons))
-                            <div class="border-t border-white/[0.06] px-6 md:px-7 py-3.5 flex items-center gap-3">
-                                <span class="text-[10px] tracking-[0.22em] uppercase text-white/40 font-bold">Follow</span>
-                                <div class="flex items-center gap-2">
-                                    @if(!empty($socialIcons['facebook']))
-                                        <a href="{{ $socialIcons['facebook'] }}" target="_blank" rel="noopener noreferrer"
-                                           aria-label="Facebook"
-                                           class="w-8 h-8 rounded-full bg-white/[0.06] border border-white/12 hover:bg-blue-500/20 hover:border-blue-400/40 text-white/70 hover:text-white flex items-center justify-center transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50">
-                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                <path d="M22 12c0-5.523-4.477-10-10-10S2 6.477 2 12c0 4.991 3.657 9.128 8.438 9.878v-6.987h-2.54V12h2.54V9.797c0-2.506 1.492-3.89 3.777-3.89 1.094 0 2.238.195 2.238.195v2.46h-1.26c-1.243 0-1.63.771-1.63 1.562V12h2.773l-.443 2.89h-2.33v6.988C18.343 21.128 22 16.991 22 12z"/>
-                                            </svg>
-                                        </a>
-                                    @endif
+                        @if($hasAnyPill)
+                            <div class="mt-8 flex flex-wrap items-center gap-2.5">
+                                @if($this->directionsUrl)
+                                    {{-- Action pills min-h-[44px] (WCAG AAA tap floor).
+                                         Was min-h-[40px], which passed AA but not AAA. --}}
+                                    <a href="{{ $this->directionsUrl }}" wire:navigate
+                                       class="inline-flex items-center gap-2 px-4 min-h-[44px] rounded-full bg-primary-600 hover:bg-primary-700 border border-primary-500/40 hover:border-primary-400 text-xs font-bold text-white transition-all active:scale-95
+                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657 13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
+                                        </svg>
+                                        Get Directions
+                                    </a>
+                                @endif
 
-                                    @if(!empty($socialIcons['instagram']))
-                                        <a href="{{ $socialIcons['instagram'] }}" target="_blank" rel="noopener noreferrer"
-                                           aria-label="Instagram"
-                                           class="w-8 h-8 rounded-full bg-white/[0.06] border border-white/12 hover:bg-pink-500/20 hover:border-pink-400/40 text-white/70 hover:text-white flex items-center justify-center transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50">
-                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
-                                                <rect x="2" y="2" width="20" height="20" rx="5"/><path d="M16 11.37A4 4 0 1112.63 8 4 4 0 0116 11.37z"/><line x1="17.5" y1="6.5" x2="17.51" y2="6.5"/>
-                                            </svg>
-                                        </a>
-                                    @endif
-                                </div>
-                            </div>
-                        @endif
+                                @if($tenant->email)
+                                    <a href="mailto:{{ $tenant->email }}"
+                                       class="inline-flex items-center gap-2 px-4 min-h-[44px] rounded-full bg-white/10 border border-white/20 hover:bg-white/20 hover:border-white/35 text-xs font-semibold text-white/90 hover:text-white transition-all active:scale-95 backdrop-blur-sm
+                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                                        </svg>
+                                        Email
+                                    </a>
+                                @endif
 
-                        {{-- Gallery strip + View All Photos — hidden on mobile
-                             to keep the initial view compact. Mobile users
-                             still reach the gallery via the footer teaser
-                             at the bottom of the page. --}}
-                        @if($this->heroThumbCount)
-                            <div class="hidden lg:block border-t border-white/[0.06] px-6 md:px-7 py-4">
-                                <div class="flex items-center justify-between mb-3">
-                                    <p class="text-[10px] tracking-[0.22em] uppercase text-white/40 font-bold">Gallery</p>
-                                    <span class="text-[10px] text-white/30 tabular-nums">{{ $this->heroThumbCount }} photos</span>
-                                </div>
-                                <div class="flex gap-2 cursor-pointer group" @click="openGallery()">
-                                    @foreach($this->heroThumbs as $i => $img)
-                                        <div class="flex-1 aspect-square rounded-lg overflow-hidden ring-1 ring-white/10 group-hover:ring-primary-400/40 transition">
-                                            <img src="{{ asset('storage/'.$img) }}"
-                                                 class="w-full h-full object-cover brightness-90 group-hover:brightness-100 group-hover:scale-110 transition duration-500"
-                                                 alt="" loading="lazy" decoding="async">
-                                        </div>
-                                    @endforeach
-                                    @if($this->heroThumbCount > 4)
-                                        <div class="flex-1 aspect-square rounded-lg bg-white/[0.06] border border-white/10 flex items-center justify-center">
-                                            <span class="text-white/70 text-xs font-bold tabular-nums">+{{ $this->heroThumbCount - 4 }}</span>
-                                        </div>
-                                    @endif
-                                </div>
-                            </div>
-
-                            <div class="hidden lg:block border-t border-white/[0.06] px-6 md:px-7 py-4">
-                                <button type="button" @click="openGallery()"
-                                        class="w-full inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full
-                                               bg-white/[0.08] border border-white/15 hover:bg-primary-500/20 hover:border-primary-400/50 hover:text-white
-                                               text-xs font-bold uppercase tracking-widest text-white/80
-                                               transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                                    View All Photos
-                                </button>
+                                @if(!empty($this->socialLinks['website']))
+                                    <a href="{{ $this->socialLinks['website'] }}" target="_blank" rel="noopener noreferrer"
+                                       class="inline-flex items-center gap-2 px-4 min-h-[44px] rounded-full bg-white/10 border border-white/20 hover:bg-white/20 hover:border-white/35 text-xs font-semibold text-white/90 hover:text-white transition-all active:scale-95 backdrop-blur-sm
+                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                            <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/>
+                                        </svg>
+                                        Website
+                                    </a>
+                                @endif
                             </div>
                         @endif
                     </div>
 
-                    @if($this->coordinates)
-                        <p class="mt-3 text-center text-[10px] font-mono text-white/25 tracking-tight tabular-nums">
-                            {{ number_format($this->coordinates['lat'], 6) }}, {{ number_format($this->coordinates['lng'], 6) }}
-                        </p>
-                    @endif
-                </div>
-            </div>
-        </div>
-    </section>
+                    {{-- ─────────── BRAND CARD (mobile-second) ─────────── --}}
+                    <div data-reveal style="--reveal-delay: 120ms" class="lg:col-span-5 lg:order-2">
+                        <div class="relative rounded-3xl bg-neutral-950/75 backdrop-blur-xl border border-white/12 shadow-2xl shadow-black/50 overflow-hidden">
 
-    {{-- ═══════════════ MAIN CONTENT ═══════════════ --}}
-    <div class="max-w-7xl mx-auto px-6 md:px-16 py-12 md:py-16 space-y-16">
+                            <div class="h-1 bg-gradient-to-r from-primary-500 via-cyan-400 to-emerald-400"></div>
 
-        {{-- ═══ ACTIVITIES ═══ --}}
-        <div id="activities">
-            <div class="reveal mb-10">
-                <div class="flex items-center gap-3 mb-2">
-                    <span class="w-5 h-px bg-primary-600"></span>
-                    <span class="text-[10px] tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Explore & Book</span>
-                </div>
-                <h2 class="font-display text-3xl md:text-5xl font-medium text-gray-900 dark:text-white">
-                    Available <em class="italic text-primary-600 dark:text-primary-400">Activities</em>
-                </h2>
-                <p class="mt-2 text-sm text-gray-500 dark:text-gray-400 max-w-md">All activities are listed below. Select your dates to book.</p>
-            </div>
+                            <div class="p-6 md:p-7 flex items-center gap-4">
+                                <div class="shrink-0 w-20 h-20 md:w-24 md:h-24 rounded-2xl bg-white shadow-xl ring-1 ring-black/5 overflow-hidden flex items-center justify-center">
+                                    @if($this->logoUrl)
+                                        <img src="{{ $this->logoUrl }}"
+                                             alt="{{ $tenant->name }}"
+                                             class="w-full h-full object-contain p-2" decoding="async">
+                                    @else
+                                        <span class="font-display text-3xl font-bold text-primary-600">
+                                            {{ strtoupper(substr($tenant->name, 0, 1)) }}
+                                        </span>
+                                    @endif
+                                </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                @forelse($this->properties as $property)
-                    @php
-                        // Precompute full URLs server-side — matching every
-                        // other image on the page. The Alpine expression then
-                        // just reads from the array without string concat.
-                        $imageUrls = array_values(array_map(
-                            fn ($p) => asset('storage/' . $p),
-                            $property->images->pluck('image_path')->all(),
-                        ));
-
-                        $imageUrlsJson = json_encode(
-                            $imageUrls,
-                            JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG,
-                        );
-                    @endphp
-
-                    <article class="group bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl overflow-hidden shadow-sm hover:shadow-lg hover:-translate-y-1 transition-all duration-300 flex flex-col reveal"
-                             wire:key="prop-{{ $property->id }}"
-                             data-images="{{ $imageUrlsJson }}"
-                             data-prop-name="{{ $property->name }}"
-                             x-data="{ imgIndex: 0, images: JSON.parse($el.dataset.images || '[]') }">
-
-                        <div class="relative overflow-hidden aspect-[16/10]">
-                            {{-- Rule 69: the img element is ALWAYS in the DOM.
-                                 Visibility is toggled with :class. --}}
-                            <img :src="images.length > 0 ? images[imgIndex] : 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'"
-                                 :alt="images.length > 0 ? ($el.dataset.propName + ' — photo ' + (imgIndex + 1)) : ''"
-                                 :class="images.length > 0 ? 'block' : 'hidden'"
-                                 class="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
-                                 loading="lazy" decoding="async">
-
-                            {{-- Empty state — same element tree, no <template x-if>. --}}
-                            <div :class="images.length === 0 ? 'flex' : 'hidden'"
-                                 class="w-full h-full bg-gray-100 dark:bg-gray-700 items-center justify-center text-gray-400 dark:text-gray-500">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                            </div>
-
-                            {{-- Carousel controls — same pattern. --}}
-                            <div :class="images.length > 1 ? 'block' : 'hidden'">
-                                <button type="button" @click.prevent="imgIndex=(imgIndex-1+images.length)%images.length"
-                                        class="absolute left-2 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-black/60 border border-white/15 flex items-center justify-center text-white/70 hover:bg-black/80 hover:text-white transition-all opacity-0 group-hover:opacity-100 focus-visible:opacity-100 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
-                                        aria-label="Previous photo">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/></svg>
-                                </button>
-                                <button type="button" @click.prevent="imgIndex=(imgIndex+1)%images.length"
-                                        class="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-black/60 border border-white/15 flex items-center justify-center text-white/70 hover:bg-black/80 hover:text-white transition-all opacity-0 group-hover:opacity-100 focus-visible:opacity-100 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
-                                        aria-label="Next photo">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
-                                </button>
-                                <div class="absolute bottom-2.5 left-0 right-0 flex justify-center gap-1">
-                                    <template x-for="(img, i) in images" :key="i">
-                                        <div @click.prevent="imgIndex=i"
-                                             class="rounded-full transition-all cursor-pointer active:scale-90"
-                                             :class="i===imgIndex ? 'w-4 h-1.5 bg-white' : 'w-1.5 h-1.5 bg-white/40'">
-                                        </div>
-                                    </template>
+                                <div class="min-w-0 flex-1">
+                                    <p class="text-[10px] tracking-[0.22em] uppercase text-amber-300/90 font-bold mb-1">
+                                        @if($this->isVerified) Verified Business @else Business @endif
+                                    </p>
+                                    <h2 class="font-display text-xl md:text-2xl font-semibold text-white leading-tight truncate">
+                                        {{ $tenant->name }}
+                                    </h2>
+                                    @if($this->businessTypeLabel)
+                                        <p class="text-xs text-white/55 mt-1 truncate">{{ $this->businessTypeLabel }}</p>
+                                    @endif
                                 </div>
                             </div>
 
-                            <div class="absolute top-3 left-3 flex flex-col gap-1.5 pointer-events-none">
-                                @if($property->propertyType)
-                                    <span class="bg-black/65 backdrop-blur text-[10px] font-bold text-primary-300 px-2.5 py-1 rounded-full tracking-wider uppercase">
-                                        {{ $property->propertyType->name }}
-                                    </span>
+                            <dl class="divide-y divide-white/[0.08] border-t border-white/[0.08]">
+                                @if($this->fullAddress)
+                                    <div class="flex items-start gap-3 px-6 md:px-7 py-3.5">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-primary-300 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657 13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
+                                        </svg>
+                                        <span class="text-xs text-white/75 leading-snug">{{ $this->fullAddress }}</span>
+                                    </div>
                                 @endif
-                            </div>
-                        </div>
 
-                        <div class="p-5 flex flex-col flex-1">
-                            <h3 class="font-display text-xl font-semibold text-gray-900 dark:text-white mb-2 leading-snug group-hover:text-primary-600 dark:group-hover:text-primary-400 transition-colors">
-                                {{ $property->name }}
-                            </h3>
-                            @if($property->description)
-                                <p class="text-sm text-gray-600 dark:text-gray-400 line-clamp-2 mb-4 flex-1 leading-relaxed">{{ $property->description }}</p>
-                            @else
-                                <div class="flex-1"></div>
+                                @if($this->hoursLabel)
+                                    <div class="flex items-center gap-3 px-6 md:px-7 py-3.5">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-primary-300 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                        </svg>
+                                        <span class="text-xs text-white/75">{{ $this->hoursLabel }}</span>
+                                    </div>
+                                @endif
+
+                                @if($this->owner)
+                                    <div class="flex items-center gap-3 px-6 md:px-7 py-3.5">
+                                        <div class="shrink-0 w-6 h-6 rounded-full overflow-hidden bg-white/10 flex items-center justify-center ring-1 ring-white/20">
+                                            @if($this->ownerAvatarUrl)
+                                                <img src="{{ $this->ownerAvatarUrl }}" alt="{{ $this->owner['name'] }}" class="w-full h-full object-cover" decoding="async">
+                                            @else
+                                                <span class="text-[9px] font-bold text-white/60">
+                                                    {{ strtoupper(substr($this->owner['name'], 0, 1)) }}
+                                                </span>
+                                            @endif
+                                        </div>
+                                        <span class="text-xs text-white/75">Operated by <span class="font-semibold text-white">{{ $this->owner['name'] }}</span></span>
+                                    </div>
+                                @endif
+                            </dl>
+
+                            @if($this->hasKyb || $this->isPermitValid || $memberSince)
+                                <div class="hidden lg:block border-t border-white/[0.08] px-6 md:px-7 py-4 space-y-2">
+                                    @if($this->hasKyb)
+                                        <div class="flex items-center gap-2 text-[11px]">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+                                            </svg>
+                                            <span class="text-white/55">KYB</span>
+                                            <span class="text-emerald-300 font-semibold">Approved</span>
+                                        </div>
+                                    @endif
+
+                                    @if($this->isPermitValid)
+                                        <div class="flex items-center gap-2 text-[11px]">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-primary-300 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z"/>
+                                            </svg>
+                                            <span class="text-white/55">Mayor's Permit</span>
+                                            <span class="text-white/90 font-semibold">valid until {{ $permitExpiresAt }}</span>
+                                        </div>
+                                    @endif
+
+                                    @if($memberSince)
+                                        <div class="flex items-center gap-2 text-[11px]">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-primary-300 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                            </svg>
+                                            <span class="text-white/55">On platform since</span>
+                                            <span class="text-white/90 font-semibold">{{ $memberSince }}</span>
+                                        </div>
+                                    @endif
+                                </div>
                             @endif
 
-                            <div class="flex flex-col sm:flex-row sm:items-center justify-between pt-4 mt-auto border-t border-gray-200 dark:border-gray-700 gap-3">
-                                <div>
-                                    <span class="font-display text-2xl font-semibold text-primary-600 dark:text-primary-400 tabular-nums">₱{{ number_format($property->price, 2) }}</span>
-                                    <span class="text-[10px] text-gray-500 dark:text-gray-400 ml-1 uppercase tracking-wider">/ unit</span>
+                            @php
+                                $socialIcons = array_filter([
+                                    'facebook'  => $this->socialLinks['facebook']  ?? null,
+                                    'instagram' => $this->socialLinks['instagram'] ?? null,
+                                ]);
+                            @endphp
+
+                            @if(!empty($socialIcons))
+                                <div class="border-t border-white/[0.08] px-6 md:px-7 py-3.5 flex items-center gap-3">
+                                    <span class="text-[10px] tracking-[0.22em] uppercase text-white/45 font-bold">Follow</span>
+                                    <div class="flex items-center gap-2">
+                                        @if(!empty($socialIcons['facebook']))
+                                            <a href="{{ $socialIcons['facebook'] }}" target="_blank" rel="noopener noreferrer"
+                                               aria-label="Facebook"
+                                               class="relative w-9 h-9 rounded-full bg-white/[0.08] border border-white/15 hover:bg-blue-500/25 hover:border-blue-400/50 text-white/75 hover:text-white flex items-center justify-center transition-all active:scale-95
+                                                      before:absolute before:content-[''] before:-inset-2.5 before:rounded-full
+                                                      [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50">
+                                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                    <path d="M22 12c0-5.523-4.477-10-10-10S2 6.477 2 12c0 4.991 3.657 9.128 8.438 9.878v-6.987h-2.54V12h2.54V9.797c0-2.506 1.492-3.89 3.777-3.89 1.094 0 2.238.195 2.238.195v2.46h-1.26c-1.243 0-1.63.771-1.63 1.562V12h2.773l-.443 2.89h-2.33v6.988C18.343 21.128 22 16.991 22 12z"/>
+                                                </svg>
+                                            </a>
+                                        @endif
+
+                                        @if(!empty($socialIcons['instagram']))
+                                            <a href="{{ $socialIcons['instagram'] }}" target="_blank" rel="noopener noreferrer"
+                                               aria-label="Instagram"
+                                               class="relative w-9 h-9 rounded-full bg-white/[0.08] border border-white/15 hover:bg-pink-500/25 hover:border-pink-400/50 text-white/75 hover:text-white flex items-center justify-center transition-all active:scale-95
+                                                      before:absolute before:content-[''] before:-inset-2.5 before:rounded-full
+                                                      [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50">
+                                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+                                                    <rect x="2" y="2" width="20" height="20" rx="5"/><path d="M16 11.37A4 4 0 1112.63 8 4 4 0 0116 11.37z"/><line x1="17.5" y1="6.5" x2="17.51" y2="6.5"/>
+                                                </svg>
+                                            </a>
+                                        @endif
+                                    </div>
                                 </div>
-                                @auth
-                                    <a href="{{ route('booking.create', ['publicproperty' => $property->id]) }}" wire:navigate
-                                       class="block w-full sm:w-auto text-center py-2 px-5 rounded-full bg-primary-600 hover:bg-primary-700 text-white text-[10px] font-bold uppercase tracking-widest transition-all shadow-lg shadow-primary-500/20 hover:-translate-y-0.5 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                        Book Now
-                                    </a>
+                            @endif
+
+                            @if($this->heroThumbCount)
+                                <div class="hidden lg:block border-t border-white/[0.08] px-6 md:px-7 py-4">
+                                    <div class="flex items-center justify-between mb-3">
+                                        <p class="text-[10px] tracking-[0.22em] uppercase text-white/45 font-bold">Gallery</p>
+                                        <span class="text-[10px] text-white/35 tabular-nums">{{ $this->heroThumbCount }} photos</span>
+                                    </div>
+                                    <div class="flex gap-2 cursor-pointer group" @click="openGallery()">
+                                        @foreach($this->heroThumbs as $i => $img)
+                                            <div class="flex-1 aspect-square rounded-lg overflow-hidden ring-1 ring-white/12 group-hover:ring-primary-400/50 transition">
+                                                <img src="{{ asset('storage/'.$img) }}"
+                                                     class="w-full h-full object-cover brightness-90 group-hover:brightness-110 group-hover:scale-110 transition duration-500"
+                                                     alt="" loading="lazy" decoding="async">
+                                            </div>
+                                        @endforeach
+                                        @if($this->heroThumbCount > 4)
+                                            <div class="flex-1 aspect-square rounded-lg bg-white/[0.08] border border-white/12 flex items-center justify-center">
+                                                <span class="text-white/75 text-xs font-bold tabular-nums">+{{ $this->heroThumbCount - 4 }}</span>
+                                            </div>
+                                        @endif
+                                    </div>
+                                </div>
+
+                                <div class="hidden lg:block border-t border-white/[0.08] px-6 md:px-7 py-4">
+                                    <button type="button" @click="openGallery()"
+                                            class="w-full inline-flex items-center justify-center gap-2 px-5 min-h-[44px] rounded-full
+                                                   bg-white/[0.10] border border-white/20 hover:bg-primary-500/25 hover:border-primary-400/60 hover:text-white
+                                                   text-xs font-bold uppercase tracking-widest text-white/85
+                                                   transition-all active:scale-95
+                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                        View All Photos
+                                    </button>
+                                </div>
+                            @endif
+                        </div>
+
+                        @if($this->coordinates)
+                            <p class="mt-3 text-center text-[10px] font-mono text-white/45 tracking-tight tabular-nums drop-shadow-[0_1px_3px_rgba(0,0,0,0.8)]">
+                                {{ number_format($this->coordinates['lat'], 6) }}, {{ number_format($this->coordinates['lng'], 6) }}
+                            </p>
+                        @endif
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        {{-- ═══════════════ MAIN CONTENT ═══════════════ --}}
+        <div class="max-w-7xl mx-auto px-6 md:px-16 py-12 md:py-16 space-y-16">
+
+            {{-- ═══ ACTIVITIES ═══ --}}
+            <div id="activities">
+                <div data-reveal class="mb-10">
+                    <p class="mb-2 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400">
+                        <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
+                        Explore &amp; Book
+                    </p>
+                    <h2 class="font-display text-3xl md:text-5xl font-medium text-gray-900 dark:text-white tracking-tight">
+                        Available <em class="italic text-primary-600 dark:text-primary-400">Activities</em>
+                    </h2>
+                    <p class="mt-2 text-sm text-gray-500 dark:text-gray-400 max-w-md">All activities are listed below. Select your dates to book.</p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    @forelse($this->properties as $property)
+                        @php
+                            $imageUrls = array_values(array_map(
+                                fn ($p) => asset('storage/' . $p),
+                                $property->images->pluck('image_path')->all(),
+                            ));
+
+                            $imageUrlsJson = json_encode(
+                                $imageUrls,
+                                JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG,
+                            );
+                        @endphp
+
+                        <article data-reveal
+                                 style="--reveal-delay: {{ min($loop->index % 3, 2) * 80 }}ms"
+                                 class="group bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl overflow-hidden shadow-sm hover:shadow-lg hover:-translate-y-1 transition-all duration-300 flex flex-col
+                                        [touch-action:manipulation]"
+                                 wire:key="prop-{{ $property->id }}"
+                                 data-images="{{ $imageUrlsJson }}"
+                                 data-prop-name="{{ $property->name }}"
+                                 x-data="{ imgIndex: 0, images: JSON.parse($el.dataset.images || '[]') }">
+
+                            <div class="relative overflow-hidden aspect-[16/10]">
+                                <img :src="images.length > 0 ? images[imgIndex] : 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'"
+                                     :alt="images.length > 0 ? ($el.dataset.propName + ' — photo ' + (imgIndex + 1)) : ''"
+                                     :class="images.length > 0 ? 'block' : 'hidden'"
+                                     class="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
+                                     loading="lazy" decoding="async">
+
+                                <div :class="images.length === 0 ? 'flex' : 'hidden'"
+                                     class="w-full h-full bg-gray-100 dark:bg-gray-700 items-center justify-center text-gray-400 dark:text-gray-500">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                </div>
+
+                                <div :class="images.length > 1 ? 'block' : 'hidden'">
+                                    {{-- Prev / next arrows.
+                                         40×40 visual is fine on desktop but below
+                                         the AAA floor on mobile. Expanded via
+                                         pseudo-element (before:-inset-1 = -4px
+                                         each side, giving 48×48 tap area) — the
+                                         visual stays 40×40. --}}
+                                    <button type="button" @click.prevent="imgIndex=(imgIndex-1+images.length)%images.length"
+                                            class="absolute left-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/55 border border-white/15 flex items-center justify-center text-white/80 hover:bg-black/80 hover:text-white transition-all opacity-0 group-hover:opacity-100 focus-visible:opacity-100 active:scale-95
+                                                   before:absolute before:content-[''] before:-inset-1 before:rounded-full
+                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
+                                            aria-label="Previous photo">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/></svg>
+                                    </button>
+                                    <button type="button" @click.prevent="imgIndex=(imgIndex+1)%images.length"
+                                            class="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/55 border border-white/15 flex items-center justify-center text-white/80 hover:bg-black/80 hover:text-white transition-all opacity-0 group-hover:opacity-100 focus-visible:opacity-100 active:scale-95
+                                                   before:absolute before:content-[''] before:-inset-1 before:rounded-full
+                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
+                                            aria-label="Next photo">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
+                                    </button>
+
+                                    <div class="absolute bottom-2 left-0 right-0 flex justify-center gap-1">
+                                        <template x-for="(img, i) in images" :key="i">
+                                            <button type="button"
+                                                    @click.prevent="imgIndex=i"
+                                                    :aria-label="'Photo ' + (i + 1)"
+                                                    :aria-current="i===imgIndex ? 'true' : 'false'"
+                                                    class="relative flex items-center justify-center rounded-full transition-all cursor-pointer
+                                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                           before:absolute before:content-[''] before:w-11 before:h-11 before:rounded-full">
+                                                <span class="block rounded-full transition-all"
+                                                      :class="i===imgIndex ? 'w-4 h-1.5 bg-white' : 'w-1.5 h-1.5 bg-white/40'"></span>
+                                            </button>
+                                        </template>
+                                    </div>
+                                </div>
+
+                                <div class="absolute top-3 left-3 flex flex-col gap-1.5 pointer-events-none">
+                                    @if($property->propertyType)
+                                        <span class="bg-black/65 backdrop-blur text-[10px] font-bold text-primary-300 px-2.5 py-1 rounded-full tracking-wider uppercase">
+                                            {{ $property->propertyType->name }}
+                                        </span>
+                                    @endif
+                                </div>
+                            </div>
+
+                            <div class="p-5 flex flex-col flex-1">
+                                <h3 class="font-display text-xl font-semibold text-gray-900 dark:text-white mb-2 leading-snug group-hover:text-primary-600 dark:group-hover:text-primary-400 transition-colors">
+                                    {{ $property->name }}
+                                </h3>
+                                @if($property->description)
+                                    <p class="text-sm text-gray-600 dark:text-gray-400 line-clamp-2 mb-4 flex-1 leading-relaxed">{{ $property->description }}</p>
                                 @else
+                                    <div class="flex-1"></div>
+                                @endif
+
+                                <div class="flex flex-col sm:flex-row sm:items-center justify-between pt-4 mt-auto border-t border-gray-200 dark:border-gray-700 gap-3">
+                                    <div>
+                                        <span class="font-display text-2xl font-semibold text-primary-600 dark:text-primary-400 tabular-nums">₱{{ number_format($property->price, 2) }}</span>
+                                        <span class="text-[10px] text-gray-500 dark:text-gray-400 ml-1 uppercase tracking-wider">/ unit</span>
+                                    </div>
+                                    @auth
+                                        <a href="{{ route('booking.create', ['publicproperty' => $property->id]) }}" wire:navigate
+                                           class="block w-full sm:w-auto text-center py-2.5 px-5 min-h-[44px] rounded-full bg-primary-600 hover:bg-primary-700 text-white text-[10px] font-bold uppercase tracking-widest transition-all shadow-lg shadow-primary-500/20 hover:-translate-y-0.5 active:scale-95
+                                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                            Book Now
+                                        </a>
+                                    @else
+                                        <a href="{{ route('login', ['redirect' => url()->current()]) }}"
+                                           class="block w-full sm:w-auto text-center py-2.5 px-5 min-h-[44px] rounded-full border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 text-[10px] font-bold uppercase tracking-widest transition-all active:scale-95
+                                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                            Login to Book
+                                        </a>
+                                    @endauth
+                                </div>
+                            </div>
+                        </article>
+                    @empty
+                        <div class="col-span-full text-center py-20 rounded-3xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 mx-auto mb-4 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
+                            <h3 class="font-display text-xl italic text-gray-500 dark:text-gray-400">No activities listed yet.</h3>
+                            <p class="text-xs text-gray-400 dark:text-gray-500 mt-2">Check back soon — new activities may be added.</p>
+                        </div>
+                    @endforelse
+                </div>
+            </div>
+
+            {{-- ═══ SERVICES ═══ --}}
+            @if($this->services->isNotEmpty())
+            <div id="services" class="pt-8 border-t border-gray-200 dark:border-gray-700">
+                <div data-reveal class="mb-10">
+                    <p class="mb-2 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400">
+                        <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
+                        Enhance Your Visit
+                    </p>
+                    <h2 class="font-display text-3xl md:text-5xl font-medium text-gray-900 dark:text-white tracking-tight">
+                        Add-on <em class="italic text-primary-600 dark:text-primary-400">Services</em>
+                    </h2>
+                    <p class="mt-2 text-sm text-gray-500 dark:text-gray-400 max-w-md">Extras available to elevate your experience.</p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                    @foreach($this->services as $service)
+                        <div data-reveal
+                             style="--reveal-delay: {{ min($loop->index % 3, 2) * 80 }}ms"
+                             class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-6 shadow-sm hover:shadow-lg hover:-translate-y-1 transition-all duration-300 flex flex-col
+                                    [touch-action:manipulation]"
+                             wire:key="svc-{{ $service->id }}">
+
+                            <div class="w-11 h-11 rounded-2xl bg-primary-50 dark:bg-primary-500/10 border border-primary-200 dark:border-primary-500/20 flex items-center justify-center text-primary-600 dark:text-primary-400 mb-4 shrink-0">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="{{ $service->icon_path }}"/>
+                                </svg>
+                            </div>
+
+                            <h3 class="font-display text-lg font-semibold text-gray-900 dark:text-white mb-2 leading-snug">{{ $service->name }}</h3>
+
+                            <div class="flex-1 mb-5"></div>
+
+                            <div class="flex items-center justify-between pt-4 mt-auto border-t border-gray-200 dark:border-gray-700">
+                                <span class="font-display text-2xl font-semibold text-gray-900 dark:text-white tabular-nums">₱{{ number_format($service->price, 2) }}</span>
+                                @auth
+                                    <span class="text-[10px] font-bold uppercase tracking-widest text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-full px-3 py-1">
+                                        Add at checkout
+                                    </span>
+                                @else
+                                    {{-- Small text link — tap area expanded to
+                                         ~44px via pseudo-element. Visual stays
+                                         compact (10px text). --}}
                                     <a href="{{ route('login', ['redirect' => url()->current()]) }}"
-                                       class="block w-full sm:w-auto text-center py-2 px-5 rounded-full border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 text-[10px] font-bold uppercase tracking-widest transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                        Login to Book
+                                       class="relative inline-flex items-center gap-1 px-2 -mx-2 py-2 -my-2 text-[10px] font-bold uppercase tracking-widest text-primary-600 hover:text-primary-700 transition-colors active:scale-95
+                                              before:absolute before:content-[''] before:inset-0 before:rounded
+                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                                        Login to add
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
                                     </a>
                                 @endauth
                             </div>
                         </div>
-                    </article>
-                @empty
-                    <div class="col-span-full text-center py-20 rounded-3xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 mx-auto mb-4 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
-                        <h3 class="font-display text-xl italic text-gray-500 dark:text-gray-400">No activities listed yet.</h3>
-                        <p class="text-xs text-gray-400 dark:text-gray-500 mt-2">Check back soon — new activities may be added.</p>
-                    </div>
-                @endforelse
-            </div>
-        </div>
-
-        {{-- ═══ SERVICES ═══ --}}
-        @if($this->services->isNotEmpty())
-        <div id="services" class="pt-8 border-t border-gray-200 dark:border-gray-700">
-            <div class="reveal mb-10">
-                <div class="flex items-center gap-3 mb-2">
-                    <span class="w-5 h-px bg-primary-600"></span>
-                    <span class="text-[10px] tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Enhance Your Visit</span>
+                    @endforeach
                 </div>
-                <h2 class="font-display text-3xl md:text-5xl font-medium text-gray-900 dark:text-white">
-                    Add-on <em class="italic text-primary-600 dark:text-primary-400">Services</em>
-                </h2>
-                <p class="mt-2 text-sm text-gray-500 dark:text-gray-400 max-w-md">Extras available to elevate your experience.</p>
             </div>
+            @endif
 
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                @foreach($this->services as $service)
-                    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-6 shadow-sm hover:shadow-lg hover:-translate-y-1 transition-all duration-300 flex flex-col reveal"
-                         wire:key="svc-{{ $service->id }}">
-
-                        <div class="w-11 h-11 rounded-2xl bg-primary-50 dark:bg-primary-500/10 border border-primary-200 dark:border-primary-500/20 flex items-center justify-center text-primary-600 dark:text-primary-400 mb-4 shrink-0">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="{{ $service->icon_path }}"/>
-                            </svg>
-                        </div>
-
-                        <h3 class="font-display text-lg font-semibold text-gray-900 dark:text-white mb-2 leading-snug">{{ $service->name }}</h3>
-
-                        <div class="flex-1 mb-5"></div>
-
-                        <div class="flex items-center justify-between pt-4 mt-auto border-t border-gray-200 dark:border-gray-700">
-                            <span class="font-display text-2xl font-semibold text-gray-900 dark:text-white tabular-nums">₱{{ number_format($service->price, 2) }}</span>
-                            @auth
-                                <span class="text-[10px] font-bold uppercase tracking-widest text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-full px-3 py-1">
-                                    Add at checkout
-                                </span>
-                            @else
-                                <a href="{{ route('login', ['redirect' => url()->current()]) }}"
-                                   class="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-primary-600 hover:text-primary-700 transition-colors active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
-                                    Login to add
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
-                                </a>
-                            @endauth
-                        </div>
-                    </div>
-                @endforeach
-            </div>
         </div>
+
+        {{-- ═══ GALLERY FOOTER TEASER ═══
+             Mobile polish:
+               • Vertical padding reduced from py-14 → pt-8 pb-12 so the
+                 section doesn't dominate a 375×667 viewport for one line
+                 of text + button.
+               • Three circular thumbnail previews + a "+N" counter appear
+                 only below `sm` — gives an immediate visual cue of what's
+                 inside, matching the pattern used elsewhere on the
+                 platform.
+               • CTA button is w-full on mobile (block-level, centred) and
+                 content-width on desktop. Previously the mobile button
+                 was centred in a narrow column with too much dead air.
+               • min-h-[52px] on the CTA — more prominent touch target. --}}
+        @if(!empty($galleryImages))
+            <div class="h-px bg-gradient-to-r from-transparent via-gray-200 dark:via-gray-700 to-transparent mx-6 md:mx-16"></div>
+            <section data-reveal class="max-w-7xl mx-auto px-6 md:px-16 pt-8 pb-12 md:py-14">
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-6 sm:gap-5">
+
+                    <div class="flex-1 min-w-0">
+                        @php $previewThumbs = array_slice($galleryImages, 0, 3); @endphp
+                        <div class="flex sm:hidden items-center -space-x-2.5 mb-5">
+                            @foreach($previewThumbs as $thumb)
+                                <img src="{{ asset('storage/'.$thumb) }}"
+                                     class="w-12 h-12 rounded-full object-cover ring-2 ring-white dark:ring-gray-900 shrink-0"
+                                     alt="" loading="lazy" decoding="async">
+                            @endforeach
+                            @if(count($galleryImages) > 3)
+                                <div class="w-12 h-12 rounded-full bg-gray-900 dark:bg-gray-700 text-white text-[11px] font-bold flex items-center justify-center ring-2 ring-white dark:ring-gray-900 tabular-nums shrink-0">
+                                    +{{ count($galleryImages) - 3 }}
+                                </div>
+                            @endif
+                        </div>
+
+                        <p class="mb-2 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400">
+                            <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
+                            Photo Gallery
+                        </p>
+                        <p class="text-gray-600 dark:text-gray-400 text-sm leading-relaxed">
+                            Explore all <span class="text-gray-900 dark:text-white font-semibold tabular-nums">{{ count($galleryImages) }} photos</span> of {{ $tenant->name }}
+                            @if($gallerySubtitle) — <em class="italic text-gray-500 dark:text-gray-400">{{ $gallerySubtitle }}</em> @endif
+                        </p>
+                    </div>
+
+                    <button type="button" @click="openGallery()"
+                            class="w-full sm:w-auto shrink-0 inline-flex items-center justify-center gap-2.5 px-7 min-h-[52px] rounded-full
+                                   bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold uppercase tracking-widest
+                                   transition-all shadow-lg shadow-primary-500/20 hover:-translate-y-0.5 active:scale-[0.98]
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                        Open Gallery
+                    </button>
+                </div>
+            </section>
         @endif
 
-    </div>
-
-    {{-- ═══ GALLERY FOOTER TEASER ═══ --}}
-    @if(!empty($galleryImages))
-        <div class="h-px bg-gradient-to-r from-transparent via-gray-200 dark:via-gray-700 to-transparent mx-6 md:mx-16"></div>
-        <section class="max-w-7xl mx-auto px-6 md:px-16 py-14 reveal flex flex-col sm:flex-row items-center justify-between gap-5">
-            <div>
-                <div class="flex items-center gap-2 mb-1">
-                    <span class="w-4 h-px bg-primary-600"></span>
-                    <span class="text-[10px] tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Photo Gallery</span>
+        {{-- ═══ STICKY MOBILE BOOK BAR ═══ --}}
+        <div class="fixed bottom-0 left-0 right-0 z-[900] bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-700 shadow-lg lg:hidden transition-transform duration-300 pb-safe"
+             :class="stickyVisible ? 'translate-y-0' : 'translate-y-full'">
+            <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
+                <div class="flex-1 min-w-0">
+                    <p class="text-gray-900 dark:text-white font-semibold text-sm truncate">{{ $tenant->name }}</p>
+                    <p class="text-gray-500 dark:text-gray-400 text-xs tabular-nums">
+                        @if($this->properties->count())
+                            From ₱{{ number_format($this->properties->min('price'), 0) }} / unit
+                        @else
+                            View offerings above
+                        @endif
+                    </p>
                 </div>
-                <p class="text-gray-600 dark:text-gray-400 text-sm">
-                    Explore all <span class="text-gray-900 dark:text-white font-semibold tabular-nums">{{ count($galleryImages) }} photos</span> of {{ $tenant->name }}
-                    @if($gallerySubtitle) — <em class="italic text-gray-500 dark:text-gray-400">{{ $gallerySubtitle }}</em> @endif
-                </p>
+                @if($this->properties->count() > 0)
+                    <button type="button" @click="document.getElementById('activities').scrollIntoView({behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'})"
+                            class="shrink-0 px-6 min-h-[44px] rounded-full bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold uppercase tracking-widest transition shadow-lg shadow-primary-500/30 active:scale-95
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                        View Activities
+                    </button>
+                @endif
             </div>
-            <button type="button" @click="openGallery()"
-                    class="shrink-0 inline-flex items-center gap-2.5 px-7 py-3 rounded-full
-                           bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold uppercase tracking-widest
-                           transition-all shadow-lg shadow-primary-500/20 hover:-translate-y-0.5 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                Open Gallery
-            </button>
-        </section>
-    @endif
-
-    {{-- ═══ STICKY MOBILE BOOK BAR ═══ --}}
-    <div class="fixed bottom-0 left-0 right-0 z-[900] bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-700 shadow-lg lg:hidden transition-transform duration-300 pb-safe"
-         :class="stickyVisible ? 'translate-y-0' : 'translate-y-full'">
-        <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
-            <div class="flex-1 min-w-0">
-                <p class="text-gray-900 dark:text-white font-semibold text-sm truncate">{{ $tenant->name }}</p>
-                <p class="text-gray-500 dark:text-gray-400 text-xs tabular-nums">
-                    @if($this->properties->count())
-                        From ₱{{ number_format($this->properties->min('price'), 0) }} / unit
-                    @else
-                        View offerings above
-                    @endif
-                </p>
-            </div>
-            @if($this->properties->count() > 0)
-                <button type="button" @click="document.getElementById('activities').scrollIntoView({behavior:'smooth'})"
-                        class="shrink-0 px-6 py-3 rounded-full bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold uppercase tracking-widest transition shadow-lg shadow-primary-500/30 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                    View Activities
-                </button>
-            @endif
         </div>
     </div>
 </div>

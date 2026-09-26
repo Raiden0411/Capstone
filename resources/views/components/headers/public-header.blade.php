@@ -46,15 +46,10 @@
     $showRegisterBusiness = !$authUser
         || ($authUser instanceof User && $authUser->canRegisterBusiness());
 
-    // Business registration is behind auth middleware. Guests clicking
-    // "Register Business" from the public header would be silently
-    // bounced to /login with no context. Route them through account
-    // creation first, preserving /register-business as the return target.
     $registerBusinessUrl = $authUser
         ? route('register_business')
         : route('register', ['redirect' => route('register_business')]);
 
-    // Dual-role (business owner) flag + current mode.
     $canSwitchModes = $authUser instanceof User && $authUser->canSwitchModes();
     $isBusinessMode = $canSwitchModes && $authUser->active_mode === User::MODE_BUSINESS;
     $isTouristMode  = $canSwitchModes && $authUser->active_mode === User::MODE_TOURIST;
@@ -139,9 +134,27 @@
          behind other paints (carousel, map tiles). `transition-[...]`
          narrows the transition to only the properties that actually
          animate (border-color, box-shadow, background-color) — no more
-         `transition-all` invalidating on every cascade. --}}
+         `transition-all` invalidating on every cascade.
+
+         ── SAFE-AREA TOP ──────────────────────────────────────────────
+         The header is `fixed top-0`. On notched iPhones with
+         `viewport-fit=cover`, the top ~47–59px of the screen is behind
+         the notch / dynamic island. `pt-[env(safe-area-inset-top)]`
+         pushes the header's CONTENT (logo, nav, buttons) below that
+         zone, while the header's own background (bg-white/90 +
+         backdrop-blur) still fills the full area — so the top of the
+         viewport reads as opaque, and content never sits behind the
+         notch.
+
+         `h-16 md:h-20` became `min-h-16 md:min-h-20` so the header can
+         GROW when the safe area is non-zero. On every other device
+         env(safe-area-inset-top) resolves to 0, the padding adds
+         nothing, and the header renders at exactly 64px / 80px — same
+         as before. See `layouts/app.blade.php` <main> for the matching
+         content offset. --}}
     <header
-        class="fixed top-0 left-0 right-0 z-50 flex items-center w-full h-16 md:h-20
+        class="fixed top-0 left-0 right-0 z-50 flex items-center w-full
+               min-h-16 md:min-h-20 pt-[env(safe-area-inset-top)]
                bg-white/90 dark:bg-gray-900/90 backdrop-blur border-b
                [transform:translateZ(0)] [backface-visibility:hidden]
                transition-[border-color,box-shadow,background-color] duration-300"
@@ -177,16 +190,29 @@
             </a>
 
             {{-- Desktop Nav — discovery links first, "About" last.
-                 aria-current="page" tells screen readers which link is
-                 the current page. The routeIs() check already drives
-                 the visual active state; this exposes it semantically. --}}
+                 Active link carries a small amber underline that mirrors
+                 the editorial eyebrow rule used elsewhere on the
+                 platform. Pure CSS via ::after — no extra elements, no
+                 extra listeners. --}}
             <div class="hidden lg:flex items-center gap-8 shrink-0">
                 @foreach($navLinks as $link)
                     @php $isActive = request()->routeIs($link['route']); @endphp
                     <a wire:key="desktop-{{ $link['route'] }}"
                        href="{{ route($link['route']) }}" wire:navigate
                        @if($isActive) aria-current="page" @endif
-                       class="text-[15px] transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-md px-1 {{ $isActive ? 'text-primary-600 dark:text-primary-400 font-bold' : 'font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white' }}">
+                       class="relative text-[15px] transition-all duration-200 active:scale-95
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                              rounded-md px-1
+                       {{ $isActive
+                            ? 'text-primary-600 dark:text-primary-400 font-bold
+                               after:absolute after:top-full after:left-1/2 after:-translate-x-1/2
+                               after:mt-1 after:h-0.5 after:w-6 after:rounded-full after:bg-amber-500
+                               after:transition-all after:duration-200'
+                            : 'font-medium text-gray-700 dark:text-gray-200
+                               hover:text-primary-600 dark:hover:text-white
+                               after:absolute after:top-full after:left-1/2 after:-translate-x-1/2
+                               after:mt-1 after:h-0.5 after:w-0 after:rounded-full after:bg-amber-500
+                               hover:after:w-6 after:transition-all after:duration-200' }}">
                         {{ $link['label'] }}
                     </a>
                 @endforeach
@@ -195,14 +221,17 @@
             {{-- Actions --}}
             <div class="flex items-center gap-1 sm:gap-1.5 md:gap-3 shrink-0">
 
-                {{-- Mode switcher — dual-role accounts only --}}
+                {{-- Mode switcher — dual-role accounts only.
+                     min-h-[44px] guarantees the WCAG AAA tap floor on
+                     tablets (md breakpoint — iPad mini is a touch device).
+                     Was min-h-[40px], which passed AA but not AAA. --}}
                 @if($canSwitchModes)
                     <form method="POST" action="{{ route('mode.switch') }}" class="hidden md:block">
                         @csrf
                         @if($isBusinessMode)
                             <input type="hidden" name="mode" value="{{ User::MODE_TOURIST }}">
                             <button type="submit"
-                                    class="group inline-flex items-center gap-2 px-3 lg:px-3.5 py-2 rounded-full border border-blue-200 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300 text-xs font-semibold transition-all duration-200 hover:bg-blue-100 dark:hover:bg-blue-500/20 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50">
+                                    class="group inline-flex items-center gap-2 px-3 lg:px-3.5 min-h-[44px] rounded-full border border-blue-200 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300 text-xs font-semibold transition-all duration-200 hover:bg-blue-100 dark:hover:bg-blue-500/20 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v3m0 12v3M5.636 5.636l2.121 2.121m8.486 8.486l2.121 2.121M3 12h3m12 0h3M5.636 18.364l2.121-2.121m8.486-8.486l2.121-2.121"/>
                                 </svg>
@@ -211,7 +240,7 @@
                         @else
                             <input type="hidden" name="mode" value="{{ User::MODE_BUSINESS }}">
                             <button type="submit"
-                                    class="group inline-flex items-center gap-2 px-3 lg:px-3.5 py-2 rounded-full border border-emerald-200 dark:border-emerald-500/30 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 text-xs font-semibold transition-all duration-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50">
+                                    class="group inline-flex items-center gap-2 px-3 lg:px-3.5 min-h-[44px] rounded-full border border-emerald-200 dark:border-emerald-500/30 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 text-xs font-semibold transition-all duration-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" d="M20.25 14.15v4.073a2.25 2.25 0 01-1.606 2.16l-6.75 1.93a2.25 2.25 0 01-1.288 0l-6.75-1.93a2.25 2.25 0 01-1.606-2.16V14.15M18 9.75V7.5a3 3 0 00-3-3H9a3 3 0 00-3 3v2.25M3.75 12v.75h16.5V12a2.25 2.25 0 00-2.25-2.25h-12A2.25 2.25 0 003.75 12z"/>
                                 </svg>
@@ -228,7 +257,10 @@
                     <livewire:public::partials.notification-bell />
                 @endauth
 
-                {{-- Dark mode toggle — Rule 69: :class swap on the icons. --}}
+                {{-- Dark mode toggle — Rule 69: :class swap on the icons.
+                     size-11 md:size-10 raises the mobile tap target to 44px.
+                     Pre-fix it was size-9 (36px) on mobile, which failed
+                     the WCAG AAA tap floor the platform's brief mandates. --}}
                 <button type="button"
                         @click="
                             dark = !dark;
@@ -236,21 +268,23 @@
                             localStorage.setItem('hs_theme', dark ? 'dark' : 'light');
                             window.dispatchEvent(new CustomEvent('theme-changed'));
                         "
-                        class="flex justify-center items-center size-9 md:size-10 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition-all duration-200 active:scale-95 shrink-0"
+                        class="flex justify-center items-center size-11 md:size-10 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition-all duration-200 active:scale-95 shrink-0"
                         aria-label="Toggle dark mode">
                     <svg xmlns="http://www.w3.org/2000/svg" x-cloak :class="dark ? '' : 'hidden'" class="shrink-0 size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
                     <svg xmlns="http://www.w3.org/2000/svg" x-cloak :class="dark ? 'hidden' : ''" class="shrink-0 size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
                 </button>
 
                 @guest
+                    {{-- min-h-[44px] added — py-2.5 alone gives ~40px on
+                         tablets, which is below the AAA tap floor. --}}
                     <a href="{{ route('login') }}" wire:navigate
-                       class="hidden sm:inline-flex px-4 lg:px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 bg-primary-600 rounded-full hover:bg-primary-700 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 shrink-0">
+                       class="hidden sm:inline-flex items-center justify-center min-h-[44px] px-4 lg:px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 bg-primary-600 rounded-full hover:bg-primary-700 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 shrink-0">
                         Login / Sign Up
                     </a>
 
                     @if($showRegisterBusiness)
                         <a href="{{ $registerBusinessUrl }}" wire:navigate
-                           class="hidden md:inline-flex px-4 lg:px-5 py-2.5 text-sm font-medium text-primary-700 dark:text-gray-200 border border-gray-300 dark:border-gray-600 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 shrink-0">
+                           class="hidden md:inline-flex items-center justify-center min-h-[44px] px-4 lg:px-5 py-2.5 text-sm font-medium text-primary-700 dark:text-gray-200 border border-gray-300 dark:border-gray-600 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 shrink-0">
                             Register Business
                         </a>
                     @endif
@@ -263,7 +297,7 @@
                                 :aria-expanded="userDropdownOpen.toString()"
                                 aria-haspopup="true"
                                 class="flex items-center gap-1.5 sm:gap-2 text-sm font-medium
-                                       py-1.5 ps-1.5 pe-2 sm:ps-2 sm:pe-3
+                                       py-1.5 ps-1.5 pe-2 sm:ps-2 sm:pe-3 min-h-[44px]
                                        rounded-full bg-primary-600 text-white hover:bg-primary-700
                                        transition-all duration-200 shadow-sm active:scale-95
                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
@@ -332,7 +366,6 @@
 
                             <div class="p-1.5 space-y-0.5">
 
-                                {{-- Mode switch — dropdown copy, useful on mobile --}}
                                 @if($canSwitchModes)
                                     <form method="POST" action="{{ route('mode.switch') }}">
                                         @csrf
@@ -360,7 +393,6 @@
                                     <div class="border-t border-gray-100 dark:border-gray-700 my-2"></div>
                                 @endif
 
-                                {{-- Dual-role: show BOTH primary destinations --}}
                                 @if($canSwitchModes)
                                     <a class="flex items-center gap-3 py-2 px-3 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-primary-600 dark:hover:text-white transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                                        href="{{ route('tenant.dashboard') }}" wire:navigate
@@ -442,12 +474,14 @@
                     </div>
                 @endauth
 
-                {{-- Mobile hamburger — Rule 69: :class swap on the icons. --}}
+                {{-- Mobile hamburger — Rule 69: :class swap on the icons.
+                     size-11 raises the tap target to 44px on mobile.
+                     Pre-fix it was size-9 (36px), below the AAA floor. --}}
                 <div class="lg:hidden shrink-0">
                     <button type="button"
                             @click="mobileOpen = !mobileOpen"
                             :aria-expanded="mobileOpen.toString()"
-                            class="size-9 md:size-10 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-all duration-200 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                            class="size-11 md:size-10 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-all duration-200 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                             aria-label="Toggle navigation">
                         <svg xmlns="http://www.w3.org/2000/svg" x-cloak :class="!mobileOpen ? '' : 'hidden'" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
                             <line x1="3" x2="21" y1="6" y2="6"/><line x1="3" x2="21" y1="12" y2="12"/><line x1="3" x2="21" y1="18" y2="18"/>
@@ -460,7 +494,18 @@
             </div>
         </nav>
 
-        {{-- Mobile drawer — Rule 69: :class toggle + CSS keyframe. --}}
+        {{-- Mobile drawer — Rule 69: :class toggle + CSS keyframe.
+
+             `top-full` anchors it to the BOTTOM of the header. Because the
+             header grows on notched devices (see pt-[env(safe-area-inset-
+             top)] above), the drawer starts lower too — that's correct.
+
+             The max-height must therefore also subtract the safe-area
+             inset: on notched devices the header is ~64px + 47px tall,
+             and the drawer needs the remaining `100dvh - that`. Pre-fix
+             the subtraction was a hard 4rem / 5rem, which on notched
+             devices would leave the drawer overflowing past the bottom
+             of the viewport (clipping the last menu item). --}}
         <div x-cloak
              :class="mobileOpen ? 'public-header-drawer' : 'hidden'"
              data-mobile-drawer
@@ -475,15 +520,26 @@
                     sm:pe-[max(1.5rem,env(safe-area-inset-right))]
                     space-y-2
                     z-40 shadow-lg
-                    max-h-[calc(100dvh-4rem)] md:max-h-[calc(100dvh-5rem)]
+                    max-h-[calc(100dvh-4rem-env(safe-area-inset-top))] md:max-h-[calc(100dvh-5rem-env(safe-area-inset-top))]
                     overflow-y-auto overscroll-contain">
 
-            {{-- Nav links — same discovery-first order as desktop --}}
+            {{-- Nav section — eyebrow matches the platform's editorial pattern --}}
+            <p class="mb-2 inline-flex items-center gap-2
+                      text-[10px] font-bold uppercase tracking-[0.2em]
+                      text-amber-600 dark:text-amber-400">
+                <span class="h-px w-4 bg-amber-500"></span>
+                Browse
+            </p>
+
             @foreach($navLinks as $link)
                 @php $isActive = request()->routeIs($link['route']); @endphp
                 <a wire:key="mobile-{{ $link['route'] }}"
                    @if($isActive) aria-current="page" @endif
-                   class="block text-base font-medium active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 {{ $isActive ? 'text-primary-600 dark:text-primary-400 font-bold bg-primary-50 dark:bg-primary-500/10' : 'text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50' }}"
+                   class="relative block text-base font-medium active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 min-h-[44px] flex items-center
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                          {{ $isActive
+                               ? 'text-primary-600 dark:text-primary-400 font-bold bg-primary-50 dark:bg-primary-500/10 before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:h-5 before:w-0.5 before:rounded-full before:bg-amber-500'
+                               : 'text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50' }}"
                    href="{{ route($link['route']) }}" wire:navigate
                    @click="mobileOpen = false">
                     {{ $link['label'] }}
@@ -491,54 +547,62 @@
             @endforeach
 
             @auth
-                {{-- Mode switcher — mobile prominent --}}
-                @if($canSwitchModes)
-                    <form method="POST" action="{{ route('mode.switch') }}" class="pt-4 mt-3 border-t border-gray-100 dark:border-gray-700">
-                        @csrf
-                        @if($isBusinessMode)
-                            <input type="hidden" name="mode" value="{{ User::MODE_TOURIST }}">
-                            <button type="submit"
-                                    class="w-full text-center text-base font-medium py-3 rounded-full bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-500/30 hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50">
-                                Switch to Tourist Mode
-                            </button>
+                <div class="pt-4 mt-3 border-t border-gray-100 dark:border-gray-700">
+                    <p class="mb-2 inline-flex items-center gap-2
+                              text-[10px] font-bold uppercase tracking-[0.2em]
+                              text-amber-600 dark:text-amber-400">
+                        <span class="h-px w-4 bg-amber-500"></span>
+                        Account
+                    </p>
+
+                    <div class="space-y-1">
+                        @if($canSwitchModes)
+                            <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 min-h-[44px] flex items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                               href="{{ route('tenant.dashboard') }}" wire:navigate
+                               @click="mobileOpen = false">Business Dashboard</a>
+                            <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 min-h-[44px] flex items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                               href="{{ route('my-bookings') }}" wire:navigate
+                               @click="mobileOpen = false">My Bookings</a>
                         @else
-                            <input type="hidden" name="mode" value="{{ User::MODE_BUSINESS }}">
-                            <button type="submit"
-                                    class="w-full text-center text-base font-medium py-3 rounded-full bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50">
-                                Switch to Business Mode
-                            </button>
+                            <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 min-h-[44px] flex items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                               href="{{ route('my-bookings') }}" wire:navigate
+                               @click="mobileOpen = false">My Bookings</a>
                         @endif
-                    </form>
-                @endif
 
-                <div class="pt-4 mt-3 border-t border-gray-100 dark:border-gray-700 space-y-1">
+                        <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 min-h-[44px] flex items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                           href="{{ route('profile') }}" wire:navigate
+                           @click="mobileOpen = false">My Profile</a>
+
+                        @if($showRegisterBusiness)
+                            <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 min-h-[44px] flex items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                               href="{{ $registerBusinessUrl }}" wire:navigate
+                               @click="mobileOpen = false">Register Business</a>
+                        @endif
+                    </div>
+
                     @if($canSwitchModes)
-                        <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
-                           href="{{ route('tenant.dashboard') }}" wire:navigate
-                           @click="mobileOpen = false">Business Dashboard</a>
-                        <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
-                           href="{{ route('my-bookings') }}" wire:navigate
-                           @click="mobileOpen = false">My Bookings</a>
-                    @else
-                        <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
-                           href="{{ route('my-bookings') }}" wire:navigate
-                           @click="mobileOpen = false">My Bookings</a>
-                    @endif
-
-                    <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
-                       href="{{ route('profile') }}" wire:navigate
-                       @click="mobileOpen = false">My Profile</a>
-
-                    @if($showRegisterBusiness)
-                        <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
-                           href="{{ $registerBusinessUrl }}" wire:navigate
-                           @click="mobileOpen = false">Register Business</a>
+                        <form method="POST" action="{{ route('mode.switch') }}" class="pt-4">
+                            @csrf
+                            @if($isBusinessMode)
+                                <input type="hidden" name="mode" value="{{ User::MODE_TOURIST }}">
+                                <button type="submit"
+                                        class="w-full text-center text-base font-medium py-3 min-h-[44px] rounded-full bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-500/30 hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50">
+                                    Switch to Tourist Mode
+                                </button>
+                            @else
+                                <input type="hidden" name="mode" value="{{ User::MODE_BUSINESS }}">
+                                <button type="submit"
+                                        class="w-full text-center text-base font-medium py-3 min-h-[44px] rounded-full bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50">
+                                    Switch to Business Mode
+                                </button>
+                            @endif
+                        </form>
                     @endif
 
                     <form method="POST" action="{{ route('logout') }}" class="pt-3">
                         @csrf
                         <button type="submit"
-                                class="w-full text-center text-base font-medium py-3 rounded-full bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-500/20 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
+                                class="w-full text-center text-base font-medium py-3 min-h-[44px] rounded-full bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-500/20 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                             Logout
                         </button>
                     </form>
@@ -546,18 +610,27 @@
             @endauth
 
             @guest
-                <div class="flex flex-col gap-3 pt-4 mt-3 border-t border-gray-200 dark:border-gray-700">
-                    <a href="{{ route('login') }}" wire:navigate @click="mobileOpen = false"
-                       class="w-full text-center text-base font-medium py-3 rounded-full bg-primary-600 text-white hover:bg-primary-700 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                        Login / Sign Up
-                    </a>
+                <div class="pt-4 mt-3 border-t border-gray-200 dark:border-gray-700">
+                    <p class="mb-3 inline-flex items-center gap-2
+                              text-[10px] font-bold uppercase tracking-[0.2em]
+                              text-amber-600 dark:text-amber-400">
+                        <span class="h-px w-4 bg-amber-500"></span>
+                        Get started
+                    </p>
 
-                    @if($showRegisterBusiness)
-                        <a href="{{ $registerBusinessUrl }}" wire:navigate @click="mobileOpen = false"
-                           class="w-full text-center text-base font-medium py-3 rounded-full border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                            Register Business
+                    <div class="flex flex-col gap-3">
+                        <a href="{{ route('login') }}" wire:navigate @click="mobileOpen = false"
+                           class="w-full text-center text-base font-medium py-3 min-h-[44px] rounded-full bg-primary-600 text-white hover:bg-primary-700 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                            Login / Sign Up
                         </a>
-                    @endif
+
+                        @if($showRegisterBusiness)
+                            <a href="{{ $registerBusinessUrl }}" wire:navigate @click="mobileOpen = false"
+                               class="w-full text-center text-base font-medium py-3 min-h-[44px] rounded-full border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                Register Business
+                            </a>
+                        @endif
+                    </div>
                 </div>
             @endguest
         </div>

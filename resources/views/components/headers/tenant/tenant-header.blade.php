@@ -5,7 +5,6 @@
     $user   = auth()->user();
     $tenant = $user?->tenant;
 
-    /* Tenant logo — used as the brand fallback in the profile dropdown. */
     $tenantLogoUrl = null;
     if ($tenant && $tenant->logo) {
         $fullPath      = public_path('storage/' . $tenant->logo);
@@ -13,8 +12,6 @@
             . '?v=' . (file_exists($fullPath) ? filemtime($fullPath) : time());
     }
 
-    /* User's own avatar — preferred over the tenant logo in the profile
-       button and dropdown (identity vs. brand). */
     $userAvatarPath = $user?->avatar;
     $userAvatarUrl  = null;
     if ($userAvatarPath) {
@@ -28,27 +25,21 @@
     $userRole    = $user?->roles->first();
     $roleLabel   = $userRole ? ucwords(str_replace(['-', '_'], ' ', $userRole->name)) : null;
 
-    /* True when the caller holds the admin/super-admin role. Used to gate
-       links whose routes carry the `role:admin|super-admin` middleware
-       (Business Settings, etc). Without this, an employee sees the link
-       and gets a dead-end 403 when they click it. */
     $isAdmin = $user?->hasAnyRole(['admin', 'super-admin']) ?? false;
 
-    /* Determine the correct dashboard route for the header link. */
     $isEmployee     = $user && ! $user->hasRole('admin') && $user->tenant_id;
     $dashboardRoute = $isEmployee
         ? route('tenant.employee.dashboard')
         : route('tenant.dashboard');
 
-    /* Dual-role accounts (business owners) can switch back to tourist mode. */
     $canSwitchModes = $user instanceof User && $user->canSwitchModes();
 
-    /* Canonical dropdown-link class — one source of truth for the six
-       links inside the profile dropdown. */
     $dropdownLinkClass = 'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm '
+        . 'min-h-[44px] '
         . 'text-gray-700 dark:text-gray-200 '
         . 'hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white '
         . 'transition-all duration-200 active:scale-[0.98] '
+        . '[touch-action:manipulation] [-webkit-tap-highlight-color:transparent] '
         . 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 '
         . 'focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900';
 @endphp
@@ -56,7 +47,6 @@
 @push('styles')
     @once
         <style>
-            /* Rule 69 replacement — CSS keyframe for the profile dropdown. */
             .tenant-header-dropdown {
                 animation: tenantHeaderDropdownIn .15s cubic-bezier(.16,1,.3,1);
             }
@@ -71,15 +61,18 @@
     @endonce
 @endpush
 
+{{-- Sticky header.
+     Backdrop blur — matches the superadmin header for visual consistency.
+     The header sits above scrolling content with a translucent surface;
+     a fully opaque bg-white would feel heavier and less like a "chrome"
+     layer.
+     Safe-area top — env(safe-area-inset-top) keeps content below the
+     notch on notched iPhones. min-h-16 md:min-h-20 (not h-16 md:h-20)
+     lets the row grow when the safe area is non-zero. --}}
 <header
     x-data="{
         minified: localStorage.getItem('tenant_sidebar_minified') === '1',
-
-        /* Mirror the theme the layout's applyTheme() already applied to
-           <html>. Reading localStorage directly desyncs for first-time
-           visitors (hs_theme === null + system prefers dark). */
         dark: document.documentElement.classList.contains('dark'),
-
         toggleDark() {
             this.dark = ! this.dark;
             localStorage.setItem('hs_theme', this.dark ? 'dark' : 'light');
@@ -89,15 +82,20 @@
     }"
     @sidebar-minified-tenant.window="minified = $event.detail"
     :class="minified ? 'lg:ps-20' : 'lg:ps-64'"
-    class="sticky top-0 inset-x-0 flex flex-wrap md:justify-start md:flex-nowrap z-30 w-full bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 text-sm h-16 md:h-20 transition-all duration-300"
+    class="sticky top-0 inset-x-0 flex flex-wrap md:justify-start md:flex-nowrap z-30 w-full
+           bg-white/90 dark:bg-gray-900/90 backdrop-blur
+           border-b border-gray-200 dark:border-gray-700
+           text-sm min-h-16 md:min-h-20 pt-[env(safe-area-inset-top)]
+           transition-all duration-300"
 >
     <nav class="px-4 sm:px-6 flex basis-full items-center w-full mx-auto justify-between gap-2" aria-label="Tenant header">
 
         {{-- Left: Mobile sidebar toggle --}}
         <div class="flex items-center gap-2 lg:hidden">
             <button type="button"
-                    class="flex items-center justify-center size-8 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700
+                    class="flex items-center justify-center size-11 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700
                            transition-all duration-200 active:scale-95
+                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                     @click="$dispatch('toggle-tenant-sidebar')"
                     aria-label="Toggle navigation">
@@ -107,21 +105,25 @@
             </button>
         </div>
 
-        {{-- Center: Tenant name link to dashboard --}}
-        <div class="hidden md:flex flex-1 items-center gap-2 px-2">
+        {{-- Center: Breadcrumb — "Business / <tenant name>". --}}
+        <div class="hidden md:flex flex-1 items-center gap-2 px-2 min-w-0">
+            <span class="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 shrink-0">Business</span>
+            <span class="text-gray-300 dark:text-gray-600 shrink-0" aria-hidden="true">/</span>
             @if($tenant)
-                <a href="{{ $dashboardRoute }}"
-                   wire:navigate
-                   class="text-xs text-gray-500 dark:text-gray-400 font-medium hover:text-gray-700 dark:hover:text-gray-200
-                          transition-all duration-200 active:scale-95 rounded
-                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                <a href="{{ $dashboardRoute }}" wire:navigate
+                   class="text-sm font-semibold text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-primary-400 truncate
+                          transition-all duration-200 active:scale-95
+                          [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 rounded">
                     {{ $tenant->name }}
                 </a>
+            @else
+                <span class="text-sm font-semibold text-gray-700 dark:text-gray-200 truncate">Victorias Tourism</span>
             @endif
         </div>
 
         {{-- Right: Actions --}}
-        <div class="flex items-center gap-2 ms-auto">
+        <div class="flex items-center gap-1.5 sm:gap-2 ms-auto">
 
             {{-- Switch to Tourist — dual-role owners only --}}
             @if($canSwitchModes)
@@ -129,8 +131,9 @@
                     @csrf
                     <input type="hidden" name="mode" value="{{ User::MODE_TOURIST }}">
                     <button type="submit"
-                            class="inline-flex items-center gap-2 py-2 px-3 rounded-full border border-blue-200 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300 text-xs font-semibold
+                            class="inline-flex items-center gap-2 h-11 sm:h-9 px-3 rounded-full border border-blue-200 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300 text-xs font-semibold
                                    transition-all duration-200 hover:bg-blue-100 dark:hover:bg-blue-500/20 active:scale-95
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                         <svg xmlns="http://www.w3.org/2000/svg" class="size-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v3m0 12v3M5.636 5.636l2.121 2.121m8.486 8.486l2.121 2.121M3 12h3m12 0h3M5.636 18.364l2.121-2.121m8.486-8.486l2.121-2.121"/>
@@ -140,11 +143,16 @@
                 </form>
             @endif
 
-            {{-- Dark mode toggle — Rule 69: :class swap on the icons. --}}
+            {{-- Notification bell — tenant-scoped, business-only payload.
+                 Backed by PublicNotificationService::forBusiness(). --}}
+            <livewire:tenant::partials.notification-bell />
+
+            {{-- Dark mode toggle --}}
             <button type="button"
                     @click="toggleDark()"
-                    class="flex items-center justify-center size-9 rounded-lg text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700
+                    class="flex items-center justify-center size-11 sm:size-9 rounded-lg text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700
                            transition-all duration-200 active:scale-95
+                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900"
                     aria-label="Toggle dark mode">
                 <svg x-cloak :class="dark ? '' : 'hidden'" xmlns="http://www.w3.org/2000/svg" class="shrink-0 size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -163,13 +171,12 @@
 
                 <button type="button"
                         @click="open = ! open"
-                        class="flex items-center gap-2 py-1.5 px-2 rounded-lg text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700
+                        class="flex items-center gap-2 min-h-[44px] py-1.5 px-2 rounded-lg text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700
                                transition-all duration-200 active:scale-95
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900"
                         :aria-expanded="open.toString()"
                         aria-haspopup="true">
-                    {{-- Prefer the user's own avatar; fall back to tenant logo,
-                         then to the initial letter. --}}
                     @if($userAvatarUrl)
                         <img src="{{ $userAvatarUrl }}"
                              alt="{{ $userName }}"
@@ -193,14 +200,13 @@
                     </svg>
                 </button>
 
-                {{-- Dropdown Panel — Rule 69: :class toggle + CSS keyframe. --}}
+                {{-- Dropdown Panel --}}
                 <div x-cloak
                      :class="open ? 'tenant-header-dropdown' : 'hidden'"
                      class="absolute right-0 mt-2 w-64 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-2xl z-50 overflow-hidden"
                      role="menu"
                      aria-label="Account menu">
 
-                    {{-- User Info --}}
                     <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
                         <div class="flex items-center gap-3">
                             @if($userAvatarUrl)
@@ -238,7 +244,6 @@
                         </div>
                     </div>
 
-                    {{-- Menu Items --}}
                     <div class="p-1.5 space-y-0.5">
 
                         @if($canSwitchModes)
@@ -246,8 +251,9 @@
                                 @csrf
                                 <input type="hidden" name="mode" value="{{ User::MODE_TOURIST }}">
                                 <button type="submit"
-                                        class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-500/10
+                                        class="w-full flex items-center gap-3 px-3 py-2.5 min-h-[44px] rounded-lg text-sm text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-500/10
                                                transition-all duration-200 active:scale-[0.98]
+                                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50">
                                     <svg xmlns="http://www.w3.org/2000/svg" class="size-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v3m0 12v3M5.636 5.636l2.121 2.121m8.486 8.486l2.121 2.121M3 12h3m12 0h3M5.636 18.364l2.121-2.121m8.486-8.486l2.121-2.121"/>
@@ -259,7 +265,6 @@
                             <div class="border-t border-gray-200 dark:border-gray-700 my-2"></div>
                         @endif
 
-                        {{-- My Account — available to ALL tenant users (admin or employee). --}}
                         <a href="{{ route('tenant.account.index') }}" wire:navigate
                            @click="open = false"
                            class="{{ $dropdownLinkClass }}">
@@ -269,12 +274,6 @@
                             My Account
                         </a>
 
-                        {{--
-                            Business Settings — admin-only.
-                            Route /admin/settings is gated by `role:admin|super-admin`
-                            in routes/web.php. Showing the link to an employee
-                            creates a dead-end 403. Gate with $isAdmin to match.
-                        --}}
                         @if($tenant && $isAdmin)
                             <a href="{{ route('tenant.settings.index') }}" wire:navigate
                                @click="open = false"
@@ -285,11 +284,19 @@
                                 </svg>
                                 Business Settings
                             </a>
+
+                            {{-- Photo Gallery — admin-only. Manage the images
+                                 shown on the public offerings page. --}}
+                            <a href="{{ route('tenant.gallery.index') }}" wire:navigate
+                               @click="open = false"
+                               class="{{ $dropdownLinkClass }}">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="size-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>
+                                </svg>
+                                Photo Gallery
+                            </a>
                         @endif
 
-                        {{-- View Public Listing — opens the tenant's public page in
-                             a new tab. Deliberately NOT wire:navigate: replacing
-                             the admin panel with the public site would be jarring. --}}
                         @if($tenant)
                             <a href="{{ route('tenant.show', $tenant->slug) }}"
                                target="_blank" rel="noopener noreferrer"
@@ -307,8 +314,9 @@
                         <form method="POST" action="{{ route('logout') }}" class="block">
                             @csrf
                             <button type="submit"
-                                    class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10
+                                    class="w-full flex items-center gap-3 px-3 py-2.5 min-h-[44px] rounded-lg text-sm text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10
                                            transition-all duration-200 active:scale-[0.98]
+                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>

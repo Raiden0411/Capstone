@@ -30,24 +30,88 @@ class extends Component
     /** Currently expanded booking — server-owned so it survives re-renders. */
     public ?int $expandedId = null;
 
-    // ─────────────────────────────────────────────────────────
-    //  Lifecycle
-    // ─────────────────────────────────────────────────────────
-
     /**
-     * Livewire actions bypass route middleware. Re-verify the session on
-     * every subsequent request. Without this, an expired session causes
-     * `where('user_id', null)` → no rows → `firstOrFail()` → a 404 on
-     * every action instead of a clean "session expired" response.
+     * On mount we reconcile any in-flight PayMongo sessions before the
+     * first render.
+     *
+     * WHY: The user typically arrives here right after completing
+     * payment at PayMongo. The webhook that flips Booking.status from
+     * `pending` → `confirmed`/`reserved` routinely lags the browser
+     * redirect by 2–10 seconds. Without this, the timer UI would show
+     * for a booking that has already been paid, the user would panic,
+     * and — worse — the Alpine countdown would fire cancelOverdue()
+     * on a paid booking. The server refuses that (Booking::isOverdue()
+     * checks isFullyPaid()) but the UI would be visibly wrong.
+     *
+     * Reconcile is a no-op for bookings with no live session.
      */
+    public function mount(): void
+    {
+        $this->requireAuth();
+        $this->reconcilePendingPayments();
+    }
+
     public function hydrate(): void
     {
-        abort_unless(Auth::check(), 403, 'Your session has expired. Please sign in again.');
+        $this->requireAuth();
     }
 
     protected function requireAuth(): void
     {
         abort_unless(Auth::check(), 403, 'Your session has expired. Please sign in again.');
+    }
+
+    /**
+     * For this user's bookings that are still `pending` with a pending
+     * PayMongo session, ping the gateway. `checkPaymentStatus()` internally
+     * queries PayMongo's REST API and only finalizes when the session is
+     * actually paid — so we can safely call this without risk of
+     * false-positives.
+     *
+     * Bounded to the last 2 days so we don't hammer the gateway for
+     * ancient bookings. Anything older than that has either been
+     * resolved or is beyond its payment window.
+     */
+    protected function reconcilePendingPayments(): void
+    {
+        $stale = Booking::withoutGlobalScope(TenantScope::class)
+            ->where('user_id', Auth::id())
+            ->where('status', Booking::STATUS_PENDING)
+            ->where('created_at', '>', now()->subDays(2))
+            ->whereHas('payments', function ($q) {
+                $q->withoutGlobalScope(TenantScope::class)
+                  ->where('payment_status', 'pending')
+                  ->whereNotNull('paymongo_session_id');
+            })
+            ->with(['payments' => fn ($q) => $q->withoutGlobalScope(TenantScope::class)])
+            ->get();
+
+        if ($stale->isEmpty()) {
+            return;
+        }
+
+        $payMongo = app(PayMongoService::class);
+
+        foreach ($stale as $booking) {
+            $pendingPayment = $booking->payments
+                ->firstWhere('payment_status', 'pending');
+
+            $reference = $pendingPayment?->paymongo_session_id;
+            if (!$reference) {
+                continue;
+            }
+
+            try {
+                // Queries PayMongo; finalizes only if genuinely paid.
+                $payMongo->checkPaymentStatus($reference);
+            } catch (\Throwable $e) {
+                Log::warning('my-bookings: gateway reconcile failed', [
+                    'booking_id' => $booking->id,
+                    'session_id' => $reference,
+                    'error'      => $e->getMessage(),
+                ]);
+            }
+        }
     }
 
     public function updatingSearch(): void       { $this->resetPage(); $this->expandedId = null; }
@@ -59,14 +123,6 @@ class extends Component
         $this->expandedId = $this->expandedId === $bookingId ? null : $bookingId;
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Mutations
-    // ─────────────────────────────────────────────────────────
-
-    /**
-     * Cancel a booking that has just become overdue (invoked from the
-     * Alpine countdown timer). Idempotent — safe to call multiple times.
-     */
     public function cancelOverdue(int $bookingId): void
     {
         $this->requireAuth();
@@ -90,6 +146,9 @@ class extends Component
                 return false;
             }
 
+            // isOverdue() itself refuses when the booking is fully paid —
+            // belt-and-braces against a race between this and the
+            // reconcile above.
             if (!$locked->isOverdue()) {
                 return false;
             }
@@ -117,15 +176,6 @@ class extends Component
         return $this->startCheckout($bookingId, Booking::TYPE_RESERVATION);
     }
 
-    /**
-     * Shared checkout bootstrap for both full and reservation payments.
-     *
-     * Flow:
-     *   1. Lock the booking and re-check status + overdue inside the lock.
-     *   2. Create the PayMongo hosted checkout session (external, no lock held).
-     *   3. Upsert the local Payment row with `payment_status = 'pending'`
-     *      so that the processing page (`findPaymentForBooking`) can find it.
-     */
     protected function startCheckout(int $bookingId, string $expectedType)
     {
         $this->requireAuth();
@@ -217,13 +267,6 @@ class extends Component
         return redirect()->away($session['checkout_url']);
     }
 
-    /**
-     * Create or update the *pending* local Payment row for a booking.
-     *
-     * Canonical statuses are `pending` and `paid`. Anything else will be
-     * invisible to `PayMongoService::findPaymentForBooking()` and the
-     * processing page will never finalize the booking.
-     */
     protected function upsertPendingPayment(
         Booking $booking,
         float $amount,
@@ -303,10 +346,6 @@ class extends Component
         };
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Computed
-    // ─────────────────────────────────────────────────────────
-
     #[Computed]
     public function bookings()
     {
@@ -359,9 +398,6 @@ class extends Component
         return $query->paginate(6);
     }
 
-    /**
-     * All counts in a single aggregate query.
-     */
     #[Computed]
     public function counts(): array
     {
@@ -395,10 +431,6 @@ class extends Component
         ];
     }
 
-    /**
-     * Temporal classification. Terminal statuses return their own name
-     * so the badge is hidden (the status badge already communicates it).
-     */
     public function getBookingClassification(Booking $booking): string
     {
         if ($booking->status === Booking::STATUS_CANCELLED) {
@@ -414,9 +446,6 @@ class extends Component
         return 'ongoing';
     }
 
-    /**
-     * Paid amount from the eager-loaded payments collection — no query.
-     */
     public function getPaidAmount(Booking $booking): float
     {
         return (float) $booking->payments
@@ -437,7 +466,18 @@ class extends Component
             .hide-scrollbar::-webkit-scrollbar { display: none; }
             .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
-            /* Countdown pulse — subtle, only when time is running short. */
+            /* Ambient page wash — matches create-booking / processing. */
+            .bookings-ambient {
+                background:
+                    radial-gradient(ellipse 70% 50% at 8% 0%, rgba(245,158,11,.06) 0%, transparent 55%),
+                    radial-gradient(ellipse 60% 55% at 95% 15%, rgba(59,130,246,.05) 0%, transparent 55%);
+            }
+            .dark .bookings-ambient {
+                background:
+                    radial-gradient(ellipse 70% 50% at 8% 0%, rgba(245,158,11,.08) 0%, transparent 55%),
+                    radial-gradient(ellipse 60% 55% at 95% 15%, rgba(59,130,246,.07) 0%, transparent 55%);
+            }
+
             @keyframes bookingsCountdownPulse {
                 0%, 100% { opacity: 1; }
                 50%      { opacity: .75; }
@@ -452,21 +492,25 @@ class extends Component
     @endonce
 @endpush
 
-<div class="relative z-10 min-h-screen text-gray-900 dark:text-gray-100">
+<div class="relative z-10 min-h-screen text-gray-900 dark:text-gray-100"
+     x-data="revealOnScroll">
+
+    <div class="bookings-ambient fixed inset-0 -z-10 pointer-events-none" aria-hidden="true"></div>
+
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10">
 
         {{-- ═══════════════ HEADER ═══════════════ --}}
         @php $counts = $this->counts; @endphp
 
-        <header class="mb-8">
-            <div class="flex items-center gap-2 mb-3">
-                <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
-                <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">My Bookings</span>
-            </div>
+        <header data-reveal class="mb-8">
+            <p class="mb-2 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400">
+                <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
+                My Bookings
+            </p>
 
             <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
                 <div>
-                    <h1 class="font-display text-3xl md:text-4xl lg:text-5xl font-semibold text-gray-900 dark:text-white leading-tight">
+                    <h1 class="font-display text-3xl md:text-4xl lg:text-5xl font-semibold tracking-tight text-gray-900 dark:text-white leading-tight">
                         Your <em class="italic text-primary-600 dark:text-primary-400">Reservations</em>
                     </h1>
                     <p class="mt-2 text-sm text-gray-500 dark:text-gray-400 max-w-md">
@@ -474,8 +518,6 @@ class extends Component
                     </p>
                 </div>
 
-                {{-- Live summary — three lightweight stat pills. Hidden when
-                     there are no bookings at all (the empty state covers it). --}}
                 @if($counts['all'] > 0)
                     <div class="flex flex-wrap items-center gap-2">
                         <span class="inline-flex items-baseline gap-2 px-3.5 py-2 rounded-full
@@ -490,7 +532,7 @@ class extends Component
                                          bg-amber-50 dark:bg-amber-500/10
                                          border border-amber-200 dark:border-amber-500/30">
                                 <strong class="font-display text-lg font-bold text-amber-700 dark:text-amber-400 tabular-nums leading-none">{{ $counts['pending'] }}</strong>
-                                <span class="text-[10px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400">Awaiting Payment</span>
+                                <span class="text-[10px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400">Awaiting</span>
                             </span>
                         @endif
 
@@ -518,8 +560,10 @@ class extends Component
                 </svg>
                 <p class="text-sm text-emerald-700 dark:text-emerald-300 font-medium flex-1">{{ session('message') }}</p>
                 <button type="button" @click="show = false"
-                        class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                        class="relative inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
                                transition-all duration-200 active:scale-95
+                               before:absolute before:content-[''] before:-inset-2 before:rounded-md
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 shrink-0"
                         aria-label="Dismiss message">
                     <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
@@ -538,8 +582,10 @@ class extends Component
                 </svg>
                 <p class="text-sm text-rose-700 dark:text-rose-300 font-medium flex-1">{{ session('error') }}</p>
                 <button type="button" @click="show = false"
-                        class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                        class="relative inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
                                transition-all duration-200 active:scale-95
+                               before:absolute before:content-[''] before:-inset-2 before:rounded-md
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 shrink-0"
                         aria-label="Dismiss error">
                     <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
@@ -549,9 +595,6 @@ class extends Component
 
         {{-- ═══════════════ FILTERS ═══════════════ --}}
         @php
-            // Two tiers: primary views (the four things users actually
-            // look for) and secondary refinements. Rendered with distinct
-            // visual weights so the row reads as a hierarchy, not a pile.
             $primaryPills = [
                 ['all',      'All',      $counts['all']],
                 ['upcoming', 'Upcoming', $counts['upcoming']],
@@ -567,27 +610,23 @@ class extends Component
             ];
         @endphp
 
-        <section class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-sm mb-8">
+        <section data-reveal class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-sm mb-8">
 
-            {{-- Tier 1 + Tier 2 pills, one scrollable row --}}
             <div class="p-4 sm:p-5 border-b border-gray-100 dark:border-gray-700">
                 <div class="flex items-center gap-3 overflow-x-auto pb-1 hide-scrollbar">
 
-                    {{-- Tier 1: primary view selector. Filled pills, larger. --}}
                     @foreach($primaryPills as [$val, $label, $num])
                         @php
                             $isActive = $statusFilter === $val;
-                            // The Pending pill stays amber-tinted whenever
-                            // there are pending bookings, even when inactive —
-                            // it's the one filter that represents an action.
                             $isUrgent = $val === 'pending' && $num > 0;
                         @endphp
                         <button type="button"
                                 wire:key="pill-primary-{{ $val }}"
                                 wire:click="$set('statusFilter','{{ $val }}')"
                                 aria-pressed="{{ $isActive ? 'true' : 'false' }}"
-                                class="inline-flex items-center gap-2 h-10 pl-4 pr-1.5 rounded-full text-sm font-semibold
+                                class="inline-flex items-center gap-2 h-11 sm:h-10 pl-4 pr-1.5 rounded-full text-sm font-semibold
                                        transition-all duration-200 active:scale-95 shrink-0
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
                                        {{ $isActive
                                            ? ($isUrgent ? 'bg-amber-500 text-white shadow-md shadow-amber-500/25' : 'bg-primary-600 text-white shadow-md shadow-primary-600/25')
@@ -608,18 +647,17 @@ class extends Component
                         </button>
                     @endforeach
 
-                    {{-- Divider --}}
                     <span class="shrink-0 h-6 w-px bg-gray-200 dark:bg-gray-700 mx-1" aria-hidden="true"></span>
 
-                    {{-- Tier 2: secondary status refinements. Muted outlines. --}}
                     @foreach($secondaryPills as [$val, $label, $num])
                         @php $isActive = $statusFilter === $val; @endphp
                         <button type="button"
                                 wire:key="pill-secondary-{{ $val }}"
                                 wire:click="$set('statusFilter','{{ $val }}')"
                                 aria-pressed="{{ $isActive ? 'true' : 'false' }}"
-                                class="inline-flex items-center gap-1.5 h-8 px-3 rounded-full text-xs font-semibold
+                                class="inline-flex items-center gap-1.5 h-11 sm:h-8 px-3 rounded-full text-xs font-semibold
                                        transition-all duration-200 active:scale-95 shrink-0
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
                                        {{ $isActive
                                            ? 'bg-gray-900 dark:bg-white text-white dark:text-gray-900'
@@ -633,7 +671,6 @@ class extends Component
                 </div>
             </div>
 
-            {{-- Search + sort row --}}
             <div class="p-4 sm:p-5 flex flex-col sm:flex-row gap-3">
                 <div class="relative flex-1">
                     <svg xmlns="http://www.w3.org/2000/svg" class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -645,12 +682,12 @@ class extends Component
                            autocomplete="off"
                            placeholder="Search by reference or property name…"
                            aria-label="Search bookings"
-                           class="input w-full"
-                           style="padding-left: 2.5rem;">
+                           class="input w-full pl-10">
                 </div>
                 <select wire:model.live="sortBy"
                         aria-label="Sort bookings"
-                        class="input w-full sm:w-auto sm:min-w-[200px] appearance-none">
+                        class="input w-full sm:w-auto sm:min-w-[200px] appearance-none
+                               [touch-action:manipulation]">
                     <option value="newest">Newest First</option>
                     <option value="oldest">Oldest First</option>
                     <option value="check_in_asc">Start Date ↑</option>
@@ -677,16 +714,33 @@ class extends Component
                     $isExpanded     = $expandedId === $booking->id;
                     $days           = max(1, (int) $booking->check_in->diffInDays($booking->check_out));
 
-                    $needsAction = $booking->status === 'pending' && $balance > 0 && $deadline !== null;
+                    // Timer is shown ONLY when the booking is genuinely
+                    // awaiting payment — the gateway reconcile in mount()
+                    // has already finalized any paid-but-not-yet-flipped
+                    // bookings, so a `pending` status here means the user
+                    // really does still owe money.
+                    //
+                    // Also requires the deadline to be in the FUTURE. A
+                    // booking past its deadline should have been flipped
+                    // by cancelOverdue() on the server; if we render a
+                    // timer for one, it would fire cancelOverdue() on the
+                    // client on its very first tick — pointless churn.
+                    $needsAction = $booking->status === 'pending'
+                        && $balance > 0
+                        && $deadline !== null
+                        && $deadline->isFuture();
                 @endphp
 
                 <article wire:key="booking-{{ $booking->id }}"
+                         data-reveal
+                         style="--reveal-delay: {{ min($loop->index, 5) * 60 }}ms"
                          class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl overflow-hidden shadow-sm
                                 hover:shadow-md transition-shadow duration-200
                                 {{ $needsAction ? 'border-l-4 border-l-amber-500' : '' }}">
 
                     {{-- ══ Card header (clickable to expand) ══ --}}
-                    <div class="flex flex-col sm:flex-row sm:items-stretch gap-0 cursor-pointer select-none"
+                    <div class="flex flex-col sm:flex-row sm:items-stretch gap-0 cursor-pointer select-none
+                                [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]"
                          wire:click="toggleExpand({{ $booking->id }})"
                          role="button"
                          tabindex="0"
@@ -716,7 +770,7 @@ class extends Component
                         {{-- ─── Content column ─── --}}
                         <div class="flex-1 min-w-0 px-4 sm:px-5 py-4 sm:py-5 flex flex-col justify-center">
 
-                            {{-- Row 1: badges + reference --}}
+                            {{-- Row 1: badges + reference + chevron --}}
                             <div class="flex flex-wrap items-center gap-2 mb-2">
                                 @php
                                     $statusClasses = match ($booking->status) {
@@ -737,15 +791,28 @@ class extends Component
                                     </span>
                                 @endif
 
-                                <span class="ml-auto text-[10px] font-mono text-gray-400 dark:text-gray-500">#{{ $booking->booking_reference }}</span>
+                                <span class="ml-auto inline-flex items-center gap-2">
+                                    <span class="text-[10px] font-mono text-gray-400 dark:text-gray-500 tabular-nums">#{{ $booking->booking_reference }}</span>
+                                    <span class="inline-flex items-center justify-center w-6 h-6 rounded-full
+                                                 text-gray-400 dark:text-gray-500
+                                                 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700
+                                                 transition-transform duration-200"
+                                          aria-hidden="true">
+                                        <svg xmlns="http://www.w3.org/2000/svg"
+                                             class="w-3 h-3 transition-transform duration-200 {{ $isExpanded ? 'rotate-180' : '' }}"
+                                             fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"/>
+                                        </svg>
+                                    </span>
+                                </span>
                             </div>
 
-                            {{-- Row 2: property name (prominent) --}}
+                            {{-- Row 2: property name --}}
                             <h3 class="font-display text-lg sm:text-xl font-semibold text-gray-900 dark:text-white leading-tight truncate">
                                 {{ $property?->name ?? 'Booking' }}
                             </h3>
 
-                            {{-- Row 3: tenant + location --}}
+                            {{-- Row 3: tenant + type --}}
                             @if($tenant)
                                 <p class="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
                                     {{ $tenant->name }}
@@ -756,7 +823,7 @@ class extends Component
                                 </p>
                             @endif
 
-                            {{-- Row 4: dates · duration · total — one clean line --}}
+                            {{-- Row 4: dates · duration · total --}}
                             <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-600 dark:text-gray-300">
                                 <span class="inline-flex items-center gap-1.5 tabular-nums">
                                     <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -780,10 +847,10 @@ class extends Component
                                     flex flex-row sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-3">
 
                             @if($needsAction)
-                                {{-- Countdown + action grouped as one urgent unit --}}
                                 <div class="flex flex-col items-end gap-1.5">
-                                    <div class="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-700 dark:text-amber-300"
+                                    <div x-cloak
                                          wire:key="deadline-{{ $booking->id }}"
+                                         class="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-700 dark:text-amber-300"
                                          x-data="{
                                              deadline: {{ $deadline->timestamp * 1000 }},
                                              remaining: null,
@@ -804,6 +871,11 @@ class extends Component
                                                      this.timer = null;
                                                      if (!this.fired) {
                                                          this.fired = true;
+                                                         // Server-side isOverdue() refuses
+                                                         // to cancel a fully-paid booking,
+                                                         // so this is safe even if the
+                                                         // gateway just finalized the
+                                                         // payment a moment ago.
                                                          $wire.cancelOverdue({{ $booking->id }});
                                                      }
                                                      return;
@@ -829,8 +901,9 @@ class extends Component
                                                 wire:click.stop="payFull({{ $booking->id }})"
                                                 wire:loading.attr="disabled"
                                                 wire:target="payFull"
-                                                class="inline-flex items-center justify-center gap-2 h-10 px-4 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                                class="inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
                                                        transition-all duration-200 active:scale-95
+                                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                                        disabled:opacity-60 disabled:cursor-not-allowed">
                                             <span wire:loading.remove wire:target="payFull">Pay Now</span>
@@ -847,8 +920,9 @@ class extends Component
                                                 wire:click.stop="payReservation({{ $booking->id }})"
                                                 wire:loading.attr="disabled"
                                                 wire:target="payReservation"
-                                                class="inline-flex items-center justify-center gap-2 h-10 px-4 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                                class="inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
                                                        transition-all duration-200 active:scale-95
+                                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                                        disabled:opacity-60 disabled:cursor-not-allowed">
                                             <span wire:loading.remove wire:target="payReservation">Pay 20%</span>
@@ -873,33 +947,22 @@ class extends Component
                                 <a href="{{ route('explore.map', ['marker' => $tenant->id, 'directions' => '1']) }}"
                                    wire:navigate
                                    wire:click.stop
-                                   class="inline-flex items-center justify-center gap-2 h-10 px-4 rounded-xl
+                                   class="inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl
                                           bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700
                                           hover:border-primary-400 dark:hover:border-primary-500 hover:text-primary-600 dark:hover:text-primary-400
                                           text-gray-700 dark:text-gray-200 text-sm font-semibold
                                           transition-all duration-200 active:scale-95
+                                          [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                                     <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
                                     </svg>
                                     Directions
                                 </a>
-                            @else
-                                {{-- Cancelled / completed: nothing to do here --}}
                             @endif
 
-                            {{-- Type label, muted --}}
                             <span class="hidden sm:inline text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">
                                 {{ $booking->booking_type === 'full' ? 'Full Payment' : 'Reservation' }}
-                            </span>
-
-                            {{-- Expand chevron --}}
-                            <span class="sm:hidden inline-flex items-center justify-center w-7 h-7 rounded-full text-gray-400"
-                                  aria-hidden="true">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 transition-transform duration-200 {{ $isExpanded ? 'rotate-180' : '' }}"
-                                     fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
-                                </svg>
                             </span>
                         </div>
                     </div>
@@ -909,10 +972,8 @@ class extends Component
                         <div wire:key="drawer-{{ $booking->id }}"
                              class="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40">
 
-                            {{-- 3-column details grid — 1 col on mobile, 3 on lg+ --}}
                             <div class="p-5 md:p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 lg:gap-8">
 
-                                {{-- Column 1: property details --}}
                                 <div>
                                     <p class="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-3">Booking Details</p>
                                     @if($property)
@@ -947,13 +1008,15 @@ class extends Component
                                                 <p class="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500">Contact</p>
                                                 @if($tenant->contact_number)
                                                     <a href="tel:{{ $tenant->contact_number }}"
-                                                       class="block text-primary-600 dark:text-primary-400 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                                                       class="block text-primary-600 dark:text-primary-400 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded
+                                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                                                         {{ $tenant->contact_number }}
                                                     </a>
                                                 @endif
                                                 @if($tenant->email)
                                                     <a href="mailto:{{ $tenant->email }}"
-                                                       class="block text-primary-600 dark:text-primary-400 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                                                       class="block text-primary-600 dark:text-primary-400 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded
+                                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                                                         {{ $tenant->email }}
                                                     </a>
                                                 @endif
@@ -964,7 +1027,6 @@ class extends Component
                                     @endif
                                 </div>
 
-                                {{-- Column 2: services + payment summary --}}
                                 <div>
                                     <p class="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-3">Services &amp; Payment</p>
 
@@ -999,7 +1061,6 @@ class extends Component
                                     </dl>
                                 </div>
 
-                                {{-- Column 3: payment history --}}
                                 <div>
                                     <p class="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-3">Payment History</p>
                                     @if($booking->payments->isNotEmpty())
@@ -1027,8 +1088,6 @@ class extends Component
                                 </div>
                             </div>
 
-                            {{-- Actions row — full-width below the grid so they're
-                                 never buried in a column --}}
                             <div class="border-t border-gray-200 dark:border-gray-700 px-5 md:px-6 py-4">
                                 <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5">
 
@@ -1040,6 +1099,7 @@ class extends Component
                                                     wire:target="payFull"
                                                     class="col-span-2 sm:col-span-1 inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
                                                            transition-all duration-200 active:scale-95
+                                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                                            disabled:opacity-60 disabled:cursor-not-allowed">
                                                 <span wire:loading.remove wire:target="payFull">Pay Full Amount</span>
@@ -1058,6 +1118,7 @@ class extends Component
                                                     wire:target="payReservation"
                                                     class="col-span-2 sm:col-span-1 inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
                                                            transition-all duration-200 active:scale-95
+                                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                                            disabled:opacity-60 disabled:cursor-not-allowed">
                                                 <span wire:loading.remove wire:target="payReservation">Pay Reservation (20%)</span>
@@ -1076,6 +1137,7 @@ class extends Component
                                         <a href="{{ route('business.offerings', ['slug' => $tenant->slug]) }}" wire:navigate
                                            class="inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
                                                   transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                                             <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
@@ -1088,6 +1150,7 @@ class extends Component
                                                wire:navigate
                                                class="inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
                                                       transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                                      [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
@@ -1100,6 +1163,7 @@ class extends Component
                                     <a href="{{ route('booking.receipt', $booking) }}" wire:navigate
                                        class="inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
                                               transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                                         <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2m-6-4h.01M6 18v4h12v-4"/>
@@ -1111,6 +1175,7 @@ class extends Component
                                        target="_blank" rel="noopener noreferrer"
                                        class="inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
                                               transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                                         <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
@@ -1125,6 +1190,7 @@ class extends Component
                                                 wire:target="requestCancellation"
                                                 class="col-span-2 sm:col-span-1 inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl border border-rose-300 dark:border-rose-500/40 bg-white dark:bg-gray-800 text-rose-700 dark:text-rose-300 text-sm font-semibold
                                                        transition-all duration-200 active:scale-95 hover:bg-rose-50 dark:hover:bg-rose-500/10
+                                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                                        disabled:opacity-60 disabled:cursor-not-allowed">
                                             <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -1139,13 +1205,13 @@ class extends Component
                     @endif
                 </article>
             @empty
-                <div class="col-span-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-3xl p-12 sm:p-16 text-center">
+                <div data-reveal class="col-span-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-3xl p-12 sm:p-16 text-center">
                     <div class="mx-auto h-20 w-20 rounded-full bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 flex items-center justify-center mb-6">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-9 h-9 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                         </svg>
                     </div>
-                    <h3 class="font-display text-2xl sm:text-3xl font-semibold text-gray-900 dark:text-white mb-2">
+                    <h3 class="font-display text-2xl sm:text-3xl font-semibold tracking-tight text-gray-900 dark:text-white mb-2">
                         @if($statusFilter !== 'all' || $search !== '')
                             Nothing matches this filter
                         @else
@@ -1165,6 +1231,7 @@ class extends Component
                                     wire:click="$set('statusFilter', 'all'); $set('search', '')"
                                     class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
                                            transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                                 Clear filters
                             </button>
@@ -1172,6 +1239,7 @@ class extends Component
                         <a href="{{ route('explore.map') }}" wire:navigate
                            class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
                                   transition-all duration-200 active:scale-95
+                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                             Explore Destinations
                         </a>

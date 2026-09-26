@@ -50,6 +50,16 @@ class extends Component
     public ?float $userLng = null;
     public bool   $followMode  = false;
     public bool   $satellite   = false;
+
+    /**
+     * Map theme — decoupled from the global site theme.
+     *
+     * 'light' | 'dark'. Persisted in session so it survives navigation.
+     * Toggled only via the dedicated map control (desktop toolbar /
+     * mobile actions sheet) — see toggleMapTheme().
+     */
+    public string $mapTheme = 'light';
+
     public bool   $sidebarOpen = true;
     public bool   $navigationActive = false;
 
@@ -103,6 +113,10 @@ class extends Component
         $this->osrmUrl     = (string) (config('livewire-mapcn.osrm_url') ?? 'https://router.project-osrm.org');
         $this->favorites   = session($this->favoritesKey(), []);
         $this->sidebarOpen = request()->cookie('map_sidebar_open') !== '0';
+
+        $theme = (string) session('map_theme', 'light');
+        $this->mapTheme = in_array($theme, ['light', 'dark'], true) ? $theme : 'light';
+
         $this->filtersHash = $this->hashFilters();
         $this->hydrateQs();
     }
@@ -822,6 +836,46 @@ class extends Component
         $this->mapEpoch++;
     }
 
+    /**
+     * Recenter the map on the user's location.
+     *
+     * Works regardless of navigation state — unlike the Alpine-side
+     * recenterNavigation(), which early-returns when nav is inactive.
+     * If we don't yet know the user's location, kick off a locate
+     * request; when it resolves, setUserLocation() flies the camera.
+     */
+    public function recenterOnMe(): void
+    {
+        if ($this->userLat && $this->userLng) {
+            $this->dispatch('map:fly-to', center: [(float) $this->userLng, (float) $this->userLat], zoom: 15);
+            $this->notify('Centered on your location.', 'success');
+            return;
+        }
+
+        $this->dispatch('request-location-for-distance');
+        $this->notify('Finding your location…', 'info');
+    }
+
+    /**
+     * Toggle the MAP theme — decoupled from the global site theme.
+     *
+     * Bumps $mapEpoch so the <x-map> wrapper re-keys and MapLibre
+     * reinitialises with the new theme. Users see the loading overlay
+     * briefly (via the wrapper's x-init="mapLoading = true").
+     */
+    public function toggleMapTheme(): void
+    {
+        $this->mapTheme = $this->mapTheme === 'dark' ? 'light' : 'dark';
+        session(['map_theme' => $this->mapTheme]);
+
+        $this->mapEpoch++;
+
+        $this->notify(
+            $this->mapTheme === 'dark' ? 'Dark map enabled.' : 'Light map enabled.',
+            'info'
+        );
+    }
+
     public function resetFilters(): void
     {
         $this->reset(['search', 'categoryFilter', 'openNow', 'hasOfferings', 'favoritesOnly', 'recommendedOnly', 'showEvents', 'showAmenities']);
@@ -910,10 +964,17 @@ class extends Component
         if ($zoom) $this->currentZoom = max(5, $zoom);
     }
 
+    /**
+     * Global site theme changed.
+     *
+     * Map theme is now DECOUPLED from the global theme (see
+     * toggleMapTheme + :theme="$mapTheme" on <x-map>). We no longer
+     * bump $themeVersion, so toggling site dark mode does NOT remount
+     * the map. Just nudge MapLibre to recalc in case the surrounding
+     * chrome changed dimensions.
+     */
     public function handleThemeChange(): void
     {
-        $this->themeVersion++;
-        $this->routeVersion++;
         $this->dispatch('map:resize');
     }
 
@@ -1079,7 +1140,8 @@ class extends Component
     {{-- Mobile sidebar backdrop --}}
     <div x-cloak
          :class="mobileOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'"
-         class="fixed inset-0 z-[1090] bg-black/60 backdrop-blur-sm lg:hidden transition-opacity duration-200"
+         class="fixed inset-0 z-[1090] bg-black/60 backdrop-blur-sm lg:hidden transition-opacity duration-200
+                [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]"
          @click="mobileOpen = false"
          aria-hidden="true"></div>
 
@@ -1176,7 +1238,8 @@ class extends Component
                 <div class="mt-5 flex flex-col sm:flex-row gap-2 justify-center">
                     <button type="button" @click="retryMap()"
                             class="inline-flex items-center justify-center gap-2 rounded-lg bg-primary-600 hover:bg-primary-700
-                                   text-white px-4 py-2.5 text-sm font-bold transition active:scale-95
+                                   text-white px-4 h-11 text-sm font-bold transition active:scale-95
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                    focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
@@ -1184,12 +1247,13 @@ class extends Component
                         Retry
                     </button>
                     <button type="button" onclick="window.location.reload()"
-                            class="inline-flex items-center justify-center rounded-lg
+                            class="inline-flex items-center justify-center rounded-lg h-11
                                    border border-gray-300 dark:border-gray-700
                                    bg-white dark:bg-gray-900
-                                   px-4 py-2.5 text-sm font-bold text-gray-700 dark:text-gray-200
+                                   px-4 text-sm font-bold text-gray-700 dark:text-gray-200
                                    hover:border-primary-400 hover:text-primary-600 dark:hover:text-primary-400
                                    transition active:scale-95
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                    focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                         Reload Page
                     </button>
@@ -1198,11 +1262,11 @@ class extends Component
         </div>
 
         {{-- MAP CANVAS WRAPPER --}}
-        <div wire:key="map-{{ $satellite ? 'sat' : 'std' }}-{{ $themeVersion }}-{{ $mapForceReload }}-{{ $showAmenities ? 'full' : 'main' }}-{{ $mapEpoch }}"
+        <div wire:key="map-{{ $satellite ? 'sat' : 'std' }}-{{ $mapForceReload }}-{{ $showAmenities ? 'full' : 'main' }}-{{ $mapEpoch }}-{{ $mapTheme }}"
              x-init="mapLoading = true"
-             class="absolute inset-0">
+             class="absolute inset-0 will-change-transform">
             <x-map
-                wire:key="mapcn-{{ $mapEpoch }}-{{ $satellite ? 'sat' : 'std' }}"
+                wire:key="mapcn-{{ $mapEpoch }}-{{ $satellite ? 'sat' : 'std' }}-{{ $mapTheme }}"
                 id="tourist-map"
                 :center="$this->initialCenter"
                 :zoom="$this->initialZoom"
@@ -1213,7 +1277,7 @@ class extends Component
                 :style="$satellite ? route('map.satellite.style') : null"
                 :light-style="$satellite ? route('map.satellite.style') : null"
                 :dark-style="$satellite ? route('map.satellite.style') : null"
-                theme="auto"
+                :theme="$mapTheme"
                 class="h-full w-full"
                 :events="['click', 'marker-clicked']"
             >
@@ -1226,14 +1290,22 @@ class extends Component
                     position="bottom-right"
                 />
 
+                @php
+                    // Resolved once per render — avoids N new Collection
+                    // instances inside the coordinate loops.
+                    $markerCats = $this->markerCategories;
+                    $markerColors = ['#f97316','#a855f7','#3b82f6','#14b8a6','#eab308','#10b981','#8b5cf6','#f43f5e'];
+                @endphp
+
                 @if(!$navigationActive)
                     @foreach($this->tenants as $tenant)
                         @php
-                            $colors = ['#f97316','#a855f7','#3b82f6','#14b8a6','#eab308','#10b981','#8b5cf6','#f43f5e'];
-                            $tc      = $colors[$loop->index % count($colors)];
+                            $tc      = $markerColors[$loop->index % count($markerColors)];
                             $isRoute = $routeTenantId === $tenant->id && !empty($routeCoords);
                             $isHL    = $highlightedId === $tenant->id;
-                            $logo    = $tenant->logo ? asset('storage/' . $tenant->logo) : null;
+                            // Rule J: relative /storage path, never asset() —
+                            // APP_URL may not match the current host.
+                            $logo    = $tenant->logo ? '/storage/' . ltrim($tenant->logo, '/') : null;
 
                             $coordCount   = count($tenant->coordinates);
                             $nearbyCount  = max(0, $coordCount - 1);
@@ -1250,14 +1322,16 @@ class extends Component
 
                             @php
                                 $coordType = $coord['type'] ?? null;
-                                $mcMatch   = !$isParent && $coordType
-                                    ? collect($this->markerCategories)->firstWhere('key', $coordType)
-                                    : null;
+                                $mcMatch   = null;
+                                if (! $isParent && $coordType) {
+                                    foreach ($markerCats as $cat) {
+                                        if (($cat['key'] ?? '') === $coordType) { $mcMatch = $cat; break; }
+                                    }
+                                }
                                 $activeColor = $mcMatch ? ($mcMatch['color'] ?? $tc) : $tc;
                             @endphp
 
                             <x-map-marker
-                                :key="'t-' . $tenant->id . '-' . $ci"
                                 wire:key="m-{{ $tenant->id }}-{{ $ci }}-{{ $mapEpoch }}"
                                 :lat="$coord['lat']"
                                 :lng="$coord['lng']"
@@ -1273,7 +1347,7 @@ class extends Component
                                                         ring-2 ring-white dark:ring-gray-900
                                                         shadow-xl shadow-gray-900/20
                                                         transition-transform duration-150
-                                                        group-hover:scale-110
+                                                        motion-safe:group-hover:scale-110
                                                         {{ ($isRoute || $isHL) ? 'outline outline-2 outline-offset-2 outline-primary-500' : '' }}"
                                                  style="border-color: {{ $tc }};">
                                                 @if($logo)
@@ -1310,14 +1384,13 @@ class extends Component
                                                         shadow-sm
                                                         opacity-80
                                                         transition-all duration-150
-                                                        group-hover:opacity-100
-                                                        group-hover:scale-110
-                                                        group-hover:shadow-md
-                                                        group-hover:bg-white dark:group-hover:bg-gray-900"
+                                                        motion-safe:group-hover:opacity-100
+                                                        motion-safe:group-hover:scale-110
+                                                        motion-safe:group-hover:shadow-md"
                                                  style="border-color: {{ $activeColor }}80;">
                                                 @if($mcMatch['icon_svg'] ?? null)
                                                     <div class="h-3.5 w-3.5 sm:h-3 sm:w-3 text-gray-700 dark:text-gray-200">
-                                                        {!! str_replace('<svg ', '<svg xmlns="http://www.w3.org/2000/svg" class="h-full w-full fill-none stroke-current stroke-2" ', $mcMatch['icon_svg']) !!}
+                                                        <x-safe-svg :svg="$mcMatch['icon_svg']" class="h-full w-full fill-none stroke-current stroke-2" />
                                                     </div>
                                                 @else
                                                     <span class="text-[10px] font-bold text-gray-700 dark:text-gray-200">
@@ -1331,8 +1404,8 @@ class extends Component
                                                         shadow-sm
                                                         opacity-70
                                                         transition-all duration-150
-                                                        group-hover:opacity-100
-                                                        group-hover:scale-150"
+                                                        motion-safe:group-hover:opacity-100
+                                                        motion-safe:group-hover:scale-150"
                                                  style="background: {{ $tc }};"></div>
                                         @endif
                                     </div>
@@ -1344,7 +1417,6 @@ class extends Component
                     @if($showEvents)
                         @foreach($this->eventMarkers as $ev)
                             <x-map-marker
-                                :key="'ev-' . $ev['id']"
                                 wire:key="ev-m-{{ $ev['id'] }}-{{ $mapEpoch }}"
                                 :lat="$ev['lat']"
                                 :lng="$ev['lng']"
@@ -1359,7 +1431,7 @@ class extends Component
                                                     bg-gradient-to-tr from-purple-600 to-pink-500
                                                     border-2 border-white shadow-lg
                                                     ring-2 ring-white dark:ring-gray-900
-                                                    transition-transform group-hover:scale-110 dark:border-gray-900">
+                                                    transition-transform motion-safe:group-hover:scale-110 dark:border-gray-900">
                                             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                                 <rect x="3" y="4" width="18" height="18" rx="2"/>
                                                 <line x1="16" y1="2" x2="16" y2="6"/>
@@ -1374,7 +1446,7 @@ class extends Component
                                     </div>
                                 </x-marker-content>
                                 <x-marker-popup>
-                                    <div class="w-[220px] rounded-xl bg-white p-4 shadow-xl dark:bg-gray-900 border border-gray-200 dark:border-gray-800">
+                                    <div class="w-[220px] rounded-2xl bg-white p-4 shadow-xl dark:bg-gray-900 border border-gray-200 dark:border-gray-800">
                                         <p class="text-xs font-bold uppercase tracking-wider text-purple-600 dark:text-purple-400">Event</p>
                                         <h3 class="mt-1 text-lg font-display font-semibold text-gray-900 dark:text-white">{{ $ev['name'] }}</h3>
                                         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -1481,9 +1553,10 @@ class extends Component
             <button type="button"
                     @click="recenterNavigation()"
                     aria-label="Recenter on my location"
-                    class="shrink-0 flex h-9 w-9 items-center justify-center rounded-full
+                    class="shrink-0 flex h-10 w-10 items-center justify-center rounded-full
                            text-white/85 hover:text-white hover:bg-white/10
                            transition active:scale-95
+                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.8" aria-hidden="true">
                     <circle cx="12" cy="12" r="7"/>
@@ -1497,10 +1570,11 @@ class extends Component
 
             <button type="button"
                     @click="stopNavigation()"
-                    class="shrink-0 inline-flex items-center gap-1.5 h-9 px-4 rounded-full
+                    class="shrink-0 inline-flex items-center gap-1.5 h-10 px-4 rounded-full
                            bg-rose-600 hover:bg-rose-500 text-white
                            text-[11px] font-bold uppercase tracking-wider
                            transition active:scale-95
+                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/60 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <rect x="6" y="6" width="12" height="12" rx="1.5"/>
@@ -1523,6 +1597,7 @@ class extends Component
                         :aria-pressed="sidebarOpen.toString()" aria-label="Toggle sidebar"
                         class="flex h-10 w-10 items-center justify-center text-gray-500
                                transition hover:bg-gray-100 hover:text-gray-900
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500/50 active:scale-95
                                dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
                         :class="sidebarOpen ? 'bg-primary-50 text-primary-600 dark:bg-primary-500/10 dark:text-primary-400' : ''">
@@ -1534,6 +1609,7 @@ class extends Component
                 <button type="button" data-tip="My location (L)" @click="locate()" aria-label="My location"
                         class="flex h-10 w-10 items-center justify-center text-gray-500
                                transition hover:bg-gray-100 hover:text-gray-900
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500/50 active:scale-95
                                dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
                         :class="locating ? 'bg-primary-50 text-primary-600 dark:bg-primary-500/10 dark:text-primary-400' : ''">
@@ -1551,6 +1627,7 @@ class extends Component
                 <button type="button" data-tip="Follow mode (F)" @click="handleFollowButton()" aria-label="Follow mode"
                         class="flex h-10 w-10 items-center justify-center text-gray-500
                                transition hover:bg-gray-100 hover:text-gray-900
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500/50 active:scale-95
                                dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
                         :class="followMode ? 'bg-primary-50 text-primary-600 dark:bg-primary-500/10 dark:text-primary-400' : ''">
@@ -1566,6 +1643,7 @@ class extends Component
                 <button type="button" data-tip="Recenter (R)" wire:click="resetView" aria-label="Recenter"
                         class="flex h-10 w-10 items-center justify-center text-gray-500
                                transition hover:bg-gray-100 hover:text-gray-900
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500/50 active:scale-95
                                dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -1584,6 +1662,7 @@ class extends Component
                             'flex h-10 w-10 items-center justify-center transition',
                             'hover:bg-gray-100 hover:text-gray-900 dark:hover:bg-gray-800 dark:hover:text-white',
                             'focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500/50 active:scale-95',
+                            '[touch-action:manipulation] [-webkit-tap-highlight-color:transparent]',
                             'text-gray-500 dark:text-gray-400',
                             'bg-primary-50 text-primary-600 dark:bg-primary-500/10 dark:text-primary-400' => $satellite,
                         ])>
@@ -1592,6 +1671,41 @@ class extends Component
                         <path stroke-linecap="round" stroke-linejoin="round" d="M2 17l10 5 10-5"/>
                         <path stroke-linecap="round" stroke-linejoin="round" d="M2 12l10 5 10-5"/>
                     </svg>
+                </button>
+
+                {{-- Map theme toggle — decoupled from global site theme. --}}
+                <button type="button" data-tip="Toggle map theme"
+                        wire:click="toggleMapTheme"
+                        wire:loading.attr="disabled"
+                        wire:target="toggleMapTheme"
+                        aria-label="Toggle map theme"
+                        aria-pressed="{{ $mapTheme === 'dark' ? 'true' : 'false' }}"
+                        @class([
+                            'flex h-10 w-10 items-center justify-center transition',
+                            'hover:bg-gray-100 hover:text-gray-900 dark:hover:bg-gray-800 dark:hover:text-white',
+                            'focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500/50 active:scale-95',
+                            '[touch-action:manipulation] [-webkit-tap-highlight-color:transparent]',
+                            'text-gray-500 dark:text-gray-400',
+                            'disabled:opacity-60 disabled:cursor-wait',
+                        ])>
+                    {{-- Sun when map theme is dark (tap → light); moon when light (tap → dark). --}}
+                    @if($mapTheme === 'dark')
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle cx="12" cy="12" r="4"/>
+                            <path d="M12 2v2"/>
+                            <path d="M12 20v2"/>
+                            <path d="m4.93 4.93 1.41 1.41"/>
+                            <path d="m17.66 17.66 1.41 1.41"/>
+                            <path d="M2 12h2"/>
+                            <path d="M20 12h2"/>
+                            <path d="m6.34 17.66-1.41 1.41"/>
+                            <path d="m19.07 4.93-1.41 1.41"/>
+                        </svg>
+                    @else
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                        </svg>
+                    @endif
                 </button>
 
                 <button type="button" data-tip="Toggle establishments"
@@ -1604,6 +1718,7 @@ class extends Component
                             'flex h-10 w-10 items-center justify-center transition',
                             'hover:bg-gray-100 hover:text-gray-900 dark:hover:bg-gray-800 dark:hover:text-white',
                             'focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500/50 active:scale-95',
+                            '[touch-action:manipulation] [-webkit-tap-highlight-color:transparent]',
                             'text-gray-500 dark:text-gray-400',
                             'disabled:opacity-60 disabled:cursor-wait',
                             'bg-primary-50 text-primary-600 dark:bg-primary-500/10 dark:text-primary-400' => $showAmenities,
@@ -1615,13 +1730,13 @@ class extends Component
                 </button>
             </div>
 
-            {{-- Help only (Share location removed) --}}
             <div class="flex flex-col overflow-hidden rounded-xl border border-gray-200/80
                         bg-white dark:bg-gray-900 shadow-lg shadow-gray-900/5
                         dark:border-gray-800/80">
                 <button type="button" data-tip="Help & shortcuts (?)" @click="helpOpen = true" aria-label="Help"
                         class="flex h-10 w-10 items-center justify-center text-gray-500
                                transition hover:bg-gray-100 hover:text-gray-900
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500/50 active:scale-95
                                dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -1636,6 +1751,7 @@ class extends Component
                     <button type="button" data-tip="Clear route" wire:click="clearRoute" aria-label="Clear route"
                             class="flex h-10 w-10 items-center justify-center text-rose-500
                                    transition hover:bg-rose-50 hover:text-rose-700
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                    focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rose-500/50 active:scale-95
                                    dark:hover:bg-rose-500/10">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -1655,27 +1771,29 @@ class extends Component
             <div class="flex items-center gap-1.5">
                 <button type="button" @click="mobileOpen = true"
                         aria-label="Open filters"
-                        class="flex h-10 min-w-[44px] items-center justify-center gap-1.5 rounded-xl
-                               border border-gray-200/80 bg-white px-3
+                        class="flex h-11 min-w-[44px] items-center justify-center gap-1.5 rounded-xl
+                               border border-gray-200/80 bg-white px-3.5
                                shadow-lg shadow-gray-900/5
                                text-gray-700 dark:text-gray-200
                                dark:border-gray-800/80 dark:bg-gray-900
                                transition active:scale-95
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h10M4 18h7"/>
                     </svg>
-                    <span class="text-[11px] font-bold uppercase tracking-wider">Filters</span>
+                    <span class="text-xs font-bold uppercase tracking-wider">Filters</span>
                 </button>
 
                 <button type="button" @click="locate()"
                         aria-label="My location"
-                        class="flex h-10 w-10 items-center justify-center rounded-xl
+                        class="flex h-11 w-11 items-center justify-center rounded-xl
                                border border-gray-200/80 bg-white
                                shadow-lg shadow-gray-900/5
                                text-gray-700 dark:text-gray-200
                                dark:border-gray-800/80 dark:bg-gray-900
                                transition active:scale-95
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                         :class="locating ? 'bg-primary-50 text-primary-600 dark:bg-primary-500/10 dark:text-primary-400' : ''">
                     <svg xmlns="http://www.w3.org/2000/svg" x-show="!locating" class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -1689,6 +1807,31 @@ class extends Component
                     </svg>
                 </button>
 
+                {{-- Recenter on user location. --}}
+                <button type="button"
+                        wire:click="recenterOnMe"
+                        wire:loading.attr="disabled"
+                        wire:target="recenterOnMe"
+                        aria-label="Recenter on my location"
+                        class="flex h-11 w-11 items-center justify-center rounded-xl
+                               border border-gray-200/80 bg-white
+                               shadow-lg shadow-gray-900/5
+                               text-gray-700 dark:text-gray-200
+                               dark:border-gray-800/80 dark:bg-gray-900
+                               transition active:scale-[0.98]
+                               disabled:opacity-60 disabled:cursor-wait
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                               focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.8" aria-hidden="true">
+                        <circle cx="12" cy="12" r="7"/>
+                        <line x1="12" y1="2" x2="12" y2="5"/>
+                        <line x1="12" y1="19" x2="12" y2="22"/>
+                        <line x1="2" y1="12" x2="5" y2="12"/>
+                        <line x1="19" y1="12" x2="22" y2="12"/>
+                        <circle cx="12" cy="12" r="2" fill="currentColor"/>
+                    </svg>
+                </button>
+
                 <button type="button"
                         @click="$dispatch('map:prepare-rebuild'); $wire.toggleEstablishments()"
                         wire:loading.attr="disabled"
@@ -1696,9 +1839,10 @@ class extends Component
                         aria-label="Toggle establishments"
                         aria-pressed="{{ $showAmenities ? 'true' : 'false' }}"
                         @class([
-                            'flex h-10 w-10 items-center justify-center rounded-xl',
+                            'flex h-11 w-11 items-center justify-center rounded-xl',
                             'border shadow-lg shadow-gray-900/5',
                             'transition active:scale-95',
+                            '[touch-action:manipulation] [-webkit-tap-highlight-color:transparent]',
                             'focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50',
                             'disabled:opacity-60 disabled:cursor-wait',
                             'border-primary-500 bg-primary-50 text-primary-700 dark:border-primary-500/40 dark:bg-primary-500/15 dark:text-primary-300' => $showAmenities,
@@ -1712,12 +1856,13 @@ class extends Component
 
                 <button type="button" @click="actionsOpen = true"
                         aria-label="More actions"
-                        class="flex h-10 w-10 items-center justify-center rounded-xl
+                        class="flex h-11 w-11 items-center justify-center rounded-xl
                                border border-gray-200/80 bg-white
                                shadow-lg shadow-gray-900/5
                                text-gray-700 dark:text-gray-200
                                dark:border-gray-800/80 dark:bg-gray-900
                                transition active:scale-95
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <circle cx="5" cy="12" r="2"/>
@@ -1729,7 +1874,8 @@ class extends Component
 
             <div x-cloak
                  x-show="actionsOpen"
-                 class="fixed inset-0 z-[1400] bg-black/50 backdrop-blur-sm flex items-end"
+                 class="fixed inset-0 z-[1400] bg-black/50 backdrop-blur-sm flex items-end
+                        [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]"
                  @click.self="actionsOpen = false"
                  role="dialog"
                  aria-modal="true"
@@ -1746,9 +1892,10 @@ class extends Component
                     <div class="grid grid-cols-3 gap-2">
                         <button type="button"
                                 @click="actionsOpen = false; handleFollowButton()"
-                                class="flex flex-col items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 py-3
+                                class="flex flex-col items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 min-h-[64px] py-3
                                        text-gray-700 dark:text-gray-200 dark:border-gray-700 dark:bg-gray-800
                                        transition active:scale-95
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                        focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2L21 21 12 17 3 21Z"/>
@@ -1756,11 +1903,18 @@ class extends Component
                             <span class="text-[10px] font-bold uppercase tracking-wider">Follow</span>
                         </button>
 
+                        {{-- Recenter — now calls a server action that works
+                             regardless of navigation state. --}}
                         <button type="button"
-                                @click="actionsOpen = false; recenterNavigation()"
-                                class="flex flex-col items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 py-3
+                                wire:click="recenterOnMe"
+                                wire:loading.attr="disabled"
+                                wire:target="recenterOnMe"
+                                @click="actionsOpen = false"
+                                class="flex flex-col items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 min-h-[64px] py-3
                                        text-gray-700 dark:text-gray-200 dark:border-gray-700 dark:bg-gray-800
                                        transition active:scale-95
+                                       disabled:opacity-60 disabled:cursor-wait
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                        focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <circle cx="12" cy="12" r="8"/>
@@ -1774,9 +1928,10 @@ class extends Component
 
                         <button type="button"
                                 @click="actionsOpen = false; mapLoading = true; if (window.__mapCanvasPoll) window.__mapCanvasPoll.start(); $wire.toggleSatellite()"
-                                class="flex flex-col items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 py-3
+                                class="flex flex-col items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 min-h-[64px] py-3
                                        text-gray-700 dark:text-gray-200 dark:border-gray-700 dark:bg-gray-800
                                        transition active:scale-95
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                        focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 2L2 7l10 5 10-5-10-5z"/>
@@ -1786,12 +1941,47 @@ class extends Component
                             <span class="text-[10px] font-bold uppercase tracking-wider">Satellite</span>
                         </button>
 
+                        {{-- Map theme toggle --}}
+                        <button type="button"
+                                wire:click="toggleMapTheme"
+                                wire:loading.attr="disabled"
+                                wire:target="toggleMapTheme"
+                                @click="actionsOpen = false"
+                                aria-label="Toggle map theme"
+                                aria-pressed="{{ $mapTheme === 'dark' ? 'true' : 'false' }}"
+                                class="flex flex-col items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 min-h-[64px] py-3
+                                       text-gray-700 dark:text-gray-200 dark:border-gray-700 dark:bg-gray-800
+                                       transition active:scale-95
+                                       disabled:opacity-60 disabled:cursor-wait
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                       focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                            @if($mapTheme === 'dark')
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+                                    <circle cx="12" cy="12" r="4"/>
+                                    <path d="M12 2v2"/>
+                                    <path d="M12 20v2"/>
+                                    <path d="m4.93 4.93 1.41 1.41"/>
+                                    <path d="m17.66 17.66 1.41 1.41"/>
+                                    <path d="M2 12h2"/>
+                                    <path d="M20 12h2"/>
+                                    <path d="m6.34 17.66-1.41 1.41"/>
+                                    <path d="m19.07 4.93-1.41 1.41"/>
+                                </svg>
+                            @else
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                                </svg>
+                            @endif
+                            <span class="text-[10px] font-bold uppercase tracking-wider">Theme</span>
+                        </button>
+
                         <button type="button"
                                 @click="actionsOpen = false; $dispatch('map:prepare-rebuild'); $wire.toggleEstablishments()"
                                 wire:loading.attr="disabled"
                                 wire:target="toggleEstablishments"
-                                class="flex flex-col items-center gap-1.5 rounded-xl border px-3 py-3
+                                class="flex flex-col items-center gap-1.5 rounded-xl border px-3 min-h-[64px] py-3
                                        transition active:scale-95 disabled:opacity-60 disabled:cursor-wait
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                        focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                                 :class="$wire.showAmenities
                                     ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-500/10 dark:text-primary-300 dark:border-primary-500/40'
@@ -1803,13 +1993,12 @@ class extends Component
                             <span class="text-[10px] font-bold uppercase tracking-wider">Establishments</span>
                         </button>
 
-                        {{-- Share tile removed --}}
-
                         <button type="button"
                                 @click="actionsOpen = false; helpOpen = true"
-                                class="flex flex-col items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 py-3
+                                class="flex flex-col items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 min-h-[64px] py-3
                                        text-gray-700 dark:text-gray-200 dark:border-gray-700 dark:bg-gray-800
                                        transition active:scale-95
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                        focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <circle cx="12" cy="12" r="10"/>
@@ -1821,9 +2010,10 @@ class extends Component
                         @if(!empty($routeCoords))
                             <button type="button"
                                     @click="actionsOpen = false; $wire.clearRoute()"
-                                    class="flex flex-col items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3 py-3
+                                    class="flex flex-col items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3 min-h-[64px] py-3
                                            text-rose-600 dark:text-rose-300 dark:border-rose-500/30 dark:bg-rose-500/10
                                            transition active:scale-95
+                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                            focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
@@ -1868,10 +2058,11 @@ class extends Component
 
                         <button type="button" wire:click="clearRoute"
                                 aria-label="Cancel route"
-                                class="shrink-0 flex h-8 w-8 items-center justify-center rounded-lg
+                                class="shrink-0 flex h-9 w-9 items-center justify-center rounded-lg
                                        text-gray-400 hover:text-rose-500 hover:bg-rose-50
                                        dark:text-gray-500 dark:hover:text-rose-400 dark:hover:bg-rose-500/10
                                        transition active:scale-95
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                        focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
@@ -1885,8 +2076,9 @@ class extends Component
                                 <button type="button"
                                         wire:click="setDirectionsProfile('{{ $p }}')"
                                         aria-pressed="{{ $directionsProfile === $p ? 'true' : 'false' }}"
-                                        class="flex-1 rounded-lg px-2 py-2 text-[11px] font-bold uppercase tracking-wider
+                                        class="flex-1 rounded-lg px-2 py-2.5 text-xs font-bold uppercase tracking-wider
                                                transition active:scale-95
+                                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
                                                {{ $directionsProfile === $p
                                                   ? 'bg-white text-primary-700 shadow-sm dark:bg-gray-700 dark:text-primary-300'
@@ -1898,11 +2090,12 @@ class extends Component
 
                         <button type="button"
                                 x-on:click="startNavigation()"
-                                class="shrink-0 inline-flex items-center gap-2 rounded-xl px-5 py-2.5
+                                class="shrink-0 inline-flex items-center gap-2 rounded-xl px-5 py-2.5 min-h-[44px]
                                        bg-primary-600 hover:bg-primary-700 text-white
                                        text-sm font-bold uppercase tracking-wider
                                        shadow-lg shadow-primary-600/30
                                        transition active:scale-95
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                        focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                                 <path d="M12 2 L21 22 L12 17.5 L3 22 Z"/>
@@ -1933,7 +2126,9 @@ class extends Component
                 :class="!detailMinimized ? 'flex' : 'hidden'"
                 @click="detailMinimized = true"
                 aria-label="Minimize details"
-                class="lg:hidden absolute top-0 inset-x-0 z-20 justify-center pt-2 pb-3 focus:outline-none">
+                class="lg:hidden absolute top-0 inset-x-0 z-20 justify-center pt-2 pb-3
+                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                       focus:outline-none">
             <span class="h-1 w-10 rounded-full bg-white/70 backdrop-blur-sm"></span>
         </button>
 
@@ -1976,18 +2171,19 @@ class extends Component
                  :class="detailMinimized ? 'flex' : 'hidden'"
                  class="lg:hidden items-center gap-3 px-4 py-3">
                 <button type="button" @click="detailMinimized = false"
-                        class="flex flex-1 min-w-0 items-center gap-3 text-left rounded-lg
+                        class="flex flex-1 min-w-0 items-center gap-3 text-left rounded-lg min-h-[44px] py-1
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                     <div class="h-9 w-9 shrink-0 rounded-full overflow-hidden bg-gray-100 dark:bg-gray-800 ring-2 ring-white dark:ring-gray-900 shadow">
                         @if($isEst && $catIconSvg)
                             <div class="flex h-full w-full items-center justify-center"
                                  style="background: {{ $catColor }}20; color: {{ $catColor }};">
                                 <div class="h-4 w-4">
-                                    {!! str_replace('<svg ', '<svg xmlns="http://www.w3.org/2000/svg" class="h-full w-full fill-none stroke-current stroke-2" ', $catIconSvg) !!}
+                                    <x-safe-svg :svg="$catIconSvg" class="h-full w-full fill-none stroke-current stroke-2" />
                                 </div>
                             </div>
                         @elseif($dt->logo)
-                            <img src="{{ asset('storage/' . $dt->logo) }}" alt="" class="h-full w-full object-cover" decoding="async">
+                            <img src="/storage/{{ ltrim($dt->logo, '/') }}" alt="" class="h-full w-full object-cover" decoding="async">
                         @else
                             <div class="flex h-full w-full items-center justify-center text-[10px] font-bold text-gray-500 dark:text-gray-400">
                                 {{ strtoupper(substr($displayName, 0, 2)) }}
@@ -2009,9 +2205,10 @@ class extends Component
                     </svg>
                 </button>
                 <button type="button" wire:click="closeDetail" aria-label="Close details"
-                        class="shrink-0 flex h-8 w-8 items-center justify-center rounded-full
+                        class="shrink-0 flex h-10 w-10 items-center justify-center rounded-full
                                text-gray-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10
                                transition active:scale-95
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
@@ -2028,7 +2225,7 @@ class extends Component
                              style="background: linear-gradient(135deg, {{ $catColor }} 0%, {{ $catColor }}cc 100%);">
                             @if($catIconSvg)
                                 <div class="h-16 w-16 text-white/95 drop-shadow-lg">
-                                    {!! str_replace('<svg ', '<svg xmlns="http://www.w3.org/2000/svg" class="h-full w-full fill-none stroke-current stroke-2" ', $catIconSvg) !!}
+                                    <x-safe-svg :svg="$catIconSvg" class="h-full w-full fill-none stroke-current stroke-2" />
                                 </div>
                             @else
                                 <span class="font-display text-5xl font-black text-white/95 tracking-tighter">
@@ -2037,7 +2234,7 @@ class extends Component
                             @endif
                         </div>
                     @elseif($dt->logo)
-                        <img src="{{ asset('storage/' . $dt->logo) }}" alt="{{ $dt->name }}"
+                        <img src="/storage/{{ ltrim($dt->logo, '/') }}" alt="{{ $dt->name }}"
                              class="h-full w-full object-cover" loading="lazy" decoding="async">
                     @else
                         <div class="h-full w-full bg-gradient-to-br from-primary-500 via-primary-600 to-primary-700 flex items-center justify-center">
@@ -2049,9 +2246,10 @@ class extends Component
                     <div class="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent"></div>
 
                     <button type="button" wire:click="closeDetail" aria-label="Close details"
-                            class="absolute right-3 top-3 flex h-9 w-9 items-center justify-center
+                            class="absolute right-3 top-3 flex h-10 w-10 items-center justify-center
                                    rounded-full bg-black/40 backdrop-blur-md text-white
                                    hover:bg-black/60 transition active:scale-95
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                    focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
@@ -2062,9 +2260,10 @@ class extends Component
                         @php $isFav = in_array($dt->id, $favorites, true); @endphp
                         <button type="button" wire:click="toggleFavorite({{ $dt->id }})"
                                 aria-label="{{ $isFav ? 'Remove from saved' : 'Save this spot' }}"
-                                class="absolute right-14 top-3 flex h-9 w-9 items-center justify-center
+                                class="absolute right-14 top-3 flex h-10 w-10 items-center justify-center
                                        rounded-full bg-black/40 backdrop-blur-md text-white
                                        hover:bg-black/60 transition active:scale-95
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                        focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="{{ $isFav ? 'currentColor' : 'none' }}"
                                  stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -2086,7 +2285,7 @@ class extends Component
                                              text-[10px] font-semibold text-white
                                              flex items-center gap-1.5">
                                     @if($dt->logo)
-                                        <img src="{{ asset('storage/' . $dt->logo) }}" alt=""
+                                        <img src="/storage/{{ ltrim($dt->logo, '/') }}" alt=""
                                              class="h-3.5 w-3.5 rounded-full object-cover ring-1 ring-white/60">
                                     @endif
                                     {{ $dt->name }}
@@ -2177,7 +2376,7 @@ class extends Component
                                 <div class="mt-4 flex items-start gap-3">
                                     <div class="shrink-0 mt-0.5 text-gray-400 dark:text-gray-500">
                                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657 13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
                                         </svg>
                                     </div>
@@ -2194,7 +2393,7 @@ class extends Component
                             <h3 class="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-3">
                                 Location
                             </h3>
-                            <p class="text-xs text-gray-500 dark:text-gray-400 font-mono">
+                            <p class="text-xs text-gray-500 dark:text-gray-400 font-mono tabular-nums">
                                 {{ number_format((float) ($coord['lat'] ?? 0), 6) }}, {{ number_format((float) ($coord['lng'] ?? 0), 6) }}
                             </p>
                         </section>
@@ -2217,7 +2416,7 @@ class extends Component
                                         <div class="flex items-start gap-3">
                                             <div class="shrink-0 mt-0.5 text-gray-400 dark:text-gray-500">
                                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657 13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
                                                 </svg>
                                             </div>
@@ -2244,7 +2443,9 @@ class extends Component
                                                 <dt class="sr-only">Phone</dt>
                                                 <dd>
                                                     <a href="tel:{{ $dt->contact_number }}"
-                                                       class="text-primary-600 dark:text-primary-400 font-medium hover:underline rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                                       class="text-primary-600 dark:text-primary-400 font-medium hover:underline rounded
+                                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                              focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                                                         {{ $dt->contact_number }}
                                                     </a>
                                                 </dd>
@@ -2263,7 +2464,9 @@ class extends Component
                                                 <dt class="sr-only">Email</dt>
                                                 <dd>
                                                     <a href="mailto:{{ $dt->email }}"
-                                                       class="text-primary-600 dark:text-primary-400 font-medium hover:underline break-all rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                                       class="text-primary-600 dark:text-primary-400 font-medium hover:underline break-all rounded
+                                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                              focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                                                         {{ $dt->email }}
                                                     </a>
                                                 </dd>
@@ -2303,15 +2506,21 @@ class extends Component
                                                 <dt class="sr-only">Links</dt>
                                                 @if($site)
                                                     <a href="{{ $site }}" target="_blank" rel="noopener noreferrer"
-                                                       class="text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">Website</a>
+                                                       class="text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline rounded
+                                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                              focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">Website</a>
                                                 @endif
                                                 @if($fb)
                                                     <a href="{{ $fb }}" target="_blank" rel="noopener noreferrer"
-                                                       class="text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">Facebook</a>
+                                                       class="text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline rounded
+                                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                              focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">Facebook</a>
                                                 @endif
                                                 @if($ig)
                                                     <a href="{{ $ig }}" target="_blank" rel="noopener noreferrer"
-                                                       class="text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">Instagram</a>
+                                                       class="text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline rounded
+                                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                              focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">Instagram</a>
                                                 @endif
                                             </div>
                                         </div>
@@ -2333,7 +2542,7 @@ class extends Component
                                              class="flex gap-3 p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
                                             <div class="h-14 w-14 shrink-0 rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-800">
                                                 @if($img)
-                                                    <img src="{{ asset('storage/' . $img->image_path) }}"
+                                                    <img src="/storage/{{ ltrim($img->image_path, '/') }}"
                                                          alt="{{ $prop->name }}"
                                                          class="h-full w-full object-cover" loading="lazy" decoding="async">
                                                 @else
@@ -2413,11 +2622,11 @@ class extends Component
                             pb-[max(0.75rem,env(safe-area-inset-bottom))]
                             flex gap-2">
                     @if($isEst)
-                        {{-- Child: Directions only, full width --}}
                         <button type="button" wire:click="getDirectionsToDetail"
                                 class="flex-1 inline-flex items-center justify-center gap-2 rounded-xl min-h-[44px]
                                        bg-primary-600 hover:bg-primary-700 text-white
                                        px-4 text-sm font-bold transition active:scale-95
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                        focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
@@ -2425,11 +2634,11 @@ class extends Component
                             Directions
                         </button>
                     @else
-                        {{-- Parent: View Business + Directions --}}
                         <a href="{{ route('business.offerings', $dt->slug) }}" wire:navigate
                            class="flex-1 inline-flex items-center justify-center gap-2 rounded-xl min-h-[44px]
                                   bg-primary-600 hover:bg-primary-700 text-white
                                   px-4 text-sm font-bold transition active:scale-95
+                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                   focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
@@ -2444,6 +2653,7 @@ class extends Component
                                        px-4 text-sm font-bold text-gray-700 dark:text-gray-200
                                        hover:border-primary-400 hover:text-primary-600 dark:hover:text-primary-400
                                        transition active:scale-95
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                        focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
@@ -2458,14 +2668,16 @@ class extends Component
     </div>
 
     {{-- ═══════════════ TOASTS ═══════════════ --}}
-    <div class="pointer-events-none fixed z-[1300] flex flex-col gap-2 right-3 transition-all duration-200"
+    <div class="pointer-events-none fixed z-[1300] flex flex-col gap-2
+                right-[max(0.75rem,var(--safe-right))] sm:right-5 transition-all duration-200"
          :class="$store.nav.active
-            ? 'top-[max(3.5rem,calc(var(--safe-top)+0.5rem))] sm:top-20 right-3 sm:right-5'
-            : 'bottom-[max(0.75rem,var(--safe-bottom))] sm:bottom-6 right-3 sm:right-5'"
+            ? 'top-[max(3.5rem,calc(var(--safe-top)+0.5rem))] sm:top-20'
+            : 'bottom-[max(0.75rem,var(--safe-bottom))] sm:bottom-6'"
          aria-live="polite" wire:ignore>
         <template x-for="t in toasts" :key="t.id">
             <div class="map-toast relative pointer-events-auto flex min-w-[220px] sm:min-w-[240px] max-w-[calc(100vw-1.5rem)] sm:max-w-sm items-center gap-3 rounded-xl border
-                        bg-white p-3 shadow-lg dark:bg-gray-900 cursor-pointer"
+                        bg-white p-3 shadow-lg dark:bg-gray-900 cursor-pointer
+                        [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]"
                  :class="{
                      'border-l-4 border-l-emerald-500': t.type === 'success',
                      'border-l-4 border-l-rose-500':    t.type === 'error',
@@ -2482,7 +2694,11 @@ class extends Component
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" :d="iconPath(t.type)"/>
                 </svg>
                 <span class="flex-1 text-sm text-gray-800 dark:text-gray-200" x-text="t.message"></span>
-                <button type="button" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                <button type="button" class="shrink-0 inline-flex items-center justify-center w-8 h-8 rounded-md
+                                             text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800
+                                             transition active:scale-95
+                                             [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                             focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                         @click.stop="removeToast(t.id)" aria-label="Dismiss">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
@@ -2501,24 +2717,28 @@ class extends Component
     {{-- ═══════════════ HELP MODAL ═══════════════ --}}
     <div x-cloak wire:ignore data-help-modal
          :class="helpOpen ? 'flex' : 'hidden'"
-         class="fixed inset-0 z-[1500] items-end sm:items-center justify-center bg-black/60 p-0 sm:p-4 backdrop-blur-sm"
+         class="fixed inset-0 z-[1500] items-end sm:items-center justify-center bg-black/60 p-0 sm:p-4 backdrop-blur-sm
+                [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]"
          @click.self="helpOpen = false"
          role="dialog"
          aria-modal="true"
          aria-labelledby="help-modal-title">
         <div class="map-help-panel w-full max-w-sm max-h-[90dvh] sm:max-h-[85dvh] overflow-hidden rounded-t-2xl sm:rounded-2xl bg-white shadow-2xl dark:bg-gray-900 border border-gray-200 dark:border-gray-800">
             <div class="flex items-center justify-between border-b border-gray-200 px-5 py-4 dark:border-gray-800">
-                <h2 id="help-modal-title" class="font-display text-xl font-semibold text-gray-900 dark:text-white">Legend &amp; Shortcuts</h2>
+                <h2 id="help-modal-title" class="font-display text-xl font-semibold tracking-tight text-gray-900 dark:text-white">Legend &amp; Shortcuts</h2>
                 <button type="button" @click="helpOpen = false" aria-label="Close help"
-                        class="rounded-lg bg-gray-100 p-2 text-gray-500 transition hover:bg-gray-200 hover:text-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white
+                        class="inline-flex items-center justify-center w-10 h-10 rounded-lg
+                               text-gray-500 transition hover:bg-gray-200 hover:text-gray-700
+                               dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
                     </svg>
                 </button>
             </div>
-            <div class="max-h-[70vh] overflow-y-auto p-5">
-                <p class="mb-3 text-xs font-bold uppercase tracking-wider text-primary-600 dark:text-primary-400">Map Legend</p>
+            <div class="max-h-[70vh] overflow-y-auto p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
+                <p class="mb-3 text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">Map Legend</p>
                 <div class="space-y-2">
                     <div class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300"><span class="h-3 w-3 rounded-full bg-blue-600 ring-2 ring-white dark:ring-gray-900"></span> Your location</div>
                     <div class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300"><span class="h-3 w-3 rounded-full bg-orange-500 ring-2 ring-white dark:ring-gray-900"></span> Tourist spot (anchor)</div>
@@ -2528,14 +2748,14 @@ class extends Component
                     <div class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300"><span class="h-1 w-5 rounded bg-blue-600"></span> Active route</div>
                 </div>
 
-                <p class="mb-3 mt-6 text-xs font-bold uppercase tracking-wider text-primary-600 dark:text-primary-400">Establishments layer</p>
+                <p class="mb-3 mt-6 text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">Establishments layer</p>
                 <div class="space-y-2 text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
                     <p>• By default the map shows only the primary Tourist Spots — the large white-ringed anchors. Each anchor may carry a small <strong>+N</strong> badge indicating how many establishments sit inside it.</p>
                     <p>• Turn on <strong>Establishments</strong> from the sidebar filters, the toolbar, or the mobile actions sheet to reveal every sub-establishment marker. They render as small, muted pins underneath the anchors.</p>
                     <p>• Tap an establishment to see its name, category, and its own directions — not the parent's.</p>
                 </div>
 
-                <p class="mb-3 mt-6 text-xs font-bold uppercase tracking-wider text-primary-600 dark:text-primary-400">Navigation</p>
+                <p class="mb-3 mt-6 text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">Navigation</p>
                 <div class="space-y-2 text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
                     <p>• Tap <strong>Navigate</strong> on a route to enter live navigation. Other pins hide so you can focus on the road.</p>
                     <p>• The blue dot shows your position. The <strong>blue cone</strong> points where your phone is facing.</p>
@@ -2544,13 +2764,13 @@ class extends Component
                     <p>• Zoomed out past city level? The map flattens to north-up to save battery. Zoom back in and heading-up returns.</p>
                 </div>
 
-                <p class="mb-3 mt-6 text-xs font-bold uppercase tracking-wider text-primary-600 dark:text-primary-400">Location Tips</p>
+                <p class="mb-3 mt-6 text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">Location Tips</p>
                 <div class="space-y-2 text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
                     <p>• If the map shows you in the wrong place (common on desktops without GPS), append <code class="font-mono bg-gray-100 dark:bg-gray-800 px-1 py-0.5 rounded">?lat=10.90&lng=123.07</code> to the URL to jump to Victorias City centre.</p>
                     <p>• Tap your blue dot to copy a share link.</p>
                 </div>
 
-                <p class="mb-3 mt-6 text-xs font-bold uppercase tracking-wider text-primary-600 dark:text-primary-400">Keyboard Shortcuts</p>
+                <p class="mb-3 mt-6 text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">Keyboard Shortcuts</p>
                 <div class="space-y-2">
                     @foreach(['/' => 'Focus search', 'L' => 'My location', 'F' => 'Follow mode', 'S' => 'Satellite', 'R' => 'Reset view', '?' => 'This help', 'Esc' => 'Close panels'] as $k => $l)
                         <div class="flex items-center justify-between text-sm text-gray-600 dark:text-gray-300">
@@ -2664,14 +2884,20 @@ class extends Component
         border-radius: 50%;
         background: #2563EB;
         border: 2.5px solid #ffffff;
-        box-shadow: 0 2px 10px rgba(37, 99, 235, 0.55);
+        /* Strengthened glow so the dot reads clearly against complex
+           satellite imagery (dark forest, bright sand, busy urban). */
+        box-shadow:
+            0 2px 12px rgba(37, 99, 235, 0.75),
+            0 0 0 1px rgba(255, 255, 255, 0.35);
         pointer-events: none;
         z-index: 1;
     }
 
     .dark .tourist-user-marker-dot {
         border-color: #0f172a;
-        box-shadow: 0 2px 10px rgba(96, 165, 250, 0.65);
+        box-shadow:
+            0 2px 14px rgba(96, 165, 250, 0.85),
+            0 0 0 1px rgba(255, 255, 255, 0.25);
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -2756,6 +2982,25 @@ class extends Component
             0 3px 12px rgba(37, 99, 235, 0.65),
             0 0 0 2.5px #0f172a,
             0 0 0 4.5px rgba(37, 99, 235, 0.4);
+    }
+
+    /* ─── User-location marker z-order fix ───
+       Bug: user-location icon disappeared under satellite raster.
+       Cause: MapLibre's DOM markers share a stacking context; the
+       user marker was rendering behind newer markers or the raster
+       imagery after a style swap.
+
+       Fix: bump the MapLibre marker WRAPPER (.maplibregl-marker)
+       that contains the user-location or nav-marker inner element.
+       :has() support — Chrome 105+, Firefox 121+, Safari 15.4+.
+
+       If the marker is NOT a MapLibre DOM marker (i.e. it's a
+       MapLibre *Layer* added via addLayer), this CSS does nothing
+       and the fix must be applied in mapApp() by re-adding the
+       layer after every setStyle() call. */
+    .maplibregl-marker:has(.tourist-user-marker),
+    .maplibregl-marker:has(.tourist-nav-marker) {
+        z-index: 9999 !important;
     }
 
     @media (hover: hover) and (min-width: 640px) {

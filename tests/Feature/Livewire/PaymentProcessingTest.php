@@ -16,11 +16,12 @@ it('processes a successful PayMongo payment and confirms the booking', function 
     config()->set('paymongo.secret_key', 'sk_test_fake_for_testing');
 
     /*
-     * The SFC's checkStatus() makes a direct HTTP call to
-     * /v1/checkout_sessions/{id} to read the gateway state. Fake it to
-     * return "paid" so finalizeCheckoutSession() runs and confirms the
-     * booking. Without the fake, the real PayMongo API would 404 on the
-     * test session ID and the SFC would return null.
+     * The SFC's mount() runs a SYNCHRONOUS gateway check per Rule E:
+     * "if the payment is genuinely paid, finalize and redirect before
+     * computing the countdown." The check makes a direct HTTP call to
+     * /v1/checkout_sessions/{id}; fake it to return "paid" so
+     * finalizeCheckoutSession() runs during mount and confirms the
+     * booking before the first render.
      */
     Http::fake([
         'api.paymongo.com/v1/checkout_sessions/*' => Http::response([
@@ -67,9 +68,12 @@ it('processes a successful PayMongo payment and confirms the booking', function 
 
     $this->actingAs($user);
 
-    // ── Act ──────────────────────────────────────────────────────
+    // ── Act: mount triggers the synchronous gateway check, which
+    //         finalizes the payment and redirects to my-bookings
+    //         BEFORE the first render. No explicit call to
+    //         checkStatus() is needed — that's the whole point of
+    //         Rule E.
     Livewire::test('public::pages.payment-processing', ['bookingId' => $booking->id])
-        ->call('checkStatus')
         ->assertRedirect(route('my-bookings'));
 
     // ── Assert ───────────────────────────────────────────────────
@@ -108,10 +112,11 @@ it('redirects immediately if booking is already confirmed', function () {
 
     $this->actingAs($user);
 
+    // ── Act: mount sees the terminal state and redirects before
+    //         doing any gateway work.
     Livewire::test('public::pages.payment-processing', ['bookingId' => $booking->id])
-        ->call('checkStatus')
         ->assertRedirect(route('my-bookings'));
 
-    // No additional transactions should be created
+    // No additional transactions should be created.
     $this->assertCount(0, Transaction::all());
 });

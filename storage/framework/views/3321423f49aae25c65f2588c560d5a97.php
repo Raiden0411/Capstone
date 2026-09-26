@@ -46,15 +46,10 @@
     $showRegisterBusiness = !$authUser
         || ($authUser instanceof User && $authUser->canRegisterBusiness());
 
-    // Business registration is behind auth middleware. Guests clicking
-    // "Register Business" from the public header would be silently
-    // bounced to /login with no context. Route them through account
-    // creation first, preserving /register-business as the return target.
     $registerBusinessUrl = $authUser
         ? route('register_business')
         : route('register', ['redirect' => route('register_business')]);
 
-    // Dual-role (business owner) flag + current mode.
     $canSwitchModes = $authUser instanceof User && $authUser->canSwitchModes();
     $isBusinessMode = $canSwitchModes && $authUser->active_mode === User::MODE_BUSINESS;
     $isTouristMode  = $canSwitchModes && $authUser->active_mode === User::MODE_TOURIST;
@@ -71,7 +66,7 @@
 ?>
 
 <?php $__env->startPush('styles'); ?>
-    <?php if (! $__env->hasRenderedOnce('363db6e1-3d04-4c70-a001-4306febfa588')): $__env->markAsRenderedOnce('363db6e1-3d04-4c70-a001-4306febfa588'); ?>
+    <?php if (! $__env->hasRenderedOnce('6ab833ca-ff85-4641-a64d-eae8307e39f7')): $__env->markAsRenderedOnce('6ab833ca-ff85-4641-a64d-eae8307e39f7'); ?>
         <style>
             /* Rule 69 replacements — CSS keyframes in place of x-transition. */
 
@@ -136,7 +131,8 @@
 
     
     <header
-        class="fixed top-0 left-0 right-0 z-50 flex items-center w-full h-16 md:h-20
+        class="fixed top-0 left-0 right-0 z-50 flex items-center w-full
+               min-h-16 md:min-h-20 pt-[env(safe-area-inset-top)]
                bg-white/90 dark:bg-gray-900/90 backdrop-blur border-b
                [transform:translateZ(0)] [backface-visibility:hidden]
                transition-[border-color,box-shadow,background-color] duration-300"
@@ -179,7 +175,19 @@
                     <a <?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::$currentLoop['key'] = 'desktop-'.e($link['route']).''; ?>wire:key="desktop-<?php echo e($link['route']); ?>"
                        href="<?php echo e(route($link['route'])); ?>" wire:navigate
                        <?php if($isActive): ?> aria-current="page" <?php endif; ?>
-                       class="text-[15px] transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-md px-1 <?php echo e($isActive ? 'text-primary-600 dark:text-primary-400 font-bold' : 'font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white'); ?>">
+                       class="relative text-[15px] transition-all duration-200 active:scale-95
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                              rounded-md px-1
+                       <?php echo e($isActive
+                            ? 'text-primary-600 dark:text-primary-400 font-bold
+                               after:absolute after:top-full after:left-1/2 after:-translate-x-1/2
+                               after:mt-1 after:h-0.5 after:w-6 after:rounded-full after:bg-amber-500
+                               after:transition-all after:duration-200'
+                            : 'font-medium text-gray-700 dark:text-gray-200
+                               hover:text-primary-600 dark:hover:text-white
+                               after:absolute after:top-full after:left-1/2 after:-translate-x-1/2
+                               after:mt-1 after:h-0.5 after:w-0 after:rounded-full after:bg-amber-500
+                               hover:after:w-6 after:transition-all after:duration-200'); ?>">
                         <?php echo e($link['label']); ?>
 
                     </a>
@@ -196,7 +204,7 @@
                         <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($isBusinessMode): ?>
                             <input type="hidden" name="mode" value="<?php echo e(User::MODE_TOURIST); ?>">
                             <button type="submit"
-                                    class="group inline-flex items-center gap-2 px-3 lg:px-3.5 py-2 rounded-full border border-blue-200 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300 text-xs font-semibold transition-all duration-200 hover:bg-blue-100 dark:hover:bg-blue-500/20 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50">
+                                    class="group inline-flex items-center gap-2 px-3 lg:px-3.5 min-h-[44px] rounded-full border border-blue-200 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300 text-xs font-semibold transition-all duration-200 hover:bg-blue-100 dark:hover:bg-blue-500/20 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v3m0 12v3M5.636 5.636l2.121 2.121m8.486 8.486l2.121 2.121M3 12h3m12 0h3M5.636 18.364l2.121-2.121m8.486-8.486l2.121-2.121"/>
                                 </svg>
@@ -205,7 +213,7 @@
                         <?php else: ?>
                             <input type="hidden" name="mode" value="<?php echo e(User::MODE_BUSINESS); ?>">
                             <button type="submit"
-                                    class="group inline-flex items-center gap-2 px-3 lg:px-3.5 py-2 rounded-full border border-emerald-200 dark:border-emerald-500/30 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 text-xs font-semibold transition-all duration-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50">
+                                    class="group inline-flex items-center gap-2 px-3 lg:px-3.5 min-h-[44px] rounded-full border border-emerald-200 dark:border-emerald-500/30 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 text-xs font-semibold transition-all duration-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" d="M20.25 14.15v4.073a2.25 2.25 0 01-1.606 2.16l-6.75 1.93a2.25 2.25 0 01-1.288 0l-6.75-1.93a2.25 2.25 0 01-1.606-2.16V14.15M18 9.75V7.5a3 3 0 00-3-3H9a3 3 0 00-3 3v2.25M3.75 12v.75h16.5V12a2.25 2.25 0 00-2.25-2.25h-12A2.25 2.25 0 003.75 12z"/>
                                 </svg>
@@ -253,21 +261,22 @@ unset($__split);
                             localStorage.setItem('hs_theme', dark ? 'dark' : 'light');
                             window.dispatchEvent(new CustomEvent('theme-changed'));
                         "
-                        class="flex justify-center items-center size-9 md:size-10 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition-all duration-200 active:scale-95 shrink-0"
+                        class="flex justify-center items-center size-11 md:size-10 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition-all duration-200 active:scale-95 shrink-0"
                         aria-label="Toggle dark mode">
                     <svg xmlns="http://www.w3.org/2000/svg" x-cloak :class="dark ? '' : 'hidden'" class="shrink-0 size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
                     <svg xmlns="http://www.w3.org/2000/svg" x-cloak :class="dark ? 'hidden' : ''" class="shrink-0 size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
                 </button>
 
                 <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if(auth()->guard()->guest()): ?>
+                    
                     <a href="<?php echo e(route('login')); ?>" wire:navigate
-                       class="hidden sm:inline-flex px-4 lg:px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 bg-primary-600 rounded-full hover:bg-primary-700 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 shrink-0">
+                       class="hidden sm:inline-flex items-center justify-center min-h-[44px] px-4 lg:px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 bg-primary-600 rounded-full hover:bg-primary-700 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 shrink-0">
                         Login / Sign Up
                     </a>
 
                     <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($showRegisterBusiness): ?>
                         <a href="<?php echo e($registerBusinessUrl); ?>" wire:navigate
-                           class="hidden md:inline-flex px-4 lg:px-5 py-2.5 text-sm font-medium text-primary-700 dark:text-gray-200 border border-gray-300 dark:border-gray-600 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 shrink-0">
+                           class="hidden md:inline-flex items-center justify-center min-h-[44px] px-4 lg:px-5 py-2.5 text-sm font-medium text-primary-700 dark:text-gray-200 border border-gray-300 dark:border-gray-600 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 shrink-0">
                             Register Business
                         </a>
                     <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
@@ -280,7 +289,7 @@ unset($__split);
                                 :aria-expanded="userDropdownOpen.toString()"
                                 aria-haspopup="true"
                                 class="flex items-center gap-1.5 sm:gap-2 text-sm font-medium
-                                       py-1.5 ps-1.5 pe-2 sm:ps-2 sm:pe-3
+                                       py-1.5 ps-1.5 pe-2 sm:ps-2 sm:pe-3 min-h-[44px]
                                        rounded-full bg-primary-600 text-white hover:bg-primary-700
                                        transition-all duration-200 shadow-sm active:scale-95
                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
@@ -351,7 +360,6 @@ unset($__split);
 
                             <div class="p-1.5 space-y-0.5">
 
-                                
                                 <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($canSwitchModes): ?>
                                     <form method="POST" action="<?php echo e(route('mode.switch')); ?>">
                                         <?php echo csrf_field(); ?>
@@ -379,7 +387,6 @@ unset($__split);
                                     <div class="border-t border-gray-100 dark:border-gray-700 my-2"></div>
                                 <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
 
-                                
                                 <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($canSwitchModes): ?>
                                     <a class="flex items-center gap-3 py-2 px-3 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-primary-600 dark:hover:text-white transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                                        href="<?php echo e(route('tenant.dashboard')); ?>" wire:navigate
@@ -467,7 +474,7 @@ unset($__split);
                     <button type="button"
                             @click="mobileOpen = !mobileOpen"
                             :aria-expanded="mobileOpen.toString()"
-                            class="size-9 md:size-10 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-all duration-200 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                            class="size-11 md:size-10 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-all duration-200 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                             aria-label="Toggle navigation">
                         <svg xmlns="http://www.w3.org/2000/svg" x-cloak :class="!mobileOpen ? '' : 'hidden'" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
                             <line x1="3" x2="21" y1="6" y2="6"/><line x1="3" x2="21" y1="12" y2="12"/><line x1="3" x2="21" y1="18" y2="18"/>
@@ -495,15 +502,26 @@ unset($__split);
                     sm:pe-[max(1.5rem,env(safe-area-inset-right))]
                     space-y-2
                     z-40 shadow-lg
-                    max-h-[calc(100dvh-4rem)] md:max-h-[calc(100dvh-5rem)]
+                    max-h-[calc(100dvh-4rem-env(safe-area-inset-top))] md:max-h-[calc(100dvh-5rem-env(safe-area-inset-top))]
                     overflow-y-auto overscroll-contain">
 
             
+            <p class="mb-2 inline-flex items-center gap-2
+                      text-[10px] font-bold uppercase tracking-[0.2em]
+                      text-amber-600 dark:text-amber-400">
+                <span class="h-px w-4 bg-amber-500"></span>
+                Browse
+            </p>
+
             <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::openLoop(); ?><?php endif; ?><?php $__currentLoopData = $navLinks; $__env->addLoop($__currentLoopData); foreach($__currentLoopData as $link): $__env->incrementLoopIndices(); $loop = $__env->getLastLoop(); ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::startLoopIteration(); ?><?php endif; ?>
                 <?php $isActive = request()->routeIs($link['route']); ?>
                 <a <?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::$currentLoop['key'] = 'mobile-'.e($link['route']).''; ?>wire:key="mobile-<?php echo e($link['route']); ?>"
                    <?php if($isActive): ?> aria-current="page" <?php endif; ?>
-                   class="block text-base font-medium active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 <?php echo e($isActive ? 'text-primary-600 dark:text-primary-400 font-bold bg-primary-50 dark:bg-primary-500/10' : 'text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50'); ?>"
+                   class="relative block text-base font-medium active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 min-h-[44px] flex items-center
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                          <?php echo e($isActive
+                               ? 'text-primary-600 dark:text-primary-400 font-bold bg-primary-50 dark:bg-primary-500/10 before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:h-5 before:w-0.5 before:rounded-full before:bg-amber-500'
+                               : 'text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50'); ?>"
                    href="<?php echo e(route($link['route'])); ?>" wire:navigate
                    @click="mobileOpen = false">
                     <?php echo e($link['label']); ?>
@@ -512,54 +530,62 @@ unset($__split);
             <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::endLoop(); ?><?php endif; ?><?php endforeach; $__env->popLoop(); $loop = $__env->getLastLoop(); ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php \Livewire\Features\SupportCompiledWireKeys\SupportCompiledWireKeys::closeLoop(); ?><?php endif; ?>
 
             <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if(auth()->guard()->check()): ?>
-                
-                <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($canSwitchModes): ?>
-                    <form method="POST" action="<?php echo e(route('mode.switch')); ?>" class="pt-4 mt-3 border-t border-gray-100 dark:border-gray-700">
-                        <?php echo csrf_field(); ?>
-                        <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($isBusinessMode): ?>
-                            <input type="hidden" name="mode" value="<?php echo e(User::MODE_TOURIST); ?>">
-                            <button type="submit"
-                                    class="w-full text-center text-base font-medium py-3 rounded-full bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-500/30 hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50">
-                                Switch to Tourist Mode
-                            </button>
+                <div class="pt-4 mt-3 border-t border-gray-100 dark:border-gray-700">
+                    <p class="mb-2 inline-flex items-center gap-2
+                              text-[10px] font-bold uppercase tracking-[0.2em]
+                              text-amber-600 dark:text-amber-400">
+                        <span class="h-px w-4 bg-amber-500"></span>
+                        Account
+                    </p>
+
+                    <div class="space-y-1">
+                        <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($canSwitchModes): ?>
+                            <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 min-h-[44px] flex items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                               href="<?php echo e(route('tenant.dashboard')); ?>" wire:navigate
+                               @click="mobileOpen = false">Business Dashboard</a>
+                            <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 min-h-[44px] flex items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                               href="<?php echo e(route('my-bookings')); ?>" wire:navigate
+                               @click="mobileOpen = false">My Bookings</a>
                         <?php else: ?>
-                            <input type="hidden" name="mode" value="<?php echo e(User::MODE_BUSINESS); ?>">
-                            <button type="submit"
-                                    class="w-full text-center text-base font-medium py-3 rounded-full bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50">
-                                Switch to Business Mode
-                            </button>
+                            <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 min-h-[44px] flex items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                               href="<?php echo e(route('my-bookings')); ?>" wire:navigate
+                               @click="mobileOpen = false">My Bookings</a>
                         <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
-                    </form>
-                <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
 
-                <div class="pt-4 mt-3 border-t border-gray-100 dark:border-gray-700 space-y-1">
+                        <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 min-h-[44px] flex items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                           href="<?php echo e(route('profile')); ?>" wire:navigate
+                           @click="mobileOpen = false">My Profile</a>
+
+                        <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($showRegisterBusiness): ?>
+                            <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 min-h-[44px] flex items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                               href="<?php echo e($registerBusinessUrl); ?>" wire:navigate
+                               @click="mobileOpen = false">Register Business</a>
+                        <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
+                    </div>
+
                     <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($canSwitchModes): ?>
-                        <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
-                           href="<?php echo e(route('tenant.dashboard')); ?>" wire:navigate
-                           @click="mobileOpen = false">Business Dashboard</a>
-                        <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
-                           href="<?php echo e(route('my-bookings')); ?>" wire:navigate
-                           @click="mobileOpen = false">My Bookings</a>
-                    <?php else: ?>
-                        <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
-                           href="<?php echo e(route('my-bookings')); ?>" wire:navigate
-                           @click="mobileOpen = false">My Bookings</a>
-                    <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
-
-                    <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
-                       href="<?php echo e(route('profile')); ?>" wire:navigate
-                       @click="mobileOpen = false">My Profile</a>
-
-                    <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($showRegisterBusiness): ?>
-                        <a class="block text-base font-medium text-gray-700 dark:text-gray-200 hover:text-primary-600 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-700/50 active:scale-95 transition-all duration-200 rounded-lg px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
-                           href="<?php echo e($registerBusinessUrl); ?>" wire:navigate
-                           @click="mobileOpen = false">Register Business</a>
+                        <form method="POST" action="<?php echo e(route('mode.switch')); ?>" class="pt-4">
+                            <?php echo csrf_field(); ?>
+                            <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($isBusinessMode): ?>
+                                <input type="hidden" name="mode" value="<?php echo e(User::MODE_TOURIST); ?>">
+                                <button type="submit"
+                                        class="w-full text-center text-base font-medium py-3 min-h-[44px] rounded-full bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-500/30 hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50">
+                                    Switch to Tourist Mode
+                                </button>
+                            <?php else: ?>
+                                <input type="hidden" name="mode" value="<?php echo e(User::MODE_BUSINESS); ?>">
+                                <button type="submit"
+                                        class="w-full text-center text-base font-medium py-3 min-h-[44px] rounded-full bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50">
+                                    Switch to Business Mode
+                                </button>
+                            <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
+                        </form>
                     <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
 
                     <form method="POST" action="<?php echo e(route('logout')); ?>" class="pt-3">
                         <?php echo csrf_field(); ?>
                         <button type="submit"
-                                class="w-full text-center text-base font-medium py-3 rounded-full bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-500/20 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
+                                class="w-full text-center text-base font-medium py-3 min-h-[44px] rounded-full bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-500/20 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                             Logout
                         </button>
                     </form>
@@ -567,18 +593,27 @@ unset($__split);
             <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
 
             <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if(auth()->guard()->guest()): ?>
-                <div class="flex flex-col gap-3 pt-4 mt-3 border-t border-gray-200 dark:border-gray-700">
-                    <a href="<?php echo e(route('login')); ?>" wire:navigate @click="mobileOpen = false"
-                       class="w-full text-center text-base font-medium py-3 rounded-full bg-primary-600 text-white hover:bg-primary-700 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                        Login / Sign Up
-                    </a>
+                <div class="pt-4 mt-3 border-t border-gray-200 dark:border-gray-700">
+                    <p class="mb-3 inline-flex items-center gap-2
+                              text-[10px] font-bold uppercase tracking-[0.2em]
+                              text-amber-600 dark:text-amber-400">
+                        <span class="h-px w-4 bg-amber-500"></span>
+                        Get started
+                    </p>
 
-                    <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($showRegisterBusiness): ?>
-                        <a href="<?php echo e($registerBusinessUrl); ?>" wire:navigate @click="mobileOpen = false"
-                           class="w-full text-center text-base font-medium py-3 rounded-full border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                            Register Business
+                    <div class="flex flex-col gap-3">
+                        <a href="<?php echo e(route('login')); ?>" wire:navigate @click="mobileOpen = false"
+                           class="w-full text-center text-base font-medium py-3 min-h-[44px] rounded-full bg-primary-600 text-white hover:bg-primary-700 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                            Login / Sign Up
                         </a>
-                    <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
+
+                        <?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if BLOCK]><![endif]--><?php endif; ?><?php if($showRegisterBusiness): ?>
+                            <a href="<?php echo e($registerBusinessUrl); ?>" wire:navigate @click="mobileOpen = false"
+                               class="w-full text-center text-base font-medium py-3 min-h-[44px] rounded-full border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                Register Business
+                            </a>
+                        <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
+                    </div>
                 </div>
             <?php endif; ?><?php if(\Livewire\Mechanisms\ExtendBlade\ExtendBlade::isRenderingLivewireComponent()): ?><!--[if ENDBLOCK]><![endif]--><?php endif; ?>
         </div>

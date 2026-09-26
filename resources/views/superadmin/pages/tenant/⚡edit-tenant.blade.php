@@ -11,6 +11,7 @@ use App\Models\TypeOfTenant;
 use App\Models\User;
 use App\Services\BusinessApplicationService;
 use App\Services\ReverseGeocodeService;
+use App\Services\SvgSanitizerService;
 use App\Traits\HandlesImageUploads;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -373,28 +374,38 @@ class extends Component {
     }
 
     // ─────────────────────────────────────────────────────
-    //  Asset preview URLs
+    //  Asset preview URLs — Rule J: relative /storage paths only.
+    //  asset() prefixes APP_URL, which may not match the current host.
     // ─────────────────────────────────────────────────────
 
     public function logoPreviewUrl(): ?string
     {
-        return $this->logo_path ? asset('storage/' . $this->logo_path) : null;
+        return $this->logo_path
+            ? '/storage/' . ltrim($this->logo_path, '/')
+            : null;
     }
 
     public function coverPreviewUrl(): ?string
     {
-        return $this->cover_photo_path ? asset('storage/' . $this->cover_photo_path) : null;
+        return $this->cover_photo_path
+            ? '/storage/' . ltrim($this->cover_photo_path, '/')
+            : null;
     }
 
     public function avatarPreviewUrl(): ?string
     {
-        return $this->admin_avatar_path ? asset('storage/' . $this->admin_avatar_path) : null;
+        return $this->admin_avatar_path
+            ? '/storage/' . ltrim($this->admin_avatar_path, '/')
+            : null;
     }
 
     public function documentUrl(BusinessDocument $doc): ?string
     {
         $path = $doc->watermarked_path ?: $doc->stored_path;
-        return $path ? asset('storage/' . $path) : null;
+
+        return $path
+            ? '/storage/' . ltrim($path, '/')
+            : null;
     }
 
     public function isImageDocument(BusinessDocument $doc): bool
@@ -409,7 +420,6 @@ class extends Component {
     protected function rules(): array
     {
         return [
-            // Business
             'name' => ['required', 'string', 'min:3', 'max:255', Rule::unique('tenants', 'name')->ignore($this->tenantRecord->id)],
             'slug' => ['required', 'string', 'max:255', 'regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/', Rule::unique('tenants', 'slug')->ignore($this->tenantRecord->id)],
             'type_of_tenant_id' => ['required', 'integer', Rule::exists('type_of_tenants', 'id')],
@@ -431,7 +441,6 @@ class extends Component {
             'is_active' => ['boolean'],
             'is_recommended' => ['boolean'],
 
-            // Legal
             'business_type' => ['required', Rule::in(BusinessApplication::BUSINESS_TYPES)],
             'business_registration_number' => ['required', 'string', 'min:4', 'max:50', 'regex:/^[A-Za-z0-9\-]+$/'],
             'tin_number' => ['required', 'string', 'regex:/^\d{3}[-\s]?\d{3}[-\s]?\d{3}(?:[-\s]?\d{3})?$/'],
@@ -452,18 +461,15 @@ class extends Component {
             ],
             'owner_birthdate' => ['nullable', 'date', 'before:18 years ago', 'after:1900-01-01'],
 
-            // Location
             'latitude' => ['required', 'numeric', 'min:-90', 'max:90'],
             'longitude' => ['required', 'numeric', 'min:-180', 'max:180'],
 
-            // Nearby
             'markers' => ['array', 'max:20'],
             'markers.*.name' => ['required', 'string', 'max:100'],
             'markers.*.lat' => ['required', 'numeric', 'min:-90', 'max:90'],
             'markers.*.lng' => ['required', 'numeric', 'min:-180', 'max:180'],
             'markers.*.type' => ['required', 'string', 'max:255'],
 
-            // Admin
             'admin_name' => ['required', 'string', 'min:3', 'max:255'],
             'admin_email' => [
                 'required', 'email:rfc', 'max:255',
@@ -682,7 +688,6 @@ class extends Component {
         $oldPath = $this->{$pathProperty};
 
         try {
-            // storeImage() → HandlesImageUploads → ImageCompressionService
             $newPath = $this->storeImage($uploadedFile, $folder, 'public', $context);
 
             if (! $newPath) {
@@ -1276,11 +1281,17 @@ class extends Component {
         }
 
         $iconPath = null;
-        $iconSvg = null;
+        $iconSvg  = null;
 
+        // Same rationale as create-tenant: sanitize before persisting so
+        // stored icon_svg values can never carry a payload into render.
         if ($this->newCategoryIcon) {
             $iconPath = $this->newCategoryIcon->store('marker-icons', 'public');
-            $iconSvg = file_get_contents($this->newCategoryIcon->getRealPath());
+
+            $rawSvg = @file_get_contents($this->newCategoryIcon->getRealPath()) ?: '';
+            $clean  = app(SvgSanitizerService::class)->sanitize($rawSvg);
+
+            $iconSvg = $clean !== '' ? $clean : null;
         }
 
         $this->markerCategories[] = [
@@ -2046,7 +2057,7 @@ class extends Component {
                                         </svg>
                                         @if($iconSvg)
                                             <div class="absolute mb-1 size-[18px] text-gray-800 dark:text-white">
-                                                {!! str_replace('<svg ', '<svg class="size-full stroke-current fill-none" ', $iconSvg) !!}
+                                                <x-safe-svg :svg="$iconSvg" class="size-full stroke-current fill-none" />
                                             </div>
                                         @else
                                             <span class="absolute mb-1 text-[10px] font-bold text-gray-800 dark:text-white">

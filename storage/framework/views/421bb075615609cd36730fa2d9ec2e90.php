@@ -1,1 +1,0 @@
-<?php /**PATH C:\laragon\www\Capstone\resources\views\emails\booking-reserved.blade.php ENDPATH**/ ?>

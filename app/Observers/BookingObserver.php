@@ -8,35 +8,26 @@ use App\Mail\BookingReceived;
 use App\Mail\BookingReserved;
 use App\Mail\NewBookingAlert;
 use App\Models\Booking;
+use App\Models\UserNotification;
 use App\Services\PublicNotificationService;
+use App\Services\UserNotificationService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Throwable;
 
-/**
- * Invalidates public-notification caches AND dispatches booking
- * lifecycle emails on every booking state change that matters.
- *
- * Cache flushes and mail dispatches are deferred to after-commit:
- * if the surrounding transaction rolls back, neither fires. Mail
- * failures are swallowed (logged only) — a broken SMTP server must
- * never roll back a committed booking.
- *
- * All mail is queued (`->queue()`) so the creating request never
- * blocks on SMTP. `php artisan queue:work` must be running for
- * emails to actually leave the queue.
- */
 class BookingObserver
 {
     public function __construct(
         protected PublicNotificationService $notifications,
+        protected UserNotificationService $userNotifications,
     ) {}
 
     public function created(Booking $booking): void
     {
         $this->flushStakeholders($booking);
         $this->sendCreatedMail($booking);
+        $this->createBookingCreatedNotifications($booking);
     }
 
     public function updated(Booking $booking): void
@@ -47,6 +38,7 @@ class BookingObserver
 
         $this->flushStakeholders($booking);
         $this->sendStatusChangeMail($booking);
+        $this->createBookingStatusChangeNotifications($booking);
     }
 
     public function deleted(Booking $booking): void
@@ -55,7 +47,114 @@ class BookingObserver
     }
 
     // ─────────────────────────────────────────────────────
-    //  Cache flushes (unchanged)
+    //  Persistent notifications
+    // ─────────────────────────────────────────────────────
+
+    private function createBookingCreatedNotifications(Booking $booking): void
+    {
+        DB::afterCommit(function () use ($booking): void {
+            $booking->loadMissing(['user', 'tenant', 'items.property']);
+
+            $property = $booking->items->first()?->property;
+
+            // `bookings.tenant_id` is NOT NULL — Larastan reads the
+            // `tenant` relation as non-nullable. Same for `user`.
+            $place = $property->name
+                ?? $booking->tenant->name
+                ?? 'your booking';
+
+            if ($booking->user) {
+                $this->userNotifications->notify($booking->user, [
+                    'scope'   => UserNotification::SCOPE_TOURIST,
+                    'type'    => 'booking',
+                    'title'   => 'Booking received',
+                    'message' => "Your booking at {$place} has been received. Complete payment within 30 minutes.",
+                    'url'     => route('booking.receipt', ['booking' => $booking->id]),
+                    'icon'    => 'clock',
+                    'color'   => 'amber',
+                ]);
+            }
+
+            if (! $booking->tenant) {
+                return;
+            }
+
+            $admins = $booking->tenant->users()
+                ->whereHas('roles', fn ($q) => $q->where('name', 'admin'))
+                ->get();
+
+            if ($admins->isEmpty()) {
+                return;
+            }
+
+            $guestName = $booking->user->name ?? 'A guest';
+            $ref       = $booking->booking_reference;
+
+            $this->userNotifications->notifyMany($admins, [
+                'scope'   => UserNotification::SCOPE_BUSINESS,
+                'type'    => 'booking',
+                'title'   => 'New booking request',
+                'message' => "{$guestName} placed a new booking ({$ref}).",
+                'url'     => route('tenant.bookings.show', $booking->id),
+                'icon'    => 'inbox',
+                'color'   => 'blue',
+            ]);
+        });
+    }
+
+    private function createBookingStatusChangeNotifications(Booking $booking): void
+    {
+        DB::afterCommit(function () use ($booking): void {
+            $booking->loadMissing(['user', 'items.property']);
+
+            $user = $booking->user;
+            if (! $user) {
+                return;
+            }
+
+            $property = $booking->items->first()?->property;
+            $place    = $property->name
+                ?? $booking->tenant->name
+                ?? 'your booking';
+
+            $payload = match ($booking->status) {
+                Booking::STATUS_CONFIRMED => [
+                    'type'    => 'booking',
+                    'title'   => 'Booking confirmed',
+                    'message' => "Your booking at {$place} is confirmed.",
+                    'icon'    => 'check-circle',
+                    'color'   => 'emerald',
+                ],
+                Booking::STATUS_RESERVED => [
+                    'type'    => 'booking',
+                    'title'   => 'Reservation confirmed',
+                    'message' => "Your reservation at {$place} is locked in. Pay the balance before check-in.",
+                    'icon'    => 'check-circle',
+                    'color'   => 'blue',
+                ],
+                Booking::STATUS_CANCELLED => [
+                    'type'    => 'booking',
+                    'title'   => 'Booking cancelled',
+                    'message' => "Your booking at {$place} has been cancelled.",
+                    'icon'    => 'alert',
+                    'color'   => 'rose',
+                ],
+                default => null,
+            };
+
+            if ($payload === null) {
+                return;
+            }
+
+            $this->userNotifications->notify($user, array_merge($payload, [
+                'scope' => UserNotification::SCOPE_TOURIST,
+                'url'   => route('booking.receipt', ['booking' => $booking->id]),
+            ]));
+        });
+    }
+
+    // ─────────────────────────────────────────────────────
+    //  Cache flushes
     // ─────────────────────────────────────────────────────
 
     private function flushStakeholders(Booking $booking): void
@@ -75,18 +174,14 @@ class BookingObserver
     }
 
     // ─────────────────────────────────────────────────────
-    //  Mail dispatches
+    //  Mail
     // ─────────────────────────────────────────────────────
 
     private function sendCreatedMail(Booking $booking): void
     {
         DB::afterCommit(function () use ($booking): void {
-            // Hydrate relations the mailables depend on. Eloquent
-            // caches these; the queued jobs serialise the model with
-            // relations intact.
             $booking->loadMissing(['user', 'tenant', 'items.property']);
 
-            // Tourist receipt.
             $touristEmail = $booking->user?->email;
             if ($touristEmail) {
                 $this->safeMail(
@@ -96,7 +191,6 @@ class BookingObserver
                 );
             }
 
-            // Tenant admins — new-booking alert.
             $tenant = $booking->tenant;
             if (! $tenant) {
                 return;
@@ -148,10 +242,6 @@ class BookingObserver
             );
         });
     }
-
-    // ─────────────────────────────────────────────────────
-    //  Safe wrapper
-    // ─────────────────────────────────────────────────────
 
     private function safeMail(callable $callback, string $context, int $bookingId): void
     {

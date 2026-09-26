@@ -28,18 +28,14 @@ class extends Component
 {
     use ChecksTenantPermissions;
 
-    /** Bound from route. Auto-locked (Eloquent model). */
     public Booking $booking;
 
-    // ── Guest ──
     public string $customerName    = '';
     public string $customerPhone   = '';
     public string $customerEmail   = '';
 
-    /** Guest user id — set via `selectGuest()` or inherited from the booking. */
     public ?int $user_id = null;
 
-    // ── Booking dates ──
     public string $check_in      = '';
     public string $check_out     = '';
     public string $check_in_time = '14:00';
@@ -47,40 +43,29 @@ class extends Component
     #[Locked]
     public string $booking_reference = '';
 
-    // ── Status / type ──
     public string $status       = Booking::STATUS_PENDING;
     public string $booking_type = Booking::TYPE_FULL;
 
-    // ── Selection ──
     /**
      * @var array<int, array{quantity: int, booking_item_id: ?int}>
-     *   keyed by property_id
      */
     public array $selectedProperties = [];
 
     /**
      * @var array<int, array{quantity: int, booking_service_id: ?int}>
-     *   keyed by service_id
      */
     public array $selectedServices = [];
 
-    // ── Money (server-computed) ──
     #[Locked] public float $totalAmount      = 0;
     #[Locked] public float $finalTotal       = 0;
     #[Locked] public float $reservationFee   = 0;
     #[Locked] public float $balanceOnArrival = 0;
 
-    /** Public — operator-editable. Capped in calculateTotal(). */
     public float $discountAmount = 0;
 
-    // ── Guest search ──
     public string $guestSearch       = '';
     public array  $guestResults      = [];
     public bool   $showGuestDropdown = false;
-
-    // ─────────────────────────────────────────────────────────
-    //  Lifecycle
-    // ─────────────────────────────────────────────────────────
 
     public function mount($booking): void
     {
@@ -136,9 +121,6 @@ class extends Component
     {
         abort_unless(Auth::user()?->tenant_id, 403);
 
-        // Rule 17 — re-verify booking ownership on every update request.
-        // Livewire actions bypass route middleware, so this is the safety
-        // net against a stale snapshot from a prior tenant session.
         abort_unless(
             $this->booking->tenant_id === Auth::user()->tenant_id,
             403,
@@ -163,10 +145,6 @@ class extends Component
     {
         $this->searchGuests();
     }
-
-    // ─────────────────────────────────────────────────────────
-    //  Validation
-    // ─────────────────────────────────────────────────────────
 
     protected function rules(): array
     {
@@ -238,14 +216,6 @@ class extends Component
         ];
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Computed
-    // ─────────────────────────────────────────────────────────
-
-    /**
-     * Rule 24 — clear memoized computed values after mutations. Called at
-     * the top of calculateTotal(), which is the post-mutation funnel.
-     */
     protected function forgetComputed(): void
     {
         unset(
@@ -409,10 +379,6 @@ class extends Component
         };
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Guest search
-    // ─────────────────────────────────────────────────────────
-
     public function searchGuests(): void
     {
         $this->requirePermission('edit bookings');
@@ -475,10 +441,6 @@ class extends Component
         $this->showGuestDropdown = false;
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Date / total recalculation hooks
-    // ─────────────────────────────────────────────────────────
-
     public function updatedCheckIn(): void      { $this->recalculateAndWarn(); }
     public function updatedCheckOut(): void     { $this->recalculateAndWarn(); }
     public function updatedCheckInTime(): void  { $this->recalculateAndWarn(); }
@@ -525,10 +487,6 @@ class extends Component
 
         $this->calculateTotal();
     }
-
-    // ─────────────────────────────────────────────────────────
-    //  Selection toggles (server-side pricing only)
-    // ─────────────────────────────────────────────────────────
 
     public function toggleProperty(int $propertyId): void
     {
@@ -595,10 +553,6 @@ class extends Component
         $this->calculateTotal();
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Total calculation — all prices come from the DB
-    // ─────────────────────────────────────────────────────────
-
     protected function calculateBaseTotal(): float
     {
         $total = 0.0;
@@ -635,14 +589,8 @@ class extends Component
         $this->balanceOnArrival = round($this->finalTotal - $this->reservationFee, 2);
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Save
-    // ─────────────────────────────────────────────────────────
-
     public function update()
     {
-        // Livewire actions bypass route middleware. Enforce the same
-        // permission the `/admin/bookings/{id}/edit` route requires.
         $this->requirePermission('edit bookings');
 
         $this->calculateTotal();
@@ -693,12 +641,6 @@ class extends Component
                     }
                 }
 
-                /*
-                 * SECURITY: only update the linked user's profile when the
-                 * booking's assigned user is the one being edited. Reassigning
-                 * a booking to a *different* user must NOT overwrite that
-                 * user's name/phone/email.
-                 */
                 if ($this->user_id && $this->user_id === $this->booking->user_id) {
                     $guest = User::find($this->user_id);
                     if ($guest) {
@@ -721,7 +663,6 @@ class extends Component
                     'total_amount' => $this->finalTotal,
                 ]);
 
-                // ── Sync items ──
                 $existingItemIds = $booking->items()->pluck('id')->all();
 
                 foreach ($this->selectedProperties as $propertyId => $item) {
@@ -769,7 +710,6 @@ class extends Component
                         ->delete();
                 }
 
-                // ── Sync services ──
                 $existingServiceIds = $booking->services()->pluck('id')->all();
 
                 $lockedServices = Service::withoutGlobalScope(TenantScope::class)
@@ -842,7 +782,8 @@ class extends Component
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-8 pb-24 lg:pb-8 max-w-7xl mx-auto space-y-6">
+<div class="p-4 sm:p-6 lg:p-8 lg:pb-8 max-w-7xl mx-auto space-y-6
+            pb-[calc(6rem+env(safe-area-inset-bottom))]">
 
     {{-- Header --}}
     <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
@@ -883,7 +824,7 @@ class extends Component
                 <span>{{ session('message') }}</span>
             </div>
             <button type="button" @click="show = false"
-                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                    class="inline-flex items-center justify-center h-11 w-11 sm:h-7 sm:w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
                            transition-all duration-200 active:scale-95
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
                     aria-label="Dismiss">
@@ -907,7 +848,7 @@ class extends Component
                 <span>{{ session('error') }}</span>
             </div>
             <button type="button" @click="show = false"
-                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                    class="inline-flex items-center justify-center h-11 w-11 sm:h-7 sm:w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
                            transition-all duration-200 active:scale-95
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
                     aria-label="Dismiss">
@@ -938,7 +879,7 @@ class extends Component
                 </div>
             </div>
             <button type="button" @click="show = false"
-                    class="inline-flex items-center justify-center h-7 w-7 shrink-0 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                    class="inline-flex items-center justify-center h-11 w-11 sm:h-7 sm:w-7 shrink-0 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
                            transition-all duration-200 active:scale-95
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
                     aria-label="Dismiss">
@@ -968,17 +909,17 @@ class extends Component
                            placeholder="Type name, email or phone…"
                            class="input w-full">
                     @if($showGuestDropdown)
-                        <div class="absolute z-20 mt-1 w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-2xl max-h-48 overflow-y-auto">
+                        <div class="absolute z-20 mt-1 w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-2xl max-h-64 overflow-y-auto">
                             @forelse($guestResults as $guest)
                                 <button type="button"
                                         wire:key="guest-{{ $guest->id }}"
                                         wire:click="selectGuest({{ $guest->id }})"
-                                        class="w-full text-left px-4 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 transition active:scale-[0.99] focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-700">
+                                        class="w-full text-left px-4 py-3 min-h-[44px] hover:bg-gray-50 dark:hover:bg-gray-700 transition active:scale-[0.99] focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-700">
                                     <p class="text-sm text-gray-900 dark:text-white">{{ $guest->name }}</p>
                                     <p class="text-xs text-gray-500 dark:text-gray-400">{{ $guest->email ?? $guest->phone }}</p>
                                 </button>
                             @empty
-                                <div class="px-4 py-2 text-sm text-gray-500 dark:text-gray-400">No matching guests found.</div>
+                                <div class="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">No matching guests found.</div>
                             @endforelse
                         </div>
                     @endif
@@ -1079,7 +1020,7 @@ class extends Component
                                         {{ $isSelected ? 'border-primary-600 ring-2 ring-primary-500/30' : 'border-gray-200 dark:border-gray-700 hover:border-primary-400/50' }}">
                                 <div class="aspect-[4/3] overflow-hidden">
                                     <img class="w-full h-full object-cover"
-                                         src="{{ $firstImg ? asset('storage/' . $firstImg->image_path) : asset('images/placeholder-room.jpg') }}"
+                                         src="{{ $firstImg ? '/storage/' . ltrim($firstImg->image_path, '/') : '/images/placeholder-room.jpg' }}"
                                          alt="{{ $property->name }}"
                                          loading="lazy"
                                          decoding="async">
@@ -1126,7 +1067,7 @@ class extends Component
                                  class="flex items-center gap-4 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-200 dark:border-gray-700">
                                 <div class="w-14 h-14 rounded-lg overflow-hidden bg-gray-200 dark:bg-gray-600 shrink-0 shadow-sm">
                                     @if($prop && $prop->images->isNotEmpty())
-                                        <img src="{{ asset('storage/' . $prop->images->first()->image_path) }}"
+                                        <img src="{{ '/storage/' . ltrim($prop->images->first()->image_path, '/') }}"
                                              class="w-full h-full object-cover"
                                              alt="{{ $prop->name }}"
                                              loading="lazy"
@@ -1142,7 +1083,7 @@ class extends Component
                                 <p class="text-sm font-bold text-gray-900 dark:text-white tabular-nums">₱{{ number_format($roomTotal, 2) }}</p>
                                 <button type="button" wire:click="toggleProperty({{ $id }})"
                                         aria-label="Remove {{ $prop->name ?? 'activity' }}"
-                                        class="inline-flex items-center justify-center h-9 w-9 rounded-lg text-gray-500 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50
+                                        class="inline-flex items-center justify-center h-11 w-11 sm:h-9 sm:w-9 rounded-lg text-gray-500 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50
                                                transition-all duration-200 active:scale-95
                                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -1171,7 +1112,7 @@ class extends Component
                             <button type="button"
                                     wire:key="svc-btn-{{ $service->id }}"
                                     wire:click="toggleService({{ $service->id }})"
-                                    class="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg border text-xs font-semibold
+                                    class="inline-flex items-center gap-1.5 h-11 sm:h-9 px-3.5 rounded-lg border text-xs font-semibold
                                            transition-all duration-200 active:scale-95
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
                                            {{ $isServiceSelected
@@ -1204,7 +1145,7 @@ class extends Component
                                         <p class="text-sm font-bold text-gray-900 dark:text-white tabular-nums">₱{{ number_format($service->price, 2) }}</p>
                                         <button type="button" wire:click="toggleService({{ $id }})"
                                                 aria-label="Remove {{ $service->name }}"
-                                                class="inline-flex items-center justify-center h-9 w-9 rounded-lg text-gray-500 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50
+                                                class="inline-flex items-center justify-center h-11 w-11 sm:h-9 sm:w-9 rounded-lg text-gray-500 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50
                                                        transition-all duration-200 active:scale-95
                                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -1295,7 +1236,8 @@ class extends Component
     </form>
 
     {{-- Mobile sticky summary --}}
-    <div class="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-700 shadow-lg p-4">
+    <div class="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-700 shadow-lg
+                p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
         <div class="flex items-center justify-between gap-4 max-w-7xl mx-auto">
             <div class="flex-1 min-w-0">
                 <p class="text-xs text-gray-500 dark:text-gray-400">Final Total</p>

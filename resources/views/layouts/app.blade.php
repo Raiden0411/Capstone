@@ -9,9 +9,13 @@
     <meta name="color-scheme" content="light dark">
     <meta name="description" content="{{ $description ?? config('app.name') . ' — Book your perfect stay.' }}">
 
-    {{-- Android Chrome address-bar tint, matched to the page background. --}}
-    <meta name="theme-color" content="#F8F7F3" media="(prefers-color-scheme: light)">
-    <meta name="theme-color" content="#111827" media="(prefers-color-scheme: dark)">
+    {{-- Theme-color: single tag, updated by applyTheme() below.
+         The previous approach used two tags with media="(prefers-color-scheme: ...)"
+         — which resolves against the OS setting, not the app's stored
+         preference. A user who chose dark in-app but has their OS on light
+         got a light-tinted address bar over a dark body. Applying the
+         resolved value from JS keeps them in sync in every case. --}}
+    <meta name="theme-color" content="#F8F7F3">
 
     <meta property="og:title" content="{{ $title ?? config('app.name') }}">
     <meta property="og:description" content="{{ $description ?? 'Discover and book premium accommodations.' }}">
@@ -30,23 +34,28 @@
             var t = localStorage.getItem('hs_theme');
             var dark = t === 'dark' || (t !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
             document.documentElement.classList.toggle('dark', dark);
+
+            var meta = document.querySelector('meta[name="theme-color"]');
+            if (meta) meta.setAttribute('content', dark ? '#111827' : '#F8F7F3');
         }
         applyTheme();
         document.addEventListener('livewire:navigated', applyTheme);
     </script>
 
-    {{-- Fonts – Inter + Playfair Display. --}}
+    {{-- Fonts – Inter. Playfair Display was retired when --font-display
+         was re-pointed at Inter in resources/css/app.css; loading it here
+         would download four unused weights per page load. --}}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="preload" as="style"
-          href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600&display=swap">
+          href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap">
     <link rel="stylesheet"
           media="print"
           onload="this.media='all'"
-          href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600&display=swap">
+          href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap">
     <noscript>
         <link rel="stylesheet"
-              href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600&display=swap">
+              href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap">
     </noscript>
 
     <title>{{ isset($title) ? $title . ' — ' . config('app.name') : config('app.name') }}</title>
@@ -66,8 +75,19 @@
 
     <x-headers.public-header />
 
-    {{-- Offset matches header height: h-16 (64px) mobile, h-20 (80px) desktop. --}}
-    <main class="flex-1 pt-16 md:pt-20">
+    {{-- Content offset must clear the fixed header.
+
+         The header's own height is now: base (64px mobile / 80px md+) PLUS
+         `env(safe-area-inset-top)` when the device has a notch or dynamic
+         island. The offset here has to match, otherwise on notched iPhones
+         the first ~47–59px of every page's content would be hidden behind
+         the header.
+
+         Non-notched devices: env() = 0, so pt-[calc(4rem+0)] = 64px and
+         pt-[calc(5rem+0)] = 80px — identical to the previous pt-16 / pt-20.
+         Notched devices: pt = 64 + 47 (or 59) and 80 + 47 (or 59), which
+         matches the header's actual rendered height. --}}
+    <main class="flex-1 pt-[calc(4rem+env(safe-area-inset-top))] md:pt-[calc(5rem+env(safe-area-inset-top))]">
         {{ $slot }}
     </main>
 

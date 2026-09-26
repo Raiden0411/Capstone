@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use App\Observers\TenantObserver;
+use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -28,7 +30,49 @@ use Illuminate\Support\Carbon;
  * @property Carbon|null $last_permit_prompt_at
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
+ * @property-read \App\Models\TypeOfTenant|null $typeOfTenant
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\User> $users
+ * @property-read int|null $users_count
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\Property> $properties
+ * @property-read int|null $properties_count
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\Service> $services
+ * @property-read int|null $services_count
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\Booking> $bookings
+ * @property-read int|null $bookings_count
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\TenantSetting> $settings
+ * @property-read int|null $settings_count
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\Event> $events
+ * @property-read int|null $events_count
+ * @property-read \App\Models\BusinessApplication|null $businessApplication
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\PermitRenewalReminder> $permitReminders
+ * @property-read int|null $permit_reminders_count
+ * @method static \Database\Factories\TenantFactory factory($count = null, $state = [])
+ * @method static Builder<static>|Tenant newModelQuery()
+ * @method static Builder<static>|Tenant newQuery()
+ * @method static Builder<static>|Tenant query()
+ * @method static Builder<static>|Tenant recommended()
+ * @method static Builder<static>|Tenant verified()
+ * @method static Builder<static>|Tenant whereAddress($value)
+ * @method static Builder<static>|Tenant whereBarangay($value)
+ * @method static Builder<static>|Tenant whereContactNumber($value)
+ * @method static Builder<static>|Tenant whereCoordinates($value)
+ * @method static Builder<static>|Tenant whereCreatedAt($value)
+ * @method static Builder<static>|Tenant whereEmail($value)
+ * @method static Builder<static>|Tenant whereId($value)
+ * @method static Builder<static>|Tenant whereIsActive($value)
+ * @method static Builder<static>|Tenant whereIsRecommended($value)
+ * @method static Builder<static>|Tenant whereLastPermitPromptAt($value)
+ * @method static Builder<static>|Tenant whereLogo($value)
+ * @method static Builder<static>|Tenant whereName($value)
+ * @method static Builder<static>|Tenant wherePermitExpiresAt($value)
+ * @method static Builder<static>|Tenant whereSlug($value)
+ * @method static Builder<static>|Tenant whereTypeOfTenantId($value)
+ * @method static Builder<static>|Tenant whereUpdatedAt($value)
+ * @method static Builder<static>|Tenant whereVerifiedAt($value)
+ * @method static Builder<static>|Tenant withPermitExpiringBefore(\Illuminate\Support\Carbon $date)
+ * @mixin \Eloquent
  */
+#[ObservedBy([TenantObserver::class])]
 class Tenant extends Model
 {
     use HasFactory;

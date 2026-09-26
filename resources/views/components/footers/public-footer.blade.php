@@ -68,13 +68,39 @@
         $linkClass = 'inline-block transition-all duration-200 active:scale-95 hover:text-primary-600 dark:hover:text-primary-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 rounded';
     @endphp
 
-    <footer class="border-t border-gray-200 bg-white py-10 dark:border-gray-700 dark:bg-gray-900 px-4 sm:px-6 lg:px-16">
+    {{-- x-data="revealOnScroll" — the footer is outside <main>, so it
+         carries its own observer. Every [data-reveal] descendant fades
+         + slides up in sequence when the footer enters the viewport.
+
+         ── SAFE-AREA ───────────────────────────────────────────────────
+         The horizontal padding matches the header nav's pattern (1rem →
+         1.5rem → 4rem) so the footer's edge columns line up with the
+         header's logo/actions. `max(...)` means on landscape notched
+         iPhones the padding grows to clear the notch zone, and on every
+         other device env() = 0 so the padding falls back to exactly the
+         previous value.
+
+         Bottom padding similarly grows for the home indicator: `pt-12`
+         stays 48px (the previous `py-12` top), `pb-[calc(3rem+env(...))]`
+         is 48px on non-notched devices and 48 + 34 ≈ 82px on iPhone X+
+         so the copyright row isn't behind the home indicator when the
+         user scrolls to the very bottom. --}}
+    <footer x-data="revealOnScroll"
+            class="border-t border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900
+                   pt-12
+                   pb-[calc(3rem+env(safe-area-inset-bottom))]
+                   ps-[max(1rem,env(safe-area-inset-left))]
+                   pe-[max(1rem,env(safe-area-inset-right))]
+                   sm:ps-[max(1.5rem,env(safe-area-inset-left))]
+                   sm:pe-[max(1.5rem,env(safe-area-inset-right))]
+                   lg:ps-[max(4rem,env(safe-area-inset-left))]
+                   lg:pe-[max(4rem,env(safe-area-inset-right))]">
         <div class="mx-auto max-w-[90rem]">
 
             {{-- Top Section: Brand --}}
-            <div class="pb-8 mb-8 border-b border-gray-200 dark:border-gray-700">
+            <div data-reveal class="pb-10 mb-10 border-b border-gray-200 dark:border-gray-700">
                 <a href="{{ route('home') }}" wire:navigate
-                   class="group mb-3 inline-flex items-center gap-3 rounded-lg
+                   class="group mb-4 inline-flex items-center gap-3 rounded-lg
                           transition-all duration-200 active:scale-95
                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                     @if($logoUrl)
@@ -87,20 +113,38 @@
                         {{ $siteName }}
                     </span>
                 </a>
-                <p class="text-xs font-medium uppercase tracking-[0.2em] text-gray-500 dark:text-gray-400">
-                    Discover the Sweet City of the North — Nature, Heritage &amp; Warm Hospitality
+
+                {{-- Split tagline into editorial eyebrow (amber) + supporting
+                     line — mirrors the two-tier text pattern used in every
+                     other section of the platform. --}}
+                <p class="mb-1.5 inline-flex items-center gap-2
+                          text-xs font-bold uppercase tracking-[0.2em]
+                          text-amber-600 dark:text-amber-400">
+                    <span class="h-px w-4 bg-amber-500"></span>
+                    Discover the Sweet City of the North
+                </p>
+                <p class="text-sm text-gray-600 dark:text-gray-400 leading-relaxed max-w-2xl">
+                    Nature, heritage, and warm hospitality — everything you need to plan a memorable visit to Victorias City, Negros Occidental.
                 </p>
             </div>
 
             {{-- Middle Section: Navigation + Contact.
                  Each link column is wrapped in <nav aria-label="..."> so
-                 assistive tech announces the landmark properly. --}}
-            <div class="pb-12 mb-12 border-b border-gray-200 dark:border-gray-700 grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-4 lg:gap-6">
+                 assistive tech announces the landmark properly.
+                 Column headings use the platform's eyebrow pattern —
+                 rule + label — but in primary blue to distinguish
+                 structural navigation from editorial amber. --}}
+            <div class="pb-12 mb-12 border-b border-gray-200 dark:border-gray-700 grid grid-cols-1 gap-10 sm:grid-cols-2 lg:grid-cols-4 lg:gap-8">
 
                 {{-- Column 1: Explore --}}
-                <nav aria-label="Explore">
-                    <h3 class="mb-4 text-sm font-semibold uppercase tracking-wide text-primary-600 dark:text-primary-400">Explore</h3>
-                    <ul class="space-y-2 text-sm text-gray-600 dark:text-gray-300">
+                <nav aria-label="Explore" data-reveal>
+                    <p class="mb-4 inline-flex items-center gap-2
+                              text-xs font-bold uppercase tracking-[0.2em]
+                              text-primary-600 dark:text-primary-400">
+                        <span class="h-px w-4 bg-primary-500"></span>
+                        Explore
+                    </p>
+                    <ul class="space-y-2.5 text-sm text-gray-600 dark:text-gray-300">
                         <li>
                             <a href="{{ route('tourist-spots.index') }}" wire:navigate class="{{ $linkClass }}">
                                 Tourist Spots &amp; Landmarks
@@ -130,9 +174,14 @@
                 </nav>
 
                 {{-- Column 2: Community --}}
-                <nav aria-label="Community">
-                    <h3 class="mb-4 text-sm font-semibold uppercase tracking-wide text-primary-600 dark:text-primary-400">Community</h3>
-                    <ul class="space-y-2 text-sm text-gray-600 dark:text-gray-300">
+                <nav aria-label="Community" data-reveal style="--reveal-delay: 80ms">
+                    <p class="mb-4 inline-flex items-center gap-2
+                              text-xs font-bold uppercase tracking-[0.2em]
+                              text-primary-600 dark:text-primary-400">
+                        <span class="h-px w-4 bg-primary-500"></span>
+                        Community
+                    </p>
+                    <ul class="space-y-2.5 text-sm text-gray-600 dark:text-gray-300">
                         <li>
                             <a href="{{ route('about') }}" wire:navigate class="{{ $linkClass }}">
                                 Local Artisans &amp; Makers
@@ -162,9 +211,14 @@
                 </nav>
 
                 {{-- Column 3: About --}}
-                <nav aria-label="About">
-                    <h3 class="mb-4 text-sm font-semibold uppercase tracking-wide text-primary-600 dark:text-primary-400">About</h3>
-                    <ul class="space-y-2 text-sm text-gray-600 dark:text-gray-300">
+                <nav aria-label="About" data-reveal style="--reveal-delay: 160ms">
+                    <p class="mb-4 inline-flex items-center gap-2
+                              text-xs font-bold uppercase tracking-[0.2em]
+                              text-primary-600 dark:text-primary-400">
+                        <span class="h-px w-4 bg-primary-500"></span>
+                        About
+                    </p>
+                    <ul class="space-y-2.5 text-sm text-gray-600 dark:text-gray-300">
                         <li>
                             <a href="{{ route('about') }}" wire:navigate class="{{ $linkClass }}">
                                 The Victorias Story
@@ -183,9 +237,14 @@
                      contact details — screen readers announce it as
                      such. It's a block element by default, so layout is
                      unchanged. --}}
-                <div>
-                    <h3 class="mb-4 text-sm font-semibold uppercase tracking-wide text-primary-600 dark:text-primary-400">Contact</h3>
-                    <address class="text-sm leading-relaxed text-gray-600 dark:text-gray-300 space-y-2 not-italic">
+                <div data-reveal style="--reveal-delay: 240ms">
+                    <p class="mb-4 inline-flex items-center gap-2
+                              text-xs font-bold uppercase tracking-[0.2em]
+                              text-primary-600 dark:text-primary-400">
+                        <span class="h-px w-4 bg-primary-500"></span>
+                        Contact
+                    </p>
+                    <address class="text-sm leading-relaxed text-gray-600 dark:text-gray-300 space-y-2.5 not-italic">
                         <p class="text-xs font-semibold uppercase tracking-wide text-gray-900 dark:text-white">
                             {{ $contactOffice }}
                         </p>
@@ -202,8 +261,14 @@
             </div>
 
             {{-- Bottom Section: Copyright --}}
-            <div class="text-center text-xs text-gray-500 dark:text-gray-400">
-                &copy; {{ date('Y') }} {{ $siteName }}. All rights reserved.
+            <div data-reveal class="flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-gray-500 dark:text-gray-400">
+                <p class="tabular-nums">
+                    &copy; {{ date('Y') }} {{ $siteName }}. All rights reserved.
+                </p>
+                <p class="inline-flex items-center gap-1.5">
+                    <span class="w-1 h-1 rounded-full bg-emerald-500" aria-hidden="true"></span>
+                    Made in Victorias City
+                </p>
             </div>
         </div>
     </footer>

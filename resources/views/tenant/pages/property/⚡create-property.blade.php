@@ -29,7 +29,6 @@ class extends Component {
     use ChecksTenantPermissions;
     use HandlesImageUploads;
 
-    // ═══ Details ═══
     #[Validate('required|string|max:255')]
     public $name = '';
 
@@ -38,7 +37,6 @@ class extends Component {
     #[Validate('nullable|string|max:2000')]
     public $description = '';
 
-    // ═══ Pricing & capacity ═══
     #[Validate('required|numeric|min:0|max:99999999.99')]
     public $price = 0.00;
 
@@ -48,30 +46,22 @@ class extends Component {
     #[Validate('required|integer|min:1|max:100000')]
     public $quantity = 1;
 
-    // ═══ Publishing ═══
     #[Validate('required|in:available,occupied,reserved,maintenance')]
     public $status = 'available';
 
     #[Validate('boolean')]
     public $is_active = true;
 
-    // ═══ Availability ═══
     #[Validate('nullable|date')]
     public ?string $unavailableFrom = null;
 
     #[Validate('nullable|date')]
     public ?string $unavailableTo = null;
 
-    // ═══ Image — single file ═══
     public $image;
 
-    // ═══ New-type modal ═══
     public bool $showNewTypeModal = false;
     public string $newTypeName = '';
-
-    // ─────────────────────────────────────────────────────────
-    //  Lifecycle
-    // ─────────────────────────────────────────────────────────
 
     public function mount(): void
     {
@@ -102,10 +92,6 @@ class extends Component {
             $this->$property = trim((string) $this->$property);
         }
     }
-
-    // ─────────────────────────────────────────────────────────
-    //  Validation
-    // ─────────────────────────────────────────────────────────
 
     protected function rules(): array
     {
@@ -151,10 +137,6 @@ class extends Component {
         ];
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Image management
-    // ─────────────────────────────────────────────────────────
-
     public function removeImage(): void
     {
         $this->authorizeManageProperties();
@@ -163,10 +145,6 @@ class extends Component {
 
         $this->dispatch('property-image-cleared');
     }
-
-    // ─────────────────────────────────────────────────────────
-    //  Property types
-    // ─────────────────────────────────────────────────────────
 
     #[Computed]
     public function propertyTypes()
@@ -235,10 +213,6 @@ class extends Component {
             $this->addError('newTypeName', 'Failed to create type. Please try again.');
         }
     }
-
-    // ─────────────────────────────────────────────────────────
-    //  Save
-    // ─────────────────────────────────────────────────────────
 
     public function save()
     {
@@ -334,9 +308,9 @@ class extends Component {
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-8 max-w-6xl mx-auto space-y-6">
+<div class="p-4 sm:p-6 lg:p-8 max-w-6xl mx-auto space-y-6
+            pb-[max(1rem,env(safe-area-inset-bottom))]">
 
-    {{-- ═══ Flash messages ═══ --}}
     @if (session()->has('message'))
         <div x-data="{ show: true }"
              x-init="setTimeout(() => show = false, 4000)"
@@ -349,8 +323,9 @@ class extends Component {
                 <span>{{ session('message') }}</span>
             </div>
             <button type="button" @click="show = false"
-                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                    class="inline-flex items-center justify-center h-11 w-11 sm:h-7 sm:w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
                            transition-all duration-200 active:scale-95
+                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
                     aria-label="Dismiss">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -372,8 +347,9 @@ class extends Component {
                 <span>{{ session('error') }}</span>
             </div>
             <button type="button" @click="show = false"
-                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                    class="inline-flex items-center justify-center h-11 w-11 sm:h-7 sm:w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
                            transition-all duration-200 active:scale-95
+                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
                     aria-label="Dismiss">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -383,7 +359,6 @@ class extends Component {
         </div>
     @endif
 
-    {{-- ═══ Page header ═══ --}}
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-800">
         <div>
             <div class="flex items-center gap-2 mb-2">
@@ -400,6 +375,7 @@ class extends Component {
         <a href="{{ route('tenant.properties.index') }}" wire:navigate
            class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
                   transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
             <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
@@ -408,14 +384,11 @@ class extends Component {
         </a>
     </div>
 
-    {{-- ═══ Form — two-column layout on lg+ ═══ --}}
     <form wire:submit="save">
         <div class="grid grid-cols-1 lg:grid-cols-5 gap-6">
 
-            {{-- ═══════════ LEFT COLUMN ═══════════ --}}
             <div class="lg:col-span-3 space-y-6">
 
-                {{-- ─── Activity Details ─── --}}
                 <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
                     <div class="flex items-center gap-3">
                         <span class="w-5 h-px bg-primary-600"></span>
@@ -440,7 +413,9 @@ class extends Component {
                             <button type="button"
                                     wire:click="openNewTypeModal"
                                     class="inline-flex items-center gap-1 text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline
-                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded active:scale-95 transition-transform">
+                                           py-2.5 -my-2.5 px-1 -mx-1 rounded
+                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95 transition-transform">
                                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
                                 </svg>
@@ -471,7 +446,6 @@ class extends Component {
                     </div>
                 </div>
 
-                {{-- ─── Pricing & Capacity ─── --}}
                 <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
                     <div class="flex items-center gap-3">
                         <span class="w-5 h-px bg-primary-600"></span>
@@ -507,23 +481,14 @@ class extends Component {
 
             </div>
 
-            {{-- ═══════════ RIGHT COLUMN ═══════════ --}}
             <div class="lg:col-span-2 space-y-6">
 
                 {{--
                     ═══ Activity Photo ═══
-
                     One Alpine scope owns both the picker and the preview URL.
                     Two functions spread into it:
                       • imageCropper({...})  — pick, crop, upload
                       • avatarPreview()      — previewUrl state + object-URL lifecycle
-
-                    The dashed box is BOTH the drop target and the display surface.
-                    When previewUrl is set:
-                      • the <img> fills it (absolute inset-0 object-cover)
-                      • the placeholder <label> hides via :class
-                    When previewUrl is null, the placeholder shows, and the box is
-                    a click-anywhere picker.
                 --}}
                 <div
                     x-data="{
@@ -549,12 +514,6 @@ class extends Component {
                         </h2>
                     </div>
 
-                    {{--
-                        ── Dashed drop zone / preview surface ──
-                        Hidden file input lives inside so the <label> can target it.
-                        The whole surface is the drag target; the whole surface is
-                        clickable via the placeholder label when empty.
-                    --}}
                     <div
                         x-on:dragover.prevent="dragging = true"
                         x-on:dragleave.prevent="dragging = false"
@@ -570,7 +529,6 @@ class extends Component {
                             : 'border-gray-300 dark:border-gray-600'"
                         class="relative aspect-video border-2 border-dashed rounded-xl overflow-hidden transition-colors"
                     >
-                        {{-- Hidden file input (the label below points at it) --}}
                         <input
                             x-ref="input"
                             id="property-image-input"
@@ -580,11 +538,6 @@ class extends Component {
                             x-on:change="pick($event)"
                         >
 
-                        {{--
-                            ── Preview image ──
-                            Fills the entire dashed box. Visible only when a
-                            preview URL exists (i.e. after a successful crop).
-                        --}}
                         <img
                             :src="previewUrl || ''"
                             :class="previewUrl ? 'block' : 'hidden'"
@@ -594,15 +547,11 @@ class extends Component {
                             decoding="async"
                         >
 
-                        {{--
-                            ── Placeholder (icon + copy) ──
-                            Covers the whole box when there's no image. Clicking
-                            anywhere on it opens the file picker.
-                        --}}
                         <label
                             for="property-image-input"
                             :class="previewUrl ? 'hidden' : 'flex'"
-                            class="absolute inset-0 flex-col items-center justify-center p-6 text-center cursor-pointer"
+                            class="absolute inset-0 flex-col items-center justify-center p-6 text-center cursor-pointer
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]"
                         >
                             <svg class="h-10 w-10 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
@@ -615,7 +564,6 @@ class extends Component {
                             </p>
                         </label>
 
-                        {{-- Upload spinner — overlaid on the box during upload --}}
                         <div
                             wire:loading.flex
                             wire:target="image"
@@ -634,16 +582,16 @@ class extends Component {
 
                     @error('image') <span class="text-rose-500 dark:text-rose-400 text-xs block">{{ $message }}</span> @enderror
 
-                    {{-- ─── Replace / Remove — only when a preview is shown ─── --}}
                     <div :class="previewUrl ? 'flex' : 'hidden'" class="items-center justify-end gap-2">
                         <label for="property-image-input"
-                               class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg
+                               class="inline-flex items-center justify-center gap-1.5 h-11 sm:h-9 px-3.5 rounded-lg
                                       border border-gray-300 dark:border-gray-600
                                       bg-white dark:bg-gray-800
                                       text-gray-700 dark:text-gray-200
                                       text-xs font-semibold cursor-pointer
                                       transition-all duration-200 active:scale-95
                                       hover:bg-gray-50 dark:hover:bg-gray-700
+                                      [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                       focus-within:outline-none focus-within:ring-2 focus-within:ring-primary-500/50">
                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
@@ -653,13 +601,14 @@ class extends Component {
 
                         <button type="button"
                                 wire:click="removeImage"
-                                class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg
+                                class="inline-flex items-center justify-center gap-1.5 h-11 sm:h-9 px-3.5 rounded-lg
                                        border border-rose-300 dark:border-rose-500/40
                                        bg-white dark:bg-gray-800
                                        text-rose-700 dark:text-rose-300
                                        text-xs font-semibold
                                        transition-all duration-200 active:scale-95
                                        hover:bg-rose-50 dark:hover:bg-rose-500/10
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
@@ -669,7 +618,6 @@ class extends Component {
                     </div>
                 </div>
 
-                {{-- ─── Publishing ─── --}}
                 <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
                     <div class="flex items-center gap-3">
                         <span class="w-5 h-px bg-primary-600"></span>
@@ -691,7 +639,8 @@ class extends Component {
                         @error('status') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
 
-                    <label class="flex items-center gap-3 cursor-pointer select-none pt-1">
+                    <label class="flex items-center gap-3 cursor-pointer select-none pt-1 min-h-[44px]
+                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                         <span class="relative inline-flex items-center shrink-0">
                             <input type="checkbox" wire:model="is_active" class="sr-only peer">
                             <span class="w-11 h-6 bg-gray-200 dark:bg-gray-600 rounded-full
@@ -707,7 +656,6 @@ class extends Component {
                     </label>
                 </div>
 
-                {{-- ─── Availability ─── --}}
                 <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
                     <div class="flex items-center gap-3">
                         <span class="w-5 h-px bg-primary-600"></span>
@@ -740,11 +688,11 @@ class extends Component {
             </div>
         </div>
 
-        {{-- ═══ Footer ═══ --}}
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-3 pt-6 mt-6 border-t border-gray-200 dark:border-gray-700">
             <a href="{{ route('tenant.properties.index') }}" wire:navigate
                class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
                       transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                      [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                 <span>Cancel</span>
             </a>
@@ -754,6 +702,7 @@ class extends Component {
                     wire:target="save"
                     class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
                            transition-all duration-200 active:scale-95
+                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                            disabled:opacity-60 disabled:cursor-not-allowed">
                 <span wire:loading.remove wire:target="save">Create Activity</span>
@@ -768,7 +717,6 @@ class extends Component {
         </div>
     </form>
 
-    {{-- ═══ New-type modal ═══ --}}
     @if($showNewTypeModal)
         <div class="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
              x-on:keydown.escape.window="$wire.closeNewTypeModal()"
@@ -786,8 +734,9 @@ class extends Component {
                     <button type="button"
                             wire:click="closeNewTypeModal"
                             aria-label="Close"
-                            class="inline-flex items-center justify-center h-9 w-9 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700
+                            class="inline-flex items-center justify-center h-11 w-11 sm:h-9 sm:w-9 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700
                                    transition-all duration-200 active:scale-95
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
@@ -836,6 +785,7 @@ class extends Component {
                             wire:click="closeNewTypeModal"
                             class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
                                    transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                         <span>Cancel</span>
                     </button>
@@ -845,6 +795,7 @@ class extends Component {
                             wire:target="createType"
                             class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
                                    transition-all duration-200 active:scale-95
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                    disabled:opacity-60 disabled:cursor-not-allowed">
                         <span wire:loading.remove wire:target="createType">Create Type</span>
@@ -861,6 +812,5 @@ class extends Component {
         </div>
     @endif
 
-    {{-- Image crop modal — singleton for this page (Rule 87) --}}
     <x-image-crop-modal />
 </div>

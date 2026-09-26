@@ -10,8 +10,7 @@
     <meta name="description" content="<?php echo e($description ?? config('app.name') . ' — Book your perfect stay.'); ?>">
 
     
-    <meta name="theme-color" content="#F8F7F3" media="(prefers-color-scheme: light)">
-    <meta name="theme-color" content="#111827" media="(prefers-color-scheme: dark)">
+    <meta name="theme-color" content="#F8F7F3">
 
     <meta property="og:title" content="<?php echo e($title ?? config('app.name')); ?>">
     <meta property="og:description" content="<?php echo e($description ?? 'Discover and book premium accommodations.'); ?>">
@@ -30,6 +29,9 @@
             var t = localStorage.getItem('hs_theme');
             var dark = t === 'dark' || (t !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
             document.documentElement.classList.toggle('dark', dark);
+
+            var meta = document.querySelector('meta[name="theme-color"]');
+            if (meta) meta.setAttribute('content', dark ? '#111827' : '#F8F7F3');
         }
         applyTheme();
         document.addEventListener('livewire:navigated', applyTheme);
@@ -39,14 +41,14 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="preload" as="style"
-          href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600&display=swap">
+          href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap">
     <link rel="stylesheet"
           media="print"
           onload="this.media='all'"
-          href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600&display=swap">
+          href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap">
     <noscript>
         <link rel="stylesheet"
-              href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600&display=swap">
+              href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap">
     </noscript>
 
     <title><?php echo e(isset($title) ? $title . ' — ' . config('app.name') : config('app.name')); ?></title>
@@ -89,7 +91,7 @@
 <?php endif; ?>
 
     
-    <main class="flex-1 pt-16 md:pt-20">
+    <main class="flex-1 pt-[calc(4rem+env(safe-area-inset-top))] md:pt-[calc(5rem+env(safe-area-inset-top))]">
         <?php echo e($slot); ?>
 
     </main>

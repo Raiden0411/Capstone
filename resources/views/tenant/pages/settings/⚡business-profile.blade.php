@@ -239,17 +239,22 @@ class extends Component
     }
 
     // ─────────────────────────────────────────────────────
-    //  Asset preview URLs
+    //  Asset preview URLs — Rule J: relative /storage paths only.
+    //  asset() prefixes APP_URL, which may not match the current host.
     // ─────────────────────────────────────────────────────
 
     public function logoPreviewUrl(): ?string
     {
-        return $this->logo_path ? asset('storage/' . $this->logo_path) : null;
+        return $this->logo_path
+            ? '/storage/' . ltrim($this->logo_path, '/')
+            : null;
     }
 
     public function coverPreviewUrl(): ?string
     {
-        return $this->cover_photo_path ? asset('storage/' . $this->cover_photo_path) : null;
+        return $this->cover_photo_path
+            ? '/storage/' . ltrim($this->cover_photo_path, '/')
+            : null;
     }
 
     // ─────────────────────────────────────────────────────
@@ -1487,7 +1492,7 @@ class extends Component
                                         </svg>
                                         @if($iconSvg)
                                             <div class="absolute mb-1 size-[18px] text-gray-800 dark:text-white">
-                                                {!! str_replace('<svg ', '<svg xmlns="http://www.w3.org/2000/svg" class="size-full stroke-current fill-none" ', $iconSvg) !!}
+                                                <x-safe-svg :svg="$iconSvg" class="size-full stroke-current fill-none" />
                                             </div>
                                         @else
                                             <span class="absolute mb-1 text-[10px] font-bold text-gray-800 dark:text-white">{{ strtoupper(substr($type ?: '?', 0, 1)) }}</span>
@@ -1697,4 +1702,4 @@ class extends Component
         });
     }
 </script>
-@endscript  
+@endscript

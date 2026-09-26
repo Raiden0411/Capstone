@@ -25,22 +25,6 @@ new
 #[Title('Complete Your Booking')]
 class extends Component
 {
-    /**
-     * The Property row this booking is for.
-     *
-     * NOT typed as non-nullable `Property` because Livewire v4's
-     * typed-model binding re-fetches the row on hydrate WITHOUT
-     * `withoutGlobalScope(TenantScope::class)` and WITHOUT the mount()
-     * eager loads. For an authenticated tourist (`tenant_id === null`)
-     * the TenantScope's `whereRaw('1 = 0')` filters the property out
-     * and a non-nullable binding throws ModelNotFoundException before
-     * the `hydrate()` hook can intervene.
-     *
-     * Approach: pin the ID on a Locked scalar (the client can't change
-     * it), make the model nullable so Livewire can null it during its
-     * own rehydrate pass, and re-fetch explicitly in `hydrate()` with
-     * the tenant-scope bypass and the mount-time eager loads.
-     */
     #[Locked]
     public int $propertyId;
 
@@ -54,7 +38,9 @@ class extends Component
     // ── Stay ──
     public string $check_in     = '';
     public string $check_out    = '';
-    public string $checkInTime  = '14:00';
+    public string $checkInTime  = '09:00';
+
+    public bool $dateRangeValid = true;
 
     // ── Selection ──
     /** @var array<int, int> service_id => quantity */
@@ -70,10 +56,6 @@ class extends Component
     public string $bookingMode   = 'full';
     public string $paymentMethod = 'gcash';
 
-    // ─────────────────────────────────────────────────────────
-    //  Lifecycle
-    // ─────────────────────────────────────────────────────────
-
     public function mount($publicproperty): void
     {
         $this->propertyId = (int) $publicproperty;
@@ -88,10 +70,6 @@ class extends Component
         $this->customerEmail = (string) Auth::user()?->email;
         $this->customerPhone = (string) (Auth::user()?->phone ?? '');
 
-        // Default to the first available day, NOT today. If today is
-        // already booked, starting there trapped the user — every
-        // attempt to extend produced "includes booked dates" because
-        // the start itself was invalid.
         $firstAvailable    = $this->firstAvailableDate;
         $this->check_in    = $firstAvailable;
         $this->check_out   = $firstAvailable;
@@ -100,12 +78,6 @@ class extends Component
         $this->calculateTotal();
     }
 
-    /**
-     * Livewire v4 re-fetches typed model properties on hydrate WITHOUT
-     * the mount-time eager loads. Re-fetch here — with the tenant-scope
-     * bypass AND the eager loads — so the template and every availability
-     * check don't trigger lazy-load queries on each action.
-     */
     public function hydrate(): void
     {
         $this->property = Property::withoutGlobalScope(TenantScope::class)
@@ -127,10 +99,6 @@ class extends Component
         }
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Validation
-    // ─────────────────────────────────────────────────────────
-
     protected function rules(): array
     {
         return [
@@ -146,10 +114,6 @@ class extends Component
             'selectedServices.*' => ['integer', 'min:1', 'max:100'],
         ];
     }
-
-    // ─────────────────────────────────────────────────────────
-    //  Date + service mutations
-    // ─────────────────────────────────────────────────────────
 
     public function setDates($checkIn, $checkOut): void
     {
@@ -239,11 +203,6 @@ class extends Component
         $this->calculateTotal();
     }
 
-    /**
-     * Add one unit of a service. Only services belonging to the
-     * property's tenant are accepted — a client-tampered ID from
-     * another tenant is silently rejected.
-     */
     public function addService(int $serviceId): void
     {
         $exists = Service::withoutGlobalScope(TenantScope::class)
@@ -262,10 +221,6 @@ class extends Component
         $this->calculateTotal();
     }
 
-    /**
-     * Decrement one unit. Removes the entry entirely at qty 1 — there
-     * is no "0 quantity but still selected" state.
-     */
     public function decrementService(int $serviceId): void
     {
         if (!isset($this->selectedServices[$serviceId])) {
@@ -289,10 +244,6 @@ class extends Component
         $this->calculateTotal();
     }
 
-    /**
-     * Reset the range to the first available day — NOT today, which
-     * may itself be booked.
-     */
     public function clearDates(): void
     {
         $target          = $this->firstAvailableDate;
@@ -301,11 +252,6 @@ class extends Component
         $this->calculateTotal();
     }
 
-    /**
-     * Recompute all totals from authoritative DB state.
-     * Called on every relevant field change AND again in submit() before
-     * any write — never trust the client-dehydrated floats.
-     */
     public function calculateTotal(): void
     {
         $price = (float) $this->property->price;
@@ -335,10 +281,6 @@ class extends Component
         $this->balanceOnArrival = round($this->totalAmount - $this->reservationFee, 2);
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Computed
-    // ─────────────────────────────────────────────────────────
-
     #[Computed]
     public function selectedServiceModels()
     {
@@ -366,12 +308,6 @@ class extends Component
             ->get(['id', 'name', 'price']);
     }
 
-    /**
-     * First day within the 90-day booking window that isn't already
-     * booked for this property. Falls back to today if nothing is
-     * free (an edge case that only happens when the calendar is
-     * fully booked).
-     */
     #[Computed]
     public function firstAvailableDate(): string
     {
@@ -389,10 +325,6 @@ class extends Component
         return now()->format('Y-m-d');
     }
 
-    /**
-     * JSON payload for the Alpine date picker. Encoded with JSON_HEX_*
-     * flags so it's safe to embed in an HTML data-* attribute.
-     */
     #[Computed]
     public function dateSelectorDataJson(): string
     {
@@ -441,31 +373,6 @@ class extends Component
             ->all();
     }
 
-    /**
-     * Explode the booked ranges into individual dates.
-     *
-     * NOTE ON SEMANTICS — currently INCLUSIVE of `check_out`:
-     *   A booking Oct 1 → Oct 3 marks Oct 1, Oct 2, and Oct 3 as taken.
-     *   That means no same-day turnover: a new guest cannot check in on
-     *   the same day another checks out. The `submit()` conflict check
-     *   uses EXCLUSIVE comparisons (`E_out > N_in`), so it would accept
-     *   that turnover. The two are inconsistent by design here — the
-     *   frontend is stricter, which is the safe side of the mismatch.
-     *
-     *   If you want standard hotel-style same-day turnover (check_out
-     *   morning is free for the next arrival), change the loop below to
-     *   include `check_in` only, then walk up to but NOT including
-     *   `check_out`:
-     *
-     *     $dates[] = $start->format('Y-m-d');
-     *     for ($d = $start->copy()->addDay(); $d->lt($end); $d->addDay()) {
-     *         $dates[] = $d->format('Y-m-d');
-     *     }
-     *
-     *   That also requires matching changes in `validateDateRange()`
-     *   below and the `submit()` conflict query. Pick one semantic and
-     *   apply it in all three places.
-     */
     #[Computed]
     public function bookedDatesArray(): array
     {
@@ -484,13 +391,10 @@ class extends Component
         return array_values(array_unique($dates));
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Date range validation
-    // ─────────────────────────────────────────────────────────
-
     protected function validateDateRange(): void
     {
         if (empty($this->check_in) || empty($this->check_out)) {
+            $this->dateRangeValid = true;
             return;
         }
 
@@ -500,27 +404,23 @@ class extends Component
 
         for ($d = $start->copy(); $d->lte($end); $d->addDay()) {
             if (in_array($d->format('Y-m-d'), $bookedDates, true)) {
+                $this->dateRangeValid = false;
                 session()->flash('error', 'Selected date range includes unavailable dates. Please choose different dates.');
                 return;
             }
         }
 
+        $this->dateRangeValid = true;
         session()->forget('error');
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Submit → create booking + PayMongo checkout session
-    // ─────────────────────────────────────────────────────────
-
     public function submit()
     {
-        // Livewire actions bypass route middleware. Re-verify the session.
         abort_unless(Auth::check(), 403, 'Your session has expired. Please sign in again.');
 
         $this->validate();
         $this->validateDateRange();
 
-        // ── Recompute totals from authoritative DB state ──
         $this->calculateTotal();
 
         $tenantId = $this->property->tenant_id;
@@ -543,13 +443,11 @@ class extends Component
         DB::beginTransaction();
 
         try {
-            // 1. Lock the property row to prevent concurrent double-booking.
             Property::withoutGlobalScope(TenantScope::class)
                 ->whereKey($this->property->id)
                 ->lockForUpdate()
                 ->first();
 
-            // 2. Re-check availability after locking.
             $conflict = BookingItem::withoutGlobalScope(TenantScope::class)
                 ->where('property_id', $this->property->id)
                 ->whereHas('booking', function ($q) {
@@ -569,24 +467,18 @@ class extends Component
             $checkInDateTime  = $this->check_in . ' ' . $this->checkInTime . ':00';
             $checkOutDateTime = $this->check_out . ' ' . $this->checkInTime . ':00';
 
-            // 3. Create the booking header.
-            //
-            // NOTE: check_in / check_out are MySQL DATE columns — they
-            // physically cannot store a time. booking_time preserves
-            // the user-picked HH:MM so the receipt can display it.
             $booking = Booking::create([
                 'tenant_id'         => $tenantId,
                 'user_id'           => Auth::id(),
                 'booking_reference' => 'BK-' . strtoupper(Str::random(8)),
                 'check_in'          => $checkInDateTime,
                 'check_out'         => $checkOutDateTime,
-                'booking_time'      => $this->checkInTime,   // ← preserves the selected start time
+                'booking_time'      => $this->checkInTime,
                 'total_amount'      => $this->totalAmount,
                 'status'            => Booking::STATUS_PENDING,
                 'booking_type'      => $this->bookingMode,
             ]);
 
-            // 4. Booking item (the property itself).
             BookingItem::create([
                 'tenant_id'   => $tenantId,
                 'booking_id'  => $booking->id,
@@ -596,7 +488,6 @@ class extends Component
                 'subtotal'    => (float) $this->property->price * $this->totalDays,
             ]);
 
-            // 5. Booking services — iterate the tenant-scoped collection.
             foreach ($this->selectedServiceModels as $serviceId => $svc) {
                 $qty = (int) ($this->selectedServices[$serviceId] ?? 0);
                 if ($qty < 1) {
@@ -612,12 +503,10 @@ class extends Component
                 ]);
             }
 
-            // 6. Determine what to charge now.
             $chargeAmount = $this->bookingMode === Booking::TYPE_RESERVATION
                 ? $this->reservationFee
                 : $this->totalAmount;
 
-            // 7. Create the PayMongo checkout session.
             $payMongo = app(PayMongoService::class);
 
             $session = $payMongo->createCheckoutSession([
@@ -652,7 +541,6 @@ class extends Component
                 return null;
             }
 
-            // 8. Record the pending payment.
             Payment::create([
                 'tenant_id'           => $tenantId,
                 'booking_id'          => $booking->id,
@@ -691,20 +579,42 @@ class extends Component
 @push('styles')
     @once
         <style>
+            /* ── Ambient background wash ── */
+            .booking-ambient {
+                background:
+                    radial-gradient(ellipse 70% 50% at 8% 5%, rgba(245,158,11,.08) 0%, transparent 55%),
+                    radial-gradient(ellipse 60% 55% at 95% 15%, rgba(59,130,246,.06) 0%, transparent 55%),
+                    radial-gradient(ellipse 80% 60% at 50% 100%, rgba(139,92,246,.04) 0%, transparent 60%);
+            }
+            .dark .booking-ambient {
+                background:
+                    radial-gradient(ellipse 70% 50% at 8% 5%, rgba(245,158,11,.10) 0%, transparent 55%),
+                    radial-gradient(ellipse 60% 55% at 95% 15%, rgba(59,130,246,.08) 0%, transparent 55%),
+                    radial-gradient(ellipse 80% 60% at 50% 100%, rgba(139,92,246,.06) 0%, transparent 60%);
+            }
+
+            /* ── Step indicator ── */
             .step-dot {
-                width: 36px; height: 36px; border-radius: 50%;
+                width: 40px; height: 40px; border-radius: 50%;
                 display: flex; align-items: center; justify-content: center;
-                font-size: 13px; font-weight: 800;
+                font-size: 14px; font-weight: 800;
                 transition: all .35s cubic-bezier(.34,1.56,.64,1);
                 flex-shrink: 0;
             }
-            .step-dot.done    { background: #059669; color: #fff; box-shadow: 0 0 0 4px rgba(5,150,105,.2); }
-            .step-dot.active  { background: #10b981; color: #fff; box-shadow: 0 0 0 5px rgba(16,185,129,.25); }
-            .step-dot.pending { background: #e5e7eb; color: #6b7280; border: 1px solid #d1d5db; }
-            .dark .step-dot.pending { background: #374151; color: #e5e7eb; border-color: #6b7280; }
+            .step-dot.done    { background: #059669; color: #fff; box-shadow: 0 0 0 4px rgba(5,150,105,.18); }
+            .step-dot.active  { background: #10b981; color: #fff; box-shadow: 0 0 0 6px rgba(16,185,129,.22); }
+            .step-dot.pending { background: #e5e7eb; color: #9ca3af; border: 1px solid #d1d5db; }
+            .dark .step-dot.pending { background: #1f2937; color: #9ca3af; border-color: #374151; }
 
+            .step-connector {
+                height: 2px;
+                border-radius: 2px;
+                transition: background-color .4s ease;
+            }
+
+            /* ── Panel transition on step change ── */
             .step-panel {
-                animation: stepSlideIn .25s cubic-bezier(.16,1,.3,1);
+                animation: stepSlideIn .28s cubic-bezier(.16,1,.3,1);
             }
             @keyframes stepSlideIn {
                 from { opacity: 0; transform: translateX(16px); }
@@ -714,7 +624,7 @@ class extends Component
                 .step-panel { animation: none; }
             }
 
-            /* Calendar day cell — 44px touch target minimum. */
+            /* ── Calendar day ── */
             .cal-day {
                 min-height: 44px;
                 min-width: 0;
@@ -732,6 +642,16 @@ class extends Component
          step: 1,
          maxStep: {{ $this->availableServices->isNotEmpty() ? 4 : 3 }},
          errors: {},
+
+         get nextLabel() {
+             if (this.step >= this.maxStep) return 'Continue';
+             const target = this.step + 1;
+             if (target === 2) return 'Continue to Dates';
+             if (target === 3) return this.maxStep === 4 ? 'Continue to Extras' : 'Continue to Payment';
+             if (target === 4) return 'Continue to Payment';
+             return 'Continue';
+         },
+
          next() {
              if (this.step === 1) {
                  if (!this.$wire.customerName.trim()) this.errors.name = 'Full name is required.';
@@ -744,9 +664,12 @@ class extends Component
                  if (!this.$wire.check_in || !this.$wire.check_out) {
                      this.errors.dates = 'Please select both start and end dates.';
                      return;
-                 } else {
-                     delete this.errors.dates;
                  }
+                 if (this.$wire.dateRangeValid === false) {
+                     this.errors.dates = 'Selected range includes unavailable days. Please pick another range.';
+                     return;
+                 }
+                 delete this.errors.dates;
              }
              if (this.step < this.maxStep) {
                  this.step++;
@@ -759,20 +682,29 @@ class extends Component
                  this.$nextTick(() => this.$refs['stepHeading' + this.step]?.focus());
              }
          },
+
          goTo(s) {
-             if (s <= this.maxStep && s !== this.step) {
-                 this.step = s;
-                 this.$nextTick(() => this.$refs['stepHeading' + this.step]?.focus());
-             }
+             if (s >= this.step) return;
+             if (s < 1 || s > this.maxStep) return;
+             this.step = s;
+             this.$nextTick(() => this.$refs['stepHeading' + this.step]?.focus());
          }
      }">
 
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 pb-32 lg:pb-12">
+    {{-- Ambient background wash --}}
+    <div class="booking-ambient fixed inset-0 -z-10 pointer-events-none" aria-hidden="true"></div>
 
-        {{-- Back link --}}
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 pb-32 lg:pb-12">
+
+        {{-- ─── Back link ─── --}}
         <div class="mb-6">
             <a href="{{ route('tenant.show', $property->tenant->slug) }}" wire:navigate
-               class="inline-flex items-center gap-1.5 text-xs uppercase tracking-wider text-gray-600 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors group active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+               class="relative inline-flex items-center gap-1.5 text-xs uppercase tracking-wider
+                      text-gray-600 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400
+                      transition-colors group active:scale-95
+                      before:absolute before:content-[''] before:-inset-2 before:rounded
+                      [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
                 <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 12H5m7-7l-7 7 7 7"/>
                 </svg>
@@ -780,19 +712,77 @@ class extends Component
             </a>
         </div>
 
-        {{-- Header --}}
-        <div class="mb-8">
-            <div class="flex items-center gap-2 mb-2">
-                <span class="w-5 h-px bg-primary-600"></span>
-                <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Reservation</span>
+        {{-- ─── Property context card ───
+             Grounds the user in what they're booking. Sits above the
+             page title so the first thing they see after the back link
+             is the actual property image + name + price. --}}
+        <div class="mb-6 sm:mb-8 rounded-2xl bg-white dark:bg-gray-800
+                    border border-gray-200 dark:border-gray-700
+                    shadow-sm p-4 sm:p-5">
+            <div class="flex items-center gap-4">
+                {{-- Thumbnail --}}
+                <div class="shrink-0 w-16 h-16 sm:w-20 sm:h-20 rounded-xl overflow-hidden
+                            bg-gray-100 dark:bg-gray-700
+                            ring-1 ring-gray-200/70 dark:ring-gray-700/70">
+                    @if($property->images->isNotEmpty())
+                        <img src="{{ asset('storage/'.$property->images->first()->image_path) }}"
+                             alt="{{ $property->name }}"
+                             class="w-full h-full object-cover"
+                             loading="eager" decoding="async">
+                    @else
+                        <div class="w-full h-full flex items-center justify-center text-gray-400">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
+                            </svg>
+                        </div>
+                    @endif
+                </div>
+
+                {{-- Info --}}
+                <div class="min-w-0 flex-1">
+                    <p class="text-[10px] font-bold uppercase tracking-[0.22em] text-amber-600 dark:text-amber-400 mb-1 inline-flex items-center gap-2">
+                        <span class="h-px w-3 bg-amber-500" aria-hidden="true"></span>
+                        Booking
+                    </p>
+                    <h2 class="font-display text-base sm:text-lg font-semibold text-gray-900 dark:text-white truncate leading-tight">
+                        {{ $property->name }}
+                    </h2>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
+                        {{ $property->propertyType->name ?? 'Activity' }}
+                        <span class="mx-1" aria-hidden="true">·</span>
+                        {{ $property->tenant->name }}
+                    </p>
+                </div>
+
+                {{-- Price --}}
+                <div class="shrink-0 text-right pl-3 border-l border-gray-200 dark:border-gray-700">
+                    <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-0.5">
+                        From
+                    </p>
+                    <p class="font-display text-lg sm:text-xl font-semibold text-primary-600 dark:text-primary-400 tabular-nums leading-none">
+                        ₱{{ number_format($property->price, 0) }}
+                    </p>
+                    <p class="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">/ unit</p>
+                </div>
             </div>
-            <h1 class="font-display text-3xl md:text-4xl font-semibold text-gray-900 dark:text-white">
+        </div>
+
+        {{-- ─── Header ─── --}}
+        <div class="mb-6 sm:mb-8">
+            <p class="mb-2 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400">
+                <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
+                Reservation
+            </p>
+            <h1 class="font-display text-2xl sm:text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 dark:text-white [text-wrap:balance]">
                 Complete Your <em class="italic text-primary-600 dark:text-primary-400">Booking</em>
             </h1>
         </div>
 
-        {{-- Step Progress --}}
-        <div class="flex items-center mb-10">
+        {{-- ─── Step Progress ───
+             Larger dots (40px), progress-filling connectors, tighter
+             labels. The connectors now change colour as the user
+             advances, giving a stronger sense of forward motion. --}}
+        <div class="flex items-start mb-8 sm:mb-10">
             @php
                 $steps = [];
                 $steps[1] = ['Your Details', 'Guest information'];
@@ -809,49 +799,64 @@ class extends Component
             @foreach($steps as $num => [$title, $sub])
                 <button type="button"
                         @click="goTo({{ $num }})"
-                        :disabled="{{ $num }} > maxStep"
-                        class="flex flex-col items-center min-w-0 flex-1 focus:outline-none group active:scale-95 focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-lg transition-all duration-200"
-                        :class="{{ $num }} <= maxStep ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'">
+                        :disabled="{{ $num }} > step"
+                        :aria-current="{{ $num }} === step ? 'step' : 'false'"
+                        class="flex flex-col items-center min-w-0 flex-1 focus:outline-none group
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                               focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-lg transition-all duration-200
+                               active:scale-95"
+                        :class="{
+                            'cursor-pointer': {{ $num }} < step,
+                            'cursor-default': {{ $num }} === step,
+                            'cursor-not-allowed opacity-60': {{ $num }} > step
+                        }">
                     <span class="step-dot"
                           :class="{
                               'done': {{ $num }} < step,
                               'active': {{ $num }} === step,
                               'pending': {{ $num }} > step
-                          }">
+                          }"
+                          aria-hidden="true">
                         <span x-text="{{ $num }} < step ? '✓' : '{{ $num }}'"></span>
                     </span>
-                    <span class="text-xs font-semibold mt-2 text-center"
+                    <span class="text-xs font-semibold mt-2.5 text-center"
                           :class="{
                               'text-gray-900 dark:text-white': {{ $num }} <= step,
                               'text-gray-500 dark:text-gray-400': {{ $num }} > step
                           }">
                         {{ $title }}
                     </span>
-                    <span class="hidden sm:block text-[10px] text-gray-400 dark:text-gray-500">{{ $sub }}</span>
+                    <span class="hidden sm:block text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">{{ $sub }}</span>
                 </button>
 
                 @if($num < count($steps))
-                    <div class="h-px flex-1 bg-gray-200 dark:bg-gray-700 mx-2 mt-4"></div>
+                    <div class="step-connector flex-1 mx-2 mt-[19px]"
+                         :class="{{ $num }} < step ? 'bg-emerald-500' : 'bg-gray-200 dark:bg-gray-700'"
+                         aria-hidden="true"></div>
                 @endif
             @endforeach
         </div>
 
-        {{-- Error Flash --}}
+        {{-- ─── Error flash ─── --}}
         @if(session()->has('error'))
             <div x-data="{ show: true }"
-                 x-init="setTimeout(() => show = false, 5000)"
+                 x-init="setTimeout(() => show = false, 6000)"
                  :class="show ? '' : 'hidden'"
                  role="alert"
                  aria-live="polite"
-                 class="bg-rose-50 dark:bg-rose-900/30 border border-rose-200 dark:border-rose-400/40 text-rose-700 dark:text-rose-200 p-4 rounded-2xl text-sm mb-6 flex items-start gap-3">
+                 class="bg-rose-50 dark:bg-rose-900/30 border border-rose-200 dark:border-rose-400/40
+                        text-rose-700 dark:text-rose-200 p-4 rounded-2xl text-sm mb-6
+                        flex items-start gap-3 shadow-sm">
                 <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
                 </svg>
                 <span class="flex-1">{{ session('error') }}</span>
                 <button type="button"
                         @click="show = false"
-                        class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                        class="relative inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
                                transition-all duration-200 active:scale-95
+                               before:absolute before:content-[''] before:-inset-2 before:rounded-md
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 shrink-0"
                         aria-label="Dismiss error">
                     <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -861,24 +866,21 @@ class extends Component
             </div>
         @endif
 
-        <div class="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-8 items-start">
+        <div class="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-6 lg:gap-8 items-start">
 
-            {{-- ═══════════════════════════════════════════════════
-                 Main Form Area
-                 ═══════════════════════════════════════════════════ --}}
             <div class="space-y-4">
 
                 {{-- ═══ STEP 1: Guest Details ═══ --}}
                 <div :class="step === 1 ? 'step-panel space-y-4' : 'hidden'">
 
-                    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm">
-                        <h2 class="font-display text-lg font-semibold text-gray-900 dark:text-white mb-4" x-ref="stepHeading1" tabindex="-1">Your Details</h2>
+                    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm">
+                        <h2 class="font-display text-lg font-semibold tracking-tight text-gray-900 dark:text-white mb-4" x-ref="stepHeading1" tabindex="-1">Your Details</h2>
 
                         <div x-data="{ showFields: {{ Auth::check() ? 'false' : 'true' }} }">
                             @auth
                                 <div class="flex items-center justify-between bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3 mb-4">
                                     <div class="flex items-center gap-3 min-w-0">
-                                        <div class="w-8 h-8 rounded-full bg-primary-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
+                                        <div class="w-9 h-9 rounded-full bg-primary-600 flex items-center justify-center text-white text-sm font-bold shrink-0">
                                             {{ strtoupper(substr(Auth::user()->name, 0, 1)) }}
                                         </div>
                                         <div class="min-w-0">
@@ -888,7 +890,10 @@ class extends Component
                                     </div>
                                     <button type="button"
                                             @click="showFields = !showFields"
-                                            class="text-[10px] font-bold uppercase tracking-wider text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 transition active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-md px-2 py-1 shrink-0">
+                                            class="relative text-[10px] font-bold uppercase tracking-wider text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 transition active:scale-95
+                                                   before:absolute before:content-[''] before:-inset-2 before:rounded-md
+                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-md px-2 py-1 shrink-0">
                                         <span x-text="showFields ? 'Done' : 'Edit'"></span>
                                     </button>
                                 </div>
@@ -899,6 +904,7 @@ class extends Component
                                 <div>
                                     <label for="customerName" class="block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">Full Name *</label>
                                     <input id="customerName" type="text" wire:model="customerName" placeholder="Your full name"
+                                           autocomplete="name"
                                            class="input w-full @error('customerName') border-rose-400/50 @enderror">
                                     @error('customerName') <p class="text-xs text-rose-600 dark:text-rose-300 mt-1">{{ $message }}</p> @enderror
                                     <p x-cloak :class="errors.name ? 'block' : 'hidden'" x-text="errors.name" class="text-xs text-rose-600 dark:text-rose-300 mt-1"></p>
@@ -907,6 +913,7 @@ class extends Component
                                 <div>
                                     <label for="customerEmail" class="block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">Email *</label>
                                     <input id="customerEmail" type="email" wire:model="customerEmail" placeholder="you@example.com" required
+                                           autocomplete="email" inputmode="email"
                                            class="input w-full @error('customerEmail') border-rose-400/50 @enderror">
                                     @error('customerEmail') <p class="text-xs text-rose-600 dark:text-rose-300 mt-1">{{ $message }}</p> @enderror
                                     <p x-cloak :class="errors.email ? 'block' : 'hidden'" x-text="errors.email" class="text-xs text-rose-600 dark:text-rose-300 mt-1"></p>
@@ -919,6 +926,7 @@ class extends Component
                                            inputmode="numeric"
                                            pattern="[0-9+]*"
                                            maxlength="13"
+                                           autocomplete="tel"
                                            wire:model.live.debounce.500ms="customerPhone"
                                            x-on:input="
                                                const cleaned = $event.target.value.replace(/[^0-9+]/g, '');
@@ -939,9 +947,9 @@ class extends Component
                         <button type="button" @click="next()"
                                 class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
                                        transition-all duration-200 active:scale-95
-                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
-                                       disabled:opacity-60 disabled:cursor-not-allowed">
-                            Continue
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                            <span x-text="nextLabel"></span>
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
                         </button>
                     </div>
@@ -951,43 +959,52 @@ class extends Component
                 <div :class="step === 2 ? 'step-panel space-y-4' : 'hidden'">
 
                     <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-4 sm:p-6 shadow-sm">
-                        <h2 class="font-display text-lg font-semibold text-gray-900 dark:text-white mb-4" x-ref="stepHeading2" tabindex="-1">Visit Dates</h2>
+                        <h2 class="font-display text-lg font-semibold tracking-tight text-gray-900 dark:text-white mb-4" x-ref="stepHeading2" tabindex="-1">Visit Dates</h2>
 
                         <div x-data="dateSelector()"
                              data-date-data="{{ $this->dateSelectorDataJson }}"
                              class="space-y-5">
 
-                            {{-- Quick-range chips --}}
                             <div>
                                 <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">Quick pick</p>
                                 <div class="flex flex-wrap gap-2">
                                     <button type="button" @click="quickSelect('today')"
-                                            class="inline-flex items-center gap-1 h-9 px-3 rounded-full border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-xs font-semibold text-gray-700 dark:text-gray-300
+                                            class="inline-flex items-center gap-1 h-11 sm:h-10 px-3.5 rounded-full border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-xs font-semibold text-gray-700 dark:text-gray-300
                                                    hover:border-primary-400 dark:hover:border-primary-500 hover:text-primary-600 dark:hover:text-primary-400
-                                                   transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                                   transition-all duration-200 active:scale-95
+                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                                         Today
                                     </button>
                                     <button type="button" @click="quickSelect('tomorrow')"
-                                            class="inline-flex items-center gap-1 h-9 px-3 rounded-full border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-xs font-semibold text-gray-700 dark:text-gray-300
+                                            class="inline-flex items-center gap-1 h-11 sm:h-10 px-3.5 rounded-full border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-xs font-semibold text-gray-700 dark:text-gray-300
                                                    hover:border-primary-400 dark:hover:border-primary-500 hover:text-primary-600 dark:hover:text-primary-400
-                                                   transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                                   transition-all duration-200 active:scale-95
+                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                                         Tomorrow
                                     </button>
                                     <button type="button" @click="quickSelect('three-days')"
-                                            class="inline-flex items-center gap-1 h-9 px-3 rounded-full border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-xs font-semibold text-gray-700 dark:text-gray-300
+                                            class="inline-flex items-center gap-1 h-11 sm:h-10 px-3.5 rounded-full border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-xs font-semibold text-gray-700 dark:text-gray-300
                                                    hover:border-primary-400 dark:hover:border-primary-500 hover:text-primary-600 dark:hover:text-primary-400
-                                                   transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                                   transition-all duration-200 active:scale-95
+                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                                         3 days
                                     </button>
                                     <button type="button" @click="quickSelect('weekend')"
-                                            class="inline-flex items-center gap-1 h-9 px-3 rounded-full border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-xs font-semibold text-gray-700 dark:text-gray-300
+                                            class="inline-flex items-center gap-1 h-11 sm:h-10 px-3.5 rounded-full border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-xs font-semibold text-gray-700 dark:text-gray-300
                                                    hover:border-primary-400 dark:hover:border-primary-500 hover:text-primary-600 dark:hover:text-primary-400
-                                                   transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                                   transition-all duration-200 active:scale-95
+                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                                         This weekend
                                     </button>
                                     <button type="button" @click="clearSelection()"
-                                            class="ml-auto inline-flex items-center gap-1 h-9 px-3 rounded-full text-xs font-semibold text-gray-500 dark:text-gray-400
+                                            class="relative ml-auto inline-flex items-center gap-1 h-11 sm:h-10 px-3.5 rounded-full text-xs font-semibold text-gray-500 dark:text-gray-400
                                                    hover:text-rose-600 dark:hover:text-rose-400 transition-all duration-200 active:scale-95
+                                                   before:absolute before:content-[''] before:-inset-1 before:rounded-full
+                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                                         <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
@@ -997,7 +1014,6 @@ class extends Component
                                 </div>
                             </div>
 
-                            {{-- Selection summary --}}
                             <div class="grid grid-cols-2 sm:grid-cols-[1fr_1fr_auto] gap-2 sm:gap-3">
                                 <div class="flex items-center gap-3 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-3 py-2.5 sm:px-4 sm:py-3">
                                     <div class="w-8 h-8 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center text-primary-600 dark:text-primary-400 shrink-0">
@@ -1040,7 +1056,6 @@ class extends Component
                                 </div>
                             </div>
 
-                            {{-- Start time --}}
                             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3">
                                 <div class="flex items-center gap-3">
                                     <div class="w-9 h-9 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center text-primary-600 dark:text-primary-400 shrink-0">
@@ -1053,14 +1068,17 @@ class extends Component
                                         <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Used for both start and end</p>
                                     </div>
                                 </div>
-                                <input type="time" wire:model.live="checkInTime" class="input" />
+                                <input type="time" wire:model.live="checkInTime" class="input max-w-[140px]" />
                             </div>
+                            @error('checkInTime')
+                                <p class="text-xs text-rose-600 dark:text-rose-300 -mt-3">{{ $message }}</p>
+                            @enderror
 
-                            {{-- Calendar navigation --}}
                             <div class="flex items-center justify-between mb-1">
                                 <button type="button" @click="prevMonth()" :disabled="!canGoPrevMonth"
-                                        class="inline-flex items-center justify-center h-9 w-9 rounded-lg text-gray-500 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700
+                                        class="inline-flex items-center justify-center h-11 w-11 sm:h-10 sm:w-10 rounded-lg text-gray-500 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700
                                                transition-all duration-200 active:scale-95
+                                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                disabled:opacity-30 disabled:cursor-not-allowed
                                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                                         aria-label="Previous month">
@@ -1068,8 +1086,9 @@ class extends Component
                                 </button>
                                 <span class="text-sm font-semibold text-gray-900 dark:text-white" x-text="currentMonthName + ' ' + currentYear"></span>
                                 <button type="button" @click="nextMonth()" :disabled="!canGoNextMonth"
-                                        class="inline-flex items-center justify-center h-9 w-9 rounded-lg text-gray-500 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700
+                                        class="inline-flex items-center justify-center h-11 w-11 sm:h-10 sm:w-10 rounded-lg text-gray-500 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700
                                                transition-all duration-200 active:scale-95
+                                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                disabled:opacity-30 disabled:cursor-not-allowed
                                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                                         aria-label="Next month">
@@ -1077,7 +1096,6 @@ class extends Component
                                 </button>
                             </div>
 
-                            {{-- Calendar grid --}}
                             <div class="grid grid-cols-7 gap-0.5 sm:gap-1">
                                 <template x-for="day in ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']" :key="day">
                                     <span class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500 text-center py-1.5" x-text="day"></span>
@@ -1090,6 +1108,7 @@ class extends Component
                                 <template x-for="day in daysInMonth" :key="day.iso">
                                     <button type="button"
                                             class="cal-day text-sm flex items-center justify-center
+                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                                             :disabled="day.isDisabled || day.isBooked"
                                             :aria-label="day.isBooked ? 'Unavailable' : ''"
@@ -1107,7 +1126,6 @@ class extends Component
                                 </template>
                             </div>
 
-                            {{-- Inline error --}}
                             <p x-cloak
                                :class="error ? 'flex' : 'hidden'"
                                class="items-start gap-2 text-xs text-rose-600 dark:text-rose-300 bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-500/30 rounded-lg px-3 py-2">
@@ -1117,7 +1135,6 @@ class extends Component
                                 <span x-text="error"></span>
                             </p>
 
-                            {{-- Legend --}}
                             <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-[10px] text-gray-500 dark:text-gray-400 pt-1">
                                 <span class="inline-flex items-center gap-1.5">
                                     <span class="w-3 h-3 rounded-sm bg-primary-600"></span>
@@ -1133,7 +1150,6 @@ class extends Component
                                 </span>
                             </div>
 
-                            {{-- Booked ranges list --}}
                             @if(!empty($this->bookedDateRanges))
                                 <div class="bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 rounded-xl p-3 sm:p-4">
                                     <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
@@ -1143,7 +1159,7 @@ class extends Component
                                         @foreach($this->bookedDateRanges as $range)
                                             <span wire:key="range-{{ md5($range['start'] . '|' . $range['end']) }}"
                                                   class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 text-[11px] font-medium">
-                                                <span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
+                                                <span class="w-1.5 h-1.5 rounded-full bg-rose-400" aria-hidden="true"></span>
                                                 {{ \Carbon\Carbon::parse($range['start'])->format('M d') }} – {{ \Carbon\Carbon::parse($range['end'])->format('M d') }}
                                             </span>
                                         @endforeach
@@ -1162,17 +1178,17 @@ class extends Component
                         <button type="button" @click="prev()"
                                 class="inline-flex items-center justify-center gap-2 h-11 px-4 sm:px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
                                        transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
-                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
-                                       disabled:opacity-60 disabled:cursor-not-allowed">
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/></svg>
                             Back
                         </button>
                         <button type="button" @click="next()"
                                 class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
                                        transition-all duration-200 active:scale-95
-                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
-                                       disabled:opacity-60 disabled:cursor-not-allowed">
-                            Continue
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                            <span x-text="nextLabel"></span>
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
                         </button>
                     </div>
@@ -1183,8 +1199,8 @@ class extends Component
                     <div :class="step === 3 ? 'step-panel space-y-4' : 'hidden'">
 
                         <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm">
-                            <h2 class="font-display text-lg font-semibold text-gray-900 dark:text-white mb-1" x-ref="stepHeading3" tabindex="-1">Extra Services</h2>
-                            <p class="text-xs text-gray-500 dark:text-gray-400 mb-5">Optional add-ons. Tap to add — adjust quantity with <span class="font-bold">+</span> / <span class="font-bold">−</span>.</p>
+                            <h2 class="font-display text-lg font-semibold tracking-tight text-gray-900 dark:text-white mb-1" x-ref="stepHeading3" tabindex="-1">Extra Services</h2>
+                            <p class="text-xs text-gray-500 dark:text-gray-400 mb-5">Optional add-ons. Tap to add — adjust quantity with + / −.</p>
 
                             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                 @foreach($this->availableServices as $service)
@@ -1203,6 +1219,7 @@ class extends Component
                                                 wire:target="addService"
                                                 class="w-full items-center justify-between gap-3 px-4 py-3 text-left
                                                        transition-all duration-200 active:scale-[0.98]
+                                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-xl
                                                        disabled:opacity-60 disabled:cursor-not-allowed
                                                        {{ $isAdded ? 'hidden' : 'flex' }}">
@@ -1210,7 +1227,7 @@ class extends Component
                                                 <span class="block text-sm font-semibold text-gray-900 dark:text-white truncate">{{ $service->name }}</span>
                                                 <span class="block text-xs text-gray-500 dark:text-gray-400 mt-0.5 tabular-nums">₱{{ number_format($service->price, 2) }}</span>
                                             </span>
-                                            <span class="shrink-0 inline-flex items-center gap-1 h-8 px-3 rounded-full bg-primary-600 hover:bg-primary-700 text-white text-[10px] font-bold uppercase tracking-wider transition">
+                                            <span class="shrink-0 inline-flex items-center gap-1 h-9 px-3.5 rounded-full bg-primary-600 hover:bg-primary-700 text-white text-[10px] font-bold uppercase tracking-wider transition">
                                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v16m8-8H4"/></svg>
                                                 Add
                                             </span>
@@ -1224,33 +1241,37 @@ class extends Component
                                                     <span class="font-bold text-primary-600 dark:text-primary-400">₱{{ number_format($service->price * $qty, 2) }}</span>
                                                 </p>
                                             </div>
-                                            <div class="shrink-0 flex items-center gap-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-full p-0.5">
+                                            <div class="shrink-0 flex items-center gap-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-full p-1">
                                                 <button type="button"
                                                         wire:click="decrementService({{ $service->id }})"
                                                         wire:loading.attr="disabled"
                                                         wire:target="decrementService,addService"
-                                                        class="inline-flex items-center justify-center w-7 h-7 rounded-full text-gray-600 dark:text-gray-300
+                                                        class="relative inline-flex items-center justify-center w-9 h-9 rounded-full text-gray-600 dark:text-gray-300
                                                                hover:bg-gray-100 dark:hover:bg-gray-700
                                                                transition-all duration-200 active:scale-90
+                                                               before:absolute before:content-[''] before:-inset-0.5 before:rounded-full
+                                                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                                disabled:opacity-60 disabled:cursor-not-allowed
                                                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                                                         aria-label="Remove one {{ $service->name }}">
-                                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M20 12H4"/></svg>
+                                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M20 12H4"/></svg>
                                                 </button>
-                                                <span class="inline-flex items-center justify-center min-w-[24px] text-sm font-bold tabular-nums text-gray-900 dark:text-white">
+                                                <span class="inline-flex items-center justify-center min-w-[28px] text-sm font-bold tabular-nums text-gray-900 dark:text-white">
                                                     {{ $qty }}
                                                 </span>
                                                 <button type="button"
                                                         wire:click="addService({{ $service->id }})"
                                                         wire:loading.attr="disabled"
                                                         wire:target="addService,decrementService"
-                                                        class="inline-flex items-center justify-center w-7 h-7 rounded-full text-white bg-primary-600
+                                                        class="relative inline-flex items-center justify-center w-9 h-9 rounded-full text-white bg-primary-600
                                                                hover:bg-primary-700
                                                                transition-all duration-200 active:scale-90
+                                                               before:absolute before:content-[''] before:-inset-0.5 before:rounded-full
+                                                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                                disabled:opacity-60 disabled:cursor-not-allowed
                                                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                                                         aria-label="Add one more {{ $service->name }}">
-                                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v16m8-8H4"/></svg>
+                                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v16m8-8H4"/></svg>
                                                 </button>
                                             </div>
                                         </div>
@@ -1263,17 +1284,17 @@ class extends Component
                             <button type="button" @click="prev()"
                                     class="inline-flex items-center justify-center gap-2 h-11 px-4 sm:px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
                                            transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
-                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
-                                           disabled:opacity-60 disabled:cursor-not-allowed">
+                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/></svg>
                                 Back
                             </button>
                             <button type="button" @click="next()"
                                     class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
                                            transition-all duration-200 active:scale-95
-                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
-                                           disabled:opacity-60 disabled:cursor-not-allowed">
-                                Continue
+                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                                <span x-text="nextLabel"></span>
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
                             </button>
                         </div>
@@ -1284,38 +1305,38 @@ class extends Component
                 @php $paymentStep = $this->availableServices->isNotEmpty() ? 4 : 3; @endphp
                 <div :class="step === {{ $paymentStep }} ? 'step-panel space-y-4' : 'hidden'">
 
-                    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm">
-                        <h2 class="font-display text-lg font-semibold text-gray-900 dark:text-white mb-4"
+                    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm">
+                        <h2 class="font-display text-lg font-semibold tracking-tight text-gray-900 dark:text-white mb-4"
                             x-ref="stepHeading{{ $paymentStep }}" tabindex="-1">Payment Method</h2>
 
-                        {{-- Booking mode --}}
                         <div class="mb-5">
                             <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">Booking Type</label>
                             <div class="grid grid-cols-2 gap-3">
-                                <label class="cursor-pointer group">
+                                <label class="cursor-pointer group relative
+                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                                     <input type="radio" wire:model.live="bookingMode" value="full" class="sr-only peer">
                                     <div class="flex flex-col items-center justify-center gap-2 p-4 rounded-2xl border-2 border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-center transition-all duration-200 cursor-pointer peer-checked:border-primary-600 peer-checked:bg-primary-50 dark:peer-checked:bg-primary-900/30 peer-checked:shadow-lg active:scale-[0.98]">
                                         <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-gray-700 dark:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                                         </svg>
-                                        <p class="text-gray-900 dark:text-white font-semibold text-sm">Book Now</p>
-                                        <p class="text-gray-500 dark:text-gray-400 text-[11px]">Pay 100% online</p>
+                                        <p class="text-gray-900 dark:text-white font-semibold text-sm">Pay in Full</p>
+                                        <p class="text-gray-500 dark:text-gray-400 text-[11px]">100% online now</p>
                                     </div>
                                 </label>
-                                <label class="cursor-pointer group">
+                                <label class="cursor-pointer group relative
+                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                                     <input type="radio" wire:model.live="bookingMode" value="reservation" class="sr-only peer">
                                     <div class="flex flex-col items-center justify-center gap-2 p-4 rounded-2xl border-2 border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-center transition-all duration-200 cursor-pointer peer-checked:border-primary-600 peer-checked:bg-primary-50 dark:peer-checked:bg-primary-900/30 peer-checked:shadow-lg active:scale-[0.98]">
                                         <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-gray-700 dark:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v10a2 2 0 002 2h14a2 2 0 002-2V7a2 2 0 00-2-2H5z"/>
                                         </svg>
                                         <p class="text-gray-900 dark:text-white font-semibold text-sm">Reserve</p>
-                                        <p class="text-gray-500 dark:text-gray-400 text-[11px]">Pay 20% reservation fee</p>
+                                        <p class="text-gray-500 dark:text-gray-400 text-[11px]">20% now · rest on arrival</p>
                                     </div>
                                 </label>
                             </div>
                         </div>
 
-                        {{-- Payment method --}}
                         <div class="mb-5">
                             <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">Pay with</label>
                             <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -1324,27 +1345,29 @@ class extends Component
                                     ['paymaya', 'Maya'],
                                     ['card',    'Credit / Debit'],
                                 ] as [$val, $label])
-                                    <label class="relative cursor-pointer group" wire:key="payment-method-{{ $val }}">
+                                    <label class="relative cursor-pointer group
+                                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]"
+                                           wire:key="payment-method-{{ $val }}">
                                         <input type="radio" wire:model.live="paymentMethod" value="{{ $val }}" class="sr-only peer">
                                         <div class="flex flex-col items-center justify-center gap-2 p-4 rounded-2xl border-2 border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-center transition-all duration-200 peer-hover:border-gray-300 dark:peer-hover:border-gray-600 peer-focus-visible:ring-2 peer-focus-visible:ring-primary-500 peer-focus-visible:ring-offset-2 peer-checked:border-primary-600 peer-checked:bg-primary-50 dark:peer-checked:bg-primary-900/20 peer-checked:shadow-md active:scale-[0.98]">
-                                            <div class="absolute top-3 right-3 opacity-0 peer-checked:opacity-100 text-primary-600 dark:text-primary-400 transition-opacity duration-200">
-                                                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+                                            <div class="absolute top-3 right-3 opacity-0 peer-checked:opacity-100 text-primary-600 dark:text-primary-400 transition-opacity duration-200" aria-hidden="true">
+                                                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
                                                     <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
                                                 </svg>
                                             </div>
 
                                             @if($val === 'gcash')
-                                                <svg xmlns="http://www.w3.org/2000/svg" class="w-10 h-10" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+                                                <svg xmlns="http://www.w3.org/2000/svg" class="w-11 h-11" viewBox="0 0 32 32" fill="none" aria-hidden="true">
                                                     <circle cx="16" cy="16" r="16" fill="#007DFE"/>
-                                                    <text x="16" y="21" text-anchor="middle" fill="white" font-size="13" font-weight="900" font-family="sans-serif">G</text>
+                                                    <text x="16" y="22" text-anchor="middle" fill="white" font-size="14" font-weight="900" font-family="system-ui,sans-serif">G</text>
                                                 </svg>
                                             @elseif($val === 'paymaya')
-                                                <svg xmlns="http://www.w3.org/2000/svg" class="w-10 h-10" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+                                                <svg xmlns="http://www.w3.org/2000/svg" class="w-11 h-11" viewBox="0 0 32 32" fill="none" aria-hidden="true">
                                                     <circle cx="16" cy="16" r="16" fill="#111827"/>
-                                                    <text x="16" y="21" text-anchor="middle" fill="#00C6D7" font-size="13" font-weight="900" font-family="sans-serif">M</text>
+                                                    <text x="16" y="22" text-anchor="middle" fill="#00C6D7" font-size="14" font-weight="900" font-family="system-ui,sans-serif">M</text>
                                                 </svg>
                                             @else
-                                                <div class="w-10 h-10 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-gray-600 dark:text-gray-300">
+                                                <div class="w-11 h-11 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-gray-600 dark:text-gray-300">
                                                     <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                                         <rect x="2" y="5" width="20" height="14" rx="2" stroke="currentColor" stroke-width="2"/>
                                                         <line x1="2" y1="10" x2="22" y2="10" stroke="currentColor" stroke-width="2"/>
@@ -1359,7 +1382,6 @@ class extends Component
                             </div>
                         </div>
 
-                        {{-- Secure notice --}}
                         <div class="flex items-start gap-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-4">
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
@@ -1372,21 +1394,21 @@ class extends Component
                             </div>
                         </div>
 
-                        {{-- Actions --}}
                         <div class="flex flex-col-reverse sm:flex-row justify-between gap-4 mt-8">
                             <button type="button" @click="prev()"
                                     class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold w-full sm:w-auto
                                            transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
-                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
-                                           disabled:opacity-60 disabled:cursor-not-allowed">
+                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/></svg>
                                 Back
                             </button>
                             <button type="button" wire:click="submit" wire:loading.attr="disabled" wire:target="submit"
                                     class="inline-flex items-center justify-center gap-2 h-11 px-6 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm w-full sm:w-auto
                                            transition-all duration-200 active:scale-95
+                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
-                                           disabled:opacity-60 disabled:cursor-not-allowed data-loading:opacity-50">
+                                           disabled:opacity-60 disabled:cursor-not-allowed">
                                 <span wire:loading.remove wire:target="submit">Proceed to Pay</span>
                                 <span wire:loading wire:target="submit" class="inline-flex items-center gap-2">
                                     <svg xmlns="http://www.w3.org/2000/svg" class="animate-spin w-4 h-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
@@ -1407,17 +1429,27 @@ class extends Component
                  ═══════════════════════════════════════════════════ --}}
             <div class="hidden lg:block lg:sticky lg:top-24">
                 <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-3xl overflow-hidden shadow-lg">
+
+                    {{-- Property image --}}
                     @if($property->images->isNotEmpty())
-                        <div class="w-full h-36 rounded-t-3xl overflow-hidden">
+                        <div class="w-full aspect-[4/3] overflow-hidden">
                             <img src="{{ asset('storage/'.$property->images->first()->image_path) }}"
                                  class="w-full h-full object-cover" alt="{{ $property->name }}" loading="lazy" decoding="async">
+                        </div>
+                    @else
+                        <div class="w-full aspect-[4/3] bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-700 dark:to-gray-800 flex items-center justify-center">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
+                            </svg>
                         </div>
                     @endif
 
                     <div class="p-6 border-b border-gray-200 dark:border-gray-700">
-                        <h3 class="font-display text-xl font-semibold text-gray-900 dark:text-white leading-tight">{{ $property->name }}</h3>
-                        <p class="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-                            {{ $property->propertyType->name ?? 'Activity' }} · {{ $property->tenant->name }}
+                        <h3 class="font-display text-xl font-semibold tracking-tight text-gray-900 dark:text-white leading-tight">{{ $property->name }}</h3>
+                        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                            {{ $property->propertyType->name ?? 'Activity' }}
+                            <span class="mx-1" aria-hidden="true">·</span>
+                            {{ $property->tenant->name }}
                         </p>
                         <div class="flex items-baseline gap-1.5 mt-3">
                             <span class="font-display text-3xl text-primary-600 dark:text-primary-400 tabular-nums">₱{{ number_format($property->price, 2) }}</span>
@@ -1486,6 +1518,14 @@ class extends Component
                             </div>
                         @endif
                     </div>
+
+                    {{-- Trust badge --}}
+                    <div class="px-6 pb-5 flex items-center justify-center gap-2 text-[10px] text-gray-400 dark:text-gray-500">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+                        </svg>
+                        <span class="uppercase tracking-wider">Secured by PayMongo</span>
+                    </div>
                 </div>
             </div>
 
@@ -1495,7 +1535,10 @@ class extends Component
     {{-- ═══════════════════════════════════════════════════════
          Mobile Sticky Summary
          ═══════════════════════════════════════════════════════ --}}
-    <div class="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-700 shadow-[0_-4px_20px_rgba(0,0,0,0.08)] p-3 pb-safe">
+    <div class="lg:hidden fixed bottom-0 left-0 right-0 z-50
+                bg-white/95 dark:bg-gray-900/95 backdrop-blur-md
+                border-t border-gray-200 dark:border-gray-700
+                shadow-[0_-4px_20px_rgba(0,0,0,0.08)] p-3 pb-safe">
         <div class="flex items-center justify-between gap-3 max-w-7xl mx-auto">
             <div class="flex-1 min-w-0">
                 <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
@@ -1511,14 +1554,36 @@ class extends Component
                     </p>
                 @endif
             </div>
-            <button type="button"
-                    @click="goTo({{ $this->availableServices->isNotEmpty() ? 4 : 3 }})"
+
+            <button x-show="step < maxStep"
+                    type="button"
+                    @click="next()"
                     class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm shrink-0
                            transition-all duration-200 active:scale-95
+                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                Continue
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
+            </button>
+
+            <button x-show="step === maxStep"
+                    type="button"
+                    wire:click="submit"
+                    wire:loading.attr="disabled"
+                    wire:target="submit"
+                    class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm shrink-0
+                           transition-all duration-200 active:scale-95
+                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                            disabled:opacity-60 disabled:cursor-not-allowed">
-                Review
-                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
+                <span wire:loading.remove wire:target="submit">Pay Now</span>
+                <span wire:loading wire:target="submit" class="inline-flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="animate-spin w-4 h-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Processing…
+                </span>
             </button>
         </div>
     </div>

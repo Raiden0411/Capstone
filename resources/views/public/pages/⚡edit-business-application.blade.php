@@ -35,21 +35,17 @@ class extends Component
 
     public const TOTAL_STEPS = 3;
 
-    // ── Step 1: Business ──
     public string $business_name        = '';
     public string $business_type        = '';
     public string $type_of_tenant_id    = '';
     public string $business_description = '';
 
-    /** @var \Livewire\Features\SupportFileUploads\TemporaryUploadedFile|null */
     public $logo = null;
     public ?string $logo_path = null;
 
-    /** @var \Livewire\Features\SupportFileUploads\TemporaryUploadedFile|null */
     public $cover_photo = null;
     public ?string $cover_photo_path = null;
 
-    // ── Step 1: Location ──
     public string $address  = '';
     public string $barangay = '';
     public string $city     = '';
@@ -60,34 +56,25 @@ class extends Component
 
     public int $locationVersion = 0;
 
-    // ── Step 2: Verification ──
     public string $business_registration_number = '';
     public string $tin_number                   = '';
 
     /** @var array<string, mixed> */
     public array $uploads = [];
 
-    // ── Step 3: Owner ──
     public string $owner_full_name = '';
     public string $owner_id_type   = '';
     public string $owner_id_number = '';
     public string $owner_birthdate = '';
 
-    /** @var \Livewire\Features\SupportFileUploads\TemporaryUploadedFile|null */
     public $owner_avatar = null;
     public ?string $owner_avatar_path = null;
 
-    // ── Step 3: Contact ──
     public string $contact_email = '';
     public string $contact_phone = '';
 
-    // ── Feedback ──
     public ?string $saveError   = null;
     public ?string $submitError = null;
-
-    // ─────────────────────────────────────────────────────────
-    //  Lifecycle
-    // ─────────────────────────────────────────────────────────
 
     public function mount(BusinessApplication $application): void
     {
@@ -144,9 +131,18 @@ class extends Component
         $this->assertOwnership($this->application);
     }
 
-    // ─────────────────────────────────────────────────────────────
-    //  Computed
-    // ─────────────────────────────────────────────────────────────
+    /**
+     * Build a host-agnostic storage URL.
+     *
+     * Rule J: never use asset()/route() for storage — APP_URL may not
+     * match the current host (e.g. envkit.net vs 127.0.0.1). A relative
+     * URL always resolves correctly on any origin.
+     */
+    protected function storageUrl(?string $path): ?string
+    {
+        if (! $path) return null;
+        return '/storage/' . ltrim($path, '/');
+    }
 
     #[Computed]
     public function siteName(): string
@@ -157,9 +153,7 @@ class extends Component
     #[Computed]
     public function logoUrl(): ?string
     {
-        $path = SiteSetting::getValue('site_logo');
-
-        return $path ? asset('storage/' . $path) : null;
+        return $this->storageUrl(SiteSetting::getValue('site_logo'));
     }
 
     /** @return array<int, string> */
@@ -337,10 +331,6 @@ class extends Component
         return $parts[0] ?: 'there';
     }
 
-    // ─────────────────────────────────────────────────────────────
-    //  Map picker — fast path
-    // ─────────────────────────────────────────────────────────────
-
     public function setBusinessLocation($lat, $lng): void
     {
         $this->requireOwnership();
@@ -359,11 +349,13 @@ class extends Component
         $this->businessLng = round($lng, 7);
 
         unset($this->hasCoordinates, $this->mapCenter, $this->mapZoom);
-    }
 
-    // ─────────────────────────────────────────────────────────────
-    //  Map picker — slow path (reverse-geocode)
-    // ─────────────────────────────────────────────────────────────
+        // Tell the map to fly to the new pin. Dispatched from PHP so the
+        // event goes through Livewire's browser event system — the mapcn
+        // package listens for `map:fly-to` there regardless of the
+        // wire:ignore boundary around the map container.
+        $this->dispatch('map:fly-to', center: [(float) $this->businessLng, (float) $this->businessLat], zoom: 16);
+    }
 
     public function resolveAddress(float $lat, float $lng): void
     {
@@ -436,30 +428,14 @@ class extends Component
         $this->dispatch('toast', message: 'Location cleared.', type: 'info');
     }
 
-    /**
-     * Request the user's current location from the browser.
-     *
-     * The location picker factory (resources/js/modules/location-picker.js)
-     * listens for a `request-geolocation` window event, calls
-     * navigator.geolocation.getCurrentPosition, and on success calls back
-     * into the SFC via `setBusinessLocation(lat, lng)`.
-     */
     public function useMyLocation(): void
     {
         $this->requireOwnership();
 
+        // The Alpine handler on <main> does the actual geolocation call,
+        // then invokes setBusinessLocation() + resolveAddress() itself.
         $this->dispatch('request-geolocation');
     }
-
-    // ─────────────────────────────────────────────────────────────
-    //  Asset uploads — cropped client-side, then routed through
-    //  storeImage() → ImageCompressionService for server-side
-    //  downscaling against the per-context ceilings.
-    //
-    //    logo         → 'tenant-logo'  (512 KB / 1024×1024)
-    //    cover_photo  → 'tenant-cover' (2 MB  / 2560×1440)
-    //    owner_avatar → 'avatars'      (512 KB / 800×800)
-    // ─────────────────────────────────────────────────────────────
 
     public function updatedLogo(): void
     {
@@ -658,10 +634,6 @@ class extends Component
         }
     }
 
-    // ─────────────────────────────────────────────────────────────
-    //  Validation
-    // ─────────────────────────────────────────────────────────────
-
     protected function stepRules(int $step): array
     {
         return match ($step) {
@@ -681,16 +653,10 @@ class extends Component
             ],
             2 => [
                 'business_registration_number' => [
-                    'required',
-                    'string',
-                    'min:4',
-                    'max:50',
-                    'regex:/^[A-Za-z0-9\-]+$/',
+                    'required', 'string', 'min:4', 'max:50', 'regex:/^[A-Za-z0-9\-]+$/',
                 ],
                 'tin_number' => [
-                    'required',
-                    'string',
-                    'regex:/^\d{3}[-\s]?\d{3}[-\s]?\d{3}(?:[-\s]?\d{3})?$/',
+                    'required', 'string', 'regex:/^\d{3}[-\s]?\d{3}[-\s]?\d{3}(?:[-\s]?\d{3})?$/',
                 ],
             ],
             3 => [
@@ -731,10 +697,6 @@ class extends Component
             'owner_id_number.min'                   => 'That ID number looks too short. Please double-check it.',
         ];
     }
-
-    // ─────────────────────────────────────────────────────────────
-    //  Step navigation
-    // ─────────────────────────────────────────────────────────────
 
     public function gotoStep(int $step): void
     {
@@ -824,10 +786,6 @@ class extends Component
             default => [],
         };
     }
-
-    // ─────────────────────────────────────────────────────────────
-    //  Document uploads
-    // ─────────────────────────────────────────────────────────────
 
     public function updated(string $name, mixed $value): void
     {
@@ -964,18 +922,13 @@ class extends Component
 
     public function documentUrl(BusinessDocument $doc): ?string
     {
-        $path = $doc->watermarked_path ?: $doc->stored_path;
-        return $path ? asset('storage/' . $path) : null;
+        return $this->storageUrl($doc->watermarked_path ?: $doc->stored_path);
     }
 
     public function isImageDocument(BusinessDocument $doc): bool
     {
         return str_starts_with((string) $doc->mime_type, 'image/');
     }
-
-    // ─────────────────────────────────────────────────────────────
-    //  Submit
-    // ─────────────────────────────────────────────────────────────
 
     public function submit(BusinessApplicationService $service)
     {
@@ -1037,9 +990,6 @@ class extends Component
 @push('styles')
     @once
         <style>
-            /* Rule 69 replacement — CSS-based toast entry instead of
-               x-transition inside <template x-for>, which is a morph
-               crash class in Livewire v4 SFCs. */
             .toast-item {
                 animation: toastIn .22s cubic-bezier(.16,1,.3,1);
             }
@@ -1058,6 +1008,7 @@ class extends Component
     x-data="{
         toasts: [],
         reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+        locating: false,
     }"
     x-on:toast.window="
         const id = Date.now() + Math.random();
@@ -1065,26 +1016,71 @@ class extends Component
         setTimeout(() => { toasts = toasts.filter(t => t.id !== id) }, 3500);
     "
     x-on:scroll-to-top.window="window.scrollTo({ top: 0, behavior: reducedMotion ? 'auto' : 'smooth' })"
+    x-on:request-geolocation.window="
+        if (locating) return;
+        if (!navigator.geolocation) {
+            $dispatch('toast', { message: 'Geolocation is not supported on this device.', type: 'error' });
+            return;
+        }
+        if (window.isSecureContext === false) {
+            $dispatch('toast', { message: 'Location needs a secure connection (https:// or http://127.0.0.1).', type: 'error' });
+            return;
+        }
+        locating = true;
+        $dispatch('toast', { message: 'Requesting your location…', type: 'info' });
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                const lat = pos.coords.latitude;
+                const lng = pos.coords.longitude;
+                Promise.resolve($wire.setBusinessLocation(lat, lng))
+                    .then(() => Promise.resolve($wire.resolveAddress(lat, lng)))
+                    .then(() => $dispatch('toast', { message: 'Location found.', type: 'success' }))
+                    .catch(() => $dispatch('toast', { message: 'Could not save the location.', type: 'error' }))
+                    .finally(() => { locating = false; });
+            },
+            (err) => {
+                const msg = err.code === 1 ? 'Location access was denied. Check your browser permissions.'
+                           : err.code === 3 ? 'Location request timed out.'
+                           : 'Could not determine your location.';
+                $dispatch('toast', { message: msg, type: 'error' });
+                locating = false;
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+        );
+    "
     class="min-h-screen">
 
-    {{-- Toast container — Rule 69: no x-transition, CSS animation carries
-         the entry. --}}
-    <div class="fixed bottom-4 right-4 z-[2000] flex flex-col gap-2 w-full max-w-sm pointer-events-none">
+    {{-- Toast container — respects safe-area insets on notched devices. --}}
+    <div class="fixed z-[2000] flex flex-col gap-2 pointer-events-none
+                bottom-[max(1rem,var(--safe-bottom))]
+                right-[max(1rem,var(--safe-right))]
+                w-[calc(100vw-2rem)] max-w-sm">
         <template x-for="toast in toasts" :key="toast.id">
-            <div class="toast-item pointer-events-auto rounded-xl px-4 py-3 shadow-lg text-sm font-medium border"
+            <div class="toast-item pointer-events-auto rounded-xl pl-4 pr-1.5 py-3 shadow-lg text-sm font-medium border
+                        flex items-center gap-2"
                  :class="{
                      'bg-emerald-50 border-emerald-200 text-emerald-800 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-300': toast.type === 'success',
                      'bg-rose-50 border-rose-200 text-rose-800 dark:bg-rose-500/10 dark:border-rose-500/30 dark:text-rose-300': toast.type === 'error',
                      'bg-blue-50 border-blue-200 text-blue-800 dark:bg-blue-500/10 dark:border-blue-500/30 dark:text-blue-300': toast.type === 'info',
                  }">
-                <span x-text="toast.message"></span>
+                <span class="flex-1 leading-snug" x-text="toast.message"></span>
+                <button type="button"
+                        @click="toasts = toasts.filter(t => t.id !== toast.id)"
+                        aria-label="Dismiss notification"
+                        class="shrink-0 inline-flex items-center justify-center w-11 h-11 sm:w-7 sm:h-7 rounded-md opacity-60 hover:opacity-100 transition-opacity
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current/40">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
             </div>
         </template>
     </div>
 
     {{-- Sticky header --}}
     <div class="sticky top-0 z-30 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md border-b border-gray-200 dark:border-gray-800">
-        <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+        <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-4 pt-[max(1rem,env(safe-area-inset-top))]">
 
             <div class="flex items-center justify-between gap-4 mb-3">
                 <div class="flex items-center gap-2.5 min-w-0">
@@ -1113,8 +1109,12 @@ class extends Component
                         Draft saved
                     </span>
                     <a href="{{ route('register_business') }}" wire:navigate
-                       class="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium text-gray-500 dark:text-gray-400 hover:text-rose-600 dark:hover:text-rose-400 transition-all duration-200 active:scale-95 rounded px-2 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                       class="shrink-0 inline-flex items-center gap-1 min-h-[44px] text-[11px] font-medium
+                              text-gray-500 dark:text-gray-400 hover:text-rose-600 dark:hover:text-rose-400
+                              transition-colors -mx-1 px-3 rounded
+                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                         </svg>
                         <span class="hidden sm:inline">Save &amp; exit</span>
@@ -1123,7 +1123,7 @@ class extends Component
             </div>
 
             <div class="mb-4">
-                <h1 class="text-lg sm:text-xl font-bold text-gray-900 dark:text-white leading-tight">
+                <h1 class="text-lg sm:text-xl font-bold tracking-tight text-gray-900 dark:text-white leading-tight">
                     Welcome back, {{ $this->applicantFirstName }}!
                 </h1>
                 <p class="mt-0.5 text-xs sm:text-sm text-gray-500 dark:text-gray-400">
@@ -1146,8 +1146,11 @@ class extends Component
                     @endphp
                     <button type="button"
                             wire:click="gotoStep({{ $num }})"
-                            class="flex-1 flex items-center gap-2 group text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-lg active:scale-[0.98] transition-transform">
-                        <span class="shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold transition-all duration-200
+                            class="flex-1 flex items-center gap-2 group text-left min-h-[44px] py-1 rounded-lg
+                                   focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                                   active:scale-[0.98] transition-transform
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
+                        <span class="shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold transition-all duration-200
                             {{ $isActive
                                 ? 'bg-primary-600 text-white ring-4 ring-primary-500/20'
                                 : ($isComplete
@@ -1215,16 +1218,13 @@ class extends Component
             </div>
         @endif
 
-        {{-- ═══════════════════════════════════════════════════════════
-             STEP 1 — BUSINESS & LOCATION
-             ═══════════════════════════════════════════════════════════ --}}
+        {{-- ═══ STEP 1 — BUSINESS & LOCATION ═══ --}}
         @if ($step === 1)
 
-            {{-- Cover photo --}}
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm overflow-hidden mb-5">
                 <div class="px-6 pt-5 pb-3 flex items-center justify-between">
                     <div class="flex items-center gap-3">
-                        <span class="w-5 h-px bg-primary-600"></span>
+                        <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
                         <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                             Cover Photo <span class="text-[10px] font-normal normal-case text-gray-400">(optional)</span>
                         </span>
@@ -1242,7 +1242,7 @@ class extends Component
                 <div class="px-6 pb-5">
                     <div class="relative aspect-[3/1] w-full rounded-xl overflow-hidden bg-gradient-to-br from-primary-500 via-primary-600 to-primary-700">
                         @if($cover_photo_path)
-                            <img src="{{ asset('storage/' . $cover_photo_path) }}" alt="Cover photo" loading="lazy" decoding="async" class="w-full h-full object-cover">
+                            <img src="{{ '/storage/' . ltrim($cover_photo_path, '/') }}" alt="Cover photo" loading="lazy" decoding="async" class="w-full h-full object-cover">
                         @else
                             <div class="absolute inset-0 flex flex-col items-center justify-center text-white/85">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-10 h-10 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -1253,7 +1253,6 @@ class extends Component
                         @endif
                     </div>
 
-                    {{-- Input wrapped in imageCropper: aspect 3:1, property 'cover_photo' --}}
                     <div
                         x-data="imageCropper({
                             wireProperty: 'cover_photo',
@@ -1265,8 +1264,9 @@ class extends Component
                         class="mt-3 flex items-center gap-2 flex-wrap"
                     >
                         <label for="cover-upload"
-                               class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold
+                               class="inline-flex items-center justify-center gap-1.5 h-11 sm:h-10 px-3.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold
                                       transition-all duration-200 active:scale-95 cursor-pointer
+                                      [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                       focus-within:ring-2 focus-within:ring-primary-500/50 focus-within:ring-offset-2 dark:focus-within:ring-offset-gray-900">
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
@@ -1277,14 +1277,27 @@ class extends Component
 
                         @if($cover_photo_path)
                             <button type="button"
-                                    x-on:click="if (confirm('Remove the cover photo?')) $wire.removeCoverPhoto()"
+                                    x-data="{
+                                        armed: false,
+                                        _t: null,
+                                        arm() { this.armed = true; clearTimeout(this._t); this._t = setTimeout(() => { this.armed = false; this._t = null; }, 4000); },
+                                        unarm() { clearTimeout(this._t); this._t = null; this.armed = false; },
+                                        destroy() { clearTimeout(this._t); }
+                                    }"
+                                    @click="armed ? (unarm(), $wire.removeCoverPhoto()) : arm()"
                                     wire:loading.attr="disabled"
                                     wire:target="removeCoverPhoto"
-                                    class="inline-flex items-center justify-center h-9 px-3.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-xs font-semibold
-                                           transition-all duration-200 active:scale-95 hover:border-rose-400 hover:text-rose-600 dark:hover:text-rose-400
+                                    :class="armed
+                                        ? 'border-amber-400 bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/40'
+                                        : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200'"
+                                    class="inline-flex items-center justify-center h-11 sm:h-10 px-3.5 rounded-lg border text-xs font-semibold
+                                           transition-all duration-200 active:scale-95
+                                           hover:border-rose-400 hover:text-rose-600 dark:hover:text-rose-400
+                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
                                            disabled:opacity-60 disabled:cursor-not-allowed">
-                                Remove
+                                <span x-show="!armed">Remove</span>
+                                <span x-show="armed" x-cloak>Confirm</span>
                             </button>
                         @endif
 
@@ -1299,10 +1312,9 @@ class extends Component
                 </div>
             </section>
 
-            {{-- Business logo --}}
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mb-5">
                 <div class="flex items-center gap-3 mb-5">
-                    <span class="w-5 h-px bg-primary-600"></span>
+                    <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
                     <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                         Business Logo <span class="text-[10px] font-normal normal-case text-gray-400">(optional)</span>
                     </span>
@@ -1311,7 +1323,7 @@ class extends Component
                 <div class="flex items-center gap-5">
                     <div class="shrink-0 w-20 h-20 rounded-2xl border-2 border-dashed border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 flex items-center justify-center overflow-hidden">
                         @if($logo_path)
-                            <img src="{{ asset('storage/' . $logo_path) }}" alt="Business logo" loading="lazy" decoding="async" class="w-full h-full object-cover">
+                            <img src="{{ '/storage/' . ltrim($logo_path, '/') }}" alt="Business logo" loading="lazy" decoding="async" class="w-full h-full object-cover">
                         @else
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
@@ -1331,8 +1343,9 @@ class extends Component
                     >
                         <div class="flex items-center gap-2 flex-wrap">
                             <label for="logo-upload"
-                                   class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold
+                                   class="inline-flex items-center justify-center gap-1.5 h-11 sm:h-10 px-3.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold
                                           transition-all duration-200 active:scale-95 cursor-pointer
+                                          [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                           focus-within:ring-2 focus-within:ring-primary-500/50 focus-within:ring-offset-2 dark:focus-within:ring-offset-gray-900">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
@@ -1343,14 +1356,27 @@ class extends Component
 
                             @if($logo_path)
                                 <button type="button"
-                                        x-on:click="if (confirm('Remove the logo?')) $wire.removeLogo()"
+                                        x-data="{
+                                            armed: false,
+                                            _t: null,
+                                            arm() { this.armed = true; clearTimeout(this._t); this._t = setTimeout(() => { this.armed = false; this._t = null; }, 4000); },
+                                            unarm() { clearTimeout(this._t); this._t = null; this.armed = false; },
+                                            destroy() { clearTimeout(this._t); }
+                                        }"
+                                        @click="armed ? (unarm(), $wire.removeLogo()) : arm()"
                                         wire:loading.attr="disabled"
                                         wire:target="removeLogo"
-                                        class="inline-flex items-center justify-center h-9 px-3.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-xs font-semibold
-                                               transition-all duration-200 active:scale-95 hover:border-rose-400 hover:text-rose-600 dark:hover:text-rose-400
+                                        :class="armed
+                                            ? 'border-amber-400 bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/40'
+                                            : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200'"
+                                        class="inline-flex items-center justify-center h-11 sm:h-10 px-3.5 rounded-lg border text-xs font-semibold
+                                               transition-all duration-200 active:scale-95
+                                               hover:border-rose-400 hover:text-rose-600 dark:hover:text-rose-400
+                                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
                                                disabled:opacity-60 disabled:cursor-not-allowed">
-                                    Remove
+                                    <span x-show="!armed">Remove</span>
+                                    <span x-show="armed" x-cloak>Confirm</span>
                                 </button>
                             @endif
 
@@ -1366,10 +1392,9 @@ class extends Component
                 </div>
             </section>
 
-            {{-- Business information --}}
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6">
                 <div class="flex items-center gap-3 mb-5">
-                    <span class="w-5 h-px bg-primary-600"></span>
+                    <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
                     <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                         Business Information
                     </span>
@@ -1377,23 +1402,24 @@ class extends Component
 
                 <div class="space-y-5">
                     <div>
-                        <label for="business_name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            Business Name <span class="text-rose-500">*</span>
+                        <label for="business_name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            Business Name <span class="text-rose-500" aria-hidden="true">*</span>
                         </label>
                         <input type="text" id="business_name" wire:model="business_name"
                                placeholder="e.g. Gawahon Eco Park"
                                maxlength="255"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                         @error('business_name') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
                     </div>
 
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
-                            <label for="business_type" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                Registration Type <span class="text-rose-500">*</span>
+                            <label for="business_type" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                Registration Type <span class="text-rose-500" aria-hidden="true">*</span>
                             </label>
                             <select id="business_type" wire:model.live="business_type"
-                                    class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                                    class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition
+                                           [touch-action:manipulation]">
                                 <option value="">— Select —</option>
                                 @foreach($this->businessTypeLabels as $key => $label)
                                     <option value="{{ $key }}">{{ $label }}</option>
@@ -1403,11 +1429,12 @@ class extends Component
                         </div>
 
                         <div>
-                            <label for="type_of_tenant_id" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                Category <span class="text-rose-500">*</span>
+                            <label for="type_of_tenant_id" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                Category <span class="text-rose-500" aria-hidden="true">*</span>
                             </label>
                             <select id="type_of_tenant_id" wire:model="type_of_tenant_id"
-                                    class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                                    class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition
+                                           [touch-action:manipulation]">
                                 <option value="">— Select —</option>
                                 @foreach($this->tenantTypes as $type)
                                     <option value="{{ $type->id }}">{{ $type->type }}</option>
@@ -1418,7 +1445,7 @@ class extends Component
                     </div>
 
                     <div>
-                        <label for="business_description" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        <label for="business_description" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             Short Description <span class="text-[10px] font-normal text-gray-400">(optional)</span>
                         </label>
                         <textarea id="business_description"
@@ -1426,16 +1453,15 @@ class extends Component
                                   rows="3"
                                   maxlength="500"
                                   placeholder="A short introduction to your business"
-                                  class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition resize-none"></textarea>
+                                  class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition resize-none"></textarea>
                         @error('business_description') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
                     </div>
                 </div>
             </section>
 
-            {{-- Location --}}
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mt-5">
                 <div class="flex items-center gap-3 mb-4">
-                    <span class="w-5 h-px bg-primary-600"></span>
+                    <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
                     <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                         Location
                     </span>
@@ -1447,8 +1473,9 @@ class extends Component
                                 wire:click="useMyLocation"
                                 wire:loading.attr="disabled"
                                 wire:target="useMyLocation"
-                                class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold
+                                class="inline-flex items-center justify-center gap-1.5 h-11 sm:h-10 px-3.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold
                                        transition-all duration-200 active:scale-95
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                        disabled:opacity-60 disabled:cursor-not-allowed">
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -1467,8 +1494,9 @@ class extends Component
                             </span>
                             <button type="button"
                                     wire:click="clearLocation"
-                                    class="inline-flex items-center justify-center h-9 px-3 rounded-lg text-[11px] font-semibold text-gray-500 hover:text-rose-600 dark:text-gray-400 dark:hover:text-rose-400
+                                    class="inline-flex items-center justify-center h-11 sm:h-10 px-3 rounded-lg text-[11px] font-semibold text-gray-500 hover:text-rose-600 dark:text-gray-400 dark:hover:text-rose-400
                                            transition-all duration-200 active:scale-95
+                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                                 Clear
                             </button>
@@ -1480,8 +1508,9 @@ class extends Component
                                 wire:click="refreshAddressFromPin"
                                 wire:loading.attr="disabled"
                                 wire:target="refreshAddressFromPin,resolveAddress"
-                                class="inline-flex items-center justify-center gap-1 h-9 px-3 rounded-lg text-[11px] font-semibold text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400
+                                class="inline-flex items-center justify-center gap-1 h-11 sm:h-10 px-3 rounded-lg text-[11px] font-semibold text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400
                                        transition-all duration-200 active:scale-95
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
                                        disabled:opacity-50 disabled:cursor-not-allowed">
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -1494,7 +1523,6 @@ class extends Component
 
                 <div class="relative">
                     <div wire:ignore
-                         wire:key="business-location-map-stable"
                          x-data="locationPicker({
                              initialLat: {{ $businessLat ?? 'null' }},
                              initialLng: {{ $businessLng ?? 'null' }},
@@ -1554,46 +1582,42 @@ class extends Component
 
                 <div class="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div class="sm:col-span-2">
-                        <label for="address" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            Street Address
-                        </label>
+                        <label for="address" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Street Address</label>
                         <input type="text" id="address" wire:model="address"
                                autocomplete="street-address"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                     </div>
 
                     <div>
-                        <label for="barangay" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Barangay</label>
+                        <label for="barangay" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Barangay</label>
                         <input type="text" id="barangay" wire:model="barangay"
                                autocomplete="address-level3"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                     </div>
 
                     <div>
-                        <label for="city" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">City / Municipality</label>
+                        <label for="city" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">City / Municipality</label>
                         <input type="text" id="city" wire:model="city"
                                autocomplete="address-level2"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                     </div>
 
                     <div class="sm:col-span-2">
-                        <label for="province" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Province</label>
+                        <label for="province" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Province</label>
                         <input type="text" id="province" wire:model="province"
                                autocomplete="address-level1"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                     </div>
                 </div>
             </section>
         @endif
 
-        {{-- ═══════════════════════════════════════════════════════════
-             STEP 2 — DOCUMENTS & VERIFICATION
-             ═══════════════════════════════════════════════════════════ --}}
+        {{-- ═══ STEP 2 — DOCUMENTS & VERIFICATION ═══ --}}
         @if ($step === 2)
 
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mb-5">
                 <div class="flex items-center gap-3 mb-5">
-                    <span class="w-5 h-px bg-primary-600"></span>
+                    <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
                     <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                         Registration Details
                     </span>
@@ -1601,8 +1625,8 @@ class extends Component
 
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                        <label for="business_registration_number" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            Registration No. <span class="text-rose-500">*</span>
+                        <label for="business_registration_number" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            Registration No. <span class="text-rose-500" aria-hidden="true">*</span>
                         </label>
                         <input type="text"
                                id="business_registration_number"
@@ -1617,13 +1641,13 @@ class extends Component
                                        $event.target.dispatchEvent(new Event('input', { bubbles: true }));
                                    }
                                "
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition font-mono">
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition font-mono">
                         @error('business_registration_number') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
                     </div>
 
                     <div>
-                        <label for="tin_number" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            TIN <span class="text-rose-500">*</span>
+                        <label for="tin_number" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            TIN <span class="text-rose-500" aria-hidden="true">*</span>
                         </label>
                         <input type="text"
                                id="tin_number"
@@ -1645,7 +1669,7 @@ class extends Component
                                        $event.target.dispatchEvent(new Event('input', { bubbles: true }));
                                    }
                                "
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition font-mono">
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition font-mono">
                         @error('tin_number') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
                     </div>
                 </div>
@@ -1654,7 +1678,7 @@ class extends Component
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6">
                 <div class="flex items-center justify-between mb-4">
                     <div class="flex items-center gap-3">
-                        <span class="w-5 h-px bg-primary-600"></span>
+                        <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
                         <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                             Required Documents
                         </span>
@@ -1687,12 +1711,16 @@ class extends Component
 
                                     @if ($isImage && $url)
                                         <a href="{{ $url }}" target="_blank" rel="noopener noreferrer"
-                                           class="block shrink-0 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 hover:border-primary-500 transition">
+                                           class="block shrink-0 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 hover:border-primary-500 transition
+                                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                                             <img src="{{ $url }}" alt="" loading="lazy" decoding="async" class="w-12 h-12 object-cover">
                                         </a>
                                     @else
                                         <a href="{{ $url }}" target="_blank" rel="noopener noreferrer"
-                                           class="shrink-0 w-12 h-12 rounded-lg bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 flex flex-col items-center justify-center text-rose-600 dark:text-rose-400 hover:border-rose-400 transition">
+                                           class="shrink-0 w-12 h-12 rounded-lg bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 flex flex-col items-center justify-center text-rose-600 dark:text-rose-400 hover:border-rose-400 transition
+                                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                                             <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>
                                             </svg>
@@ -1715,26 +1743,38 @@ class extends Component
                                         <div class="mt-1.5 flex items-center gap-3">
                                             <a href="{{ $url }}" target="_blank" rel="noopener noreferrer"
                                                class="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline
-                                                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded px-0.5 transition">
+                                                      [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition py-2.5 px-1 -mx-1 -my-2.5">
                                                 View
                                             </a>
-                                            <span class="w-px h-3 bg-gray-300 dark:bg-gray-700"></span>
+                                            <span class="w-px h-3 bg-gray-300 dark:bg-gray-700" aria-hidden="true"></span>
                                             <button type="button"
-                                                    x-on:click="if (confirm('Remove this document? You can upload a new one after.')) $wire.deleteDocument({{ $existing->id }})"
+                                                    x-data="{
+                                                        armed: false,
+                                                        _t: null,
+                                                        arm() { this.armed = true; clearTimeout(this._t); this._t = setTimeout(() => { this.armed = false; this._t = null; }, 4000); },
+                                                        unarm() { clearTimeout(this._t); this._t = null; this.armed = false; },
+                                                        destroy() { clearTimeout(this._t); }
+                                                    }"
+                                                    @click="armed ? (unarm(), $wire.deleteDocument({{ $existing->id }})) : arm()"
                                                     wire:loading.attr="disabled"
                                                     wire:target="deleteDocument"
-                                                    class="text-[11px] font-semibold text-gray-500 dark:text-gray-400 hover:text-rose-600 dark:hover:text-rose-400 transition-all duration-200 active:scale-95
-                                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 rounded px-0.5
-                                                           disabled:opacity-60 disabled:cursor-not-allowed">
-                                                Replace
+                                                    class="text-[11px] font-semibold transition-colors py-2.5 px-1 -mx-1 -my-2.5
+                                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
+                                                           disabled:opacity-60 disabled:cursor-not-allowed"
+                                                    :class="armed ? 'text-amber-600 dark:text-amber-400' : 'text-gray-500 dark:text-gray-400 hover:text-rose-600 dark:hover:text-rose-400'">
+                                                <span x-show="!armed">Replace</span>
+                                                <span x-show="armed" x-cloak>Confirm?</span>
                                             </button>
                                         </div>
                                     </div>
                                 </div>
                             @else
                                 <label for="file-{{ $docType }}"
-                                       class="flex items-center gap-3 cursor-pointer group">
-                                    <div class="shrink-0 w-9 h-9 rounded-lg bg-white dark:bg-gray-800 border border-dashed border-gray-300 dark:border-gray-600 flex items-center justify-center text-gray-400 group-hover:border-primary-500 group-hover:text-primary-600 dark:group-hover:text-primary-400 transition">
+                                       class="flex items-center gap-3 cursor-pointer group min-h-[44px]
+                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
+                                    <div class="shrink-0 w-10 h-10 rounded-lg bg-white dark:bg-gray-800 border border-dashed border-gray-300 dark:border-gray-600 flex items-center justify-center text-gray-400 group-hover:border-primary-500 group-hover:text-primary-600 dark:group-hover:text-primary-400 transition">
                                         <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
                                         </svg>
@@ -1765,7 +1805,8 @@ class extends Component
                 </div>
 
                 <details class="mt-4 border-t border-gray-100 dark:border-gray-700/60 pt-4">
-                    <summary class="cursor-pointer list-none flex items-center justify-between py-1 group">
+                    <summary class="cursor-pointer list-none flex items-center justify-between min-h-[44px] py-1.5 group
+                                    [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                         <span class="text-[11px] font-semibold text-gray-600 dark:text-gray-300 group-hover:text-primary-600 dark:group-hover:text-primary-400 transition">
                             Additional documents (optional)
                         </span>
@@ -1792,18 +1833,29 @@ class extends Component
                                             {{ $this->documentLabels[$docType] ?? $docType }}
                                         </p>
                                         <button type="button"
-                                                x-on:click="if (confirm('Remove this document?')) $wire.deleteDocument({{ $existing->id }})"
+                                                x-data="{
+                                                    armed: false,
+                                                    _t: null,
+                                                    arm() { this.armed = true; clearTimeout(this._t); this._t = setTimeout(() => { this.armed = false; this._t = null; }, 4000); },
+                                                    unarm() { clearTimeout(this._t); this._t = null; this.armed = false; },
+                                                    destroy() { clearTimeout(this._t); }
+                                                }"
+                                                @click="armed ? (unarm(), $wire.deleteDocument({{ $existing->id }})) : arm()"
                                                 wire:loading.attr="disabled"
                                                 wire:target="deleteDocument"
-                                                class="text-[11px] font-semibold text-gray-500 hover:text-rose-600 dark:hover:text-rose-400 transition-all duration-200 active:scale-95
-                                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 rounded px-1
-                                                       disabled:opacity-60 disabled:cursor-not-allowed">
-                                            Remove
+                                                class="text-[11px] font-semibold transition-colors py-2.5 px-1.5 -mx-1.5 -my-2.5
+                                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
+                                                       disabled:opacity-60 disabled:cursor-not-allowed"
+                                                :class="armed ? 'text-amber-600 dark:text-amber-400' : 'text-gray-500 hover:text-rose-600 dark:hover:text-rose-400'">
+                                            <span x-show="!armed">Remove</span>
+                                            <span x-show="armed" x-cloak>Confirm?</span>
                                         </button>
                                     </div>
                                 @else
-                                    <label for="file-opt-{{ $docType }}" class="flex items-center gap-3 cursor-pointer group">
-                                        <div class="shrink-0 w-8 h-8 rounded-lg bg-white dark:bg-gray-800 border border-dashed border-gray-300 dark:border-gray-600 flex items-center justify-center text-gray-400 group-hover:border-primary-500 group-hover:text-primary-600 transition">
+                                    <label for="file-opt-{{ $docType }}" class="flex items-center gap-3 cursor-pointer group min-h-[44px]
+                                                                                [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
+                                        <div class="shrink-0 w-10 h-10 rounded-lg bg-white dark:bg-gray-800 border border-dashed border-gray-300 dark:border-gray-600 flex items-center justify-center text-gray-400 group-hover:border-primary-500 group-hover:text-primary-600 transition">
                                             <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
                                             </svg>
@@ -1847,14 +1899,12 @@ class extends Component
             @endif
         @endif
 
-        {{-- ═══════════════════════════════════════════════════════════
-             STEP 3 — OWNER, CONTACT & REVIEW
-             ═══════════════════════════════════════════════════════════ --}}
+        {{-- ═══ STEP 3 — OWNER, CONTACT & REVIEW ═══ --}}
         @if ($step === 3)
 
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mb-5">
                 <div class="flex items-center gap-3 mb-5">
-                    <span class="w-5 h-px bg-primary-600"></span>
+                    <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
                     <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                         Owner Photo <span class="text-[10px] font-normal normal-case text-gray-400">(optional)</span>
                     </span>
@@ -1863,7 +1913,7 @@ class extends Component
                 <div class="flex items-center gap-5">
                     <div class="shrink-0 w-20 h-20 rounded-full border-2 border-dashed border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 flex items-center justify-center overflow-hidden">
                         @if($owner_avatar_path)
-                            <img src="{{ asset('storage/' . $owner_avatar_path) }}" alt="Owner photo" loading="lazy" decoding="async" class="w-full h-full object-cover">
+                            <img src="{{ '/storage/' . ltrim($owner_avatar_path, '/') }}" alt="Owner photo" loading="lazy" decoding="async" class="w-full h-full object-cover">
                         @else
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
@@ -1883,8 +1933,9 @@ class extends Component
                     >
                         <div class="flex items-center gap-2 flex-wrap">
                             <label for="avatar-upload"
-                                   class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold
+                                   class="inline-flex items-center justify-center gap-1.5 h-11 sm:h-10 px-3.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold
                                           transition-all duration-200 active:scale-95 cursor-pointer
+                                          [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                           focus-within:ring-2 focus-within:ring-primary-500/50 focus-within:ring-offset-2 dark:focus-within:ring-offset-gray-900">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
@@ -1895,14 +1946,27 @@ class extends Component
 
                             @if($owner_avatar_path)
                                 <button type="button"
-                                        x-on:click="if (confirm('Remove the photo?')) $wire.removeOwnerAvatar()"
+                                        x-data="{
+                                            armed: false,
+                                            _t: null,
+                                            arm() { this.armed = true; clearTimeout(this._t); this._t = setTimeout(() => { this.armed = false; this._t = null; }, 4000); },
+                                            unarm() { clearTimeout(this._t); this._t = null; this.armed = false; },
+                                            destroy() { clearTimeout(this._t); }
+                                        }"
+                                        @click="armed ? (unarm(), $wire.removeOwnerAvatar()) : arm()"
                                         wire:loading.attr="disabled"
                                         wire:target="removeOwnerAvatar"
-                                        class="inline-flex items-center justify-center h-9 px-3.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-xs font-semibold
-                                               transition-all duration-200 active:scale-95 hover:border-rose-400 hover:text-rose-600 dark:hover:text-rose-400
+                                        :class="armed
+                                            ? 'border-amber-400 bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/40'
+                                            : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200'"
+                                        class="inline-flex items-center justify-center h-11 sm:h-10 px-3.5 rounded-lg border text-xs font-semibold
+                                               transition-all duration-200 active:scale-95
+                                               hover:border-rose-400 hover:text-rose-600 dark:hover:text-rose-400
+                                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
                                                disabled:opacity-60 disabled:cursor-not-allowed">
-                                    Remove
+                                    <span x-show="!armed">Remove</span>
+                                    <span x-show="armed" x-cloak>Confirm</span>
                                 </button>
                             @endif
 
@@ -1920,7 +1984,7 @@ class extends Component
 
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6">
                 <div class="flex items-center gap-3 mb-5">
-                    <span class="w-5 h-px bg-primary-600"></span>
+                    <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
                     <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                         Owner Information
                     </span>
@@ -1928,23 +1992,24 @@ class extends Component
 
                 <div class="space-y-5">
                     <div>
-                        <label for="owner_full_name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            Full Name <span class="text-rose-500">*</span>
+                        <label for="owner_full_name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            Full Name <span class="text-rose-500" aria-hidden="true">*</span>
                         </label>
                         <input type="text" id="owner_full_name" wire:model="owner_full_name"
                                placeholder="Juan dela Cruz"
                                autocomplete="name"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                         @error('owner_full_name') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
                     </div>
 
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div class="sm:col-span-2">
-                            <label for="owner_id_type" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                Type of Government ID <span class="text-rose-500">*</span>
+                            <label for="owner_id_type" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                Type of Government ID <span class="text-rose-500" aria-hidden="true">*</span>
                             </label>
                             <select id="owner_id_type" wire:model.live="owner_id_type"
-                                    class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                                    class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition
+                                           [touch-action:manipulation]">
                                 <option value="">— Select an accepted ID —</option>
                                 @foreach($this->ownerIdTypes as $key => $label)
                                     <option value="{{ $key }}">{{ $label }}</option>
@@ -1954,24 +2019,24 @@ class extends Component
                         </div>
 
                         <div class="sm:col-span-2">
-                            <label for="owner_id_number" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                ID Number <span class="text-rose-500">*</span>
+                            <label for="owner_id_number" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                ID Number <span class="text-rose-500" aria-hidden="true">*</span>
                             </label>
                             <input type="text" id="owner_id_number" wire:model="owner_id_number"
                                    placeholder="Number as printed on your ID"
                                    autocomplete="off"
-                                   class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                                   class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                             @error('owner_id_number') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
                         </div>
 
                         <div class="sm:col-span-2 sm:max-w-xs">
-                            <label for="owner_birthdate" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            <label for="owner_birthdate" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                                 Date of Birth <span class="text-[10px] font-normal text-gray-400">(optional)</span>
                             </label>
                             <input type="date" id="owner_birthdate" wire:model="owner_birthdate"
                                    autocomplete="bday"
                                    max="{{ now()->subDay()->format('Y-m-d') }}"
-                                   class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                                   class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                         </div>
                     </div>
                 </div>
@@ -1979,7 +2044,7 @@ class extends Component
 
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mt-5">
                 <div class="flex items-center gap-3 mb-5">
-                    <span class="w-5 h-px bg-primary-600"></span>
+                    <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
                     <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                         Contact Information
                     </span>
@@ -1987,25 +2052,25 @@ class extends Component
 
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                        <label for="contact_email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            Email <span class="text-rose-500">*</span>
+                        <label for="contact_email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            Email <span class="text-rose-500" aria-hidden="true">*</span>
                         </label>
                         <input type="email" id="contact_email" wire:model="contact_email"
-                               autocomplete="email"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                               autocomplete="email" inputmode="email"
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                         @error('contact_email') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
                     </div>
 
                     <div>
-                        <label for="contact_phone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                            Phone <span class="text-rose-500">*</span>
+                        <label for="contact_phone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                            Phone <span class="text-rose-500" aria-hidden="true">*</span>
                         </label>
                         <input type="tel" id="contact_phone" wire:model="contact_phone"
                                placeholder="09xxxxxxxxx"
                                autocomplete="tel"
                                inputmode="numeric"
                                maxlength="13"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
                         @error('contact_phone') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
                     </div>
                 </div>
@@ -2014,7 +2079,7 @@ class extends Component
             <section class="mt-5 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 bg-white dark:bg-gray-800/90 shadow-sm overflow-hidden">
                 <div class="px-5 py-3.5 border-b border-gray-100 dark:border-gray-700/60 bg-gradient-to-r from-primary-50/60 to-transparent dark:from-primary-500/[0.06] dark:to-transparent">
                     <div class="flex items-center gap-3">
-                        <span class="w-5 h-px bg-primary-600"></span>
+                        <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
                         <span class="text-[10px] font-bold uppercase tracking-wider text-primary-700 dark:text-primary-400">
                             Review &amp; Submit
                         </span>
@@ -2032,10 +2097,10 @@ class extends Component
                     <div class="rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 max-w-sm">
                         @php
                             $previewCover = $this->cover_photo_path
-                                ? asset('storage/' . $this->cover_photo_path)
+                                ? '/storage/' . ltrim($this->cover_photo_path, '/')
                                 : null;
                             $previewLogo = $this->logo_path
-                                ? asset('storage/' . $this->logo_path)
+                                ? '/storage/' . ltrim($this->logo_path, '/')
                                 : null;
                         @endphp
 
@@ -2110,23 +2175,26 @@ class extends Component
 
                 <div class="px-5 pb-5 flex items-center gap-3 flex-wrap">
                     <button type="button" wire:click="gotoStep(1)"
-                            class="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline
-                                   transition-all duration-200 active:scale-95
-                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded px-0.5">
+                            class="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline py-2.5 px-1 -mx-1 -my-2.5
+                                   transition-colors
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                         ← Edit business &amp; location
                     </button>
-                    <span class="text-gray-300 dark:text-gray-600">·</span>
+                    <span class="text-gray-300 dark:text-gray-600" aria-hidden="true">·</span>
                     <button type="button" wire:click="gotoStep(2)"
-                            class="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline
-                                   transition-all duration-200 active:scale-95
-                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded px-0.5">
+                            class="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline py-2.5 px-1 -mx-1 -my-2.5
+                                   transition-colors
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                         Edit documents &amp; verification
                     </button>
-                    <span class="text-gray-300 dark:text-gray-600">·</span>
+                    <span class="text-gray-300 dark:text-gray-600" aria-hidden="true">·</span>
                     <button type="button" wire:click="gotoStep(3)"
-                            class="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline
-                                   transition-all duration-200 active:scale-95
-                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded px-0.5">
+                            class="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline py-2.5 px-1 -mx-1 -my-2.5
+                                   transition-colors
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                         Edit owner &amp; contact
                     </button>
                 </div>
@@ -2134,7 +2202,8 @@ class extends Component
         @endif
 
         {{-- Navigation --}}
-        <div class="sticky bottom-4 mt-5 z-20">
+        <div class="sticky z-20 mt-5
+                    bottom-[max(1rem,var(--safe-bottom))]">
             <div class="bg-white/95 dark:bg-gray-800/95 backdrop-blur border border-gray-200 dark:border-gray-700 rounded-2xl shadow-lg p-2.5 flex items-center justify-between gap-3">
 
                 @if ($step > 1)
@@ -2144,6 +2213,7 @@ class extends Component
                             wire:target="back,next,submit"
                             class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
                                    transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                    disabled:opacity-60 disabled:cursor-not-allowed">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -2157,7 +2227,7 @@ class extends Component
 
                 <div class="hidden sm:flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400">
                     <span class="font-semibold tabular-nums">{{ $step }}</span>
-                    <span class="text-gray-300 dark:text-gray-600">/</span>
+                    <span class="text-gray-300 dark:text-gray-600" aria-hidden="true">/</span>
                     <span class="tabular-nums">{{ count($this->stepLabels) }}</span>
                 </div>
 
@@ -2168,6 +2238,7 @@ class extends Component
                             wire:target="back,next,submit"
                             class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
                                    transition-all duration-200 active:scale-95
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                    disabled:opacity-60 disabled:cursor-not-allowed">
                         <span wire:loading.remove wire:target="next">Continue</span>
@@ -2185,6 +2256,7 @@ class extends Component
                             title="{{ $this->isReadyToSubmit ? 'Submit your application for review' : 'Complete all required fields and upload all required documents first' }}"
                             class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
                                    transition-all duration-200 active:scale-95
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                    disabled:opacity-40 disabled:cursor-not-allowed">
                         <span wire:loading.remove wire:target="submit">Submit for Review</span>
@@ -2202,6 +2274,5 @@ class extends Component
         </p>
     </div>
 
-    {{-- Image crop modal — singleton for this SFC --}}
     <x-image-crop-modal />
 </main>

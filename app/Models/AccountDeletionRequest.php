@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use App\Observers\AccountDeletionRequestObserver;
+use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
@@ -38,6 +40,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @method static \Illuminate\Database\Eloquent\Builder<static>|AccountDeletionRequest whereUserId($value)
  * @mixin \Eloquent
  */
+#[ObservedBy([AccountDeletionRequestObserver::class])]
 class AccountDeletionRequest extends Model
 {
     public const SCOPE_BUSINESS_ONLY = 'business_only';

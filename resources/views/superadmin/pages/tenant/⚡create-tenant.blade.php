@@ -13,6 +13,7 @@ use App\Models\TypeOfTenant;
 use App\Models\User;
 use App\Services\BusinessApplicationService;
 use App\Services\ReverseGeocodeService;
+use App\Services\SvgSanitizerService;
 use App\Traits\HandlesImageUploads;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Auth;
@@ -328,19 +329,27 @@ class extends Component {
         ));
     }
 
+    // Rule J: relative /storage paths only. asset() prefixes APP_URL, which
+    // may not match the current host (127.0.0.1 vs envkit.net) and breaks.
     public function logoPreviewUrl(): ?string
     {
-        return $this->logo_path ? asset('storage/' . $this->logo_path) : null;
+        return $this->logo_path
+            ? '/storage/' . ltrim($this->logo_path, '/')
+            : null;
     }
 
     public function coverPreviewUrl(): ?string
     {
-        return $this->cover_photo_path ? asset('storage/' . $this->cover_photo_path) : null;
+        return $this->cover_photo_path
+            ? '/storage/' . ltrim($this->cover_photo_path, '/')
+            : null;
     }
 
     public function avatarPreviewUrl(): ?string
     {
-        return $this->admin_avatar_path ? asset('storage/' . $this->admin_avatar_path) : null;
+        return $this->admin_avatar_path
+            ? '/storage/' . ltrim($this->admin_avatar_path, '/')
+            : null;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -849,8 +858,6 @@ class extends Component {
     #[On('map:click')]
     public function onMapClick(float|string $lat, float|string $lng): void
     {
-        // Step 2's map forwards nothing now (the module owns it), so this
-        // handler only ever fires from Step 3's map (sub-markers).
         if ($this->step === 3) {
             $this->addMarkerAt($lat, $lng);
         }
@@ -1218,11 +1225,19 @@ class extends Component {
         }
 
         $iconPath = null;
-        $iconSvg = null;
-        // SVG marker icon — stored raw (compression N/A for SVGs).
+        $iconSvg  = null;
+
+        // SVG marker icon — raw bytes go to disk (compression N/A for SVGs);
+        // the string that lands in SiteSetting is sanitized first, so a
+        // malicious upload can never carry <script>, on* handlers, or
+        // javascript: URLs into the rendered page.
         if ($this->newCategoryIcon) {
             $iconPath = $this->newCategoryIcon->store('marker-icons', 'public');
-            $iconSvg = file_get_contents($this->newCategoryIcon->getRealPath());
+
+            $rawSvg = @file_get_contents($this->newCategoryIcon->getRealPath()) ?: '';
+            $clean  = app(SvgSanitizerService::class)->sanitize($rawSvg);
+
+            $iconSvg = $clean !== '' ? $clean : null;
         }
 
         $this->markerCategories[] = [
@@ -2125,7 +2140,7 @@ class extends Component {
                                                 </svg>
                                                 @if($iconSvg)
                                                     <div class="absolute mb-1 size-[18px] text-gray-800 dark:text-white">
-                                                        {!! str_replace('<svg ', '<svg class="size-full stroke-current fill-none" ', $iconSvg) !!}
+                                                        <x-safe-svg :svg="$iconSvg" class="size-full stroke-current fill-none" />
                                                     </div>
                                                 @else
                                                     <span class="absolute mb-1 text-[10px] font-bold text-gray-800 dark:text-white">

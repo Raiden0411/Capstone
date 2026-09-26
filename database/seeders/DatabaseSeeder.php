@@ -21,6 +21,7 @@ use App\Models\Tenant;
 use App\Models\TenantSetting;
 use App\Models\TypeOfTenant;
 use App\Models\User;
+use App\Models\UserNotification;
 use App\Services\ImageCompressionService;
 use App\Services\KybVerificationService;
 use Carbon\Carbon;
@@ -33,10 +34,8 @@ use Illuminate\Support\Str;
 
 class DatabaseSeeder extends Seeder
 {
-    /** Cache of TypeOfTenant ids keyed by type name, built during seeding. */
     protected array $tenantTypeIds = [];
 
-    /** Compression summary counters, printed at the end of run(). */
     protected array $compressionStats = [
         'compressed' => 0,
         'skipped'    => 0,
@@ -45,15 +44,12 @@ class DatabaseSeeder extends Seeder
 
     public function run(): void
     {
-        $this->call([
-            RoleSeeder::class,
-        ]);
+        $this->call([RoleSeeder::class]);
 
         $this->seedMarkerCategories();
         $this->seedTenantTypes();
         $this->seedGlobalPropertyTypes();
         $this->seedSiteContent();
-
         $this->seedSuperAdmins();
 
         $spots      = $this->touristSpots();
@@ -70,6 +66,9 @@ class DatabaseSeeder extends Seeder
         $this->seedAccountDeletionRequests($owners, $tourists);
         $this->seedPermitRenewalReminders();
 
+        $this->seedDocumentRenewals();
+        $this->seedUserNotifications();
+
         $this->printSummary();
     }
 
@@ -77,13 +76,11 @@ class DatabaseSeeder extends Seeder
     {
         $this->command->newLine();
         $this->command->info('✓ Seed complete.');
-
         $this->command->newLine();
         $this->command->line('  <fg=cyan;options=bold>Image compression</>');
         $this->command->line(sprintf('    <fg=green>Compressed:</> %d', $this->compressionStats['compressed']));
         $this->command->line(sprintf('    <fg=gray>Skipped   :</> %d', $this->compressionStats['skipped']));
         $this->command->line(sprintf('    <fg=red>Failed    :</> %d', $this->compressionStats['failed']));
-
         $this->command->newLine();
         $this->command->line('  <fg=cyan;options=bold>Test credentials</> (password = <fg=yellow>password</>)');
         $this->command->line('    Superadmin    : superadmin@gmail.com');
@@ -104,21 +101,6 @@ class DatabaseSeeder extends Seeder
         );
     }
 
-    /**
-     * Download a remote URL to the public disk, compress it in place using
-     * the same ImageCompressionService that user uploads flow through, and
-     * return true on success.
-     *
-     * Idempotent: if the target file already exists, the download is
-     * skipped. Compression is also skipped on subsequent seeds unless
-     * $forceCompress is true — that flag bypasses the "already under
-     * the ceiling" short-circuit in ImageCompressionService.
-     *
-     * Force-compress is the seeder's default so every downloaded image
-     * gets re-encoded — the compressed file has EXIF stripped, is
-     * auto-oriented, and goes through the quality ladder. This is the
-     * fastest way to verify the compressor is wired up end-to-end.
-     */
     protected function downloadAndCompressOnce(
         string $url,
         string $relativePath,
@@ -127,7 +109,6 @@ class DatabaseSeeder extends Seeder
     ): bool {
         $disk = Storage::disk('public');
 
-        // Already on disk — optionally force a re-compress, then bail.
         if ($disk->exists($relativePath)) {
             if ($forceCompress && $context !== null) {
                 $this->compressStoredFile($disk->path($relativePath), $relativePath, $context, true);
@@ -135,7 +116,6 @@ class DatabaseSeeder extends Seeder
             return true;
         }
 
-        // ── 1. Download ──────────────────────────────────────
         try {
             $response = Http::timeout(20)
                 ->withOptions(['verify' => false])
@@ -155,7 +135,6 @@ class DatabaseSeeder extends Seeder
             return false;
         }
 
-        // ── 2. Compress in place via the system's own service ──
         if ($context !== null) {
             $this->compressStoredFile($disk->path($relativePath), $relativePath, $context, $forceCompress);
         }
@@ -163,10 +142,6 @@ class DatabaseSeeder extends Seeder
         return true;
     }
 
-    /**
-     * Run a stored file through the compression service and report the
-     * result. Never throws — a compression failure leaves the file intact.
-     */
     protected function compressStoredFile(
         string $absolutePath,
         string $relativePath,
@@ -175,57 +150,39 @@ class DatabaseSeeder extends Seeder
     ): void {
         try {
             $before = @filesize($absolutePath) ?: 0;
-
-            $did = app(ImageCompressionService::class)
-                ->compressInPlace($absolutePath, $context, force: $force);
-
+            $did = app(ImageCompressionService::class)->compressInPlace($absolutePath, $context, force: $force);
             clearstatcache(true, $absolutePath);
             $after = @filesize($absolutePath) ?: 0;
 
             if ($did) {
                 $this->compressionStats['compressed']++;
-
                 $saved = $before - $after;
                 $pct   = $before > 0 ? round(($saved / $before) * 100, 1) : 0;
-
                 $this->command?->getOutput()->writeln(sprintf(
                     '  <fg=green;options=bold>✓</> <fg=gray>%s</> %s → %s <fg=gray>(−%s%%)</>',
-                    $context,
-                    $this->humanBytes($before),
-                    $this->humanBytes($after),
-                    $pct,
+                    $context, $this->humanBytes($before), $this->humanBytes($after), $pct,
                 ));
             } else {
                 $this->compressionStats['skipped']++;
-
                 $this->command?->getOutput()->writeln(sprintf(
                     '  <fg=gray>·</> <fg=gray>%s</> %s <fg=gray>(no change needed)</>',
-                    $context,
-                    $this->humanBytes($before),
+                    $context, $this->humanBytes($before),
                 ));
             }
         } catch (\Throwable $e) {
             $this->compressionStats['failed']++;
-
             Log::warning("Seeder: compression failed for {$relativePath}: {$e->getMessage()}");
-
             $this->command?->getOutput()->writeln(sprintf(
                 '  <fg=red>✗</> <fg=gray>%s</> %s <fg=gray>(%s)</>',
-                $context,
-                $relativePath,
-                $e->getMessage(),
+                $context, $relativePath, $e->getMessage(),
             ));
         }
     }
 
     protected function humanBytes(int $bytes): string
     {
-        if ($bytes < 1024) {
-            return $bytes . ' B';
-        }
-        if ($bytes < 1024 * 1024) {
-            return round($bytes / 1024, 1) . ' KB';
-        }
+        if ($bytes < 1024) return $bytes . ' B';
+        if ($bytes < 1024 * 1024) return round($bytes / 1024, 1) . ' KB';
         return round($bytes / 1024 / 1024, 2) . ' MB';
     }
 
@@ -240,73 +197,48 @@ class DatabaseSeeder extends Seeder
         $hash  = crc32(strtolower($email));
         $index = ($hash % 99) + 1;
         $sex   = ($hash % 2 === 0) ? 'men' : 'women';
-
         return "https://randomuser.me/api/portraits/{$sex}/{$index}.jpg";
     }
 
     protected function fetchLogo(string $slug): string
     {
         $relativePath = "placeholders/tenants/{$slug}.jpg";
-        $this->downloadAndCompressOnce(
-            $this->picsum("logo-{$slug}", 600, 600),
-            $relativePath,
-            'tenant-logo',
-        );
+        $this->downloadAndCompressOnce($this->picsum("logo-{$slug}", 600, 600), $relativePath, 'tenant-logo');
         return $relativePath;
     }
 
     protected function fetchSiteLogo(): string
     {
         $relativePath = 'placeholders/site/logo.jpg';
-        $this->downloadAndCompressOnce(
-            $this->picsum('site-logo-victorias', 600, 600),
-            $relativePath,
-            'site',
-        );
+        $this->downloadAndCompressOnce($this->picsum('site-logo-victorias', 600, 600), $relativePath, 'site');
         return $relativePath;
     }
 
     protected function fetchSiteHero(): string
     {
         $relativePath = 'placeholders/site/hero.jpg';
-        $this->downloadAndCompressOnce(
-            $this->picsum('site-hero-victorias', 1920, 1080),
-            $relativePath,
-            'site',
-        );
+        $this->downloadAndCompressOnce($this->picsum('site-hero-victorias', 1920, 1080), $relativePath, 'site');
         return $relativePath;
     }
 
     protected function fetchSiteSideImage(int $index): string
     {
         $relativePath = "placeholders/site/side-{$index}.jpg";
-        $this->downloadAndCompressOnce(
-            $this->picsum("site-side-{$index}", 800, 800),
-            $relativePath,
-            'site',
-        );
+        $this->downloadAndCompressOnce($this->picsum("site-side-{$index}", 800, 800), $relativePath, 'site');
         return $relativePath;
     }
 
     protected function fetchSpotCover(string $tenantSlug): string
     {
         $relativePath = "placeholders/covers/{$tenantSlug}.jpg";
-        $this->downloadAndCompressOnce(
-            $this->picsum("cover-{$tenantSlug}", 1920, 900),
-            $relativePath,
-            'tenant-cover',
-        );
+        $this->downloadAndCompressOnce($this->picsum("cover-{$tenantSlug}", 1920, 900), $relativePath, 'tenant-cover');
         return $relativePath;
     }
 
     protected function fetchGalleryImage(string $tenantSlug, int $index): string
     {
         $relativePath = "placeholders/gallery/{$tenantSlug}-{$index}.jpg";
-        $this->downloadAndCompressOnce(
-            $this->picsum("gallery-{$tenantSlug}-{$index}", 1200, 900),
-            $relativePath,
-            'property',
-        );
+        $this->downloadAndCompressOnce($this->picsum("gallery-{$tenantSlug}-{$index}", 1200, 900), $relativePath, 'property');
         return $relativePath;
     }
 
@@ -314,12 +246,7 @@ class DatabaseSeeder extends Seeder
     {
         $propSlug     = Str::slug($propertyName);
         $relativePath = "placeholders/properties/{$tenantSlug}-{$propSlug}.jpg";
-
-        $this->downloadAndCompressOnce(
-            $this->picsum("{$tenantSlug}-{$propertyName}", 1600, 1200),
-            $relativePath,
-            'property',
-        );
+        $this->downloadAndCompressOnce($this->picsum("{$tenantSlug}-{$propertyName}", 1600, 1200), $relativePath, 'property');
         return $relativePath;
     }
 
@@ -327,24 +254,14 @@ class DatabaseSeeder extends Seeder
     {
         $slug         = Str::slug($eventName);
         $relativePath = "placeholders/events/{$slug}.jpg";
-
-        $this->downloadAndCompressOnce(
-            $this->picsum("event-{$eventName}", 1600, 900),
-            $relativePath,
-            'event',
-        );
+        $this->downloadAndCompressOnce($this->picsum("event-{$eventName}", 1600, 900), $relativePath, 'event');
         return $relativePath;
     }
 
     protected function fetchAvatar(string $email): string
     {
         $relativePath = 'placeholders/avatars/' . md5(strtolower($email)) . '.jpg';
-
-        $this->downloadAndCompressOnce(
-            $this->randomUserUrl($email),
-            $relativePath,
-            'avatars',
-        );
+        $this->downloadAndCompressOnce($this->randomUserUrl($email), $relativePath, 'avatars');
         return $relativePath;
     }
 
@@ -360,7 +277,6 @@ class DatabaseSeeder extends Seeder
         SiteSetting::setValue('site_name', 'Victorias City Tourism');
         SiteSetting::setValue('site_logo', $logoPath);
         SiteSetting::setValue('hero_background_image', $heroPath);
-
         SiteSetting::setValue('hero_title', 'Welcome to the North');
         SiteSetting::setValue('hero_subtitle', 'Victorias City');
         SiteSetting::setValue(
@@ -402,7 +318,6 @@ class DatabaseSeeder extends Seeder
         ];
 
         $storedCategories = [];
-
         foreach ($categories as $cat) {
             $storedCategories[] = [
                 'key'       => $cat['key'],
@@ -445,7 +360,6 @@ class DatabaseSeeder extends Seeder
                 ['type' => $data['type']],
                 ['description' => $data['description']],
             );
-
             $this->tenantTypeIds[$data['type']] = $row->id;
         }
     }
@@ -467,7 +381,7 @@ class DatabaseSeeder extends Seeder
     }
 
     // ═════════════════════════════════════════════════════════
-    //  Users
+    //  Users — all backdated so User Growth chart has 6 months
     // ═════════════════════════════════════════════════════════
 
     protected function seedSuperAdmins(): void
@@ -493,6 +407,12 @@ class DatabaseSeeder extends Seeder
             }
 
             $user->syncRoles(['super-admin']);
+
+            // Backdate SA signups — they've been here the longest.
+            $user->forceFill([
+                'created_at' => now()->subDays(180)->subHours(random_int(0, 23))->subMinutes(random_int(0, 59)),
+                'updated_at' => now()->subDays(180),
+            ])->save();
         }
     }
 
@@ -519,6 +439,18 @@ class DatabaseSeeder extends Seeder
             }
 
             $owner->syncRoles(['tourist', 'admin']);
+
+            // Owners sign up before their tenant — stagger ~6 days apart.
+            $joinedAt = now()
+                ->subDays(155 - ($i * 6))
+                ->subHours(random_int(0, 23))
+                ->subMinutes(random_int(0, 59));
+
+            $owner->forceFill([
+                'created_at' => $joinedAt,
+                'updated_at' => $joinedAt,
+            ])->save();
+
             $owners[] = $owner;
         }
 
@@ -548,6 +480,18 @@ class DatabaseSeeder extends Seeder
             }
 
             $tourist->syncRoles(['tourist']);
+
+            // Tourists sign up across ~5 months — 25 days apart.
+            $joinedAt = now()
+                ->subDays(175 - ($i * 25))
+                ->subHours(random_int(0, 23))
+                ->subMinutes(random_int(0, 59));
+
+            $tourist->forceFill([
+                'created_at' => $joinedAt,
+                'updated_at' => $joinedAt,
+            ])->save();
+
             $tourists[] = $tourist;
         }
 
@@ -577,6 +521,18 @@ class DatabaseSeeder extends Seeder
             }
 
             $applicant->syncRoles(['tourist']);
+
+            // Applicants sign up in the recent 3 months.
+            $joinedAt = now()
+                ->subDays(90 - ($i * 15))
+                ->subHours(random_int(0, 23))
+                ->subMinutes(random_int(0, 59));
+
+            $applicant->forceFill([
+                'created_at' => $joinedAt,
+                'updated_at' => $joinedAt,
+            ])->save();
+
             $applicants[] = $applicant;
         }
 
@@ -953,7 +909,7 @@ class DatabaseSeeder extends Seeder
     }
 
     // ═════════════════════════════════════════════════════════
-    //  Tenants
+    //  Tenants — backdated to span 6 months
     // ═════════════════════════════════════════════════════════
 
     protected function seedTenants(array $spots, array $owners): void
@@ -965,6 +921,13 @@ class DatabaseSeeder extends Seeder
             $ownerNumber = $index + 1;
             $logoPath    = $this->fetchLogo($data['slug']);
             $coordinates = $this->buildCoordinates($data);
+
+            // Spread tenant signups across ~5 months — index 0 is oldest.
+            // 150 days minus 8 days per index: 18 tenants → ~136-day span.
+            $tenantJoinedAt = now()
+                ->subDays(150 - ($index * 8))
+                ->subHours(random_int(0, 23))
+                ->subMinutes(random_int(0, 59));
 
             $tenant = Tenant::updateOrCreate(
                 ['slug' => $data['slug']],
@@ -978,10 +941,16 @@ class DatabaseSeeder extends Seeder
                     'coordinates'       => $coordinates,
                     'logo'              => $logoPath,
                     'is_active'         => true,
-                    'verified_at'       => now(),
-                    'permit_expires_at' => now()->addMonths(9),
+                    'verified_at'       => $tenantJoinedAt->copy()->addDays(3),
+                    'permit_expires_at' => $tenantJoinedAt->copy()->addMonths(9),
                 ],
             );
+
+            // Eloquent blocks timestamps via mass-assignment — force them.
+            $tenant->forceFill([
+                'created_at' => $tenantJoinedAt,
+                'updated_at' => $tenantJoinedAt,
+            ])->save();
 
             $owner->update(['tenant_id' => $tenant->id, 'active_mode' => User::MODE_BUSINESS]);
             $owner->syncRoles(['tourist', 'admin']);
@@ -1012,30 +981,16 @@ class DatabaseSeeder extends Seeder
     protected function seedTenantGallery(Tenant $tenant, array $data): void
     {
         $coverPath = $this->fetchSpotCover($data['slug']);
-        TenantSetting::updateOrCreate(
-            ['tenant_id' => $tenant->id, 'key' => 'spot_cover'],
-            ['value' => $coverPath],
-        );
+        TenantSetting::updateOrCreate(['tenant_id' => $tenant->id, 'key' => 'spot_cover'], ['value' => $coverPath]);
 
         $gallery = [];
         for ($i = 1; $i <= 6; $i++) {
             $gallery[] = $this->fetchGalleryImage($data['slug'], $i);
         }
 
-        TenantSetting::updateOrCreate(
-            ['tenant_id' => $tenant->id, 'key' => 'business_gallery'],
-            ['value' => $gallery],
-        );
-
-        TenantSetting::updateOrCreate(
-            ['tenant_id' => $tenant->id, 'key' => 'gallery_title'],
-            ['value' => "Discover {$data['name']}"],
-        );
-
-        TenantSetting::updateOrCreate(
-            ['tenant_id' => $tenant->id, 'key' => 'gallery_subtitle'],
-            ['value' => $data['description'] ?? 'A glimpse of what awaits you.'],
-        );
+        TenantSetting::updateOrCreate(['tenant_id' => $tenant->id, 'key' => 'business_gallery'], ['value' => $gallery]);
+        TenantSetting::updateOrCreate(['tenant_id' => $tenant->id, 'key' => 'gallery_title'], ['value' => "Discover {$data['name']}"]);
+        TenantSetting::updateOrCreate(['tenant_id' => $tenant->id, 'key' => 'gallery_subtitle'], ['value' => $data['description'] ?? 'A glimpse of what awaits you.']);
     }
 
     protected function seedTenantKybRecord(Tenant $tenant, User $owner): void
@@ -1065,8 +1020,8 @@ class DatabaseSeeder extends Seeder
                 'logo_path'                    => $tenant->logo,
                 'status'                       => BusinessApplication::STATUS_APPROVED,
                 'source'                       => BusinessApplication::SOURCE_SUPERADMIN_DIRECT,
-                'submitted_at'                 => now()->subMonths(1),
-                'reviewed_at'                  => now()->subMonths(1),
+                'submitted_at'                 => $tenant->created_at,
+                'reviewed_at'                  => $tenant->verified_at,
                 'reviewed_by'                  => $superAdminId,
             ],
         );
@@ -1179,10 +1134,18 @@ class DatabaseSeeder extends Seeder
                 'is_active' => true,
             ],
         );
+
+        // Employees joined sometime after the tenant was created.
+        $joinedAt = $tenant->created_at
+            ? $tenant->created_at->copy()->addDays(random_int(5, 40))
+            : now()->subDays(random_int(30, 150));
+
+        $user->forceFill(['created_at' => $joinedAt, 'updated_at' => $joinedAt])->save();
     }
 
     // ═════════════════════════════════════════════════════════
-    //  Bookings — FIXED: backdated created_at via forceFill
+    //  Bookings — spread across 6 months, varied properties,
+    //  services, and payment methods.
     // ═════════════════════════════════════════════════════════
 
     protected function seedBookingsForAllTenants(array $bookers): void
@@ -1209,28 +1172,46 @@ class DatabaseSeeder extends Seeder
         shuffle($candidates);
         $sample = array_slice($candidates, 0, 8);
 
-        $statusPlan = [
-            Booking::STATUS_COMPLETED,
-            Booking::STATUS_CONFIRMED,
-            Booking::STATUS_PENDING,
-            Booking::STATUS_RESERVED,
-            Booking::STATUS_CANCELLED,
-            Booking::STATUS_CHECKED_IN,
-            Booking::STATUS_CONFIRMED,
-            Booking::STATUS_PENDING,
-        ];
+        // Payment methods cycle deterministically so the pie chart
+        // always has a mix — cash, gcash, card, repeat.
+        $paymentCycle = ['cash', 'gcash', 'card'];
 
-        Booking::withoutEvents(function () use ($sample, $tenant, $statusPlan, $propertyIds, $propertyPrices, $serviceIds, $servicePrices): void {
+        Booking::withoutEvents(function () use (
+            $sample, $tenant, $propertyIds, $propertyPrices,
+            $serviceIds, $servicePrices, $paymentCycle
+        ): void {
             foreach ($sample as $index => $booker) {
-                $status = $statusPlan[$index % count($statusPlan)];
-                $isPast = in_array($status, [Booking::STATUS_COMPLETED, Booking::STATUS_CANCELLED], true);
+                // Spread bookings across 6 months — index % 6 gives
+                // month offsets 0..5 so every bar in the chart gets hits.
+                $monthsBack = $index % 6;
 
-                $checkIn  = $isPast
-                    ? Carbon::now()->subDays(random_int(5, 30))
-                    : Carbon::now()->addDays(random_int(3, 21));
+                $createdAt = now()
+                    ->subMonths($monthsBack)
+                    ->subDays(random_int(0, 25))
+                    ->subHours(random_int(0, 23))
+                    ->subMinutes(random_int(0, 59));
+
+                $checkIn  = $createdAt->copy()->addDays(random_int(1, 30));
                 $checkOut = $checkIn->copy()->addDays(random_int(1, 4));
 
-                $roomId    = $propertyIds[array_rand($propertyIds)];
+                // Derive status from timing.
+                if ($checkOut->isPast()) {
+                    $status = $index % 3 === 0
+                        ? Booking::STATUS_CANCELLED
+                        : Booking::STATUS_COMPLETED;
+                } elseif ($checkIn->isPast() && $checkOut->isFuture()) {
+                    $status = Booking::STATUS_CHECKED_IN;
+                } else {
+                    $status = match ($index % 3) {
+                        0       => Booking::STATUS_PENDING,
+                        1       => Booking::STATUS_RESERVED,
+                        default => Booking::STATUS_CONFIRMED,
+                    };
+                }
+
+                // Rotate through properties so top-performer charts
+                // have distinct bars, not one dominant property.
+                $roomId    = $propertyIds[$index % count($propertyIds)];
                 $roomPrice = $propertyPrices[$roomId];
                 $nights    = max(1, (int) $checkIn->diffInDays($checkOut));
                 $total     = $roomPrice * $nights;
@@ -1238,9 +1219,6 @@ class DatabaseSeeder extends Seeder
                 $bookingType = $status === Booking::STATUS_RESERVED
                     ? Booking::TYPE_RESERVATION
                     : Booking::TYPE_FULL;
-
-                // ── FIX: forceFill bypasses $fillable so created_at sticks ──
-                $backdated = $checkIn->copy()->subDays(random_int(1, 5));
 
                 $booking = new Booking();
                 $booking->forceFill([
@@ -1252,8 +1230,8 @@ class DatabaseSeeder extends Seeder
                     'total_amount'      => $total,
                     'status'            => $status,
                     'booking_type'      => $bookingType,
-                    'created_at'        => $backdated,
-                    'updated_at'        => $backdated,
+                    'created_at'        => $createdAt,
+                    'updated_at'        => $createdAt,
                 ]);
                 $booking->save();
 
@@ -1266,8 +1244,16 @@ class DatabaseSeeder extends Seeder
                     'subtotal'    => $total,
                 ]);
 
-                for ($j = 0, $max = random_int(0, 2); $j < $max; $j++) {
-                    $svcId    = $serviceIds[array_rand($serviceIds)];
+                // 1-3 services per booking, rotated so every service
+                // appears in the Top Services chart.
+                $serviceCount = 1 + ($index % 3);
+                $usedServices = [];
+
+                for ($j = 0; $j < $serviceCount; $j++) {
+                    $svcId = $serviceIds[($index + $j) % count($serviceIds)];
+                    if (in_array($svcId, $usedServices, true)) continue;
+                    $usedServices[] = $svcId;
+
                     $svcPrice = $servicePrices[$svcId];
 
                     BookingService::create([
@@ -1295,23 +1281,30 @@ class DatabaseSeeder extends Seeder
                     ? round($total * 0.20, 2)
                     : $total;
 
-                // ── FIX: forceFill for backdated payment timestamps ──
+                $paymentMethod = $paymentCycle[$index % count($paymentCycle)];
+
+                $paidAt = null;
+                if ($paymentStatus === 'paid') {
+                    $candidate = $createdAt->copy()->addHours(random_int(1, 10));
+                    $paidAt = $candidate->isFuture()
+                        ? $createdAt->copy()->addMinutes(random_int(5, 60))
+                        : $candidate;
+                }
+
                 $payment = new Payment();
                 $payment->forceFill([
                     'tenant_id'        => $tenant->id,
                     'booking_id'       => $booking->id,
                     'amount'           => $paymentAmount,
-                    'payment_method'   => collect(['cash', 'gcash', 'card'])->random(),
+                    'payment_method'   => $paymentMethod,
                     'payment_type'     => $bookingType,
                     'payment_status'   => $paymentStatus,
-                    'paid_at'          => $paymentStatus === 'paid'
-                        ? $backdated->copy()->addHours(random_int(1, 10))
-                        : null,
+                    'paid_at'          => $paidAt,
                     'reference_number' => $paymentStatus === 'paid'
                         ? 'TXN-' . Str::upper(Str::random(10))
                         : null,
-                    'created_at'       => $backdated,
-                    'updated_at'       => now(),
+                    'created_at'       => $createdAt,
+                    'updated_at'       => $paidAt ?? $createdAt,
                 ]);
                 $payment->save();
             }
@@ -1319,7 +1312,7 @@ class DatabaseSeeder extends Seeder
     }
 
     // ═════════════════════════════════════════════════════════
-    //  Events — expanded with past + inactive variations
+    //  Events
     // ═════════════════════════════════════════════════════════
 
     protected function seedEvents(): void
@@ -1370,7 +1363,6 @@ class DatabaseSeeder extends Seeder
             );
         }
 
-        // ── PAST EVENTS — for the "past" filter on the events page ──
         $pastEvents = [
             ['name' => 'Kadalag-an Festival 2025',          'barangay' => 'Barangay V',   'type' => 'fiesta',        'featured' => false, 'tenant_slug' => 'victorias-public-plaza',   'days' => -90,  'coord' => ['lat' => 10.90,  'lng' => 123.07],  'desc' => 'The 2025 edition of the Kadalag-an Festival — a milestone year celebrating the city\'s heritage.'],
             ['name' => 'Malihaw Festival 2025',             'barangay' => 'Barangay IX',  'type' => 'fiesta',        'featured' => false, 'tenant_slug' => 'daan-banwa-heritage-site', 'days' => -75,  'coord' => ['lat' => 10.925, 'lng' => 123.05],  'desc' => 'Last year\'s Malihaw Festival, honoring Nuestra Señora de las Victorias with the traditional fluvial parade.'],
@@ -1400,7 +1392,6 @@ class DatabaseSeeder extends Seeder
             );
         }
 
-        // ── INACTIVE EVENT — for the "inactive" test case ──
         Event::updateOrCreate(
             ['name' => 'Cancelled: Food Truck Rally 2025'],
             [
@@ -1439,6 +1430,15 @@ class DatabaseSeeder extends Seeder
                 ['user_id' => $user->id, 'business_name' => $s['business_name']],
                 $this->buildApplicationPayload($s, $user),
             );
+
+            // Backdate created_at to the submitted_at date so the
+            // application's age in the queue is realistic.
+            if ($application->wasRecentlyCreated && $application->submitted_at) {
+                $application->forceFill([
+                    'created_at' => $application->submitted_at,
+                    'updated_at' => $application->reviewed_at ?? $application->submitted_at,
+                ])->save();
+            }
 
             if (($s['with_documents'] ?? false) && ! $application->documents()->exists()) {
                 $status = match ($s['status']) {
@@ -1650,5 +1650,202 @@ class DatabaseSeeder extends Seeder
                 ],
             );
         }
+    }
+
+    // ═════════════════════════════════════════════════════════
+    //  Document renewals
+    // ═════════════════════════════════════════════════════════
+
+    protected function seedDocumentRenewals(): void
+    {
+        $superAdminId = User::query()->where('email', 'superadmin@gmail.com')->value('id');
+
+        $plan = [
+            ['status' => BusinessDocument::STATUS_PENDING,  'days_ago' => 2,  'reviewed' => null],
+            ['status' => BusinessDocument::STATUS_PENDING,  'days_ago' => 5,  'reviewed' => null],
+            ['status' => BusinessDocument::STATUS_VERIFIED, 'days_ago' => 12, 'reviewed' => 6],
+            ['status' => BusinessDocument::STATUS_REJECTED, 'days_ago' => 20, 'reviewed' => 14],
+        ];
+
+        Tenant::query()->orderBy('id', 'asc')->take(4)->get()->each(
+            function (Tenant $tenant, int $index) use ($plan, $superAdminId): void {
+                $step         = $plan[$index % count($plan)];
+                $status       = $step['status'];
+                $daysAgo      = $step['days_ago'];
+                $reviewedDays = $step['reviewed'];
+
+                $original = BusinessDocument::query()
+                    ->whereHas('application', fn ($q) => $q->where('approved_tenant_id', $tenant->id))
+                    ->where('document_type', BusinessDocument::TYPE_MAYORS_PERMIT)
+                    ->where('is_renewal', false)
+                    ->first();
+
+                if (! $original) return;
+
+                $alreadyHasRenewal = BusinessDocument::query()
+                    ->where('business_application_id', $original->business_application_id)
+                    ->where('document_type', $original->document_type)
+                    ->where('is_renewal', true)
+                    ->exists();
+
+                if ($alreadyHasRenewal) return;
+
+                $renewalStoredPath      = "kyb-documents/renewals/{$tenant->id}-mayors-permit-{$original->id}.jpg";
+                $renewalWatermarkedPath = "kyb-documents/watermarked/renewals/{$tenant->id}-mayors-permit-{$original->id}.jpg";
+
+                $disk = Storage::disk('public');
+
+                if (! $disk->exists($renewalStoredPath) && $disk->exists($original->stored_path)) {
+                    $disk->copy($original->stored_path, $renewalStoredPath);
+                    $this->compressStoredFile(
+                        $disk->path($renewalStoredPath),
+                        $renewalStoredPath,
+                        'renewal-mayors-permit',
+                        force: true,
+                    );
+                }
+
+                if (
+                    $original->watermarked_path
+                    && ! $disk->exists($renewalWatermarkedPath)
+                    && $disk->exists($original->watermarked_path)
+                ) {
+                    $disk->copy($original->watermarked_path, $renewalWatermarkedPath);
+                }
+
+                if (! $disk->exists($renewalStoredPath)) return;
+
+                $submittedAt = now()
+                    ->subDays($daysAgo)
+                    ->subHours($tenant->id % 8)
+                    ->subMinutes(($tenant->id * 7) % 60);
+
+                $reviewedAt = $reviewedDays !== null
+                    ? now()
+                        ->subDays($reviewedDays)
+                        ->subHours($tenant->id % 5)
+                        ->subMinutes(($tenant->id * 11) % 60)
+                    : null;
+
+                $expiresAt = now()
+                    ->addYear()
+                    ->subDays($index * 3);
+
+                $document = new BusinessDocument();
+                $document->forceFill([
+                    'business_application_id' => $original->business_application_id,
+                    'user_id'                 => $original->user_id,
+                    'document_type'           => BusinessDocument::TYPE_MAYORS_PERMIT,
+                    'is_renewal'              => true,
+                    'original_filename'       => 'Mayors-Permit-Renewal-' . $submittedAt->year . '.jpg',
+                    'stored_path'             => $renewalStoredPath,
+                    'watermarked_path'        => $renewalWatermarkedPath,
+                    'mime_type'               => 'image/jpeg',
+                    'file_size'               => $disk->size($renewalStoredPath),
+                    'file_hash'               => hash('sha256', $disk->get($renewalStoredPath)),
+                    'document_number'         => null,
+                    'issued_at'               => $submittedAt->copy()->subDays(1),
+                    'expires_at'              => $expiresAt,
+                    'verification_status'     => $status,
+                    'verification_notes'      => $status === BusinessDocument::STATUS_REJECTED
+                        ? 'Permit scan is unclear around the official seal. Please re-upload with better lighting.'
+                        : null,
+                    'watermarked_at'          => $submittedAt->copy()->addMinutes(2),
+                    'renewal_reviewed_by'     => $reviewedAt ? $superAdminId : null,
+                    'renewal_reviewed_at'     => $reviewedAt,
+                    'created_at'              => $submittedAt,
+                    'updated_at'              => $reviewedAt ?? $submittedAt,
+                ]);
+                $document->save();
+            },
+        );
+    }
+
+    // ═════════════════════════════════════════════════════════
+    //  User notifications
+    // ═════════════════════════════════════════════════════════
+
+    protected function seedUserNotifications(): void
+    {
+        $insert = function (
+            User $user,
+            string $scope,
+            array $tpl,
+            Carbon $createdAt,
+        ): void {
+            $notification = new UserNotification();
+            $notification->forceFill([
+                'user_id'    => $user->id,
+                'scope'      => $scope,
+                'type'       => $tpl['type'],
+                'title'      => $tpl['title'],
+                'message'    => $tpl['message'],
+                'url'        => null,
+                'icon'       => $tpl['icon'],
+                'color'      => $tpl['color'],
+                'read_at'    => $tpl['read'] ? $createdAt->copy()->addHours(2) : null,
+                'created_at' => $createdAt,
+                'updated_at' => $tpl['read'] ? $createdAt->copy()->addHours(2) : $createdAt,
+            ]);
+            $notification->save();
+        };
+
+        $touristTemplates = [
+            ['type' => 'booking', 'title' => 'Booking received', 'message' => 'Your booking has been received. Complete payment within 30 minutes.', 'icon' => 'clock', 'color' => 'amber', 'read' => false, 'minutes_ago' => 12],
+            ['type' => 'booking', 'title' => 'Booking confirmed', 'message' => 'Your booking is confirmed. See you soon!', 'icon' => 'check-circle', 'color' => 'emerald', 'read' => false, 'minutes_ago' => 60 * 26],
+            ['type' => 'kyb_approved', 'title' => 'Business application approved', 'message' => 'Your business application has been approved.', 'icon' => 'check-circle', 'color' => 'emerald', 'read' => true, 'minutes_ago' => 60 * 24 * 5],
+        ];
+
+        User::query()
+            ->role('tourist')
+            ->whereDoesntHave('roles', fn ($q) => $q->whereIn('name', ['admin', 'super-admin']))
+            ->orderBy('id', 'asc')
+            ->take(4)
+            ->get()
+            ->each(function (User $user, int $i) use ($touristTemplates, $insert): void {
+                foreach ($touristTemplates as $tpl) {
+                    $when = now()->subMinutes($tpl['minutes_ago'] + ($i * 17));
+                    $insert($user, UserNotification::SCOPE_TOURIST, $tpl, $when);
+                }
+            });
+
+        $businessTemplates = [
+            ['type' => 'booking', 'title' => 'New booking request', 'message' => 'A new booking was placed for your property.', 'icon' => 'inbox', 'color' => 'blue', 'read' => false, 'minutes_ago' => 8],
+            ['type' => 'renewal_approved', 'title' => "Mayor's Permit renewal approved", 'message' => 'Your renewal was approved. Your permit on file is up to date.', 'icon' => 'check-circle', 'color' => 'emerald', 'read' => false, 'minutes_ago' => 60 * 22],
+            ['type' => 'renewal_rejected', 'title' => "Mayor's Permit renewal needs attention", 'message' => 'Your renewal was rejected. Reason: The permit scan is unclear around the official seal.', 'icon' => 'x-circle', 'color' => 'rose', 'read' => false, 'minutes_ago' => 60 * 24 * 3],
+            ['type' => 'permit_expiry_60d_' . now()->year, 'title' => 'Permit expires soon', 'message' => "Your Mayor's Permit expires in 60 days. Consider starting the renewal early.", 'icon' => 'clock', 'color' => 'amber', 'read' => true, 'minutes_ago' => 60 * 24 * 9],
+        ];
+
+        User::query()
+            ->role('admin')
+            ->whereNotNull('tenant_id', 'and')
+            ->orderBy('id', 'asc')
+            ->take(4)
+            ->get()
+            ->each(function (User $user, int $i) use ($businessTemplates, $insert): void {
+                $subset = $i % 2 === 0 ? $businessTemplates : array_slice($businessTemplates, 0, 2);
+                foreach ($subset as $tpl) {
+                    $when = now()->subMinutes($tpl['minutes_ago'] + ($i * 23));
+                    $insert($user, UserNotification::SCOPE_BUSINESS, $tpl, $when);
+                }
+            });
+
+        $platformTemplates = [
+            ['type' => 'business_application', 'title' => 'New business application', 'message' => 'Hilltop Inn submitted a business application for review.', 'icon' => 'inbox', 'color' => 'blue', 'read' => false, 'minutes_ago' => 4],
+            ['type' => 'deletion_request', 'title' => 'New account deletion request', 'message' => 'A business owner requested account deletion. Review the impact before approving.', 'icon' => 'alert', 'color' => 'rose', 'read' => false, 'minutes_ago' => 60 * 5],
+            ['type' => 'renewal', 'title' => "Permit renewal awaiting review", 'message' => "A tenant submitted a Mayor's Permit renewal for review.", 'icon' => 'clock', 'color' => 'amber', 'read' => false, 'minutes_ago' => 60 * 24 * 2],
+            ['type' => 'tenant', 'title' => 'New tenant verified', 'message' => 'Gawahon Eco Park was verified and is now publicly listed.', 'icon' => 'check-circle', 'color' => 'emerald', 'read' => true, 'minutes_ago' => 60 * 24 * 6],
+        ];
+
+        User::query()
+            ->role('super-admin')
+            ->orderBy('id', 'asc')
+            ->get()
+            ->each(function (User $user, int $i) use ($platformTemplates, $insert): void {
+                foreach ($platformTemplates as $tpl) {
+                    $when = now()->subMinutes($tpl['minutes_ago'] + ($i * 13));
+                    $insert($user, UserNotification::SCOPE_PLATFORM, $tpl, $when);
+                }
+            });
     }
 }

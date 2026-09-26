@@ -31,7 +31,6 @@ class extends Component {
 
     public Property $property;
 
-    // ═══ Details ═══
     #[Validate('required|string|max:255')]
     public $name = '';
 
@@ -40,7 +39,6 @@ class extends Component {
 
     public $property_type_id = '';
 
-    // ═══ Pricing & capacity ═══
     #[Validate('required|numeric|min:0|max:99999999.99')]
     public $price = 0.00;
 
@@ -50,29 +48,18 @@ class extends Component {
     #[Validate('required|integer|min:1|max:100000')]
     public $quantity = 1;
 
-    // ═══ Publishing ═══
     #[Validate('required|in:available,occupied,reserved,maintenance')]
     public $status = 'available';
 
     #[Validate('boolean')]
     public $is_active = true;
 
-    // ═══ Availability ═══
     #[Validate('nullable|date')]
     public ?string $unavailableFrom = null;
 
     #[Validate('nullable|date|after_or_equal:unavailableFrom')]
     public ?string $unavailableTo = null;
 
-    // ═══ Single image ═══
-    //
-    // The page manages ONE image per property:
-    //   • currentImageId / Path / Url describe the row currently in the DB
-    //     (or null if none).
-    //   • newImage is a freshly-picked/cropped file that will REPLACE the
-    //     existing one on save.
-    //   • removeExisting flags the current image for deletion on save (used
-    //     only when newImage is empty).
     public $newImage;
 
     public ?int    $currentImageId   = null;
@@ -81,13 +68,8 @@ class extends Component {
 
     public bool $removeExisting = false;
 
-    // ═══ New-type inline form ═══
     public bool $showNewTypeForm = false;
     public string $newTypeName = '';
-
-    // ─────────────────────────────────────────────────────────
-    //  Lifecycle
-    // ─────────────────────────────────────────────────────────
 
     public function mount($property): void
     {
@@ -108,10 +90,6 @@ class extends Component {
         $this->fillFromProperty($property);
     }
 
-    /**
-     * Four-layer pattern, Layer 3 — re-verify on every Livewire update
-     * request. Route middleware only runs on the initial GET.
-     */
     public function hydrate(): void
     {
         $this->authorizeManageProperties();
@@ -119,9 +97,6 @@ class extends Component {
         $user = Auth::user();
         abort_unless($user && $user->tenant_id, 403);
 
-        // Property is auto-locked by Livewire (typed Eloquent model), but the
-        // underlying row could have been reassigned to another tenant while
-        // this page sat open.
         abort_unless($this->property->tenant_id === $user->tenant_id, 403);
     }
 
@@ -145,10 +120,6 @@ class extends Component {
         }
     }
 
-    /**
-     * Populate form fields from the property model. Reused by mount() and
-     * resetForm() so the two stay in sync.
-     */
     protected function fillFromProperty(Property $property): void
     {
         $this->name             = $property->name;
@@ -166,22 +137,20 @@ class extends Component {
         $this->unavailableTo   = null;
 
         // Snapshot the current image (if any).
+        // Rule J: relative /storage/ URL — asset() prefixes APP_URL,
+        // which may not match the current host.
         $img = $property->images->first();
 
         if ($img) {
             $this->currentImageId   = $img->id;
             $this->currentImagePath = $img->image_path;
-            $this->currentImageUrl  = asset('storage/' . $img->image_path);
+            $this->currentImageUrl  = '/storage/' . ltrim($img->image_path, '/');
         } else {
             $this->currentImageId   = null;
             $this->currentImagePath = null;
             $this->currentImageUrl  = null;
         }
     }
-
-    // ─────────────────────────────────────────────────────────
-    //  Validation
-    // ─────────────────────────────────────────────────────────
 
     protected function rules(): array
     {
@@ -207,10 +176,6 @@ class extends Component {
             'newImage' => ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
         ];
     }
-
-    // ─────────────────────────────────────────────────────────
-    //  Property types
-    // ─────────────────────────────────────────────────────────
 
     #[Computed]
     public function propertyTypes()
@@ -272,45 +237,25 @@ class extends Component {
         }
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Image management (single)
-    // ─────────────────────────────────────────────────────────
-
-    /**
-     * Two states of "Remove" on this page:
-     *   1. A new pick exists → cancel the pick, revert to whatever was in
-     *      the DB (or empty if none).
-     *   2. No new pick, existing image present → flag it for deletion on save.
-     */
     public function removeImage(): void
     {
         $this->authorizeManageProperties();
 
         if ($this->newImage) {
-            // Cancel the fresh pick — revert to the DB image.
             $this->newImage = null;
         } else {
-            // Flag the DB image for deletion.
             $this->removeExisting = true;
         }
 
-        // Tell the Alpine preview consumer to revoke its object URL.
         $this->dispatch('property-image-cleared');
     }
 
-    /**
-     * Undo a "Remove existing" flag before save.
-     */
     public function undoRemove(): void
     {
         $this->authorizeManageProperties();
 
         $this->removeExisting = false;
     }
-
-    // ─────────────────────────────────────────────────────────
-    //  Reset
-    // ─────────────────────────────────────────────────────────
 
     public function resetForm(): void
     {
@@ -323,15 +268,10 @@ class extends Component {
         $this->fillFromProperty($fresh);
         $this->resetErrorBag();
 
-        // Alpine-side preview cleanly cleared.
         $this->dispatch('property-image-cleared');
 
         session()->flash('message', 'Form reset to the last saved state.');
     }
-
-    // ─────────────────────────────────────────────────────────
-    //  Save
-    // ─────────────────────────────────────────────────────────
 
     public function update()
     {
@@ -339,10 +279,6 @@ class extends Component {
 
         $this->validate();
 
-        /*
-         * Refuse "available" while the property has an active or upcoming
-         * booking — same guard as before.
-         */
         if ($this->status === 'available') {
             $hasActive = Booking::withoutGlobalScope(TenantScope::class)
                 ->where('tenant_id', Auth::user()->tenant_id)
@@ -358,11 +294,6 @@ class extends Component {
 
         $tenantId = Auth::user()->tenant_id;
 
-        /*
-         * Store the new image (if any) BEFORE the transaction. If the DB
-         * write fails, we clean up in the catch block. Every file routes
-         * through storeImage() with the 'property' context (≤2 MB).
-         */
         $storedPath = null;
         try {
             if ($this->newImage) {
@@ -384,7 +315,6 @@ class extends Component {
             return null;
         }
 
-        // Snapshot existing image paths for post-commit cleanup.
         $oldPaths = PropertyImage::withoutGlobalScope(TenantScope::class)
             ->where('property_id', $this->property->id)
             ->pluck('image_path')
@@ -405,12 +335,6 @@ class extends Component {
                     'is_active'        => $this->is_active,
                 ]);
 
-                /*
-                 * Image state machine on save:
-                 *   • newImage present  → wipe existing rows, insert the new one
-                 *   • removeExisting    → wipe existing rows, insert nothing
-                 *   • neither           → leave image as-is
-                 */
                 if ($storedPath) {
                     PropertyImage::withoutGlobalScope(TenantScope::class)
                         ->where('property_id', $this->property->id)
@@ -462,17 +386,10 @@ class extends Component {
             return null;
         }
 
-        /*
-         * Post-commit file cleanup. Any old image that was replaced or
-         * removed is safe to delete now. If newImage is empty AND
-         * removeExisting is false, $oldPaths is unchanged and nothing is
-         * deleted (the image on disk is still referenced by the DB row).
-         */
         if (($storedPath || $this->removeExisting) && ! empty($oldPaths)) {
             $disk = Storage::disk('public');
 
             foreach ($oldPaths as $path) {
-                // Do not delete the file we just stored.
                 if ($path === $storedPath) {
                     continue;
                 }
@@ -496,9 +413,9 @@ class extends Component {
 };
 ?>
 
-<div class="p-4 sm:p-6 lg:p-8 max-w-6xl mx-auto space-y-6">
+<div class="p-4 sm:p-6 lg:p-8 max-w-6xl mx-auto space-y-6
+            pb-[max(1rem,env(safe-area-inset-bottom))]">
 
-    {{-- ═══ Flash messages ═══ --}}
     @if (session()->has('message'))
         <div x-data="{ show: true }"
              x-init="setTimeout(() => show = false, 4000)"
@@ -511,8 +428,9 @@ class extends Component {
                 <span>{{ session('message') }}</span>
             </div>
             <button type="button" @click="show = false"
-                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                    class="inline-flex items-center justify-center h-11 w-11 sm:h-7 sm:w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
                            transition-all duration-200 active:scale-95
+                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
                     aria-label="Dismiss">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -534,8 +452,9 @@ class extends Component {
                 <span>{{ session('error') }}</span>
             </div>
             <button type="button" @click="show = false"
-                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                    class="inline-flex items-center justify-center h-11 w-11 sm:h-7 sm:w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
                            transition-all duration-200 active:scale-95
+                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
                     aria-label="Dismiss">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -545,7 +464,6 @@ class extends Component {
         </div>
     @endif
 
-    {{-- ═══ Page header ═══ --}}
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-800">
         <div>
             <div class="flex items-center gap-2 mb-2">
@@ -562,6 +480,7 @@ class extends Component {
         <a href="{{ route('tenant.properties.index') }}" wire:navigate
            class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
                   transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
             <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
@@ -570,14 +489,11 @@ class extends Component {
         </a>
     </div>
 
-    {{-- ═══ Form — two-column layout on lg+ ═══ --}}
     <form wire:submit="update">
         <div class="grid grid-cols-1 lg:grid-cols-5 gap-6">
 
-            {{-- ═══════════ LEFT COLUMN ═══════════ --}}
             <div class="lg:col-span-3 space-y-6">
 
-                {{-- ─── Activity Details ─── --}}
                 <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
                     <div class="flex items-center gap-3">
                         <span class="w-5 h-px bg-primary-600"></span>
@@ -602,7 +518,9 @@ class extends Component {
                             <button type="button"
                                     wire:click="toggleNewTypeForm"
                                     class="inline-flex items-center gap-1 text-xs font-semibold text-primary-600 dark:text-primary-400 hover:underline
-                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded active:scale-95 transition-transform">
+                                           py-2.5 -my-2.5 px-1 -mx-1 rounded
+                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95 transition-transform">
                                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
                                 </svg>
@@ -619,7 +537,6 @@ class extends Component {
                         </select>
                         @error('property_type_id') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
 
-                        {{-- Inline new-type form --}}
                         @if($showNewTypeForm)
                             <div class="mt-2 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-200 dark:border-gray-700 space-y-2">
                                 <label for="field-new-type" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -638,6 +555,7 @@ class extends Component {
                                             wire:target="createType"
                                             class="inline-flex items-center justify-center gap-1.5 h-11 px-4 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm shrink-0
                                                    transition-all duration-200 active:scale-95
+                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                                    disabled:opacity-60 disabled:cursor-not-allowed">
                                         <span wire:loading.remove wire:target="createType">Add</span>
@@ -667,7 +585,6 @@ class extends Component {
                     </div>
                 </div>
 
-                {{-- ─── Pricing & Capacity ─── --}}
                 <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
                     <div class="flex items-center gap-3">
                         <span class="w-5 h-px bg-primary-600"></span>
@@ -703,24 +620,8 @@ class extends Component {
 
             </div>
 
-            {{-- ═══════════ RIGHT COLUMN ═══════════ --}}
             <div class="lg:col-span-2 space-y-6">
 
-                {{--
-                    ═══ Activity Photo ═══
-
-                    Single image. Alpine state:
-                      • previewUrl      — object URL of a freshly-picked crop
-                      • serverUrl       — the DB image URL (from the SFC)
-                      • Livewire flags: removeExisting (marks DB image for delete)
-
-                    Preview visibility:
-                      showPreview = previewUrl OR (serverUrl AND NOT removeExisting)
-
-                    The dashed box is BOTH the display surface and the drop zone.
-                    When empty, an absolute-inset <label> shows the icon + copy
-                    and triggers the picker on click.
-                --}}
                 <div
                     x-data="{
                         ...imageCropper({
@@ -749,7 +650,6 @@ class extends Component {
                         </h2>
                     </div>
 
-                    {{-- ─── Dashed box: display + drop zone ─── --}}
                     <div
                         x-on:dragover.prevent="dragging = true"
                         x-on:dragleave.prevent="dragging = false"
@@ -774,7 +674,6 @@ class extends Component {
                             x-on:change="pick($event)"
                         >
 
-                        {{-- Preview image — new crop OR existing server image --}}
                         <img
                             :src="previewUrl || serverUrl"
                             :class="showPreview ? 'block' : 'hidden'"
@@ -784,11 +683,11 @@ class extends Component {
                             decoding="async"
                         >
 
-                        {{-- Placeholder — icon + copy — only when no image --}}
                         <label
                             for="property-image-input"
                             :class="showPreview ? 'hidden' : 'flex'"
-                            class="absolute inset-0 flex-col items-center justify-center p-6 text-center cursor-pointer"
+                            class="absolute inset-0 flex-col items-center justify-center p-6 text-center cursor-pointer
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]"
                         >
                             <svg class="h-10 w-10 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
@@ -801,7 +700,6 @@ class extends Component {
                             </p>
                         </label>
 
-                        {{-- Upload spinner overlay --}}
                         <div
                             wire:loading.flex
                             wire:target="newImage"
@@ -820,26 +718,18 @@ class extends Component {
 
                     @error('newImage') <span class="text-rose-500 dark:text-rose-400 text-xs block">{{ $message }}</span> @enderror
 
-                    {{--
-                        ─── Buttons below ───
-                        • Remove — cancels the fresh pick (reverts to DB) OR
-                          flags the DB image for deletion. Visibility depends
-                          on whether either state is present.
-                        • Undo — appears when removeExisting is true and the
-                          preview shows empty, to reverse the flag.
-                    --}}
                     <div class="space-y-2">
 
-                        {{-- Replace / Remove row --}}
                         <div :class="showPreview ? 'flex' : 'hidden'" class="items-center justify-end gap-2">
                             <label for="property-image-input"
-                                   class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg
+                                   class="inline-flex items-center justify-center gap-1.5 h-11 sm:h-9 px-3.5 rounded-lg
                                           border border-gray-300 dark:border-gray-600
                                           bg-white dark:bg-gray-800
                                           text-gray-700 dark:text-gray-200
                                           text-xs font-semibold cursor-pointer
                                           transition-all duration-200 active:scale-95
                                           hover:bg-gray-50 dark:hover:bg-gray-700
+                                          [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                           focus-within:outline-none focus-within:ring-2 focus-within:ring-primary-500/50">
                                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
@@ -849,13 +739,14 @@ class extends Component {
 
                             <button type="button"
                                     wire:click="removeImage"
-                                    class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg
+                                    class="inline-flex items-center justify-center gap-1.5 h-11 sm:h-9 px-3.5 rounded-lg
                                            border border-rose-300 dark:border-rose-500/40
                                            bg-white dark:bg-gray-800
                                            text-rose-700 dark:text-rose-300
                                            text-xs font-semibold
                                            transition-all duration-200 active:scale-95
                                            hover:bg-rose-50 dark:hover:bg-rose-500/10
+                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
@@ -864,7 +755,6 @@ class extends Component {
                             </button>
                         </div>
 
-                        {{-- Undo-remove row --}}
                         <div
                             x-data
                             x-show="$wire.removeExisting && !previewUrl"
@@ -876,13 +766,14 @@ class extends Component {
                             </span>
                             <button type="button"
                                     wire:click="undoRemove"
-                                    class="inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg
+                                    class="inline-flex items-center justify-center gap-1.5 h-11 sm:h-8 px-3 rounded-lg
                                            border border-rose-300 dark:border-rose-500/40
                                            bg-white dark:bg-gray-800
                                            text-rose-700 dark:text-rose-300
                                            text-xs font-semibold
                                            transition-all duration-200 active:scale-95
                                            hover:bg-rose-100 dark:hover:bg-rose-500/20
+                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                                 Undo
                             </button>
@@ -890,7 +781,6 @@ class extends Component {
                     </div>
                 </div>
 
-                {{-- ─── Publishing ─── --}}
                 <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
                     <div class="flex items-center gap-3">
                         <span class="w-5 h-px bg-primary-600"></span>
@@ -912,7 +802,8 @@ class extends Component {
                         @error('status') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
 
-                    <label class="flex items-center gap-3 cursor-pointer select-none pt-1">
+                    <label class="flex items-center gap-3 cursor-pointer select-none pt-1 min-h-[44px]
+                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                         <span class="relative inline-flex items-center shrink-0">
                             <input type="checkbox" wire:model="is_active" class="sr-only peer">
                             <span class="w-11 h-6 bg-gray-200 dark:bg-gray-600 rounded-full
@@ -928,7 +819,6 @@ class extends Component {
                     </label>
                 </div>
 
-                {{-- ─── Availability ─── --}}
                 <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
                     <div class="flex items-center gap-3">
                         <span class="w-5 h-px bg-primary-600"></span>
@@ -961,12 +851,12 @@ class extends Component {
             </div>
         </div>
 
-        {{-- ═══ Footer ═══ --}}
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-3 pt-6 mt-6 border-t border-gray-200 dark:border-gray-700">
             <button type="button"
                     wire:click="resetForm"
                     class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
                            transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                 <span>Reset</span>
             </button>
@@ -974,6 +864,7 @@ class extends Component {
             <a href="{{ route('tenant.properties.index') }}" wire:navigate
                class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
                       transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                      [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                 <span>Cancel</span>
             </a>
@@ -983,6 +874,7 @@ class extends Component {
                     wire:target="update"
                     class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
                            transition-all duration-200 active:scale-95
+                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                            disabled:opacity-60 disabled:cursor-not-allowed">
                 <span wire:loading.remove wire:target="update">Update Activity</span>
@@ -997,6 +889,5 @@ class extends Component {
         </div>
     </form>
 
-    {{-- Image crop modal — singleton for this page (Rule 87) --}}
     <x-image-crop-modal />
 </div>

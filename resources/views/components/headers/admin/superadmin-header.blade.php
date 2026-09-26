@@ -33,11 +33,14 @@
 
     /*
      * Canonical dropdown-link class — one source of truth for the two
-     * links inside the profile dropdown.
+     * links inside the profile dropdown. min-h-[44px] and the mobile
+     * touch conventions (Rule 156 + §6.2) are baked in.
      */
     $dropdownLinkClass = 'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm '
+        . 'min-h-[44px] '
         . 'text-gray-700 transition-all duration-200 '
         . 'hover:bg-gray-100 hover:text-gray-900 active:scale-[0.98] '
+        . '[touch-action:manipulation] [-webkit-tap-highlight-color:transparent] '
         . 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 '
         . 'focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-800 '
         . 'dark:text-gray-200 dark:hover:bg-gray-700 dark:hover:text-white';
@@ -81,19 +84,20 @@
     :class="minified ? 'lg:ps-20' : 'lg:ps-64'"
     class="sticky top-0 inset-x-0 z-30 flex w-full flex-wrap md:flex-nowrap md:justify-start
            border-b border-gray-200 bg-white/90 dark:bg-gray-900/90 backdrop-blur
-           h-16 md:h-20 text-sm transition-all duration-300 dark:border-gray-700"
+           min-h-16 md:min-h-20 pt-[env(safe-area-inset-top)] text-sm transition-all duration-300 dark:border-gray-700"
 >
     <nav class="mx-auto flex w-full basis-full items-center justify-between gap-2 px-4 sm:px-6" aria-label="Super admin header">
 
         {{-- Left: Mobile sidebar toggle --}}
         <div class="flex items-center gap-2 lg:hidden">
             <button type="button"
-                    class="flex size-8 items-center justify-center gap-x-2 rounded-full border border-gray-300 bg-white text-gray-700
+                    class="flex size-11 items-center justify-center gap-x-2 rounded-full border border-gray-300 bg-white text-gray-700
                            transition-all duration-200 hover:bg-gray-100 active:scale-95
+                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                            dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
                     @click="$dispatch('toggle-superadmin-sidebar')"
-                    aria-label="Toggle navigation">
+                    aria-label="Open navigation menu">
                 <svg xmlns="http://www.w3.org/2000/svg" class="size-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
                 </svg>
@@ -115,10 +119,12 @@
             <livewire:superadmin::partials.notification-bell />
 
             {{-- Dark mode toggle — Rule 69: :class swap on the icons. --}}
+            {{-- 44px on mobile (Rule 156); 36px on desktop to match the platform's compact header scale. --}}
             <button type="button"
                     @click="toggleDark()"
-                    class="flex size-9 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-500
+                    class="flex size-11 sm:size-9 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-500
                            transition-all duration-200 hover:bg-gray-100 hover:text-gray-900 active:scale-95
+                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                            dark:border-gray-600 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white"
                     aria-label="Toggle dark mode">
@@ -139,8 +145,9 @@
                         @click="open = !open"
                         :aria-expanded="open.toString()"
                         aria-haspopup="true"
-                        class="flex items-center gap-2 rounded-full px-2 py-1.5 text-gray-600
+                        class="flex items-center gap-2 min-h-[44px] rounded-full px-2 py-1.5 text-gray-600
                                transition-all duration-200 hover:bg-gray-100 hover:text-gray-900 active:scale-95
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-white">
                     <div class="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary-600 text-xs font-bold text-white">
@@ -159,7 +166,7 @@
                 {{-- Dropdown Panel — Rule 69: :class toggle + CSS keyframe. --}}
                 <div x-cloak
                      :class="open ? 'superadmin-header-dropdown' : 'hidden'"
-                     class="absolute right-0 z-50 mt-2 w-60 sm:w-64 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-800"
+                     class="absolute right-0 z-50 mt-2 w-60 max-w-[calc(100vw-2rem)] sm:w-64 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-800"
                      role="menu"
                      aria-label="Account menu">
 
@@ -187,6 +194,7 @@
                     <div class="space-y-0.5 p-1.5">
                         <a href="{{ route('superadmin.profile') }}" wire:navigate
                            @click="open = false"
+                           role="menuitem"
                            class="{{ $dropdownLinkClass }}">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
@@ -197,8 +205,10 @@
                         <form method="POST" action="{{ route('logout') }}" class="block">
                             @csrf
                             <button type="submit"
-                                    class="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-rose-600
+                                    role="menuitem"
+                                    class="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm min-h-[44px] text-rose-600
                                            transition-all duration-200 hover:bg-rose-50 active:scale-[0.98]
+                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-800
                                            dark:text-rose-400 dark:hover:bg-rose-500/10">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">

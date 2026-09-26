@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Str;
 
 new
-#[Layout('tenant.layouts.app')]
+#[Layout('tenant::layouts.app')]
 #[Title('Booking Details')]
 class extends Component
 {
@@ -102,6 +102,19 @@ class extends Component
             Booking::STATUS_COMPLETED,
             Booking::STATUS_CANCELLED,
         ], true);
+    }
+
+    /**
+     * Rule J — never use asset() for storage. It prefixes APP_URL, which
+     * may not match the current host (envkit.net vs 127.0.0.1). A relative
+     * /storage/... path always resolves on any origin.
+     */
+    #[Computed]
+    public function tenantLogoUrl(): ?string
+    {
+        $path = $this->booking->tenant?->logo;
+
+        return $path ? '/storage/' . ltrim($path, '/') : null;
     }
 };
 ?>
@@ -470,7 +483,7 @@ class extends Component
 
                         <div class="flex justify-between items-baseline pt-3 mt-1 border-t-2 border-dashed border-gray-200 dark:border-gray-700">
                             <dt class="text-sm font-bold uppercase tracking-wider {{ $this->isSettled ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-700 dark:text-rose-400' }}">
-                                {{ $this->isSettled ? 'Paid in Full' : 'Balance Due' }}
+                                {{ $this->isSettled ? 'Balance' : 'Balance Due' }}
                             </dt>
                             <dd class="font-mono font-bold text-lg tabular-nums {{ $this->isSettled ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400' }}">
                                 ₱{{ number_format($this->balance, 2) }}
@@ -555,8 +568,8 @@ class extends Component
 
             {{-- ─── Letterhead ─────────────────────────────────── --}}
             <header class="receipt-letterhead">
-                @if($booking->tenant?->logo)
-                    <img src="{{ asset('storage/' . $booking->tenant->logo) }}"
+                @if($this->tenantLogoUrl)
+                    <img src="{{ $this->tenantLogoUrl }}"
                          alt="{{ $booking->tenant->name }}"
                          class="receipt-logo">
                 @endif
@@ -688,7 +701,7 @@ class extends Component
             @endif
 
             <div class="receipt-row receipt-row-total">
-                <span class="receipt-row-label">{{ $this->isSettled ? 'Paid in Full' : 'Balance Due' }}</span>
+                <span class="receipt-row-label">{{ $this->isSettled ? 'Balance' : 'Balance Due' }}</span>
                 <span class="receipt-row-value receipt-mono">₱{{ number_format($this->balance, 2) }}</span>
             </div>
 
@@ -804,8 +817,6 @@ class extends Component
         .receipt-print-only { display: none; }
 
         @media print {
-            /* Preferred: 80mm thermal paper. `auto` height = exactly as
-               tall as the content needs — never a second blank page. */
             @page {
                 size: 80mm auto;
                 margin: 0;
@@ -820,20 +831,10 @@ class extends Component
                 height: auto !important;
             }
 
-            /* Visibility-based hide. The JS layer below provides stronger
-               inline-style hiding for the layout chrome. */
             body * { visibility: hidden !important; }
             .receipt-print-only,
             .receipt-print-only * { visibility: visible !important; }
 
-            /* ── The receipt wrapper ──
-               No absolute positioning. The JS strip-pass already removed
-               the layout chrome and cleared padding/margin from every
-               ancestor, so the receipt flows from the top of the page.
-               `margin: 0 auto` centers it horizontally when the printer's
-               paper is wider than 80mm (A4/Letter PDF).
-               On real 80mm thermal paper the auto margins resolve to 0
-               and the receipt fills the roll edge-to-edge. */
             .receipt-print-only {
                 display: block !important;
                 width: 80mm !important;
@@ -848,11 +849,6 @@ class extends Component
             .no-print { display: none !important; }
         }
 
-
-        /* ══════════════════════════════════════════════════════════════
-           RECEIPT DOCUMENT — 80mm single-column, print-safe
-           ══════════════════════════════════════════════════════════════ */
-
         .receipt-document {
             width: 100%;
             color: #111;
@@ -863,7 +859,6 @@ class extends Component
             -webkit-font-smoothing: antialiased;
         }
 
-        /* ── Letterhead ── */
         .receipt-letterhead {
             text-align: center;
             padding-bottom: 2mm;
@@ -903,12 +898,10 @@ class extends Component
             margin: 2mm 0 0;
         }
 
-        /* ── Rules (separators) ── */
         .receipt-rule        { border-top: 1px solid #111; margin: 2.5mm 0; }
         .receipt-rule-dashed { border-top: 1px dashed #aaa; margin: 2.5mm 0; }
         .receipt-rule-thick  { border-top: 1px solid #111; margin: 3mm 0; }
 
-        /* ── Section headings ── */
         .receipt-section-title {
             font-size: 8.5px;
             font-weight: 700;
@@ -919,7 +912,6 @@ class extends Component
             page-break-after: avoid;
         }
 
-        /* ── Rows (label / value pairs) ── */
         .receipt-row {
             display: flex;
             justify-content: space-between;
@@ -952,7 +944,6 @@ class extends Component
 
         .receipt-row-total .receipt-row-label { color: #111; }
 
-        /* ── Guest / text blocks ── */
         .receipt-line-bold {
             font-size: 11px;
             font-weight: 600;
@@ -975,7 +966,6 @@ class extends Component
             margin: 0;
         }
 
-        /* ── Items table ── */
         .receipt-table {
             width: 100%;
             border-collapse: collapse;
@@ -1010,13 +1000,11 @@ class extends Component
             font-size: 10px;
         }
 
-        /* ── Payments ── */
         .receipt-payment {
             padding: 0.8mm 0;
             page-break-inside: avoid;
         }
 
-        /* ── Footer ── */
         .receipt-footer {
             text-align: center;
             padding-top: 2mm;
@@ -1044,13 +1032,11 @@ class extends Component
             letter-spacing: 0.05em;
         }
 
-        /* ── Monospace numbers ── */
         .receipt-mono {
             font-family: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
             font-variant-numeric: tabular-nums;
         }
 
-        /* ── Capitalized labels ── */
         .receipt-table .capitalize,
         .receipt-payment .capitalize { text-transform: capitalize; }
     </style>
@@ -1058,9 +1044,6 @@ class extends Component
 
     {{-- ═══════════════════════════════════════════════════════════════
          PRINT SCOPE HANDLER
-         Before print: hide every direct child of <body> that is not an
-         ancestor of the receipt, and strip padding/margin/background
-         from its ancestors. After print: restore.
          ═══════════════════════════════════════════════════════════════ --}}
     <script>
         (function () {

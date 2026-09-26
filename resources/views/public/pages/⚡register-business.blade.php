@@ -14,23 +14,6 @@ new
 #[Title('Register Your Business')]
 class extends Component
 {
-    /**
-     * The user's most relevant KYB application.
-     *
-     * Preference order:
-     *   1. An *editable* application (draft or needs_revision) — because
-     *      that's the one the user can actually act on. Even if the same
-     *      user has a `rejected` record that was touched more recently
-     *      (e.g. a reviewer added a rejection reason after the user
-     *      started a fresh draft), the editable record is what the UI
-     *      should point at — otherwise the "Continue Application" CTA
-     *      would be replaced by "Start New Application", which the
-     *      server-side RegisterBusinessController::store() would then
-     *      attach to the SAME draft anyway. That mismatch is a UX bug.
-     *   2. Otherwise the latest record of any status (submitted, approved,
-     *      rejected) — the panels for those states already handle the
-     *      "read-only" narrative correctly.
-     */
     #[Computed]
     public function application(): ?BusinessApplication
     {
@@ -57,7 +40,6 @@ class extends Component
             ->first();
     }
 
-    /** Current state key for the panel switch. */
     #[Computed]
     public function state(): string
     {
@@ -100,12 +82,18 @@ class extends Component
         return (string) SiteSetting::getValue('site_name', config('app.name'));
     }
 
+    /**
+     * Relative storage URLs (Rule J).
+     * asset() prefixes APP_URL — which may not match the current host
+     * (envkit.net vs 127.0.0.1). A relative /storage/... path always
+     * resolves correctly on any origin.
+     */
     #[Computed]
     public function logoUrl(): ?string
     {
         $path = SiteSetting::getValue('site_logo');
 
-        return $path ? asset('storage/' . $path) : null;
+        return $path ? '/storage/' . ltrim($path, '/') : null;
     }
 
     #[Computed]
@@ -114,20 +102,17 @@ class extends Component
         $path = SiteSetting::getValue('hero_background_image');
 
         return $path
-            ? asset('storage/' . $path)
+            ? '/storage/' . ltrim($path, '/')
             : 'https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1600&q=80';
     }
 };
 ?>
 
-<main class="min-h-[100dvh] flex flex-col lg:flex-row bg-white dark:bg-gray-950">
+<main class="min-h-[100dvh] flex flex-col lg:flex-row
+             bg-[#F8F7F3] dark:bg-[#0F172A]"
+      x-data="revealOnScroll">
 
-    {{-- ═══════════════════════════════════════════════════════════
-         LEFT — HERO
-         Sticky viewport-height sidebar on desktop, stacked panel on
-         mobile. Content is bottom-anchored with a cinematic gradient
-         for text contrast against any hero image.
-         ═══════════════════════════════════════════════════════════ --}}
+    {{-- ═══════════════ LEFT — HERO ═══════════════ --}}
     <aside class="relative w-full shrink-0 min-h-[280px] sm:min-h-[360px] lg:min-h-0 lg:h-[100dvh] lg:w-[55%] lg:sticky lg:top-0 overflow-hidden">
 
         <img src="{{ $this->heroUrl }}"
@@ -139,59 +124,59 @@ class extends Component
              height="900"
              class="absolute inset-0 w-full h-full object-cover">
 
-        {{-- Gradient overlay — stronger at the bottom for text contrast --}}
         <div class="absolute inset-0 bg-gradient-to-t from-black/85 via-black/35 to-black/15" aria-hidden="true"></div>
-
-        {{-- Subtle vignette --}}
         <div class="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_40%,rgba(0,0,0,0.35)_100%)]" aria-hidden="true"></div>
 
-        {{-- Hero content --}}
         <div class="relative z-10 flex flex-col justify-end h-full min-h-[280px] sm:min-h-[360px] lg:min-h-0 px-6 sm:px-10 lg:px-16 xl:px-24 pb-8 sm:pb-12 lg:pb-16 text-white">
 
-            {{-- Brand pill --}}
-            <span class="inline-flex w-max items-center gap-2 px-3 py-1.5 rounded-full bg-white/10 backdrop-blur-md border border-white/20 text-[11px] font-semibold tracking-wider uppercase">
-                <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+            <span data-reveal
+                  class="inline-flex w-max items-center gap-2 px-3 py-1.5 rounded-full bg-white/10 backdrop-blur-md border border-white/20 text-[11px] font-semibold tracking-wider uppercase">
+                <span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span>
                 {{ $this->siteName }}
             </span>
 
-            {{-- Headline --}}
-            <h1 class="mt-5 sm:mt-6 max-w-2xl text-3xl sm:text-4xl md:text-5xl xl:text-[56px] font-extrabold tracking-tight leading-[1.05]">
+            <h1 data-reveal style="--reveal-delay: 80ms"
+                class="mt-5 sm:mt-6 max-w-2xl text-3xl sm:text-4xl md:text-5xl xl:text-[56px] font-extrabold tracking-tight leading-[1.05] [text-wrap:balance]">
                 Register your business &<br class="hidden sm:inline" />
                 welcome the world
             </h1>
 
-            {{-- Subheadline --}}
-            <p class="mt-4 sm:mt-5 max-w-xl text-sm sm:text-base font-medium leading-relaxed text-white/75">
+            <p data-reveal style="--reveal-delay: 140ms"
+               class="mt-4 sm:mt-5 max-w-xl text-sm sm:text-base font-medium leading-relaxed text-white/75">
                 Put your resort, inn, eco-park, or restaurant on the map.
                 Reach more visitors and share the best of Victorias City.
             </p>
         </div>
     </aside>
 
-    {{-- ═══════════════════════════════════════════════════════════
-         RIGHT — STATE-AWARE PANEL
-         ═══════════════════════════════════════════════════════════ --}}
+    {{-- ═══════════════ RIGHT — STATE-AWARE PANEL ═══════════════ --}}
     <section class="relative flex-1 flex items-center justify-center px-5 sm:px-8 lg:px-16 py-10 lg:py-16">
 
-        {{-- Subtle background texture (light/dark aware) --}}
+        {{-- Ambient radials — platform palette: blue top-right, amber bottom-left.
+             Matches §2.3 of the design system. --}}
         <div class="absolute inset-0 -z-10 opacity-[0.35] dark:opacity-[0.06] pointer-events-none" aria-hidden="true">
-            <div class="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(99,102,241,0.10),transparent_55%)]"></div>
-            <div class="absolute inset-0 bg-[radial-gradient(circle_at_bottom_left,rgba(16,185,129,0.08),transparent_55%)]"></div>
+            <div class="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(59,130,246,0.10),transparent_55%)]"></div>
+            <div class="absolute inset-0 bg-[radial-gradient(circle_at_bottom_left,rgba(245,158,11,0.08),transparent_55%)]"></div>
         </div>
 
         <div class="w-full max-w-md">
 
             {{-- Back to home --}}
             <a href="{{ route('home') }}" wire:navigate
-               class="inline-flex items-center gap-1.5 text-xs font-medium text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-all duration-200 active:scale-95 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 mb-8">
-                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+               data-reveal
+               class="inline-flex items-center gap-1.5 -mx-1 px-1 py-2.5 -my-2.5 text-xs font-medium
+                      text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400
+                      transition-colors mb-8 rounded
+                      [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                 </svg>
                 Back to home
             </a>
 
             {{-- Brand mark --}}
-            <div class="flex items-center gap-3 mb-8">
+            <div data-reveal style="--reveal-delay: 60ms" class="flex items-center gap-3 mb-8">
                 @if($this->logoUrl)
                     <img src="{{ $this->logoUrl }}"
                          alt="{{ $this->siteName }}"
@@ -208,15 +193,24 @@ class extends Component
                 <span class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">{{ $this->siteName }}</span>
             </div>
 
+            {{-- Eyebrow --}}
+            <p data-reveal style="--reveal-delay: 100ms"
+               class="mb-2 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400">
+                <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
+                Business Setup
+            </p>
+
             {{-- Page heading --}}
-            <h2 class="text-3xl sm:text-4xl font-bold tracking-tight text-gray-900 dark:text-white leading-tight">
+            <h2 data-reveal style="--reveal-delay: 140ms"
+                class="text-3xl sm:text-4xl font-bold tracking-tight text-gray-900 dark:text-white leading-tight">
                 Register Your Business
             </h2>
-            <p class="mt-2 text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
+            <p data-reveal style="--reveal-delay: 180ms"
+               class="mt-2 text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
                 Complete our verification process to list your business on {{ $this->siteName }}.
             </p>
 
-            {{-- Flash: success — Rule 95 auto-dismiss + dismiss X + a11y --}}
+            {{-- Flash: success --}}
             @if (session()->has('message'))
                 <div x-data="{ show: true }"
                      x-init="setTimeout(() => show = false, 4000)"
@@ -230,9 +224,10 @@ class extends Component
                     <span class="flex-1 font-medium text-emerald-800 dark:text-emerald-300 leading-relaxed">{{ session('message') }}</span>
                     <button type="button"
                             @click="show = false"
-                            class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
-                                   transition-all duration-200 active:scale-95
-                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 shrink-0"
+                            class="inline-flex items-center justify-center h-11 w-11 sm:h-7 sm:w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                                   transition-all duration-200 active:scale-95 shrink-0
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
                             aria-label="Dismiss message">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
@@ -241,7 +236,7 @@ class extends Component
                 </div>
             @endif
 
-            {{-- Flash: error — Rule 95 --}}
+            {{-- Flash: error --}}
             @if (session()->has('error'))
                 <div x-data="{ show: true }"
                      x-init="setTimeout(() => show = false, 5000)"
@@ -255,9 +250,10 @@ class extends Component
                     <span class="flex-1 font-medium text-rose-800 dark:text-rose-300 leading-relaxed">{{ session('error') }}</span>
                     <button type="button"
                             @click="show = false"
-                            class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
-                                   transition-all duration-200 active:scale-95
-                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 shrink-0"
+                            class="inline-flex items-center justify-center h-11 w-11 sm:h-7 sm:w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                                   transition-all duration-200 active:scale-95 shrink-0
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
                             aria-label="Dismiss error">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
@@ -266,13 +262,10 @@ class extends Component
                 </div>
             @endif
 
-            {{-- ══════════════════════════════════════════════════════════
-                 STATE-AWARE PANEL
-                 ══════════════════════════════════════════════════════════ --}}
+            {{-- ═══ STATE-AWARE PANEL ═══ --}}
 
             @if ($this->isApproved)
-                {{-- ✅ Approved --}}
-                <div class="mt-8 rounded-2xl border border-emerald-200/70 dark:border-emerald-500/25 bg-emerald-50/40 dark:bg-emerald-500/[0.06] p-6">
+                <div data-reveal class="mt-8 rounded-2xl border border-emerald-200/70 dark:border-emerald-500/25 bg-emerald-50/40 dark:bg-emerald-500/[0.06] p-6">
                     <div class="flex items-start gap-4">
                         <div class="shrink-0 w-11 h-11 rounded-xl flex items-center justify-center bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30">
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -280,7 +273,7 @@ class extends Component
                             </svg>
                         </div>
                         <div class="flex-1 min-w-0 pt-0.5">
-                            <h3 class="text-base font-semibold text-gray-900 dark:text-white">
+                            <h3 class="text-base font-semibold tracking-tight text-gray-900 dark:text-white">
                                 Your business is approved
                             </h3>
                             <p class="mt-1.5 text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
@@ -292,7 +285,8 @@ class extends Component
                     <a href="{{ route('tenant.dashboard') }}" wire:navigate
                        class="mt-6 w-full inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold shadow-sm
                               transition-all duration-200 active:scale-95
-                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-950">
+                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                         Go to business dashboard
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
@@ -301,8 +295,7 @@ class extends Component
                 </div>
 
             @elseif ($this->isSubmitted)
-                {{-- ⏳ Under review --}}
-                <div class="mt-8 rounded-2xl border border-amber-200/70 dark:border-amber-500/25 bg-amber-50/40 dark:bg-amber-500/[0.06] p-6">
+                <div data-reveal class="mt-8 rounded-2xl border border-amber-200/70 dark:border-amber-500/25 bg-amber-50/40 dark:bg-amber-500/[0.06] p-6">
                     <div class="flex items-start gap-4">
                         <div class="shrink-0 w-11 h-11 rounded-xl flex items-center justify-center bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-500/30">
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -310,7 +303,7 @@ class extends Component
                             </svg>
                         </div>
                         <div class="flex-1 min-w-0 pt-0.5">
-                            <h3 class="text-base font-semibold text-gray-900 dark:text-white">
+                            <h3 class="text-base font-semibold tracking-tight text-gray-900 dark:text-white">
                                 Application under review
                             </h3>
                             <p class="mt-1.5 text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
@@ -326,8 +319,7 @@ class extends Component
                 </div>
 
             @elseif ($this->isRejected)
-                {{-- ❌ Rejected --}}
-                <div class="mt-8 rounded-2xl border border-rose-200/70 dark:border-rose-500/25 bg-rose-50/40 dark:bg-rose-500/[0.06] p-6">
+                <div data-reveal class="mt-8 rounded-2xl border border-rose-200/70 dark:border-rose-500/25 bg-rose-50/40 dark:bg-rose-500/[0.06] p-6">
                     <div class="flex items-start gap-4">
                         <div class="shrink-0 w-11 h-11 rounded-xl flex items-center justify-center bg-rose-100 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-500/30">
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -335,7 +327,7 @@ class extends Component
                             </svg>
                         </div>
                         <div class="flex-1 min-w-0 pt-0.5">
-                            <h3 class="text-base font-semibold text-gray-900 dark:text-white">
+                            <h3 class="text-base font-semibold tracking-tight text-gray-900 dark:text-white">
                                 Application not approved
                             </h3>
                             <p class="mt-1.5 text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
@@ -363,9 +355,9 @@ class extends Component
                                 :aria-busy="loading"
                                 class="w-full inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold shadow-sm
                                        transition-all duration-200 active:scale-95
-                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-950
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                        disabled:opacity-60 disabled:cursor-not-allowed">
-                            {{-- Rule 69: :class toggling, never x-show. --}}
                             <span :class="loading ? 'hidden' : 'inline-flex items-center gap-2'">
                                 Start new application
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -384,8 +376,7 @@ class extends Component
                 </div>
 
             @elseif ($this->isEditable)
-                {{-- ✏️ Draft or needs-revision --}}
-                <div class="mt-8 rounded-2xl border border-indigo-200/70 dark:border-indigo-500/25 bg-indigo-50/40 dark:bg-indigo-500/[0.06] p-6">
+                <div data-reveal class="mt-8 rounded-2xl border border-indigo-200/70 dark:border-indigo-500/25 bg-indigo-50/40 dark:bg-indigo-500/[0.06] p-6">
                     <div class="flex items-start gap-4">
                         <div class="shrink-0 w-11 h-11 rounded-xl flex items-center justify-center bg-indigo-100 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30">
                             @if ($this->state === BusinessApplication::STATUS_NEEDS_REVISION)
@@ -399,7 +390,7 @@ class extends Component
                             @endif
                         </div>
                         <div class="flex-1 min-w-0 pt-0.5">
-                            <h3 class="text-base font-semibold text-gray-900 dark:text-white">
+                            <h3 class="text-base font-semibold tracking-tight text-gray-900 dark:text-white">
                                 @if ($this->state === BusinessApplication::STATUS_NEEDS_REVISION)
                                     Revision requested
                                 @else
@@ -435,7 +426,8 @@ class extends Component
                                 :aria-busy="loading"
                                 class="w-full inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold shadow-sm
                                        transition-all duration-200 active:scale-95
-                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-950
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                        disabled:opacity-60 disabled:cursor-not-allowed">
                             <span :class="loading ? 'hidden' : 'inline-flex items-center gap-2'">
                                 @if ($this->state === BusinessApplication::STATUS_NEEDS_REVISION)
@@ -459,8 +451,7 @@ class extends Component
                 </div>
 
             @else
-                {{-- 🆕 No application yet --}}
-                <div class="mt-8 rounded-2xl border border-gray-200/70 dark:border-gray-700/70 bg-white/60 dark:bg-gray-900/40 backdrop-blur-sm p-6 shadow-sm">
+                <div data-reveal class="mt-8 rounded-2xl border border-gray-200/70 dark:border-gray-700/70 bg-white/60 dark:bg-gray-900/40 backdrop-blur-sm p-6 shadow-sm">
 
                     <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-5">
                         What to expect
@@ -504,7 +495,8 @@ class extends Component
                                 :aria-busy="loading"
                                 class="w-full inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
                                        transition-all duration-200 active:scale-95
-                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-950
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                        disabled:opacity-60 disabled:cursor-not-allowed">
                             <span :class="loading ? 'hidden' : 'inline-flex items-center gap-2'">
                                 Start application
@@ -524,7 +516,6 @@ class extends Component
                 </div>
             @endif
 
-            {{-- Legal footer --}}
             <p class="mt-8 text-center text-xs text-gray-400 dark:text-gray-500 leading-relaxed">
                 By continuing, you agree to {{ $this->siteName }}'s terms and privacy policy.
             </p>

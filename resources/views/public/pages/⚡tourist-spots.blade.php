@@ -29,24 +29,15 @@ class extends Component
     public string $sortBy = 'name';   // name | newest | popular | price_asc | price_desc
 
     /**
-     * Sorts that require the bookings_count aggregate. Used to add the
-     * withCount() only when needed — avoids a wasted subquery on the
-     * default alphabetical sort.
+     * Sorts that require the bookings_count aggregate.
      */
     private const SORTS_NEEDING_BOOKINGS = ['popular'];
 
     /**
-     * All non-default sort keys. Anything else falls through to the
-     * default alphabetical ordering. Guards against a malicious or
-     * typo'd URL parameter.
+     * All non-default sort keys. Guards against typo'd URL params.
      */
     private const SORTS_NON_DEFAULT = ['newest', 'popular', 'price_asc', 'price_desc'];
 
-    /**
-     * JSON payload for the Alpine hero carousel.
-     * Encoded with JSON_HEX_* flags so it can safely sit inside an
-     * HTML data-* attribute — avoids the §6.2 @js()-in-x-data trap.
-     */
     #[Computed]
     public function heroImagesJson(): string
     {
@@ -61,27 +52,6 @@ class extends Component
     {
         $term = trim($this->search);
 
-        // NOTE: Tenant does NOT use BelongsToTenant (it is the root of the
-        // tenant system, so it cannot scope to itself). No withoutGlobalScope
-        // call is needed on the ROOT query.
-        //
-        // HOWEVER — the `properties` and `services` tables DO use
-        // BelongsToTenant, and TenantScope applies to the SUBQUERIES that
-        // withCount() and withMin() generate. On this public page we must
-        // bypass that scope explicitly, or authenticated users (tourists,
-        // tenant admins) will see zero counts and null prices. Guests
-        // happen to work because TenantScope short-circuits on Auth::check()
-        // — that masked the bug in manual testing.
-        //
-        // SORTING:
-        //   Each non-default branch appends `->orderBy('name')` as a
-        //   deterministic tiebreaker. Without it, two tenants with the
-        //   same booking count could swap positions between requests.
-        //
-        //   For price sorts, `IS NULL ASC` pushes tenants with no
-        //   properties to the bottom. MySQL sorts NULL first by default,
-        //   which would put the "no price yet" cards at the top of a
-        //   "Price: low → high" list — visually broken.
         return Tenant::query()
             ->where('is_active', true)
             ->with(['typeOfTenant:id,type'])
@@ -114,9 +84,6 @@ class extends Component
     #[Computed]
     public function featured()
     {
-        // Tenant has no global scope. Bookings DO — the withCount bypasses it
-        // so counts include every booking on the tenant, not just the current
-        // viewer's.
         return Tenant::query()
             ->where('is_active', true)
             ->withCount([
@@ -133,8 +100,6 @@ class extends Component
     #[Computed]
     public function categories()
     {
-        // TypeOfTenant has no global scope. The tenants relation points to
-        // Tenant, which is also unscoped — no bypass needed.
         return TypeOfTenant::query()
             ->withCount(['tenants' => fn ($q) => $q->where('is_active', true)])
             ->whereHas('tenants', fn ($q) => $q->where('is_active', true))
@@ -157,7 +122,6 @@ class extends Component
     #[Computed]
     public function heroImages(): array
     {
-        // Prioritise top picks for the hero carousel.
         $topPicks = $this->featured->filter(fn ($t) => $t->logo);
         if ($topPicks->isNotEmpty()) {
             $images = $topPicks->map(fn ($t) => asset('storage/' . $t->logo))->values()->toArray();
@@ -193,16 +157,11 @@ class extends Component
         prefersReduced: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
         onVisibilityChange: null,
         init() {
-            // Respect prefers-reduced-motion: do not auto-advance. Users
-            // who set this preference see a static first slide. (WCAG 2.2.2)
+            // Respect prefers-reduced-motion: do not auto-advance. (WCAG 2.2.2)
             if (this.prefersReduced) return;
             if (this.heroImages.length <= 1) return;
 
             // Only start the interval when the tab is actually visible.
-            // Previously this fired unconditionally — a page opened in a
-            // background tab (middle-click, bookmark, restore-session)
-            // would advance heroIndex while the user wasn't looking, so
-            // they'd land on a mid-cycle slide when they finally switched.
             if (!document.hidden) this.startTimer();
 
             // Pause when the tab is hidden; resume when it returns.
@@ -222,6 +181,7 @@ class extends Component
         startTimer() {
             if (this.prefersReduced) return;
             if (this.heroImages.length <= 1) return;
+            if (document.hidden) return;   // Rule 142
             this.stopTimer();
             this.heroTimer = setInterval(() => {
                 this.heroIndex = (this.heroIndex + 1) % this.heroImages.length;
@@ -237,16 +197,16 @@ class extends Component
      data-hero-images="{{ $this->heroImagesJson }}"
      class="min-h-screen">
 
-    {{-- Hero with carousel background --}}
-    <section class="relative overflow-hidden bg-gray-900 py-14 md:py-20">
+    {{-- ═══════════ HERO ═══════════
+         Padding bumped from py-14 md:py-20 → py-16 sm:py-20 md:py-24.
+         The stat cards moved from a single bordered block into three
+         separate glass surfaces inside a horizontal scroll strip that
+         fits them on desktop and lets them breathe on mobile. --}}
+    <section class="relative overflow-hidden bg-gray-900 py-16 sm:py-20 md:py-24">
 
-        {{-- Rule 69: no <template x-if>. The carousel wrapper is always in
-             the DOM; visibility is toggled with :class. The inner
-             <template x-for> is safe (no x-transition modifiers).
-
-             Images are decorative (background slides behind the hero
-             text) — alt="" + aria-hidden="true" so screen readers skip
-             them and don't read the same generic phrase five times. --}}
+        {{-- Rule 69: no <template x-if>. Visibility toggled with :class.
+             Decorative images — alt="" + aria-hidden="true" so screen
+             readers skip them and don't read five generic alt phrases. --}}
         <div class="absolute inset-0"
              :class="heroImages.length > 0 ? '' : 'hidden'">
             <template x-for="(img, index) in heroImages" :key="img">
@@ -263,47 +223,93 @@ class extends Component
 
         <div class="absolute inset-0 bg-gradient-to-r from-black/70 via-black/50 to-black/70"></div>
 
-        <div class="relative z-10 mx-auto flex max-w-7xl flex-col justify-between gap-8 px-6 md:flex-row md:items-center lg:px-8">
-            <div class="max-w-xl">
-                <p class="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-primary-400">
-                    <span class="h-px w-4 bg-primary-400"></span>
+        {{-- Soft amber corner wash — matches the homepage hero accent. --}}
+        <div class="absolute inset-x-0 top-0 h-1/3
+                    bg-gradient-to-b from-amber-500/12 via-amber-500/4 to-transparent
+                    pointer-events-none" aria-hidden="true"></div>
+
+        <div class="relative z-10 mx-auto flex max-w-7xl flex-col gap-8 px-4 sm:px-6 md:flex-row md:items-end md:justify-between md:gap-12 lg:px-8">
+            <div class="max-w-2xl">
+                {{-- Editorial eyebrow — amber, matching the platform-wide pattern. --}}
+                <p class="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-amber-300">
+                    <span class="h-px w-4 bg-amber-400" aria-hidden="true"></span>
                     Victorias City
                 </p>
-                <h1 class="font-display text-4xl font-semibold leading-tight text-white sm:text-5xl md:text-6xl">
+                <h1 class="font-display text-4xl font-bold leading-[1.05] tracking-tight text-white sm:text-5xl md:text-6xl">
                     Discover Local<br><em class="italic text-primary-300">Wonders</em>
                 </h1>
-                <p class="mt-4 max-w-md text-sm leading-relaxed text-white/60">
+                <p class="mt-4 max-w-lg text-sm leading-relaxed text-white/70 sm:text-base">
                     Find the perfect destinations, hidden gems, and must-visit attractions throughout the city and its barangays.
                 </p>
             </div>
 
-            <div class="flex items-center gap-4 sm:gap-6 rounded-2xl border border-primary-500/20 bg-primary-500/10 p-6 backdrop-blur md:flex-col md:gap-4">
-                <div>
-                    <div class="font-display text-3xl font-medium text-primary-300 tabular-nums">{{ $this->totalCount }}</div>
-                    <div class="text-xs font-semibold uppercase tracking-wider text-white/50">Destinations</div>
+            {{-- Hero stats.
+                 Three separate glass cards. On mobile they scroll
+                 horizontally (each min-w prevents them from squishing);
+                 on `md` they sit side-by-side with no scroll. --}}
+            <div class="flex shrink-0 gap-3 overflow-x-auto scrollbar-hide pb-1
+                        md:overflow-visible md:pb-0">
+                <div class="shrink-0 min-w-[120px] md:min-w-[128px]
+                            rounded-2xl border border-white/10 bg-white/[0.06] backdrop-blur-md
+                            px-4 py-3.5">
+                    <div class="font-display text-3xl font-semibold text-white tabular-nums leading-none">
+                        {{ $this->totalCount }}
+                    </div>
+                    <div class="mt-2 text-[10px] font-bold uppercase tracking-[0.15em] text-white/60">
+                        Destinations
+                    </div>
                 </div>
-                <div class="h-10 w-px bg-primary-500/20 md:h-px md:w-10"></div>
-                <div>
-                    <div class="font-display text-3xl font-medium text-primary-300 tabular-nums">{{ $this->categories->count() }}</div>
-                    <div class="text-xs font-semibold uppercase tracking-wider text-white/50">Categories</div>
+
+                <div class="shrink-0 min-w-[120px] md:min-w-[128px]
+                            rounded-2xl border border-white/10 bg-white/[0.06] backdrop-blur-md
+                            px-4 py-3.5">
+                    <div class="font-display text-3xl font-semibold text-white tabular-nums leading-none">
+                        {{ $this->categories->count() }}
+                    </div>
+                    <div class="mt-2 text-[10px] font-bold uppercase tracking-[0.15em] text-white/60">
+                        Categories
+                    </div>
                 </div>
-                <div class="h-10 w-px bg-primary-500/20 md:h-px md:w-10"></div>
-                <div>
-                    <div class="font-display text-3xl font-medium text-primary-300 tabular-nums">{{ $this->featured->count() }}</div>
-                    <div class="text-xs font-semibold uppercase tracking-wider text-white/50">Top Picks</div>
+
+                <div class="shrink-0 min-w-[120px] md:min-w-[128px]
+                            rounded-2xl border border-white/10 bg-white/[0.06] backdrop-blur-md
+                            px-4 py-3.5">
+                    <div class="font-display text-3xl font-semibold text-white tabular-nums leading-none">
+                        {{ $this->featured->count() }}
+                    </div>
+                    <div class="mt-2 text-[10px] font-bold uppercase tracking-[0.15em] text-white/60">
+                        Top Picks
+                    </div>
                 </div>
             </div>
         </div>
     </section>
 
-    {{-- Sticky Controls --}}
-    {{-- `top-16 md:top-20` matches the public layout's header heights
-         (h-16 on mobile, h-20 on desktop). Using bare `top-16` left the
-         bar overlapping the header on desktop. --}}
-    <div class="sticky top-16 md:top-20 z-20 border-b border-gray-200 bg-white/95 backdrop-blur dark:border-gray-800 dark:bg-gray-900/95">
-        <div class="mx-auto flex max-w-7xl flex-col gap-4 px-6 py-4 md:flex-row md:items-center lg:px-8">
-            {{-- Search (Rule 107 — `.input` + inline padding-left for the icon) --}}
-            <div class="relative max-w-xs flex-1">
+    {{-- ═══════════ STICKY CONTROLS ═══════════
+         The public header is now `min-h-16 md:min-h-20` PLUS
+         `pt-[env(safe-area-inset-top)]`. On notched iPhones that
+         adds ~47–59px of height. The sticky bar must offset by the
+         SAME amount so it doesn't slide behind the header.
+
+         Non-notched devices: env() = 0, so top-[calc(4rem+0)] = 64px
+         (mobile) and top-[calc(5rem+0)] = 80px (md+) — identical to
+         the previous top-16 md:top-20.
+
+         Mobile padding tightened to py-3 / gap-3 so the sticky bar
+         eats less vertical space on small screens.
+         All interactive controls are h-11 (44px) on mobile and h-9
+         (36px) on sm+ — WCAG AAA tap floor on mobile. --}}
+    <div class="sticky z-20 border-b border-gray-200 bg-white/95 backdrop-blur
+                dark:border-gray-800 dark:bg-gray-900/95
+                top-[calc(4rem+env(safe-area-inset-top))]
+                md:top-[calc(5rem+env(safe-area-inset-top))]">
+        <div class="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-3 sm:px-6 sm:py-4 md:flex-row md:items-center md:gap-4 lg:px-8">
+
+            {{-- Search.
+                 `.input` sets text-base sm:text-sm (iOS-zoom safe).
+                 Padding moved off inline `style=""` onto Tailwind
+                 utilities so it stays in the class chain. --}}
+            <div class="relative max-w-full flex-1 md:max-w-xs">
                 <svg xmlns="http://www.w3.org/2000/svg" class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
                 </svg>
@@ -311,30 +317,37 @@ class extends Component
                        wire:model.live.debounce.300ms="search"
                        enterkeyhint="search"
                        autocomplete="off"
-                       class="input w-full"
-                       style="padding-left: 2.25rem; padding-right: 2.25rem;"
+                       class="input w-full pl-9 pr-11"
                        placeholder="Search destinations…"
                        aria-label="Search destinations">
                 @if($search)
+                    {{-- Expand the touch target to 44px via a pseudo-element
+                         without changing the visual size. Rule: WCAG 2.5.5. --}}
                     <button type="button"
                             wire:click="$set('search','')"
                             wire:key="clear-search-btn"
-                            class="absolute right-2 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-gray-400 transition hover:bg-gray-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 dark:hover:bg-gray-700"
+                            class="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full
+                                   text-gray-400 transition hover:bg-gray-200 active:scale-95
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                                   dark:hover:bg-gray-700
+                                   before:absolute before:content-[''] before:-inset-2.5 before:rounded-full
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]"
                             aria-label="Clear search">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
                     </button>
                 @endif
             </div>
 
-            {{-- Category Pills (Rule 99 canonical — pill + inline count) --}}
+            {{-- Category Pills — h-11 on mobile (44px), h-9 at sm. --}}
             <div class="flex flex-1 gap-2 overflow-x-auto pb-1 scrollbar-hide">
                 @php $allActive = blank($categoryFilter); @endphp
                 <button type="button"
                         wire:click="$set('categoryFilter','')"
                         wire:key="cat-pill-all"
                         aria-pressed="{{ $allActive ? 'true' : 'false' }}"
-                        class="inline-flex items-center gap-2 h-9 pl-3.5 pr-1.5 rounded-full text-xs font-semibold uppercase tracking-wide border
+                        class="inline-flex items-center gap-2 h-11 sm:h-9 pl-3.5 pr-1.5 rounded-full text-xs font-semibold uppercase tracking-wide border
                                transition-all duration-200 active:scale-95 shrink-0
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
                                {{ $allActive
                                     ? 'bg-primary-600 border-primary-600 text-white shadow-sm'
@@ -351,8 +364,9 @@ class extends Component
                             wire:click="$set('categoryFilter','{{ $cat->type }}')"
                             wire:key="cat-pill-{{ $cat->id }}"
                             aria-pressed="{{ $isActive ? 'true' : 'false' }}"
-                            class="inline-flex items-center gap-2 h-9 pl-3.5 pr-1.5 rounded-full text-xs font-semibold uppercase tracking-wide border
+                            class="inline-flex items-center gap-2 h-11 sm:h-9 pl-3.5 pr-1.5 rounded-full text-xs font-semibold uppercase tracking-wide border
                                    transition-all duration-200 active:scale-95 shrink-0
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
                                    {{ $isActive
                                         ? 'bg-primary-600 border-primary-600 text-white shadow-sm'
@@ -369,18 +383,17 @@ class extends Component
             {{-- Sort + View toggle --}}
             <div class="flex shrink-0 items-center gap-2">
 
-                {{-- Sort dropdown. `wire:model.live` because changing sort
-                     re-queries the server — the result must reflect
-                     immediately, not on the next user action. --}}
+                {{-- Sort dropdown — h-11 on mobile (44px), h-9 at sm. --}}
                 <div class="relative">
                     <select wire:model.live="sortBy"
                             wire:key="sort-select"
                             aria-label="Sort destinations"
-                            class="appearance-none h-9 pl-3 pr-8 rounded-lg border border-gray-200 dark:border-gray-700
+                            class="appearance-none h-11 sm:h-9 pl-3 pr-8 rounded-lg border border-gray-200 dark:border-gray-700
                                    bg-white dark:bg-gray-900
                                    text-xs font-semibold text-gray-700 dark:text-gray-300
                                    focus:outline-none focus:ring-2 focus:ring-primary-500/50
-                                   transition cursor-pointer">
+                                   transition cursor-pointer
+                                   [touch-action:manipulation]">
                         <option value="name">Alphabetical</option>
                         <option value="newest">Newest first</option>
                         <option value="popular">Most booked</option>
@@ -392,13 +405,15 @@ class extends Component
                     </svg>
                 </div>
 
-                {{-- View toggle --}}
+                {{-- View toggle — h-11 w-11 on mobile (44×44), h-9 w-9 at sm. --}}
                 <div class="flex shrink-0 overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
                     <button type="button"
                             wire:click="$set('viewMode','grid')"
                             wire:key="view-toggle-grid"
                             aria-pressed="{{ $viewMode === 'grid' ? 'true' : 'false' }}"
-                            class="flex h-9 w-9 items-center justify-center transition active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                            class="flex h-11 w-11 sm:h-9 sm:w-9 items-center justify-center transition active:scale-95
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                   focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
                                    {{ $viewMode === 'grid'
                                         ? 'bg-primary-600 text-white'
                                         : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800' }}"
@@ -410,7 +425,9 @@ class extends Component
                             wire:click="$set('viewMode','list')"
                             wire:key="view-toggle-list"
                             aria-pressed="{{ $viewMode === 'list' ? 'true' : 'false' }}"
-                            class="flex h-9 w-9 items-center justify-center transition active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                            class="flex h-11 w-11 sm:h-9 sm:w-9 items-center justify-center transition active:scale-95
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                   focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
                                    {{ $viewMode === 'list'
                                         ? 'bg-primary-600 text-white'
                                         : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800' }}"
@@ -421,52 +438,89 @@ class extends Component
                 </div>
             </div>
         </div>
+
+        {{-- Subtle animated progress hairline while Livewire is updating.
+             Replaces the plain spinner that used to sit BELOW the grid
+             and cause a visible layout jump. This is a zero-shift
+             indicator that lives inside the sticky bar's own border. --}}
+        <div class="relative h-0.5 overflow-hidden" aria-hidden="true">
+            <div wire:loading.delay.shortest
+                 wire:target="search,categoryFilter,viewMode,resetFilters,sortBy"
+                 class="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-primary-500 to-transparent
+                        animate-[progressSweep_1.2s_ease-in-out_infinite] motion-reduce:animate-none"
+                 style="animation-name: progressSweep;"></div>
+        </div>
     </div>
 
-    {{-- Body --}}
-    <div class="mx-auto max-w-7xl px-6 py-10 lg:px-8">
+    @push('styles')
+        @once
+            <style>
+                @keyframes progressSweep {
+                    0%   { transform: translateX(-100%); }
+                    100% { transform: translateX(400%); }
+                }
+            </style>
+        @endonce
+    @endpush
 
-        {{-- Featured Destinations --}}
+    {{-- ═══════════ BODY ═══════════
+         x-data="revealOnScroll" — one IntersectionObserver +
+         one MutationObserver covers everything inside. Morph-added
+         nodes (grid updates, @if toggles) get auto-observed. --}}
+    <div class="mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-10 lg:px-8" x-data="revealOnScroll">
+
+        {{-- ═══════════ FEATURED ═══════════ --}}
         @if(!$this->hasActiveFilters && $this->featured->isNotEmpty())
             <section class="mb-12">
-                <div class="mb-6 flex items-end justify-between">
+                <div data-reveal class="mb-6 flex items-end justify-between gap-4">
                     <div>
-                        <p class="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-primary-600 dark:text-primary-400">
-                            <span class="h-px w-4 bg-primary-600 dark:bg-primary-400"></span>
+                        <p class="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400">
+                            <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
                             Featured
                         </p>
-                        <h2 class="font-display text-2xl font-semibold text-gray-900 dark:text-white md:text-3xl">Popular <em class="italic text-primary-600 dark:text-primary-400">Picks</em></h2>
+                        <h2 class="font-display text-2xl font-bold tracking-tight text-gray-900 dark:text-white md:text-3xl">
+                            Popular <em class="italic text-primary-600 dark:text-primary-400">Picks</em>
+                        </h2>
                     </div>
-                    <div class="font-display text-5xl font-light text-gray-200 dark:text-gray-800 tabular-nums">{{ str_pad($this->featured->count(), 2, '0', STR_PAD_LEFT) }}</div>
+                    <div class="font-display text-5xl font-light text-gray-200 dark:text-gray-800 tabular-nums leading-none">
+                        {{ str_pad($this->featured->count(), 2, '0', STR_PAD_LEFT) }}
+                    </div>
                 </div>
 
-                <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 sm:gap-6 lg:grid-cols-3">
                     @foreach($this->featured as $tenant)
-                        @php
-                            $img = $tenant->logo ? asset('storage/' . $tenant->logo) : null;
-                        @endphp
+                        @php $img = $tenant->logo ? asset('storage/' . $tenant->logo) : null; @endphp
                         <a href="{{ route('business.offerings', $tenant->slug) }}" wire:navigate wire:key="feat-{{ $tenant->id }}"
-                           class="group relative flex aspect-[4/5] flex-col justify-end overflow-hidden rounded-2xl transition-all duration-300 hover:-translate-y-1 hover:shadow-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-[0.99]">
+                           data-reveal
+                           style="--reveal-delay: {{ min($loop->index, 2) * 80 }}ms"
+                           class="group relative flex aspect-[4/5] flex-col justify-end overflow-hidden rounded-2xl
+                                  shadow-sm hover:shadow-2xl hover:shadow-amber-500/10
+                                  ring-1 ring-transparent hover:ring-amber-400/30
+                                  transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]
+                                  hover:-translate-y-1
+                                  focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                                  active:scale-[0.99]
+                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                             @if($img)
                                 <img src="{{ $img }}" alt="{{ $tenant->name }}" class="absolute inset-0 h-full w-full object-cover brightness-75 transition duration-700 group-hover:scale-105 group-hover:brightness-90" loading="lazy" decoding="async">
                             @else
                                 <div class="absolute inset-0 bg-gradient-to-br from-gray-900 to-gray-700"></div>
                             @endif
-                            <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent"></div>
+                            <div class="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-transparent"></div>
                             <div class="relative z-10 p-5">
-                                <span class="mb-2 inline-flex items-center gap-1 rounded bg-primary-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary-300">
+                                <span class="mb-2 inline-flex items-center gap-1 rounded-full bg-amber-500/20 backdrop-blur-sm px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-200 ring-1 ring-inset ring-amber-400/20">
                                     <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
                                     Featured
                                 </span>
-                                <div class="text-xs font-semibold uppercase tracking-wider text-white/50">{{ $tenant->typeOfTenant?->type ?? 'Destination' }}</div>
-                                <h3 class="font-display text-xl font-semibold text-white">{{ $tenant->name }}</h3>
+                                <div class="text-xs font-semibold uppercase tracking-wider text-white/60">{{ $tenant->typeOfTenant?->type ?? 'Destination' }}</div>
+                                <h3 class="font-display text-xl font-semibold text-white leading-tight">{{ $tenant->name }}</h3>
                                 @if($tenant->address)
-                                    <p class="mt-1 flex items-start gap-1 text-xs text-white/50">
-                                        <svg xmlns="http://www.w3.org/2000/svg" class="mt-0.5 h-3 w-3 shrink-0 text-primary-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/></svg>
-                                        {{ $tenant->address }}
+                                    <p class="mt-1 flex items-start gap-1 text-xs text-white/60">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="mt-0.5 h-3 w-3 shrink-0 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/></svg>
+                                        <span class="line-clamp-1">{{ $tenant->address }}</span>
                                     </p>
                                 @endif
-                                <span class="mt-3 inline-flex items-center gap-1 text-xs font-bold uppercase tracking-wider text-primary-400 opacity-0 transition group-hover:opacity-100">
+                                <span class="mt-3 inline-flex items-center gap-1 text-xs font-bold uppercase tracking-wider text-amber-300 opacity-0 transition group-hover:opacity-100">
                                     Explore
                                     <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
                                 </span>
@@ -479,15 +533,15 @@ class extends Component
             </section>
         @endif
 
-        {{-- All Destinations --}}
+        {{-- ═══════════ ALL DESTINATIONS ═══════════ --}}
         <section>
-            <div class="mb-6 flex flex-wrap items-end justify-between gap-4">
+            <div data-reveal class="mb-6 flex flex-wrap items-end justify-between gap-4">
                 <div>
-                    <p class="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-primary-600 dark:text-primary-400">
-                        <span class="h-px w-4 bg-primary-600 dark:bg-primary-400"></span>
+                    <p class="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400">
+                        <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
                         {{ $this->hasActiveFilters ? 'Search Results' : 'All Destinations' }}
                     </p>
-                    <h2 class="font-display text-2xl font-semibold text-gray-900 dark:text-white md:text-3xl">
+                    <h2 class="font-display text-2xl font-bold tracking-tight text-gray-900 dark:text-white md:text-3xl">
                         @if($this->hasActiveFilters)
                             <em class="italic text-primary-600 dark:text-primary-400">{{ $this->tenants->count() }}</em> {{ \Illuminate\Support\Str::plural('Spot', $this->tenants->count()) }} Found
                         @else
@@ -497,38 +551,55 @@ class extends Component
                 </div>
                 <div class="flex items-center gap-4">
                     @if($this->hasActiveFilters)
+                        {{-- Reset Filters — h-11 on mobile (44px), h-9 at sm. --}}
                         <button type="button"
                                 wire:click="resetFilters"
                                 wire:key="reset-filters-btn"
-                                class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg
+                                class="inline-flex items-center justify-center gap-1.5 h-11 sm:h-9 px-3.5 rounded-lg
                                        border border-rose-300 dark:border-rose-500/40
                                        bg-white dark:bg-gray-800
                                        text-rose-700 dark:text-rose-300
                                        text-xs font-semibold uppercase tracking-wider
                                        transition-all duration-200 active:scale-95
                                        hover:bg-rose-50 dark:hover:bg-rose-500/10
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                             Clear
                         </button>
                     @endif
-                    <div class="font-display text-5xl font-light text-gray-200 dark:text-gray-800 tabular-nums">{{ str_pad($this->tenants->count(), 2, '0', STR_PAD_LEFT) }}</div>
+                    <div class="font-display text-5xl font-light text-gray-200 dark:text-gray-800 tabular-nums leading-none">
+                        {{ str_pad($this->tenants->count(), 2, '0', STR_PAD_LEFT) }}
+                    </div>
                 </div>
             </div>
 
-            {{-- `transition-opacity duration-200` on the container smooths
-                 the wire:loading fade — previously the opacity change was
-                 instant and read as a flash. --}}
-            <div class="grid gap-6 transition-opacity duration-200 {{ $viewMode === 'list' ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4' }}"
-                 wire:loading.class="opacity-50"
+            {{-- Grid.
+                 `transition-opacity duration-300` for a smooth fade.
+                 `pointer-events-none` while loading so a mid-update tap
+                 can't land on a card that's about to be replaced. --}}
+            <div class="grid gap-5 sm:gap-6 transition-opacity duration-300
+                        {{ $viewMode === 'list' ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4' }}"
+                 wire:loading.class="opacity-40 pointer-events-none"
                  wire:target="search,categoryFilter,viewMode,resetFilters,sortBy">
                 @forelse($this->tenants as $tenant)
                     @php
                         $img  = $tenant->logo ? asset('storage/' . $tenant->logo) : null;
                         $minP = $tenant->properties_min_price;
+                        $offeringCount = $tenant->properties_count + $tenant->services_count;
                     @endphp
                     <a href="{{ route('business.offerings', $tenant->slug) }}" wire:navigate wire:key="dest-{{ $tenant->id }}"
-                       class="group flex overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 dark:border-gray-800 dark:bg-gray-900 active:scale-[0.99] {{ $viewMode === 'list' ? 'flex-row' : 'flex-col' }}">
+                       data-reveal
+                       style="--reveal-delay: {{ min($loop->index % 4, 3) * 60 }}ms"
+                       class="group flex overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm
+                              transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]
+                              hover:-translate-y-1 hover:shadow-lg hover:shadow-primary-500/5
+                              hover:border-primary-200 dark:hover:border-primary-500/30
+                              focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                              dark:border-gray-800 dark:bg-gray-900
+                              active:scale-[0.99]
+                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                              {{ $viewMode === 'list' ? 'flex-row' : 'flex-col' }}">
                         <div class="relative {{ $viewMode === 'list' ? 'h-auto w-32 shrink-0' : 'aspect-[4/3] w-full' }}">
                             @if($img)
                                 <img src="{{ $img }}" alt="{{ $tenant->name }}" class="h-full w-full object-cover brightness-90 transition duration-700 group-hover:scale-105 group-hover:brightness-100" loading="lazy" decoding="async">
@@ -538,7 +609,7 @@ class extends Component
                                 </div>
                             @endif
                             @if($tenant->typeOfTenant)
-                                <span class="absolute bottom-2 left-2 rounded bg-black/70 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white">{{ $tenant->typeOfTenant->type }}</span>
+                                <span class="absolute bottom-2 left-2 rounded-full bg-black/70 backdrop-blur-sm px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white">{{ $tenant->typeOfTenant->type }}</span>
                             @endif
                         </div>
 
@@ -546,7 +617,7 @@ class extends Component
                             <h3 class="font-display text-lg font-semibold leading-tight text-gray-900 transition group-hover:text-primary-600 dark:text-white dark:group-hover:text-primary-400">{{ $tenant->name }}</h3>
                             @if($tenant->address)
                                 <p class="mt-1 flex items-start gap-1 text-xs text-gray-500 dark:text-gray-400">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="mt-0.5 h-3 w-3 shrink-0 text-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/></svg>
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="mt-0.5 h-3 w-3 shrink-0 text-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657 13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/></svg>
                                     <span class="line-clamp-2">{{ $tenant->address }}</span>
                                 </p>
                             @endif
@@ -554,10 +625,12 @@ class extends Component
                             <div class="mt-auto flex items-center justify-between border-t border-gray-100 pt-3 dark:border-gray-800">
                                 <div>
                                     @if($minP !== null)
-                                        <div class="font-display text-lg font-semibold text-gray-900 dark:text-white tabular-nums">₱{{ number_format($minP, 0) }}</div>
-                                        <div class="text-[10px] uppercase tracking-wider text-gray-400">from / unit</div>
+                                        <div class="font-display text-lg font-semibold text-gray-900 dark:text-white tabular-nums leading-none">
+                                            ₱{{ number_format($minP, 0) }}
+                                        </div>
+                                        <div class="mt-1 text-[10px] uppercase tracking-wider text-gray-400">from / unit</div>
                                     @else
-                                        <div class="text-xs text-gray-500 dark:text-gray-400">{{ $tenant->properties_count + $tenant->services_count }} offering{{ ($tenant->properties_count + $tenant->services_count) !== 1 ? 's' : '' }}</div>
+                                        <div class="text-xs text-gray-500 dark:text-gray-400">{{ $offeringCount }} offering{{ $offeringCount !== 1 ? 's' : '' }}</div>
                                     @endif
                                 </div>
                                 <span class="inline-flex items-center gap-1 text-xs font-bold uppercase tracking-wider text-primary-600 opacity-0 transition group-hover:opacity-100 dark:text-primary-400">
@@ -568,30 +641,34 @@ class extends Component
                         </div>
                     </a>
                 @empty
-                    <div class="col-span-full rounded-xl border border-dashed border-gray-300 p-12 text-center dark:border-gray-700">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="mx-auto mb-4 h-12 w-12 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-                        </svg>
-                        <h3 class="font-display text-xl italic text-gray-500 dark:text-gray-400">No destinations found.</h3>
-                        <p class="mt-2 text-sm text-gray-400 dark:text-gray-500">Try a different keyword or clear your filters.</p>
+                    <div class="col-span-full flex flex-col items-center justify-center text-center gap-3
+                                rounded-2xl border border-dashed border-gray-300 dark:border-gray-700
+                                bg-gray-50/60 dark:bg-gray-900/40
+                                px-6 py-16">
+                        <div class="p-3 rounded-2xl bg-white dark:bg-gray-800 text-gray-400 dark:text-gray-500 shadow-sm">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-7 w-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                            </svg>
+                        </div>
+                        <h3 class="font-display text-lg font-semibold text-gray-900 dark:text-white">
+                            No destinations found
+                        </h3>
+                        <p class="max-w-xs text-sm text-gray-500 dark:text-gray-400">
+                            Try a different keyword or clear your filters to see everything.
+                        </p>
                         @if($this->hasActiveFilters)
                             <button type="button"
                                     wire:click="resetFilters"
-                                    class="mt-4 inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                    class="mt-3 inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-lg shadow-primary-600/20
                                            transition-all duration-200 active:scale-95
-                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
-                                           disabled:opacity-60 disabled:cursor-not-allowed">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
                                 Reset Filters
                             </button>
                         @endif
                     </div>
                 @endforelse
-            </div>
-
-            {{-- Loading indicator --}}
-            <div wire:loading.block wire:target="search,categoryFilter,viewMode,resetFilters,sortBy" class="py-8 text-center">
-                <div class="inline-block h-8 w-8 animate-spin rounded-full border-2 border-primary-600 border-t-transparent motion-reduce:animate-none"></div>
             </div>
         </section>
     </div>

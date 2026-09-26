@@ -131,11 +131,6 @@ class extends Component
         return $url;
     }
 
-    // ─────────────────────────────────────────────────────
-    //  Branding & links — resolved once per render, cached
-    //  by Livewire's #[Computed] memoization.
-    // ─────────────────────────────────────────────────────
-
     #[Computed]
     public function siteName(): string
     {
@@ -161,24 +156,12 @@ class extends Component
     }
 
     /**
-     * A real, active destination from the platform — shown as a
-     * floating card in the hero on md+ screens.
-     *
-     * QUERY: One indexed query. Livewire's #[Computed] memoizes it
-     * for the request. Tenant doesn't use BelongsToTenant (it's the
-     * root of the tenant system), so no scope bypass needed.
-     *
-     * ORDER: Recommended first → verified second → alphabetical tie.
-     *
-     * Returns null if no tenant qualifies. The card only renders
-     * when this is non-null.
-     *
-     * @return array{name: string, slug: string, type: string, logo: string, url: string}|null
+     * @return array<int, array{name: string, slug: string, type: string, logo: string, url: string}>
      */
     #[Computed]
-    public function featuredTenant(): ?array
+    public function featuredTenants(): array
     {
-        $tenant = Tenant::query()
+        return Tenant::query()
             ->where('is_active', true)
             ->whereNotNull('logo')
             ->whereNotNull('slug')
@@ -186,19 +169,16 @@ class extends Component
             ->orderByDesc('is_recommended')
             ->orderByDesc('verified_at')
             ->orderBy('name')
-            ->first(['id', 'name', 'slug', 'logo', 'type_of_tenant_id']);
-
-        if (!$tenant || !$tenant->logo) {
-            return null;
-        }
-
-        return [
-            'name' => (string) $tenant->name,
-            'slug' => (string) $tenant->slug,
-            'type' => (string) ($tenant->typeOfTenant?->type ?? 'Destination'),
-            'logo' => asset('storage/' . $tenant->logo),
-            'url'  => route('business.offerings', $tenant->slug),
-        ];
+            ->limit(3)
+            ->get(['id', 'name', 'slug', 'logo', 'type_of_tenant_id'])
+            ->map(fn ($tenant) => [
+                'name' => (string) $tenant->name,
+                'slug' => (string) $tenant->slug,
+                'type' => (string) ($tenant->typeOfTenant?->type ?? 'Destination'),
+                'logo' => asset('storage/' . $tenant->logo),
+                'url'  => route('business.offerings', $tenant->slug),
+            ])
+            ->all();
     }
 
     #[Computed]
@@ -214,188 +194,185 @@ class extends Component
 @push('styles')
     @once
         <style>
-            /* Rule 69 replacements — CSS keyframes for the business modal. */
-            .login-modal-backdrop {
-                animation: loginModalBackdropIn .2s ease-out;
-            }
-            @keyframes loginModalBackdropIn {
-                from { opacity: 0 }
-                to   { opacity: 1 }
-            }
-            .login-modal-panel {
-                animation: loginModalPanelIn .25s cubic-bezier(.16,1,.3,1);
-            }
-            @keyframes loginModalPanelIn {
-                from { opacity: 0; transform: translateY(16px) scale(.98); }
-                to   { opacity: 1; transform: translateY(0) scale(1); }
-            }
-            @media (prefers-reduced-motion: reduce) {
-                .login-modal-backdrop, .login-modal-panel { animation: none; }
-            }
-
-            /* Ambient glow on the form panel. */
-            .login-form-panel {
+            /* ── Ambient glow on the form panel ── */
+            .auth-form-panel {
                 background-image:
                     radial-gradient(ellipse 70% 50% at 50% 0%, rgba(245,158,11,.05) 0%, transparent 55%),
                     radial-gradient(ellipse 60% 60% at 100% 100%, rgba(59,130,246,.04) 0%, transparent 55%);
             }
-            .dark .login-form-panel {
+            .dark .auth-form-panel {
                 background-image:
                     radial-gradient(ellipse 70% 50% at 50% 0%, rgba(245,158,11,.09) 0%, transparent 55%),
                     radial-gradient(ellipse 60% 60% at 100% 100%, rgba(59,130,246,.07) 0%, transparent 55%);
             }
 
-            /* Caps Lock warning slide-in. */
-            .caps-warning {
-                animation: capsWarningIn .18s ease-out;
+            /* ── Soft vignette over the hero photo ── */
+            .auth-hero-vignette {
+                background: radial-gradient(ellipse 90% 80% at 50% 50%, transparent 40%, rgba(0,0,0,.35) 100%);
             }
-            @keyframes capsWarningIn {
+
+            /* ── Featured chip entrance ── */
+            @keyframes authChipIn {
+                from { opacity: 0; transform: translateY(6px); }
+                to   { opacity: 1; transform: translateY(0); }
+            }
+            .auth-chip {
+                animation: authChipIn .5s cubic-bezier(.16,1,.3,1) both;
+            }
+            .auth-chip:nth-child(1) { animation-delay: .25s; }
+            .auth-chip:nth-child(2) { animation-delay: .35s; }
+            .auth-chip:nth-child(3) { animation-delay: .45s; }
+
+            /* ── Caps Lock warning ── */
+            @keyframes authCapsIn {
                 from { opacity: 0; transform: translateY(-4px); }
                 to   { opacity: 1; transform: translateY(0); }
             }
-            @media (prefers-reduced-motion: reduce) {
-                .caps-warning { animation: none; }
-            }
+            .auth-caps { animation: authCapsIn .18s ease-out; }
 
-            /* Featured-spot card entrance. */
-            .login-featured-card {
-                animation: loginFeaturedIn .5s cubic-bezier(.16,1,.3,1) .25s both;
-            }
-            @keyframes loginFeaturedIn {
-                from { opacity: 0; transform: translateY(-6px); }
+            /* ── Business-notice inline collapse ── */
+            @keyframes authNoticeIn {
+                from { opacity: 0; transform: translateY(-4px); }
                 to   { opacity: 1; transform: translateY(0); }
             }
+            .auth-notice { animation: authNoticeIn .2s ease-out; }
+
             @media (prefers-reduced-motion: reduce) {
-                .login-featured-card { animation: none; }
+                .auth-chip, .auth-caps, .auth-notice { animation: none; }
             }
         </style>
     @endonce
 @endpush
 
-<div class="min-h-screen w-full overflow-x-hidden flex flex-col md:flex-row bg-white dark:bg-gray-900"
-     x-data="{ showBusinessNotice: false }"
-     @keydown.escape.window="showBusinessNotice = false">
+<div class="min-h-screen flex flex-col md:flex-row bg-white dark:bg-gray-900">
 
-    {{-- ═══════════════ LEFT: HERO ═══════════════ --}}
-    {{--
-        Structure (top → bottom of the DOM):
+    {{-- ═══════════════ HERO ═══════════════
+         Unified treatment across all four auth pages:
+           • Photo + 3-layer overlay (directional + bottom + vignette)
+           • Amber top wash
+           • Brand badge pinned top-left
+           • Copy + featured chip strip anchored bottom-left
 
-          1. <img>                        — background photo
-          2. gradient overlay             — legibility
-          3. featured-spot card           — top-right (md+ only)
-          4. copy container               — bottom, badge + headline + description
+         md:sticky + md:h-screen keeps the hero pinned while the form
+         scrolls on tall pages (register). On short pages (login) the
+         whole viewport fits and sticky is a no-op. --}}
+    <div class="relative w-full md:w-1/2 min-h-[200px] sm:min-h-[260px] md:min-h-screen md:h-screen md:sticky md:top-0 overflow-hidden">
 
-        The card is a SIBLING of the copy container, not a child. In the
-        previous version it was a child, anchored `bottom-8 right-8` — which
-        positioned it relative to the copy container's own box, overlapping
-        the description paragraph. As a sibling, `top-* right-*` positions
-        it against the hero, well clear of the bottom-anchored copy.
-    --}}
-    <div class="relative w-full md:w-3/5 min-h-[240px] sm:min-h-[280px] md:min-h-screen order-1 md:order-1 overflow-hidden">
         <img src="{{ $this->heroUrl }}"
              alt=""
              aria-hidden="true"
              loading="eager"
              fetchpriority="high"
              decoding="async"
-             width="1600"
-             height="900"
+             width="1600" height="900"
              class="absolute inset-0 object-cover w-full h-full">
 
-        <div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/45 to-black/15"></div>
+        {{-- Overlay: directional + bottom + vignette --}}
+        <div class="absolute inset-0 bg-gradient-to-br from-black/30 via-black/40 to-black/85"></div>
+        <div class="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/85 via-black/40 to-transparent"></div>
+        <div class="absolute inset-0 auth-hero-vignette pointer-events-none" aria-hidden="true"></div>
 
-        {{--
-            Featured-spot card — top-right corner.
+        {{-- Warm amber top wash --}}
+        <div class="absolute inset-x-0 top-0 h-1/3 bg-gradient-to-b from-amber-500/12 via-amber-500/4 to-transparent pointer-events-none" aria-hidden="true"></div>
 
-            Desktop only (md:flex). On mobile the hero is only 240px
-            tall; the card would compete with the copy for space and
-            force the description out of the visible area.
+        <div class="relative h-full flex flex-col justify-between
+                    p-5 sm:p-8 md:p-12 lg:p-16 text-white">
 
-            Sized at max-w-[280px] so a long business name truncates
-            at a readable width rather than stretching the card.
-        --}}
-        @if($this->featuredTenant)
-            @php $ft = $this->featuredTenant; @endphp
-            <a href="{{ $ft['url'] }}"
-               wire:navigate
-               class="login-featured-card hidden md:flex absolute top-6 right-6 lg:top-10 lg:right-10
-                      items-center gap-3 w-[280px]
-                      rounded-2xl p-3 pr-3.5
-                      bg-white/[0.08] hover:bg-white/[0.14] backdrop-blur-md
-                      border border-white/15 hover:border-white/30
-                      transition-all duration-300 active:scale-[0.97]
-                      group
-                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50">
-                <img src="{{ $ft['logo'] }}"
-                     alt=""
-                     width="44" height="44"
-                     loading="lazy" decoding="async"
-                     class="w-11 h-11 rounded-xl object-cover bg-white/10 shrink-0">
-                <div class="min-w-0 flex-1">
-                    <p class="text-[9px] font-bold uppercase tracking-[0.18em] text-amber-300/90 mb-0.5">
-                        Featured Spot
-                    </p>
-                    <p class="text-sm font-semibold text-white leading-tight truncate">
-                        {{ $ft['name'] }}
-                    </p>
-                    <p class="text-[11px] text-white/55 truncate mt-0.5">
-                        {{ $ft['type'] }}
-                    </p>
-                </div>
-                <svg xmlns="http://www.w3.org/2000/svg"
-                     class="w-4 h-4 text-white/50 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0"
-                     fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/>
-                </svg>
-            </a>
-        @endif
-
-        {{-- Copy container — anchored to the bottom --}}
-        <div class="absolute inset-x-0 bottom-0 p-5 sm:p-8 md:p-16 lg:p-20 text-white">
             {{-- Brand badge --}}
-            <span class="inline-flex max-w-full items-center gap-2 px-3 py-1 text-[11px] font-bold tracking-widest text-white uppercase bg-black/40 rounded-full backdrop-blur-sm border border-white/15">
-                <span class="w-1.5 h-1.5 bg-amber-400 rounded-full shrink-0" aria-hidden="true"></span>
-                <span class="truncate">{{ $this->siteName }}</span>
-            </span>
+            <div>
+                <span class="inline-flex max-w-full items-center gap-2 px-3 py-1.5
+                             text-[11px] font-bold tracking-[0.22em] uppercase
+                             text-white bg-black/40 rounded-full backdrop-blur-md
+                             border border-white/15 shadow-sm">
+                    <span class="w-1.5 h-1.5 bg-amber-400 rounded-full shrink-0" aria-hidden="true"></span>
+                    <span class="truncate">{{ $this->siteName }}</span>
+                </span>
+            </div>
 
-            {{--
-                Headline — plain Inter Bold. No italic, no accent color.
-                text-wrap: balance is inherited from the base layer so
-                this wraps evenly instead of leaving a single orphan
-                word on its last line.
+            {{-- Copy + featured chips --}}
+            <div class="mt-8 md:mt-auto">
 
-                Rendered as <p> not <h1>: the page's real <h1> is the
-                form title.
-            --}}
-            <p class="mt-6 text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight leading-[1.08] break-words text-white max-w-3xl">
-                Your journey to the heart of the wilderness starts here
-            </p>
+                <h1 class="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight
+                           leading-[1.06] text-white max-w-3xl
+                           [text-wrap:balance]">
+                    Welcome back to<br class="hidden sm:block">
+                    Victorias City
+                </h1>
 
-            <p class="max-w-2xl mt-4 sm:mt-5 text-sm sm:text-base font-normal leading-relaxed text-gray-200/85">
-                Discover the unmapped ecotrails, pristine waterfalls, and rich history of Victorias City.
-                Let us show you a side of the world you've never seen.
-            </p>
+                <p class="max-w-xl mt-4 sm:mt-5 text-sm sm:text-base leading-relaxed text-white/75">
+                    Your bookings, saved destinations, and local finds — all in one place.
+                </p>
+
+                @if(!empty($this->featuredTenants))
+                    <div class="hidden md:block mt-6 md:mt-7">
+                        <p class="mb-2.5 inline-flex items-center gap-2
+                                  text-[10px] font-bold uppercase tracking-[0.22em]
+                                  text-amber-300/90">
+                            <span class="h-px w-4 bg-amber-400/70" aria-hidden="true"></span>
+                            Featured Spots
+                        </p>
+
+                        <div class="flex gap-2 flex-wrap">
+                            @foreach($this->featuredTenants as $ft)
+                                <a href="{{ $ft['url'] }}"
+                                   wire:navigate
+                                   wire:key="login-feat-{{ $ft['slug'] }}"
+                                   class="auth-chip group shrink-0 inline-flex items-center gap-2
+                                          pl-1.5 pr-3 py-1.5 rounded-full
+                                          bg-white/[0.08] hover:bg-white/[0.16]
+                                          ring-1 ring-inset ring-white/15 hover:ring-white/35
+                                          text-white
+                                          transition-all duration-200 active:scale-[0.97]
+                                          [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300/60 focus-visible:ring-offset-2 focus-visible:ring-offset-black/40">
+                                    <img src="{{ $ft['logo'] }}" alt="" width="28" height="28"
+                                         loading="lazy" decoding="async"
+                                         class="w-7 h-7 rounded-full object-cover bg-white/10 shrink-0">
+                                    <span class="text-xs sm:text-[13px] font-medium leading-none truncate max-w-[130px]">
+                                        {{ $ft['name'] }}
+                                    </span>
+                                    <svg xmlns="http://www.w3.org/2000/svg"
+                                         class="w-3 h-3 shrink-0 opacity-0 -translate-x-1
+                                                group-hover:opacity-70 group-hover:translate-x-0
+                                                transition-all duration-200"
+                                         fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/>
+                                    </svg>
+                                </a>
+                            @endforeach
+                        </div>
+                    </div>
+                @endif
+            </div>
         </div>
     </div>
 
-    {{-- ═══════════════ RIGHT: LOGIN FORM ═══════════════ --}}
-    <div class="login-form-panel flex items-center justify-center w-full min-w-0 px-4 sm:px-6 py-10 md:py-12 bg-white dark:bg-gray-900 md:w-2/5 lg:px-16 order-2 md:order-2">
+    {{-- ═══════════════ FORM ═══════════════ --}}
+    <div class="auth-form-panel flex items-center justify-center w-full min-w-0
+                px-5 sm:px-8 md:px-10 lg:px-16 py-10 md:py-12
+                bg-white dark:bg-gray-900 md:w-1/2">
         <div class="w-full max-w-md min-w-0">
 
-            {{-- Back to Home --}}
+            {{-- Back link --}}
             <a href="{{ route('home') }}" wire:navigate
-               class="inline-flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-all duration-200 active:scale-95 mb-8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+               class="inline-flex items-center gap-1.5 text-sm font-medium
+                      text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400
+                      transition-colors mb-8 -mx-1 px-1 py-1 rounded
+                      [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                 <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                 </svg>
                 Back to Home
             </a>
 
-            {{-- Brand / Logo --}}
+            {{-- Brand row --}}
             <div class="flex items-center gap-3 mb-8 min-w-0">
                 @if($this->logoUrl)
-                    <img src="{{ $this->logoUrl }}" alt="{{ $this->siteName }} logo"
-                         width="40" height="40" decoding="async"
+                    <img src="{{ $this->logoUrl }}"
+                         alt="{{ $this->siteName }} logo"
+                         width="40" height="40"
+                         decoding="async"
                          class="w-10 h-10 object-contain rounded-lg shrink-0">
                 @else
                     <div class="w-10 h-10 rounded-xl bg-primary-600 flex items-center justify-center text-white shrink-0 font-bold text-lg"
@@ -403,21 +380,34 @@ class extends Component
                         {{ strtoupper(substr($this->siteName, 0, 1)) }}
                     </div>
                 @endif
-                <span class="text-base font-semibold text-gray-900 dark:text-white truncate">{{ $this->siteName }}</span>
+                <span class="text-base font-semibold text-gray-900 dark:text-white truncate">
+                    {{ $this->siteName }}
+                </span>
             </div>
 
-            {{-- Form heading --}}
-            <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-2 break-words leading-tight tracking-tight">
-                Login to your account
-            </h1>
-
-            <p class="text-sm text-gray-500 dark:text-gray-400 mb-8">
-                Enter your email and password to continue.
+            {{-- Eyebrow --}}
+            <p class="mb-2 inline-flex items-center gap-2
+                      text-[10px] font-bold uppercase tracking-[0.22em]
+                      text-amber-600 dark:text-amber-400">
+                <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
+                Sign in
             </p>
 
+            <h2 class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white mb-2 break-words leading-tight">
+                Welcome back
+            </h2>
+
+            <p class="text-sm text-gray-500 dark:text-gray-400 mb-8">
+                Sign in to manage your bookings, saved spots, and account.
+            </p>
+
+            {{-- Errors --}}
             @if ($errors->any())
                 <div role="alert" aria-live="polite"
-                     class="mb-5 flex items-start gap-3 bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 border-l-4 border-l-rose-500 rounded-xl p-3.5">
+                     class="mb-5 flex items-start gap-3
+                            bg-rose-50 dark:bg-rose-500/10
+                            border border-rose-200 dark:border-rose-500/30 border-l-4 border-l-rose-500
+                            rounded-xl p-3.5">
                     <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                     </svg>
@@ -429,37 +419,58 @@ class extends Component
                 </div>
             @endif
 
+            {{-- Form --}}
             <form wire:submit="login" class="space-y-5"
                   x-data="{ showPassword: false, capsLock: false }">
 
+                {{-- Email --}}
                 <div>
                     <label for="email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                        Email Address
+                        Email address
                     </label>
-                    <input id="email"
-                           type="email"
-                           wire:model="email"
-                           autofocus
-                           autocomplete="username"
-                           placeholder="example@email.com"
-                           class="block w-full px-4 py-3 text-base sm:text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500 @error('email') border-rose-400/60 @enderror">
+                    <div class="relative">
+                        <svg xmlns="http://www.w3.org/2000/svg"
+                             class="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500"
+                             fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.8" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/>
+                        </svg>
+                        <input id="email"
+                               type="email"
+                               wire:model="email"
+                               autofocus
+                               autocomplete="username"
+                               inputmode="email"
+                               placeholder="you@example.com"
+                               class="input pl-10 @error('email') border-rose-400/60 @enderror">
+                    </div>
                     @error('email')
                         <p class="mt-1.5 text-xs text-rose-500 break-words">{{ $message }}</p>
                     @enderror
                 </div>
 
+                {{-- Password --}}
                 <div>
                     <div class="flex items-center justify-between gap-3 mb-1.5">
                         <label for="password" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
                             Password
                         </label>
                         <a href="{{ route('password.request') }}" wire:navigate
-                           class="text-sm font-medium text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 hover:underline transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded shrink-0">
-                            Forgot?
+                           class="relative text-xs font-semibold
+                                  text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300
+                                  hover:underline transition-all duration-200 active:scale-95 shrink-0
+                                  before:absolute before:content-[''] before:-inset-2 before:rounded
+                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded px-1 -mx-1 py-1">
+                            Forgot password?
                         </a>
                     </div>
 
                     <div class="relative">
+                        <svg xmlns="http://www.w3.org/2000/svg"
+                             class="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500"
+                             fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.8" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/>
+                        </svg>
                         <input :type="showPassword ? 'text' : 'password'"
                                id="password"
                                wire:model="password"
@@ -468,17 +479,25 @@ class extends Component
                                @keyup="capsLock = $event.getModifierState && $event.getModifierState('CapsLock')"
                                @keydown="capsLock = $event.getModifierState && $event.getModifierState('CapsLock')"
                                @blur="capsLock = false"
-                               class="block w-full px-4 py-3 pr-11 text-base sm:text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500 @error('password') border-rose-400/60 @enderror">
+                               class="input pl-10 pr-11 @error('password') border-rose-400/60 @enderror">
 
-                        <button type="button" @click="showPassword = !showPassword"
-                                class="absolute inset-y-0 flex items-center right-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-full"
+                        <button type="button"
+                                @click="showPassword = !showPassword"
                                 :aria-label="showPassword ? 'Hide password' : 'Show password'"
-                                :aria-pressed="showPassword ? 'true' : 'false'">
-                            <svg xmlns="http://www.w3.org/2000/svg" x-cloak :class="!showPassword ? '' : 'hidden'" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+                                :aria-pressed="showPassword ? 'true' : 'false'"
+                                class="absolute right-1 top-1/2 -translate-y-1/2
+                                       inline-flex items-center justify-center w-8 h-8 rounded-lg
+                                       text-gray-400 hover:text-gray-700 dark:hover:text-gray-200
+                                       hover:bg-gray-100 dark:hover:bg-gray-700/60
+                                       transition-colors
+                                       before:absolute before:content-[''] before:-inset-1.5 before:rounded-lg
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                            <svg x-show="!showPassword" xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                             </svg>
-                            <svg xmlns="http://www.w3.org/2000/svg" x-cloak :class="showPassword ? '' : 'hidden'" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+                            <svg x-show="showPassword" x-cloak xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88" />
                             </svg>
                         </button>
@@ -486,7 +505,7 @@ class extends Component
 
                     <p x-cloak
                        x-show="capsLock"
-                       class="caps-warning mt-1.5 inline-flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400"
+                       class="auth-caps mt-1.5 inline-flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400"
                        role="status"
                        aria-live="polite">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" aria-hidden="true">
@@ -500,23 +519,36 @@ class extends Component
                     @enderror
                 </div>
 
+                {{-- Remember me --}}
                 <div class="flex items-center pt-1">
-                    <label class="flex items-center text-sm text-gray-600 dark:text-gray-300 cursor-pointer select-none">
+                    <label class="flex items-center text-sm text-gray-600 dark:text-gray-300 cursor-pointer select-none
+                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                         <input type="checkbox"
                                id="remember"
                                wire:model="remember"
-                               class="shrink-0 rounded border-gray-300 dark:border-gray-600 text-primary-600 focus:ring-primary-500 bg-white dark:bg-gray-700">
-                        <span class="ml-2">Remember me</span>
+                               class="shrink-0 w-4 h-4 rounded
+                                      border-gray-300 dark:border-gray-600
+                                      text-primary-600
+                                      focus:ring-primary-500 focus:ring-offset-0
+                                      bg-white dark:bg-gray-700">
+                        <span class="ml-2">Keep me signed in</span>
                     </label>
                 </div>
 
+                {{-- Submit --}}
                 <button type="submit"
                         wire:loading.attr="disabled"
                         wire:target="login"
-                        class="w-full inline-flex items-center justify-center gap-2 h-11 mt-2 text-sm font-semibold text-white transition-all duration-200 bg-primary-600 hover:bg-primary-700 rounded-xl shadow-sm
-                               disabled:opacity-50 disabled:cursor-not-allowed active:scale-95
+                        class="w-full inline-flex items-center justify-center gap-2 h-11 mt-2
+                               text-sm font-semibold text-white
+                               bg-primary-600 hover:bg-primary-700
+                               rounded-xl shadow-sm shadow-primary-600/20
+                               transition-all duration-200
+                               disabled:opacity-50 disabled:cursor-not-allowed
+                               active:scale-[0.98]
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
-                    <span wire:loading.remove wire:target="login">Login now</span>
+                    <span wire:loading.remove wire:target="login">Sign in</span>
                     <span wire:loading wire:target="login" class="inline-flex items-center gap-2">
                         <svg xmlns="http://www.w3.org/2000/svg" class="animate-spin w-4 h-4 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
@@ -527,44 +559,96 @@ class extends Component
                 </button>
             </form>
 
-            <div class="mt-8 pt-6 border-t border-gray-100 dark:border-gray-800 space-y-2">
+            {{-- Secondary links --}}
+            <div class="mt-8 pt-6 border-t border-gray-100 dark:border-gray-800 space-y-2.5"
+                 x-data="{ showBusinessNotice: false }">
+
                 <p class="text-sm text-center text-gray-600 dark:text-gray-400">
-                    Don't have an account?
+                    New here?
                     <a href="{{ route('register', $this->redirectTo ? ['redirect' => $this->redirectTo] : []) }}" wire:navigate
-                       class="text-primary-600 dark:text-primary-400 font-medium hover:underline ml-1 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
-                        Sign up
+                       class="relative text-primary-600 dark:text-primary-400 font-semibold hover:underline ml-1
+                              before:absolute before:content-[''] before:-inset-2 before:rounded
+                              transition-all duration-200 active:scale-95
+                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded px-1 -mx-1 py-0.5">
+                        Create an account
                     </a>
                 </p>
 
                 <p class="text-sm text-center text-gray-600 dark:text-gray-400">
                     Own a tourist spot?
                     <button type="button"
-                            @click="showBusinessNotice = true"
-                            class="text-primary-600 dark:text-primary-400 font-medium hover:underline ml-1 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                            @click="showBusinessNotice = !showBusinessNotice"
+                            :aria-expanded="showBusinessNotice.toString()"
+                            aria-controls="business-notice-inline"
+                            class="relative text-primary-600 dark:text-primary-400 font-semibold hover:underline ml-1
+                                   before:absolute before:content-[''] before:-inset-2 before:rounded
+                                   transition-all duration-200 active:scale-95
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded px-1 -mx-1 py-0.5">
                         Register your business
                     </button>
                 </p>
+
+                <div x-cloak
+                     x-show="showBusinessNotice"
+                     x-collapse
+                     id="business-notice-inline"
+                     class="auth-notice mt-3">
+                    <div class="rounded-xl border border-blue-200/70 dark:border-blue-500/30
+                                bg-blue-50/70 dark:bg-blue-500/[0.08]
+                                p-4 text-left">
+                        <div class="flex items-start gap-3">
+                            <div class="shrink-0 w-8 h-8 rounded-lg
+                                        bg-blue-100 dark:bg-blue-500/20
+                                        text-blue-700 dark:text-blue-300
+                                        flex items-center justify-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none"
+                                     stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                          d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+                                </svg>
+                            </div>
+                            <div class="min-w-0 flex-1">
+                                <p class="text-sm font-semibold text-blue-900 dark:text-blue-200 leading-snug">
+                                    Create a tourist account first
+                                </p>
+                                <p class="mt-1 text-xs text-blue-800/85 dark:text-blue-300/85 leading-relaxed">
+                                    You'll need one to register your business. It takes less than a minute.
+                                </p>
+                                <a href="{{ $this->businessSignupUrl }}"
+                                   wire:navigate
+                                   class="mt-3 inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg
+                                          bg-primary-600 hover:bg-primary-700
+                                          text-xs font-semibold text-white
+                                          shadow-sm shadow-primary-600/20
+                                          transition-all duration-200 active:scale-95
+                                          [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-blue-950">
+                                    Create a Tourist Account
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 shrink-0" fill="none"
+                                         stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
+                                    </svg>
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
 
-            {{--
-                Footer row — copyright left, "Continue browsing" right.
-
-                Both at 11px muted. "Continue browsing" is the escape
-                hatch for users who landed here from a redirect but
-                don't want to sign in — they want to keep looking at
-                the site. Placed at the very bottom so it doesn't
-                compete with the primary CTAs (Sign up / Register
-                business) above it.
-            --}}
+            {{-- Footer row --}}
             <div class="mt-10 pt-5 border-t border-gray-100 dark:border-gray-800
                         flex items-center justify-between gap-3
                         text-[11px] text-gray-400 dark:text-gray-600">
                 <span class="truncate">© {{ date('Y') }} {{ $this->siteName }}</span>
                 <a href="{{ route('home') }}" wire:navigate
-                   class="inline-flex items-center gap-1 shrink-0
+                   class="relative inline-flex items-center gap-1 shrink-0
                           hover:text-primary-600 dark:hover:text-primary-400
                           transition-all duration-200 active:scale-95
-                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                          before:absolute before:content-[''] before:-inset-2 before:rounded
+                          [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded px-1 -mx-1 py-0.5">
                     Continue browsing
                     <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
@@ -574,100 +658,4 @@ class extends Component
 
         </div>
     </div>
-
-    {{-- ═══════════════════════════════════════════════════════════
-         Business Registration — account-first notice (modal)
-         ═══════════════════════════════════════════════════════════ --}}
-    {{-- Rule 69: :class toggling + CSS keyframes. --}}
-    <div x-cloak
-         :class="showBusinessNotice ? 'login-modal-backdrop flex' : 'hidden'"
-         class="fixed inset-0 z-[1000] items-center justify-center p-4 sm:p-6
-                bg-gray-900/60 backdrop-blur-sm"
-         role="dialog"
-         aria-modal="true"
-         aria-labelledby="business-notice-title"
-         @click.self="showBusinessNotice = false">
-
-        <div x-cloak
-             :class="showBusinessNotice ? 'login-modal-panel' : 'hidden'"
-             class="relative w-full max-w-sm bg-white dark:bg-gray-800 rounded-3xl
-                    shadow-2xl border border-gray-200/80 dark:border-gray-700/80
-                    overflow-hidden"
-             @click.stop>
-
-            <button type="button"
-                    @click="showBusinessNotice = false"
-                    aria-label="Close"
-                    class="absolute top-3.5 right-3.5 z-10 w-8 h-8 rounded-full
-                           flex items-center justify-center
-                           text-gray-400 hover:text-gray-700 dark:hover:text-gray-200
-                           hover:bg-gray-100 dark:hover:bg-gray-700
-                           transition-all duration-200 active:scale-95
-                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none"
-                     stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"
-                     aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
-                </svg>
-            </button>
-
-            <div class="p-6 sm:p-7">
-
-                <div class="flex items-center justify-center w-12 h-12 rounded-2xl
-                            bg-gradient-to-b from-blue-50 to-blue-100/60
-                            dark:from-blue-500/15 dark:to-blue-500/[0.08]
-                            border border-blue-200/70 dark:border-blue-500/25
-                            text-blue-600 dark:text-blue-400
-                            shadow-sm">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none"
-                         stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"
-                         aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round"
-                              d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
-                    </svg>
-                </div>
-
-                <h3 id="business-notice-title"
-                    class="mt-4 text-lg font-semibold text-gray-900 dark:text-white leading-snug break-words">
-                    Create a tourist account first
-                </h3>
-
-                <p class="mt-2 text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
-                    You'll need one to register your business. It takes less than a minute.
-                </p>
-
-                <div class="mt-6 flex flex-col sm:flex-row sm:items-center gap-2.5">
-                    <a href="{{ $this->businessSignupUrl }}"
-                       wire:navigate
-                       class="flex-1 min-w-0 inline-flex items-center justify-center gap-1.5 h-11 rounded-xl
-                              bg-primary-600 hover:bg-primary-700
-                              px-4 text-sm font-semibold text-white whitespace-nowrap
-                              shadow-sm shadow-primary-600/20
-                              transition-all duration-200 active:scale-95
-                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2
-                              dark:focus-visible:ring-offset-gray-800">
-                        Create a Tourist Account
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none"
-                             stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"
-                             aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
-                        </svg>
-                    </a>
-                    <button type="button"
-                            @click="showBusinessNotice = false"
-                            class="sm:w-auto inline-flex items-center justify-center h-11 rounded-xl
-                                   px-4 text-sm font-semibold whitespace-nowrap
-                                   text-gray-600 dark:text-gray-300
-                                   border border-gray-200 dark:border-gray-700
-                                   hover:bg-gray-50 dark:hover:bg-gray-700/50
-                                   transition-all duration-200 active:scale-95
-                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                        Maybe later
-                    </button>
-                </div>
-
-            </div>
-        </div>
-    </div>
-
 </div>

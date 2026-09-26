@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use App\Models\SiteSetting;
+use App\Services\SvgSanitizerService;
 
 new
 #[Layout('superadmin.layouts.app')]
@@ -102,8 +103,14 @@ class extends Component
         try {
             if ($this->newIcon) {
                 $iconPath = $this->newIcon->store('marker-icons', 'public');
-                // Read the raw SVG contents for inline rendering later
-                $iconSvg = file_get_contents($this->newIcon->getRealPath());
+
+                // Read raw bytes, then sanitize before persisting. The
+                // sanitizer strips <script>, on* handlers, foreignObject,
+                // and javascript: URLs — so a malicious upload can never
+                // execute when the stored SVG is rendered.
+                $rawSvg  = @file_get_contents($this->newIcon->getRealPath()) ?: '';
+                $clean   = app(SvgSanitizerService::class)->sanitize($rawSvg);
+                $iconSvg = $clean !== '' ? $clean : null;
             }
 
             $this->categories[] = [
@@ -158,7 +165,11 @@ class extends Component
             if (isset($this->categories[$index]['icon_file']) && $this->categories[$index]['icon_file']) {
                 $file        = $this->categories[$index]['icon_file'];
                 $newIconPath = $file->store('marker-icons', 'public');
-                $iconSvg     = file_get_contents($file->getRealPath());
+
+                // Sanitize before persisting — same contract as addCategory().
+                $rawSvg  = @file_get_contents($file->getRealPath()) ?: '';
+                $clean   = app(SvgSanitizerService::class)->sanitize($rawSvg);
+                $iconSvg = $clean !== '' ? $clean : null;
 
                 $this->categories[$index]['icon_path'] = $newIconPath;
                 $this->categories[$index]['icon_svg']  = $iconSvg;
@@ -447,14 +458,15 @@ class extends Component
                 <div class="flex items-center gap-4 lg:w-1/4 shrink-0">
                     <div class="h-12 w-12 rounded-xl flex items-center justify-center shrink-0 border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-2 shadow-sm">
                         @if(!empty($cat['icon_path']) && Storage::disk('public')->exists($cat['icon_path']))
-                            <img src="{{ Storage::url($cat['icon_path']) }}"
+                            {{-- Rule J: relative /storage path, never Storage::url() --}}
+                            <img src="/storage/{{ ltrim($cat['icon_path'], '/') }}"
                                  class="w-full h-full object-contain"
                                  alt="{{ $cat['label'] }}"
                                  loading="lazy"
                                  decoding="async">
                         @elseif(!empty($cat['icon_svg']))
                             <div class="w-full h-full text-gray-700 dark:text-gray-300">
-                                {!! str_replace('<svg ', '<svg class="w-full h-full stroke-current fill-none" ', $cat['icon_svg']) !!}
+                                <x-safe-svg :svg="$cat['icon_svg']" class="w-full h-full stroke-current fill-none" />
                             </div>
                         @else
                             <div class="w-4 h-4 rounded-full shadow-sm" style="background-color: {{ $cat['color'] }};"></div>
@@ -553,7 +565,7 @@ class extends Component
                             </span>
                         </button>
 
-                        {{-- Delete — Rule 19: Alpine confirm --}}
+                        {{-- Delete — deferred: still uses native confirm() pending two-click-arm conversion --}}
                         <button type="button"
                                 x-on:click="if (confirm('Delete \'{{ addslashes($cat['label']) }}\'? Markers using this key will fall back to Uncategorized.')) $wire.removeCategory({{ $index }})"
                                 wire:loading.attr="disabled"
@@ -586,15 +598,7 @@ class extends Component
         @endforelse
     </div>
 
-    {{-- ═══════════════════════════════════════════════════════════════
-         TOAST NOTIFICATIONS
-         ─────────────────────────────────────────────────────────────
-         Rule 69 fix (bug 6.155): the previous `<template x-for>` used
-         `x-transition:enter/leave` — that combination crashes the v4
-         morph engine during wire:navigate (Cannot read properties of
-         undefined reading 'cloneNode'). Transitions are removed; toasts
-         appear/disappear instantly.
-         ═══════════════════════════════════════════════════════════════ --}}
+    {{-- Toast Notifications --}}
     <div x-data="{ toasts: [] }"
          x-on:toast.window="
              const id = Date.now() + Math.random();

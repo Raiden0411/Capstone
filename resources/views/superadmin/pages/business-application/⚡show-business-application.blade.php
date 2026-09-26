@@ -23,6 +23,22 @@ class extends Component
 
     public ?string $errorMessage = null;
 
+    /**
+     * Eager-load set — mirrored between mount() and hydrate() so the
+     * relation graph is identical on every request. Without this in
+     * hydrate(), Livewire v4's model re-fetch drops the loaded
+     * relations and every `->documents` / `->verifications` access
+     * becomes a fresh lazy query.
+     */
+    private const RELATIONS = [
+        'user:id,name,email,avatar,created_at',
+        'documents'            => 'orderBy:document_type',
+        'verifications.verifier:id,name',
+        'typeOfTenant:id,type,description',
+        'reviewer:id,name',
+        'approvedTenant:id,name,slug',
+    ];
+
     public function mount(BusinessApplication $application): void
     {
         $this->assertSuperAdmin();
@@ -42,6 +58,17 @@ class extends Component
     public function hydrate(): void
     {
         $this->assertSuperAdmin();
+
+        // Re-hydrate the relation graph — Livewire's model binding
+        // re-fetches the row but does NOT re-populate relations.
+        $this->application->load([
+            'user:id,name,email,avatar,created_at',
+            'documents'            => fn ($q) => $q->orderBy('document_type'),
+            'verifications.verifier:id,name',
+            'typeOfTenant:id,type,description',
+            'reviewer:id,name',
+            'approvedTenant:id,name,slug',
+        ]);
     }
 
     protected function assertSuperAdmin(): void
@@ -67,11 +94,7 @@ class extends Component
     //  Computed
     // ─────────────────────────────────────────────────────────────
 
-    /**
-     * Status chip config — label + tailwind class string.
-     *
-     * @return array{label: string, classes: string}
-     */
+    /** @return array{label: string, classes: string} */
     #[Computed]
     public function statusConfig(): array
     {
@@ -120,12 +143,7 @@ class extends Component
         ];
     }
 
-    /**
-     * Primary pinned coordinate — the first entry of the application's
-     * coordinates array. Returns null when nothing is pinned.
-     *
-     * @return array{lat: float, lng: float}|null
-     */
+    /** @return array{lat: float, lng: float}|null */
     #[Computed]
     public function primaryCoords(): ?array
     {
@@ -244,7 +262,7 @@ class extends Component
     {{-- ═══ Back link ═══ --}}
     <a href="{{ route('superadmin.business-applications.index') }}" wire:navigate
        class="inline-flex items-center gap-2 text-xs sm:text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400
-              transition-all duration-200 active:scale-95
+              transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
         <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
@@ -294,7 +312,7 @@ class extends Component
             </div>
             <button type="button" @click="show = false"
                     class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
-                           transition-all duration-200 active:scale-95
+                           transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
                     aria-label="Dismiss">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -320,7 +338,7 @@ class extends Component
             </div>
             <button type="button" @click="show = false"
                     class="inline-flex items-center justify-center h-7 w-7 shrink-0 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
-                           transition-all duration-200 active:scale-95
+                           transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
                     aria-label="Dismiss">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -330,9 +348,7 @@ class extends Component
         </div>
     @endif
 
-    {{-- ═══════════════════════════════════════════════════════════
-         HERO — COVER PHOTO
-         ═══════════════════════════════════════════════════════════ --}}
+    {{-- ═══ HERO — COVER PHOTO ═══ --}}
     <section class="rounded-2xl overflow-hidden border border-gray-200/80 dark:border-gray-700/80 shadow-sm">
         <div class="relative aspect-[3/1] w-full bg-gray-900">
             @if ($application->cover_photo_path)
@@ -387,7 +403,6 @@ class extends Component
 
             {{-- Business --}}
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-5 sm:p-6">
-
                 <div class="flex items-center gap-3 mb-5">
                     <span class="w-5 h-px bg-primary-600"></span>
                     <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
@@ -395,7 +410,6 @@ class extends Component
                     </span>
                 </div>
 
-                {{-- Business Logo preview --}}
                 <div class="mb-5 pb-5 border-b border-gray-100 dark:border-gray-700/60">
                     <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
                         Business Logo
@@ -433,7 +447,6 @@ class extends Component
                     @endif
                 </div>
 
-                {{-- Short description --}}
                 <div class="mb-5 pb-5 border-b border-gray-100 dark:border-gray-700/60">
                     <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
                         Business Description
@@ -551,7 +564,7 @@ class extends Component
                 </dl>
             </section>
 
-            {{-- Location — address + interactive map --}}
+            {{-- Location --}}
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-5 sm:p-6">
                 <div class="flex items-center gap-3 mb-5">
                     <span class="w-5 h-px bg-primary-600"></span>
@@ -579,7 +592,6 @@ class extends Component
                     </div>
                 </dl>
 
-                {{-- Pinned location — interactive map --}}
                 @if ($this->hasPinnedLocation)
                     @php $coords = $this->primaryCoords; @endphp
 
@@ -596,11 +608,11 @@ class extends Component
 
                             <a href="https://www.google.com/maps?q={{ $coords['lat'] }},{{ $coords['lng'] }}"
                                target="_blank" rel="noopener noreferrer"
-                               class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg
+                               class="inline-flex items-center justify-center gap-1.5 h-11 px-4 rounded-lg
                                       border border-primary-300 dark:border-primary-500/40
                                       bg-white dark:bg-gray-800 text-primary-700 dark:text-primary-300
                                       text-[11px] font-semibold
-                                      transition-all duration-200 active:scale-95
+                                      transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                       hover:bg-primary-50 dark:hover:bg-primary-500/10
                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                                 <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -610,10 +622,6 @@ class extends Component
                             </a>
                         </div>
 
-                        {{-- Read-only review map. The wrapper is wire:ignore'd so the
-                             MapLibre instance is never touched by Livewire's morph —
-                             reviewer can pan/zoom freely. Marker is a static teardrop
-                             at the applicant's pinned coordinate. --}}
                         <div wire:ignore
                              wire:key="review-map-{{ $application->id }}"
                              class="relative h-72 sm:h-80 rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-900">
@@ -918,7 +926,7 @@ class extends Component
                               border border-emerald-300 dark:border-emerald-500/40
                               bg-white dark:bg-gray-800 text-emerald-700 dark:text-emerald-300
                               text-xs font-semibold
-                              transition-all duration-200 active:scale-95
+                              transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                               hover:bg-emerald-50 dark:hover:bg-emerald-500/10
                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                         <span>View approved tenant</span>
@@ -929,9 +937,7 @@ class extends Component
                 @endif
             </section>
 
-            {{-- ═════════════════════════════════════════════════════════
-                 ACTIONS — Approve + tabbed Revision/Reject
-                 ═════════════════════════════════════════════════════════ --}}
+            {{-- ACTIONS --}}
             @if ($this->isActionable)
                 <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-5 sm:p-6">
                     <div class="flex items-center gap-3 mb-4">
@@ -941,7 +947,7 @@ class extends Component
                         </span>
                     </div>
 
-                    {{-- Approve — primary, full-width — Rule 19: Alpine confirm() --}}
+                    {{-- Approve --}}
                     <button type="button"
                             x-on:click="if (confirm('Approve this application and create the tenant? An approval email will be sent to the applicant.')) $wire.approve()"
                             wire:loading.attr="disabled"
@@ -949,7 +955,7 @@ class extends Component
                             @disabled(! $this->isDocComplete)
                             title="{{ $this->isDocComplete ? 'Approve and create the tenant' : 'All required documents must be uploaded first' }}"
                             class="w-full inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold shadow-sm
-                                   transition-all duration-200 active:scale-95
+                                   transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                    disabled:opacity-40 disabled:cursor-not-allowed">
                         <span wire:loading.remove wire:target="approve" class="inline-flex items-center gap-2">
@@ -985,7 +991,7 @@ class extends Component
                         </div>
                     </div>
 
-                    {{-- Tab switcher — Rule 69: :class toggle, no x-show/x-transition --}}
+                    {{-- Tab switcher --}}
                     <div x-data="{ tab: null }" class="space-y-3">
                         <div class="grid grid-cols-2 gap-2">
                             <button type="button"
@@ -994,7 +1000,7 @@ class extends Component
                                         ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-200 border-amber-300 dark:border-amber-500/50 ring-2 ring-amber-500/30'
                                         : 'bg-white dark:bg-gray-800 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-500/30 hover:bg-amber-50 dark:hover:bg-amber-500/10'"
                                     class="inline-flex items-center justify-center gap-1.5 h-11 px-3 rounded-xl text-xs font-semibold border
-                                           transition-all duration-200 active:scale-95
+                                           transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50">
                                 <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/>
@@ -1008,7 +1014,7 @@ class extends Component
                                         ? 'bg-rose-100 dark:bg-rose-500/20 text-rose-800 dark:text-rose-200 border-rose-300 dark:border-rose-500/50 ring-2 ring-rose-500/30'
                                         : 'bg-white dark:bg-gray-800 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-500/30 hover:bg-rose-50 dark:hover:bg-rose-500/10'"
                                     class="inline-flex items-center justify-center gap-1.5 h-11 px-3 rounded-xl text-xs font-semibold border
-                                           transition-all duration-200 active:scale-95
+                                           transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                                 <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
@@ -1024,9 +1030,9 @@ class extends Component
                                       wire:model="revision_notes"
                                       rows="4"
                                       maxlength="1000"
-                                      aria-describedby="revision-notes-error"
+                                      @error('revision_notes') aria-describedby="revision-notes-error" @enderror
                                       placeholder="Explain what needs to be corrected — this text is emailed to the applicant."
-                                      class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500 transition resize-none"></textarea>
+                                      class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500 transition resize-none"></textarea>
                             @error('revision_notes')
                                 <p id="revision-notes-error" class="mt-1 text-xs text-rose-500 dark:text-rose-400">{{ $message }}</p>
                             @enderror
@@ -1035,7 +1041,7 @@ class extends Component
                                     wire:loading.attr="disabled"
                                     wire:target="requestRevision"
                                     class="mt-3 w-full inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold shadow-sm
-                                           transition-all duration-200 active:scale-95
+                                           transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                            disabled:opacity-60 disabled:cursor-not-allowed">
                                 <span wire:loading.remove wire:target="requestRevision">Send revision request</span>
@@ -1056,9 +1062,9 @@ class extends Component
                                       wire:model="rejection_reason"
                                       rows="4"
                                       maxlength="1000"
-                                      aria-describedby="rejection-reason-error"
+                                      @error('rejection_reason') aria-describedby="rejection-reason-error" @enderror
                                       placeholder="Explain why this application is being rejected — this text is emailed to the applicant."
-                                      class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-rose-500/50 focus:border-rose-500 transition resize-none"></textarea>
+                                      class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-2.5 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-rose-500/50 focus:border-rose-500 transition resize-none"></textarea>
                             @error('rejection_reason')
                                 <p id="rejection-reason-error" class="mt-1 text-xs text-rose-500 dark:text-rose-400">{{ $message }}</p>
                             @enderror
@@ -1067,7 +1073,7 @@ class extends Component
                                     wire:loading.attr="disabled"
                                     wire:target="reject"
                                     class="mt-3 w-full inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold shadow-sm
-                                           transition-all duration-200 active:scale-95
+                                           transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                            disabled:opacity-60 disabled:cursor-not-allowed">
                                 <span wire:loading.remove wire:target="reject">Reject permanently</span>

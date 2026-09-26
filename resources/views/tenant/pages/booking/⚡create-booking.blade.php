@@ -30,13 +30,11 @@ class extends Component {
 
     use ChecksTenantPermissions;
 
-    // ── Guest ──
     public string $customerName    = '';
     public string $customerPhone   = '';
     public string $customerEmail   = '';
     public string $customerAddress = '';
 
-    // ── Dates ──
     public string $check_in      = '';
     public string $check_out     = '';
     public string $check_in_time = '';
@@ -57,7 +55,6 @@ class extends Component {
 
     public string $payment_method = 'cash';
 
-    // ── QR Ph state (all server-set) ──
     #[Locked] public ?string $qrPaymentIntentId = null;
     #[Locked] public ?string $qrImage           = null;
     #[Locked] public ?string $qrExpiresAt       = null;
@@ -548,7 +545,6 @@ class extends Component {
     {
         $this->qrError = null;
 
-        /** @var PayMongoService $payMongo */
         $payMongo = app(PayMongoService::class);
 
         $intent = $payMongo->createQrPhPaymentIntent(
@@ -637,7 +633,6 @@ class extends Component {
             return;
         }
 
-        /** @var PayMongoService $payMongo */
         $payMongo = app(PayMongoService::class);
 
         if (! $payMongo->finalizeQrPayment($this->qrPaymentIntentId)) {
@@ -749,7 +744,7 @@ class extends Component {
                 <span>{{ session('message') }}</span>
             </div>
             <button type="button" @click="show = false"
-                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                    class="inline-flex items-center justify-center h-11 w-11 sm:h-7 sm:w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
                            transition-all duration-200 active:scale-95
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
                     aria-label="Dismiss">
@@ -772,7 +767,7 @@ class extends Component {
                 <span>{{ session('error') }}</span>
             </div>
             <button type="button" @click="show = false"
-                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                    class="inline-flex items-center justify-center h-11 w-11 sm:h-7 sm:w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
                            transition-all duration-200 active:scale-95
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
                     aria-label="Dismiss">
@@ -991,7 +986,7 @@ class extends Component {
 
                                 <div class="aspect-[4/3] overflow-hidden relative">
                                     <img class="w-full h-full object-cover"
-                                         src="{{ $firstImg ? asset('storage/'. $firstImg->image_path) : asset('images/placeholder-room.jpg') }}"
+                                         src="{{ $firstImg ? '/storage/' . ltrim($firstImg->image_path, '/') : '/images/placeholder-room.jpg' }}"
                                          alt="{{ $property->name }}"
                                          loading="lazy"
                                          decoding="async">
@@ -1016,7 +1011,7 @@ class extends Component {
                                     @if(!$isAvailable)
                                         <button type="button"
                                                 wire:click.stop="openCalendar({{ $property->id }})"
-                                                class="inline-flex items-center justify-center h-7 px-2.5 rounded-lg text-[11px] font-semibold shrink-0
+                                                class="inline-flex items-center justify-center h-11 sm:h-7 px-2.5 rounded-lg text-[11px] font-semibold shrink-0
                                                        border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200
                                                        transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
                                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
@@ -1169,7 +1164,6 @@ class extends Component {
                     </h2>
                 </div>
 
-                {{-- Guest line --}}
                 @if($customerName)
                     <div class="text-xs">
                         <p class="text-gray-500 dark:text-gray-400">Guest</p>
@@ -1177,7 +1171,6 @@ class extends Component {
                     </div>
                 @endif
 
-                {{-- Duration line --}}
                 @if($check_in && $check_out)
                     <div class="text-xs">
                         <p class="text-gray-500 dark:text-gray-400">Duration</p>
@@ -1190,7 +1183,6 @@ class extends Component {
                     </div>
                 @endif
 
-                {{-- Selected items --}}
                 <div class="pt-3 border-t border-gray-100 dark:border-gray-700/60 space-y-2 max-h-64 overflow-y-auto">
                     @forelse($selectedProperties as $id => $qty)
                         @php
@@ -1217,7 +1209,6 @@ class extends Component {
                     @endforeach
                 </div>
 
-                {{-- Grand total --}}
                 <div class="pt-4 border-t border-gray-200 dark:border-gray-700">
                     <div class="flex items-baseline justify-between gap-3">
                         <span class="text-sm text-gray-500 dark:text-gray-400">Grand Total</span>
@@ -1225,7 +1216,6 @@ class extends Component {
                     </div>
                 </div>
 
-                {{-- Submit --}}
                 <button type="submit"
                         wire:loading.attr="disabled"
                         wire:target="submit"
@@ -1245,7 +1235,6 @@ class extends Component {
                     </span>
                 </button>
 
-                {{-- Cancel --}}
                 <a href="{{ route('tenant.bookings.index') }}" wire:navigate
                    class="w-full inline-flex items-center justify-center h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
                           transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
@@ -1278,7 +1267,7 @@ class extends Component {
                     </h3>
                     <button type="button" wire:click="closeCalendar"
                             aria-label="Close calendar"
-                            class="inline-flex items-center justify-center h-8 w-8 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700
+                            class="inline-flex items-center justify-center h-11 w-11 sm:h-8 sm:w-8 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700
                                    transition-all duration-200 active:scale-95
                                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -1307,7 +1296,7 @@ class extends Component {
                     <div class="flex items-center justify-between">
                         <button type="button" @click="prevMonth()"
                                 aria-label="Previous month"
-                                class="inline-flex items-center justify-center h-9 w-9 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300
+                                class="inline-flex items-center justify-center h-11 w-11 sm:h-9 sm:w-9 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300
                                        transition-all duration-200 active:scale-95
                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -1318,7 +1307,7 @@ class extends Component {
                               x-text="currentMonthName + ' ' + currentYear"></span>
                         <button type="button" @click="nextMonth()"
                                 aria-label="Next month"
-                                class="inline-flex items-center justify-center h-9 w-9 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300
+                                class="inline-flex items-center justify-center h-11 w-11 sm:h-9 sm:w-9 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300
                                        transition-all duration-200 active:scale-95
                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -1360,8 +1349,9 @@ class extends Component {
     @if($showQrModal && $qrImage)
         <div class="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
              x-on:keydown.escape.window="$wire.cancelQrPayment()">
-            <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl max-w-md w-full p-6"
-                 @click.outside="$wire.closeQrModal()">
+            <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl max-w-md w-full p-6
+                        pb-[max(1.5rem,env(safe-area-inset-bottom))]"
+                 @click.outside="$wire.cancelQrPayment()">
 
                 <div class="flex items-start justify-between mb-4 gap-3">
                     <div class="min-w-0">
@@ -1370,9 +1360,9 @@ class extends Component {
                             Open any e-wallet or bank app to scan
                         </p>
                     </div>
-                    <button type="button" wire:click="closeQrModal"
+                    <button type="button" wire:click="cancelQrPayment"
                             aria-label="Close QR modal"
-                            class="inline-flex items-center justify-center h-8 w-8 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700
+                            class="inline-flex items-center justify-center h-11 w-11 sm:h-8 sm:w-8 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700
                                    transition-all duration-200 active:scale-95
                                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">

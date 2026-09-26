@@ -35,32 +35,17 @@ class extends Component {
     public ?int $userFilter = null;
     #[Url]
     public string $sortBy = 'newest';
-    public ?int $expandedId = null;
 
     public function mount(): void
     {
         $this->processMaintenanceTasks();
     }
 
-    /**
-     * Guard every subsequent Livewire request. mount() only runs once; every
-     * action (delete, cancelBooking…) is a separate HTTP request.
-     */
     public function hydrate(): void
     {
         abort_unless(Auth::user()?->tenant_id, 403);
     }
 
-    /**
-     * Cancels overdue bookings and confirms fully-paid ones.
-     *
-     * Throttled: `Cache::add` is atomic across requests for our drivers, so
-     * only one request per minute per tenant actually runs the work. The
-     * payment deadline is 30 minutes and PayMongo enforces its own timeout,
-     * so a ≤60s delay in the safety net is invisible.
-     *
-     * Never rethrows — the page must render regardless.
-     */
     protected function processMaintenanceTasks(): void
     {
         try {
@@ -145,11 +130,6 @@ class extends Component {
     public function updatingToDate(): void       { $this->resetPage(); }
     public function updatingUserFilter(): void   { $this->resetPage(); }
     public function updatingSortBy(): void       { $this->resetPage(); }
-
-    public function toggleExpand(int $id): void
-    {
-        $this->expandedId = $this->expandedId === $id ? null : $id;
-    }
 
     public function delete(int $id): void
     {
@@ -363,7 +343,7 @@ class extends Component {
                 <span>{{ session('message') }}</span>
             </div>
             <button type="button" @click="show = false"
-                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                    class="inline-flex items-center justify-center h-11 w-11 sm:h-7 sm:w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
                            transition-all duration-200 active:scale-95
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
                     aria-label="Dismiss">
@@ -386,7 +366,7 @@ class extends Component {
                 <span>{{ session('error') }}</span>
             </div>
             <button type="button" @click="show = false"
-                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                    class="inline-flex items-center justify-center h-11 w-11 sm:h-7 sm:w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
                            transition-all duration-200 active:scale-95
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
                     aria-label="Dismiss">
@@ -430,7 +410,6 @@ class extends Component {
     {{-- ═══ Filters ═══ --}}
     <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4 space-y-4">
 
-        {{-- Row 1: Search --}}
         <div class="relative">
             <svg class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500 pointer-events-none"
                  fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -443,7 +422,6 @@ class extends Component {
                    placeholder="Search reference or guest…">
         </div>
 
-        {{-- Row 2: Guest + Sort (2-col on tablet+, stacked on tiny mobile) --}}
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <select wire:model.live="userFilter" class="input w-full">
                 <option value="">All Guests</option>
@@ -460,7 +438,6 @@ class extends Component {
             </select>
         </div>
 
-        {{-- Row 3: Date range (From / To side by side, caption above) --}}
         <div>
             <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">Date Range</p>
             <div class="grid grid-cols-2 gap-2">
@@ -475,7 +452,6 @@ class extends Component {
             </div>
         </div>
 
-        {{-- Row 4: Status pills with inline counts --}}
         @php
             $pills = [
                 ['value' => '',           'label' => 'All',        'count' => $s['total']],
@@ -492,7 +468,7 @@ class extends Component {
                         wire:click="$set('statusFilter', '{{ $pill['value'] }}')"
                         wire:key="pill-{{ $pill['value'] !== '' ? $pill['value'] : 'all' }}"
                         aria-pressed="{{ $isActive ? 'true' : 'false' }}"
-                        class="inline-flex items-center gap-2 h-9 pl-3.5 pr-1.5 rounded-full text-xs font-semibold uppercase tracking-wide border
+                        class="inline-flex items-center gap-2 h-11 sm:h-9 pl-3.5 pr-1.5 rounded-full text-xs font-semibold uppercase tracking-wide border
                                transition-all duration-200 active:scale-95 shrink-0
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
                                {{ $isActive
@@ -509,7 +485,7 @@ class extends Component {
             @endforeach
 
             @if($s['overdue'] > 0)
-                <span class="inline-flex items-center gap-1.5 h-9 px-3 rounded-full text-[10px] font-bold uppercase tracking-wider
+                <span class="inline-flex items-center gap-1.5 h-11 sm:h-9 px-3 rounded-full text-[10px] font-bold uppercase tracking-wider
                              bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-500/30">
                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
@@ -520,7 +496,7 @@ class extends Component {
 
             @if($this->hasActiveFilters)
                 <button type="button" wire:click="clearFilters"
-                        class="inline-flex items-center gap-1 h-9 px-3.5 rounded-full text-xs font-semibold uppercase tracking-wide
+                        class="inline-flex items-center gap-1 h-11 sm:h-9 px-3.5 rounded-full text-xs font-semibold uppercase tracking-wide
                                border border-rose-300 dark:border-rose-500/40
                                bg-white dark:bg-gray-800 text-rose-700 dark:text-rose-300
                                transition-all duration-200 active:scale-95
@@ -613,7 +589,7 @@ class extends Component {
                     <div class="p-4 pb-3">
                         <div class="flex items-start justify-between gap-3 mb-1">
                             <div class="flex items-center gap-3 min-w-0">
-                                <div class="w-11 h-11 rounded-full bg-blue-50 dark:bg-blue-500/15 flex items-center justify-center text-primary-600 dark:text-primary-400 font-bold text-sm shrink-0">
+                                <div class="w-11 h-11 rounded-full bg-primary-50 dark:bg-primary-500/15 flex items-center justify-center text-primary-600 dark:text-primary-400 font-bold text-sm shrink-0">
                                     {{ strtoupper(substr($booking->user->name ?? 'G', 0, 1)) }}
                                 </div>
                                 <div class="min-w-0">
@@ -718,7 +694,7 @@ class extends Component {
                         <a href="{{ route('tenant.bookings.show', $booking->id) }}" wire:navigate
                            aria-label="View booking {{ $booking->booking_reference }}"
                            title="View"
-                           class="inline-flex items-center justify-center h-9 w-9 rounded-lg text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700
+                           class="inline-flex items-center justify-center h-11 w-11 sm:h-9 sm:w-9 rounded-lg text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700
                                   transition-all duration-200 active:scale-95
                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -730,7 +706,7 @@ class extends Component {
                         <a href="{{ route('tenant.bookings.edit', $booking->id) }}" wire:navigate
                            aria-label="Edit booking {{ $booking->booking_reference }}"
                            title="Edit"
-                           class="inline-flex items-center justify-center h-9 w-9 rounded-lg text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10
+                           class="inline-flex items-center justify-center h-11 w-11 sm:h-9 sm:w-9 rounded-lg text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10
                                   transition-all duration-200 active:scale-95
                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -740,27 +716,53 @@ class extends Component {
 
                         @if($booking->status === 'pending' && $balance > 0)
                             <button type="button"
-                                    x-on:click="if (confirm('Cancel booking #{{ $booking->booking_reference }}?')) $wire.cancelBooking({{ $booking->id }})"
-                                    aria-label="Cancel booking {{ $booking->booking_reference }}"
-                                    title="Cancel"
-                                    class="inline-flex items-center justify-center h-9 w-9 rounded-lg text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-500/10
+                                    x-data="{
+                                        armed: false,
+                                        _t: null,
+                                        arm() { this.armed = true; clearTimeout(this._t); this._t = setTimeout(() => { this.armed = false; this._t = null; }, 4000); },
+                                        unarm() { clearTimeout(this._t); this._t = null; this.armed = false; },
+                                        destroy() { clearTimeout(this._t); }
+                                    }"
+                                    @click="armed ? (unarm(), $wire.cancelBooking({{ $booking->id }})) : arm()"
+                                    :class="armed
+                                        ? 'bg-amber-100 text-amber-700 ring-2 ring-amber-400/60 dark:bg-amber-500/20 dark:text-amber-200'
+                                        : 'text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-500/10'"
+                                    :aria-label="armed ? 'Click again to confirm cancel' : 'Cancel booking {{ $booking->booking_reference }}'"
+                                    :title="armed ? 'Click again to confirm' : 'Cancel'"
+                                    class="inline-flex items-center justify-center h-11 w-11 sm:h-9 sm:w-9 rounded-lg
                                            transition-all duration-200 active:scale-95
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <svg x-show="!armed" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
+                                </svg>
+                                <svg x-show="armed" x-cloak class="w-4 h-4 animate-pulse motion-reduce:animate-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                 </svg>
                             </button>
                         @endif
 
                         <button type="button"
-                                x-on:click="if (confirm('Delete booking #{{ $booking->booking_reference }}?')) $wire.delete({{ $booking->id }})"
-                                aria-label="Delete booking {{ $booking->booking_reference }}"
-                                title="Delete"
-                                class="inline-flex items-center justify-center h-9 w-9 rounded-lg text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10
+                                x-data="{
+                                    armed: false,
+                                    _t: null,
+                                    arm() { this.armed = true; clearTimeout(this._t); this._t = setTimeout(() => { this.armed = false; this._t = null; }, 4000); },
+                                    unarm() { clearTimeout(this._t); this._t = null; this.armed = false; },
+                                    destroy() { clearTimeout(this._t); }
+                                }"
+                                @click="armed ? (unarm(), $wire.delete({{ $booking->id }})) : arm()"
+                                :class="armed
+                                    ? 'bg-rose-100 text-rose-700 ring-2 ring-rose-400/60 dark:bg-rose-500/20 dark:text-rose-200'
+                                    : 'text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10'"
+                                :aria-label="armed ? 'Click again to confirm delete' : 'Delete booking {{ $booking->booking_reference }}'"
+                                :title="armed ? 'Click again to confirm' : 'Delete'"
+                                class="inline-flex items-center justify-center h-11 w-11 sm:h-9 sm:w-9 rounded-lg
                                        transition-all duration-200 active:scale-95
                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <svg x-show="!armed" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                            </svg>
+                            <svg x-show="armed" x-cloak class="w-4 h-4 animate-pulse motion-reduce:animate-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                             </svg>
                         </button>
                     </div>

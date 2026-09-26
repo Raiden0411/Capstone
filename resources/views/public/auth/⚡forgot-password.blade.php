@@ -50,11 +50,6 @@ class extends Component
         $email = strtolower(trim($this->email));
         $ip    = request()->ip();
 
-        // ═══════════════════════════════════════════════════════════
-        // 1. IP-ONLY LIMITER — broad abuse prevention
-        // ═══════════════════════════════════════════════════════════
-        // Prevents one IP from probing multiple different emails.
-        // 5 attempts / 10 minutes.
         $ipKey = 'password-reset-ip:' . $ip;
 
         if (RateLimiter::tooManyAttempts($ipKey, 5)) {
@@ -63,9 +58,6 @@ class extends Component
             return;
         }
 
-        // ═══════════════════════════════════════════════════════════
-        // 2. EMAIL + IP LIMITER — targeted per-email protection
-        // ═══════════════════════════════════════════════════════════
         $emailKey = 'password-reset:' . $email . '|' . $ip;
 
         if (RateLimiter::tooManyAttempts($emailKey, 3)) {
@@ -74,14 +66,9 @@ class extends Component
             return;
         }
 
-        // Hit both counters BEFORE any DB work — failed attempts
-        // still count toward the limit.
-        RateLimiter::hit($ipKey, 600);    // 10 minutes
-        RateLimiter::hit($emailKey, 60);  // 60 seconds
+        RateLimiter::hit($ipKey, 600);
+        RateLimiter::hit($emailKey, 60);
 
-        // ═══════════════════════════════════════════════════════════
-        // 3. EXPLICIT EMAIL CHECK
-        // ═══════════════════════════════════════════════════════════
         $user = User::query()->where('email', $email)->first();
 
         if (!$user) {
@@ -89,9 +76,6 @@ class extends Component
             return;
         }
 
-        // ═══════════════════════════════════════════════════════════
-        // 4. DISPATCH THE RESET EMAIL
-        // ═══════════════════════════════════════════════════════════
         try {
             $status = Password::sendResetLink(['email' => $email]);
         } catch (\Throwable $e) {
@@ -123,12 +107,6 @@ class extends Component
         $this->resetValidation();
     }
 
-    // ─────────────────────────────────────────────────────
-    //  Branding — Rule 81: migrated from a pre-root @php
-    //  block (unsupported/unreliable in SFCs) to
-    //  #[Computed] methods.
-    // ─────────────────────────────────────────────────────
-
     #[Computed]
     public function siteName(): string
     {
@@ -154,16 +132,12 @@ class extends Component
     }
 
     /**
-     * A real, active destination from the platform — shown as a
-     * floating card in the hero on md+ screens. Matches the login
-     * and register pages.
-     *
-     * @return array{name: string, slug: string, type: string, logo: string, url: string}|null
+     * @return array<int, array{name: string, slug: string, type: string, logo: string, url: string}>
      */
     #[Computed]
-    public function featuredTenant(): ?array
+    public function featuredTenants(): array
     {
-        $tenant = Tenant::query()
+        return Tenant::query()
             ->where('is_active', true)
             ->whereNotNull('logo')
             ->whereNotNull('slug')
@@ -171,19 +145,16 @@ class extends Component
             ->orderByDesc('is_recommended')
             ->orderByDesc('verified_at')
             ->orderBy('name')
-            ->first(['id', 'name', 'slug', 'logo', 'type_of_tenant_id']);
-
-        if (!$tenant || !$tenant->logo) {
-            return null;
-        }
-
-        return [
-            'name' => (string) $tenant->name,
-            'slug' => (string) $tenant->slug,
-            'type' => (string) ($tenant->typeOfTenant?->type ?? 'Destination'),
-            'logo' => asset('storage/' . $tenant->logo),
-            'url'  => route('business.offerings', $tenant->slug),
-        ];
+            ->limit(3)
+            ->get(['id', 'name', 'slug', 'logo', 'type_of_tenant_id'])
+            ->map(fn ($tenant) => [
+                'name' => (string) $tenant->name,
+                'slug' => (string) $tenant->slug,
+                'type' => (string) ($tenant->typeOfTenant?->type ?? 'Destination'),
+                'logo' => asset('storage/' . $tenant->logo),
+                'url'  => route('business.offerings', $tenant->slug),
+            ])
+            ->all();
     }
 };
 ?>
@@ -191,28 +162,29 @@ class extends Component
 @push('styles')
     @once
         <style>
-            /* Ambient glow on the form panel. */
-            .login-form-panel {
+            .auth-form-panel {
                 background-image:
                     radial-gradient(ellipse 70% 50% at 50% 0%, rgba(245,158,11,.05) 0%, transparent 55%),
                     radial-gradient(ellipse 60% 60% at 100% 100%, rgba(59,130,246,.04) 0%, transparent 55%);
             }
-            .dark .login-form-panel {
+            .dark .auth-form-panel {
                 background-image:
                     radial-gradient(ellipse 70% 50% at 50% 0%, rgba(245,158,11,.09) 0%, transparent 55%),
                     radial-gradient(ellipse 60% 60% at 100% 100%, rgba(59,130,246,.07) 0%, transparent 55%);
             }
-
-            /* Featured-spot card entrance. */
-            .login-featured-card {
-                animation: loginFeaturedIn .5s cubic-bezier(.16,1,.3,1) .25s both;
+            .auth-hero-vignette {
+                background: radial-gradient(ellipse 90% 80% at 50% 50%, transparent 40%, rgba(0,0,0,.35) 100%);
             }
-            @keyframes loginFeaturedIn {
-                from { opacity: 0; transform: translateY(-6px); }
+            @keyframes authChipIn {
+                from { opacity: 0; transform: translateY(6px); }
                 to   { opacity: 1; transform: translateY(0); }
             }
+            .auth-chip { animation: authChipIn .5s cubic-bezier(.16,1,.3,1) both; }
+            .auth-chip:nth-child(1) { animation-delay: .25s; }
+            .auth-chip:nth-child(2) { animation-delay: .35s; }
+            .auth-chip:nth-child(3) { animation-delay: .45s; }
             @media (prefers-reduced-motion: reduce) {
-                .login-featured-card { animation: none; }
+                .auth-chip { animation: none; }
             }
         </style>
     @endonce
@@ -220,82 +192,92 @@ class extends Component
 
 <div class="min-h-screen flex flex-col md:flex-row bg-white dark:bg-gray-900">
 
-    {{-- ═══════════════ LEFT: HERO ═══════════════ --}}
-    <div class="relative w-full md:w-3/5 min-h-[240px] sm:min-h-[280px] md:min-h-screen order-1 md:order-1 overflow-hidden">
+    {{-- ═══════════════ HERO ═══════════════ --}}
+    <div class="relative w-full md:w-1/2 min-h-[200px] sm:min-h-[260px] md:min-h-screen md:h-screen md:sticky md:top-0 overflow-hidden">
+
         <img src="{{ $this->heroUrl }}"
-             alt=""
-             aria-hidden="true"
-             loading="eager"
-             fetchpriority="high"
-             decoding="async"
-             width="1600"
-             height="900"
+             alt="" aria-hidden="true"
+             loading="eager" fetchpriority="high" decoding="async"
+             width="1600" height="900"
              class="absolute inset-0 object-cover w-full h-full">
 
-        <div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/45 to-black/15"></div>
+        <div class="absolute inset-0 bg-gradient-to-br from-black/30 via-black/40 to-black/85"></div>
+        <div class="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/85 via-black/40 to-transparent"></div>
+        <div class="absolute inset-0 auth-hero-vignette pointer-events-none" aria-hidden="true"></div>
+        <div class="absolute inset-x-0 top-0 h-1/3 bg-gradient-to-b from-amber-500/12 via-amber-500/4 to-transparent pointer-events-none" aria-hidden="true"></div>
 
-        {{-- Featured-spot card — top-right corner. Desktop only. --}}
-        @if($this->featuredTenant)
-            @php $ft = $this->featuredTenant; @endphp
-            <a href="{{ $ft['url'] }}"
-               wire:navigate
-               class="login-featured-card hidden md:flex absolute top-6 right-6 lg:top-10 lg:right-10
-                      items-center gap-3 w-[280px]
-                      rounded-2xl p-3 pr-3.5
-                      bg-white/[0.08] hover:bg-white/[0.14] backdrop-blur-md
-                      border border-white/15 hover:border-white/30
-                      transition-all duration-300 active:scale-[0.97]
-                      group
-                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50">
-                <img src="{{ $ft['logo'] }}"
-                     alt=""
-                     width="44" height="44"
-                     loading="lazy" decoding="async"
-                     class="w-11 h-11 rounded-xl object-cover bg-white/10 shrink-0">
-                <div class="min-w-0 flex-1">
-                    <p class="text-[9px] font-bold uppercase tracking-[0.18em] text-amber-300/90 mb-0.5">
-                        Featured Spot
-                    </p>
-                    <p class="text-sm font-semibold text-white leading-tight truncate">
-                        {{ $ft['name'] }}
-                    </p>
-                    <p class="text-[11px] text-white/55 truncate mt-0.5">
-                        {{ $ft['type'] }}
-                    </p>
-                </div>
-                <svg xmlns="http://www.w3.org/2000/svg"
-                     class="w-4 h-4 text-white/50 group-hover:text-white group-hover:translate-x-0.5 transition-all shrink-0"
-                     fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/>
-                </svg>
-            </a>
-        @endif
+        <div class="relative h-full flex flex-col justify-between
+                    p-5 sm:p-8 md:p-12 lg:p-16 text-white">
 
-        {{-- Copy container — anchored to the bottom --}}
-        <div class="absolute inset-x-0 bottom-0 p-5 sm:p-8 md:p-16 lg:p-20 text-white">
-            <span class="inline-flex max-w-full items-center gap-2 px-3 py-1 text-[11px] font-bold tracking-widest text-white uppercase bg-black/40 rounded-full backdrop-blur-sm border border-white/15">
-                <span class="w-1.5 h-1.5 bg-amber-400 rounded-full shrink-0" aria-hidden="true"></span>
-                <span class="truncate">{{ $this->siteName }}</span>
-            </span>
+            <div>
+                <span class="inline-flex max-w-full items-center gap-2 px-3 py-1.5
+                             text-[11px] font-bold tracking-[0.22em] uppercase
+                             text-white bg-black/40 rounded-full backdrop-blur-md
+                             border border-white/15 shadow-sm">
+                    <span class="w-1.5 h-1.5 bg-amber-400 rounded-full shrink-0" aria-hidden="true"></span>
+                    <span class="truncate">{{ $this->siteName }}</span>
+                </span>
+            </div>
 
-            {{-- Headline — plain Inter Bold. Rendered as <p> not <h1>:
-                 the page's real <h1> is the form title. --}}
-            <p class="mt-6 text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight leading-[1.08] break-words text-white max-w-3xl">
-                Forgotten passwords are easily fixed
-            </p>
+            <div class="mt-8 md:mt-auto">
+                <h2 class="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight
+                           leading-[1.06] text-white max-w-3xl
+                           [text-wrap:balance]">
+                    Forgotten passwords are easily fixed
+                </h2>
 
-            <p class="max-w-2xl mt-4 sm:mt-5 text-sm sm:text-base font-normal leading-relaxed text-gray-200/85">
-                Enter the email address you used to create your account and we'll send you a secure link to choose a new password.
-            </p>
+                <p class="max-w-xl mt-4 sm:mt-5 text-sm sm:text-base leading-relaxed text-white/75">
+                    Enter the email address you used to create your account and we'll send you a secure link to choose a new password.
+                </p>
+
+                @if(!empty($this->featuredTenants))
+                    <div class="hidden md:block mt-6 md:mt-7">
+                        <p class="mb-2.5 inline-flex items-center gap-2
+                                  text-[10px] font-bold uppercase tracking-[0.22em]
+                                  text-amber-300/90">
+                            <span class="h-px w-4 bg-amber-400/70" aria-hidden="true"></span>
+                            Featured Spots
+                        </p>
+                        <div class="flex gap-2 flex-wrap">
+                            @foreach($this->featuredTenants as $ft)
+                                <a href="{{ $ft['url'] }}"
+                                   wire:navigate
+                                   wire:key="forgot-feat-{{ $ft['slug'] }}"
+                                   class="auth-chip group shrink-0 inline-flex items-center gap-2
+                                          pl-1.5 pr-3 py-1.5 rounded-full
+                                          bg-white/[0.08] hover:bg-white/[0.16]
+                                          ring-1 ring-inset ring-white/15 hover:ring-white/35
+                                          text-white
+                                          transition-all duration-200 active:scale-[0.97]
+                                          [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300/60 focus-visible:ring-offset-2 focus-visible:ring-offset-black/40">
+                                    <img src="{{ $ft['logo'] }}" alt="" width="28" height="28"
+                                         loading="lazy" decoding="async"
+                                         class="w-7 h-7 rounded-full object-cover bg-white/10 shrink-0">
+                                    <span class="text-xs sm:text-[13px] font-medium leading-none truncate max-w-[130px]">
+                                        {{ $ft['name'] }}
+                                    </span>
+                                </a>
+                            @endforeach
+                        </div>
+                    </div>
+                @endif
+            </div>
         </div>
     </div>
 
-    {{-- ═══════════════ RIGHT: FORM ═══════════════ --}}
-    <div class="login-form-panel flex items-start md:items-center justify-center w-full min-w-0 px-4 sm:px-6 py-10 md:py-12 bg-white dark:bg-gray-900 md:w-2/5 lg:px-16 order-2 md:order-2">
+    {{-- ═══════════════ FORM ═══════════════ --}}
+    <div class="auth-form-panel flex items-start md:items-center justify-center w-full min-w-0
+                px-5 sm:px-8 md:px-10 lg:px-16 py-10 md:py-12
+                bg-white dark:bg-gray-900 md:w-1/2">
         <div class="w-full max-w-md min-w-0">
 
             <a href="{{ route('login') }}" wire:navigate
-               class="inline-flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 transition-all duration-200 active:scale-95 mb-8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+               class="inline-flex items-center gap-1.5 text-sm font-medium
+                      text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400
+                      transition-colors mb-8 -mx-1 px-1 py-1 rounded
+                      [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                 <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                 </svg>
@@ -318,7 +300,7 @@ class extends Component
 
             @if($submitted)
 
-                {{-- ── Success state ── --}}
+                {{-- Success state --}}
                 <div class="flex items-center justify-center w-14 h-14 rounded-2xl
                             bg-emerald-100 dark:bg-emerald-500/15
                             text-emerald-600 dark:text-emerald-400 mb-6">
@@ -349,13 +331,13 @@ class extends Component
                                border border-gray-300 dark:border-gray-700
                                hover:bg-gray-50 dark:hover:bg-gray-800/60
                                rounded-xl transition-all duration-200 active:scale-95
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                     Use a different email
                 </button>
 
             @else
 
-                {{-- ── Form state ── --}}
                 <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-2 break-words leading-tight tracking-tight">
                     Forgot your password?
                 </h1>
@@ -378,18 +360,21 @@ class extends Component
                 @endif
 
                 <form wire:submit="sendResetLink" class="space-y-5">
-
                     <div>
                         <label for="email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            Email Address <span class="text-rose-500">*</span>
+                            Email Address <span class="text-rose-500" aria-hidden="true">*</span>
                         </label>
-                        <input id="email"
-                               type="email"
-                               wire:model="email"
-                               autofocus
-                               autocomplete="email"
-                               placeholder="example@email.com"
-                               class="block w-full px-4 py-3 text-base sm:text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-xl transition-colors focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 focus:outline-none placeholder:text-gray-400 dark:placeholder-gray-500 @error('email') border-rose-400/60 @enderror">
+                        <div class="relative">
+                            <svg xmlns="http://www.w3.org/2000/svg"
+                                 class="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500"
+                                 fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.8" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/>
+                            </svg>
+                            <input id="email" type="email" wire:model="email"
+                                   autofocus autocomplete="email"
+                                   placeholder="example@email.com"
+                                   class="input pl-10 @error('email') border-rose-400/60 @enderror">
+                        </div>
                         @error('email')
                             <p class="mt-1.5 text-xs text-rose-500 break-words">{{ $message }}</p>
                         @enderror
@@ -398,8 +383,9 @@ class extends Component
                     <button type="submit"
                             wire:loading.attr="disabled"
                             wire:target="sendResetLink"
-                            class="w-full inline-flex items-center justify-center gap-2 h-11 mt-2 text-sm font-semibold text-white transition-all duration-200 bg-primary-600 hover:bg-primary-700 rounded-xl shadow-sm
+                            class="w-full inline-flex items-center justify-center gap-2 h-11 mt-2 text-sm font-semibold text-white transition-all duration-200 bg-primary-600 hover:bg-primary-700 rounded-xl shadow-sm shadow-primary-600/20
                                    disabled:opacity-50 disabled:cursor-not-allowed active:scale-95
+                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                         <span wire:loading.remove wire:target="sendResetLink">Send reset link</span>
                         <span wire:loading wire:target="sendResetLink" class="inline-flex items-center gap-2">
@@ -421,22 +407,25 @@ class extends Component
             <p class="mt-8 text-sm text-center text-gray-600 dark:text-gray-400">
                 Remembered it after all?
                 <a href="{{ route('login') }}" wire:navigate
-                   class="text-primary-600 dark:text-primary-400 font-medium hover:underline ml-1 transition-all duration-200 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                   class="relative text-primary-600 dark:text-primary-400 font-medium hover:underline ml-1
+                          before:absolute before:content-[''] before:-inset-2 before:rounded
+                          transition-all duration-200 active:scale-95
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded px-1 -mx-1 py-0.5">
                     Back to Login
                 </a>
             </p>
 
-            {{-- Footer row — copyright left, "Continue browsing" right.
-                 Matches the login and register pages. --}}
             <div class="mt-10 pt-5 border-t border-gray-100 dark:border-gray-800
                         flex items-center justify-between gap-3
                         text-[11px] text-gray-400 dark:text-gray-600">
                 <span class="truncate">© {{ date('Y') }} {{ $this->siteName }}</span>
                 <a href="{{ route('home') }}" wire:navigate
-                   class="inline-flex items-center gap-1 shrink-0
+                   class="relative inline-flex items-center gap-1 shrink-0
                           hover:text-primary-600 dark:hover:text-primary-400
                           transition-all duration-200 active:scale-95
-                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+                          before:absolute before:content-[''] before:-inset-2 before:rounded
+                          [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded px-1 -mx-1 py-0.5">
                     Continue browsing
                     <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
@@ -446,5 +435,4 @@ class extends Component
 
         </div>
     </div>
-
 </div>

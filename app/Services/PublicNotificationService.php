@@ -19,7 +19,8 @@ class PublicNotificationService
     public const MAX_DISPLAYED = 6;
 
     /**
-     * Build the notification payload for a user.
+     * Build the notification payload for a user — tourist + business
+     * items merged. Used by the public-facing bell.
      *
      * @return array{items: array<int, array<string, mixed>>, count: int}
      */
@@ -37,22 +38,44 @@ class PublicNotificationService
     }
 
     /**
-     * Invalidate the cache for a user by ID.
+     * Build the notification payload for a tenant admin — business
+     * items ONLY.
      *
-     * Use this from model observers, jobs, and anywhere else that has a
-     * user_id on hand but no need (or ability) to load the full User row.
+     * @return array{items: array<int, array<string, mixed>>, count: int}
+     */
+    public function forBusiness(?User $user): array
+    {
+        if (! $user || ! $user->tenant_id) {
+            return ['items' => [], 'count' => 0];
+        }
+
+        return Cache::remember(
+            self::businessCacheKeyFor((int) $user->id),
+            self::CACHE_TTL,
+            function () use ($user): array {
+                $items = $this->businessNotifications($user);
+
+                usort($items, fn ($a, $b) => ($b['time'] ?? 0) <=> ($a['time'] ?? 0));
+
+                return [
+                    'items' => array_slice($items, 0, self::MAX_DISPLAYED),
+                    'count' => count($items),
+                ];
+            }
+        );
+    }
+
+    /**
+     * Invalidate both notification caches for a user by ID.
      */
     public function flushForUserId(int $userId): void
     {
         Cache::forget(self::cacheKeyFor($userId));
+        Cache::forget(self::businessCacheKeyFor($userId));
     }
 
     /**
-     * Invalidate the cache for a user — call this from observers/jobs
-     * when a booking or KYB application changes state.
-     *
-     * Thin wrapper over flushForUserId() for call sites that already hold
-     * a User instance.
+     * Invalidate the cache for a user.
      */
     public function flush(User $user): void
     {
@@ -61,18 +84,6 @@ class PublicNotificationService
 
     /**
      * Invalidate the notification cache for every admin user of a tenant.
-     *
-     * Tenant admins see a "N pending bookings" badge in their header
-     * dropdown (see businessNotifications()). Any booking event that
-     * changes the tenant's pending count must flush them.
-     *
-     * The query is indexed: users.tenant_id + a subquery on the
-     * model_has_roles pivot. One row per tenant in the common case.
-     *
-     * Deliberately does NOT deduplicate against a possible own-user flush
-     * — Cache::forget() is a single DELETE on the database cache driver,
-     * and two forgets for the same key is a no-op cost. Deduping would
-     * add branching for zero behavioral gain.
      */
     public function flushTenantAdmins(int $tenantId): void
     {
@@ -87,16 +98,14 @@ class PublicNotificationService
             ->each(fn ($id) => $this->flushForUserId((int) $id));
     }
 
-    /**
-     * Single source of truth for the cache-key format.
-     *
-     * Read and write must always produce the same key for the same user;
-     * keeping the format in one place makes that impossible to break by
-     * accident.
-     */
     private static function cacheKeyFor(int $userId): string
     {
         return "public_notifications:{$userId}";
+    }
+
+    private static function businessCacheKeyFor(int $userId): string
+    {
+        return "tenant_notifications:{$userId}";
     }
 
     protected function build(User $user): array
@@ -106,7 +115,6 @@ class PublicNotificationService
             $user->isBusinessOwner() ? $this->businessNotifications($user) : [],
         );
 
-        // Newest first.
         usort($items, fn ($a, $b) => ($b['time'] ?? 0) <=> ($a['time'] ?? 0));
 
         $items = array_slice($items, 0, self::MAX_DISPLAYED);
@@ -125,7 +133,6 @@ class PublicNotificationService
     {
         $items = [];
 
-        // Bookings — the user's own, scoped past tenant global scope.
         $bookings = Booking::query()
             ->withoutGlobalScope(TenantScope::class)
             ->where('user_id', $user->id)
@@ -199,7 +206,6 @@ class PublicNotificationService
             }
         }
 
-        // Own KYB application status.
         /** @var BusinessApplication|null $application */
         $application = BusinessApplication::query()
             ->where('user_id', $user->id)
@@ -277,7 +283,6 @@ class PublicNotificationService
 
         $items = [];
 
-        // Pending bookings on this tenant.
         $pendingCount = Booking::query()
             ->where('tenant_id', $user->tenant_id)
             ->where('status', Booking::STATUS_PENDING)
@@ -300,15 +305,16 @@ class PublicNotificationService
                 'title'   => $pendingCount === 1
                     ? 'New booking request'
                     : "{$pendingCount} booking requests",
-                'message' => $latest->user->name
+                'message' => $latest && $latest->user && $latest->user->name
                     ? "Latest from {$latest->user->name}. Review and confirm."
                     : 'Review and confirm incoming bookings.',
                 'url'     => route('tenant.bookings.index'),
-                'time'    => $latest->created_at->timestamp ?? time(),
+                // Larastan: `created_at` is always populated on a fetched
+                // Eloquent model — no nullsafe on the second segment.
+                'time'    => $latest?->created_at->timestamp ?? time(),
             ];
         }
 
-        // Permit renewal.
         /** @var Tenant|null $tenant */
         $tenant = Tenant::query()->find($user->tenant_id);
 

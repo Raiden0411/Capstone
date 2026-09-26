@@ -30,7 +30,6 @@ class extends Component
     #[Computed]
     public function hero(): array
     {
-        // Single batched cache read for every hero + discover key.
         $keys = [
             'hero_title', 'hero_subtitle', 'hero_description',
             'hero_background_image',
@@ -38,11 +37,6 @@ class extends Component
             'discover_title', 'discover_description',
         ];
 
-        // Versioned batch cache — a single cache entry, invalidated
-        // instantly when any of these keys is written via
-        // SiteSetting::setValue(). See SiteSetting::getBatch().
-        // NOTE: this caches a SCALAR array, not Eloquent models —
-        // safe with the database driver.
         $settings = SiteSetting::getBatch($keys, 'homepage_hero');
 
         $fallbacks = [
@@ -56,12 +50,16 @@ class extends Component
         for ($i = 1; $i <= 4; $i++) {
             $key  = "hero_side_image_{$i}";
             $path = $settings[$key] ?? null;
-            $sideImages[$i] = $path ? asset('storage/' . $path) : $fallbacks[$i];
+            // Rule J: relative /storage path, never asset() — APP_URL
+            // may not match the current host.
+            $sideImages[$i] = $path
+                ? '/storage/' . ltrim($path, '/')
+                : $fallbacks[$i];
         }
 
         $backgroundPath = $settings['hero_background_image'] ?? null;
         $background = $backgroundPath
-            ? asset('storage/' . $backgroundPath)
+            ? '/storage/' . ltrim($backgroundPath, '/')
             : 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&q=80&w=1600';
 
         return [
@@ -76,21 +74,6 @@ class extends Component
         ];
     }
 
-    /**
-     * Editable content for the final CTA section.
-     *
-     * Every text field and the background image are stored as
-     * SiteSetting rows under the `homepage_cta` cache namespace,
-     * so a write through SiteSetting::setValue() invalidates the
-     * whole batch in one shot — same pattern as hero().
-     *
-     * `background` falls back to a working Unsplash landscape if the
-     * admin hasn't uploaded a custom image yet. The Blade also carries
-     * an `onerror` fallback on the <img> so a broken URL degrades to
-     * the gradient rather than showing a broken-image glyph.
-     *
-     * @return array{eyebrow: string, title: string, description: string, buttonText: string, background: string}
-     */
     #[Computed]
     public function finalCta(): array
     {
@@ -112,23 +95,11 @@ class extends Component
             'description' => $settings['cta_description'] ?? 'Start your journey today! Discover the best places, experiences, and adventures Victorias City has to offer.',
             'buttonText'  => $settings['cta_button_text'] ?? 'Explore Now',
             'background'  => $backgroundPath
-                ? asset('storage/' . $backgroundPath)
+                ? '/storage/' . ltrim($backgroundPath, '/')
                 : 'https://images.unsplash.com/photo-1501785888041-af3ef285b470?auto=format&fit=crop&w=1920&q=80',
         ];
     }
 
-    /**
-     * Small trust-strip numbers rendered under the hero quick actions.
-     * Two COUNT queries per page load, on indexed columns. No caching —
-     * the numbers should reflect reality within a request, and a fresh
-     * COUNT is faster than a cache round-trip for this payload size.
-     *
-     * Both queries bypass the tenant global scope: a signed-in tenant
-     * admin browsing the public homepage must still see platform-wide
-     * numbers, not their own tenant's subset.
-     *
-     * @return array{destinations: int, events: int}
-     */
     #[Computed]
     public function heroStats(): array
     {
@@ -150,9 +121,6 @@ class extends Component
     #[Computed]
     public function popularDestinations()
     {
-        // NO Cache::remember — the database cache driver corrupts
-        // hydrated Eloquent models on unserialize (PHP 8.5 + Laravel 13).
-        // Query is LIMIT 3, sub-10ms. Caching was a premature optimization.
         return Tenant::withoutGlobalScope(TenantScope::class)
             ->where('is_active', true)
             ->withCount([
@@ -167,10 +135,56 @@ class extends Component
             ->get(['id', 'name', 'slug', 'logo', 'type_of_tenant_id', 'coordinates']);
     }
 
+    /**
+     * Search-strip shortcuts for the hero. Derived from the SAME
+     * booking-volume source as popularDestinations() — same scope
+     * bypass, same is_active filter, same withCount of non-cancelled
+     * bookings — just a wider limit and a narrower select. Nothing
+     * here is hardcoded; if the platform has no bookings yet, we
+     * fall back to the newest active tenants so the strip still
+     * offers real entry points to a first-time visitor.
+     *
+     * @return array<int, array{id: int, name: string, url: string}>
+     */
+    #[Computed]
+    public function popularSearchTerms(): array
+    {
+        $terms = Tenant::withoutGlobalScope(TenantScope::class)
+            ->where('is_active', true)
+            ->withCount([
+                'bookings' => fn ($q) => $q
+                    ->withoutGlobalScope(TenantScope::class)
+                    ->whereNotIn('status', [Booking::STATUS_CANCELLED]),
+            ])
+            ->orderByDesc('bookings_count')
+            ->orderBy('name')
+            ->limit(4)
+            ->get(['id', 'name', 'slug']);
+
+        // If nobody has booked anything yet, the top-by-bookings list
+        // collapses to alphabetical. Give the strip a more useful set
+        // instead: the newest active tenants on the platform.
+        if ($terms->every(fn ($t) => (int) $t->bookings_count === 0)) {
+            $terms = Tenant::withoutGlobalScope(TenantScope::class)
+                ->where('is_active', true)
+                ->orderByDesc('created_at')
+                ->orderBy('name')
+                ->limit(4)
+                ->get(['id', 'name', 'slug']);
+        }
+
+        return $terms->map(fn ($t) => [
+            'id'   => $t->id,
+            'name' => $t->name,
+            'url'  => $t->slug
+                ? route('business.offerings', $t->slug)
+                : route('explore.map', ['q' => $t->name]),
+        ])->values()->toArray();
+    }
+
     #[Computed]
     public function carouselItems()
     {
-        // NO Cache::remember — same reason as above.
         return Tenant::withoutGlobalScope(TenantScope::class)
             ->whereNotNull('logo')
             ->where('is_active', true)
@@ -184,17 +198,15 @@ class extends Component
     {
         if ($this->carouselItems->isNotEmpty()) {
             return $this->carouselItems->map(function ($tenant) {
-                // Precompute the detail URL server-side so the Alpine
-                // carousel never has to know the route pattern. Route
-                // changes become a one-file edit in routes/web.php.
                 return [
                     'name'  => $tenant->name,
                     'slug'  => $tenant->slug,
                     'url'   => $tenant->slug
                         ? route('business.offerings', $tenant->slug)
                         : '#',
+                    // Rule J: relative /storage path.
                     'image' => $tenant->logo
-                        ? asset('storage/' . $tenant->logo)
+                        ? '/storage/' . ltrim($tenant->logo, '/')
                         : 'https://images.unsplash.com/photo-1501785888041-af3ef285b470?q=80&w=800&auto=format&fit=crop',
                 ];
             })->values()->toArray();
@@ -209,13 +221,6 @@ class extends Component
         ];
     }
 
-    /**
-     * Parent + sub-marker payload for the homepage preview map.
-     *
-     * Colour palette is IDENTICAL to ⚡explore-map's — a rotating
-     * 8-colour ring indexed by position. Ensures visual parity with
-     * the full explore map (Rule 52 — sibling consistency).
-     */
     #[Computed]
     public function mapLocations()
     {
@@ -235,7 +240,8 @@ class extends Component
                     'slug'        => $tenant->slug,
                     'type'        => $type,
                     'color'       => $color,
-                    'logo'        => $tenant->logo ? asset('storage/' . $tenant->logo) : null,
+                    // Rule J: relative /storage path.
+                    'logo'        => $tenant->logo ? '/storage/' . ltrim($tenant->logo, '/') : null,
                     'coordinates' => $tenant->coordinates,
                 ];
             })
@@ -245,7 +251,6 @@ class extends Component
     #[Computed]
     public function featuredEvents()
     {
-        // NO Cache::remember — same reason as popularDestinations.
         return Event::withoutGlobalScope(TenantScope::class)
             ->where('featured', true)
             ->where('is_active', true)
@@ -267,18 +272,6 @@ class extends Component
         return collect($this->markerCategories)->keyBy('key');
     }
 
-    /**
-     * Auth state exposed to Blade as a computed property.
-     *
-     * Why a computed instead of Blade's @auth/@else/@endauth:
-     * Livewire v4's ExtendBlade compiler has been observed to
-     * mis-pair @auth/@else blocks when the branch body contains
-     * multiple elements each carrying wire:navigate — producing
-     * an orphaned endforeach in the compiled PHP (the primary
-     * cause of the ParseError this file originally tripped).
-     * A plain @if/@else on a boolean computed is unambiguous
-     * for the compiler and produces the correct structure.
-     */
     #[Computed]
     public function isAuthenticated(): bool
     {
@@ -315,23 +308,6 @@ class extends Component
 };
 ?>
 
-{{--
-    Root Alpine scope.
-
-    Owns THREE pieces of scroll-driven UI state, all driven by ONE scroll
-    listener so we don't stack multiple rAF loops:
-
-      • progress        0–100, drives the amber progress bar at the top
-      • showBackToTop   true after ~1 viewport of scroll
-      • showStickySearch true once the hero search bar has scrolled out
-
-    All three respect prefers-reduced-motion: the progress bar still updates
-    (it's a status indicator, not an animation) but the back-to-top button
-    and sticky search use instant visibility instead of slide transitions.
-
-    Nothing here is a named Alpine factory — it's an inline literal, so it
-    can live in the SFC and not violate Rule 119.
---}}
 <div
     x-data="{
         progress: 0,
@@ -345,8 +321,6 @@ class extends Component
             window.addEventListener('scroll', this._onScroll, { passive: true });
             window.addEventListener('resize', this._onResize, { passive: true });
 
-            // Observe the hero search bar — when it leaves the viewport,
-            // show the sticky compact search below the header.
             this.$nextTick(() => {
                 const heroSearch = this.$refs.heroSearch;
                 if (!heroSearch || !('IntersectionObserver' in window)) return;
@@ -365,9 +339,7 @@ class extends Component
             if (this._heroObserver) this._heroObserver.disconnect();
         },
 
-        _onResize() {
-            this._onScroll();
-        },
+        _onResize() { this._onScroll(); },
 
         _onScroll() {
             if (this._ticking) return;
@@ -396,8 +368,13 @@ class extends Component
     class="relative"
 >
 
-    {{-- ═══════════════ SCROLL PROGRESS BAR ═══════════════ --}}
-    <div class="fixed top-0 left-0 right-0 h-0.5 z-[60] bg-transparent pointer-events-none"
+    {{-- ═══════════════ SCROLL PROGRESS BAR ═══════════════
+         Sits at the very top of the viewport, but must offset by
+         env(safe-area-inset-top) so on notched iPhones it renders
+         just BELOW the notch instead of being clipped behind it.
+         On every other device the inset is 0, so `top-[env(...)]`
+         resolves to `top: 0` — identical to the previous `top-0`. --}}
+    <div class="fixed top-[env(safe-area-inset-top)] left-0 right-0 h-0.5 z-[60] bg-transparent pointer-events-none"
          aria-hidden="true">
         <div class="h-full bg-amber-500 origin-left"
              :style="`transform: scaleX(${progress / 100}); transition: transform 100ms linear;`"></div>
@@ -434,13 +411,14 @@ class extends Component
                    enterkeyhint="search"
                    placeholder="Search destinations…"
                    aria-label="Search destinations"
-                   class="flex-1 min-w-0 h-10 bg-transparent outline-none text-sm
+                   class="flex-1 min-w-0 h-10 bg-transparent outline-none text-base sm:text-sm
                           text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400">
             <button type="submit"
                     class="shrink-0 h-10 w-10 rounded-full flex items-center justify-center
                            bg-primary-600 hover:bg-primary-700 text-white
                            transition-all duration-200 active:scale-95
-                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                 <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/>
                 </svg>
@@ -469,6 +447,7 @@ class extends Component
                bg-gray-900 dark:bg-white text-white dark:text-gray-900
                shadow-xl shadow-gray-900/25
                transition-transform active:scale-90
+               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
         <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 15l7-7 7 7"/>
@@ -476,7 +455,9 @@ class extends Component
     </button>
 
     {{-- ═══════════════ MAIN CONTENT ═══════════════ --}}
-    <main class="relative z-10">
+    {{-- x-data="revealOnScroll" — a single IntersectionObserver
+         drives every [data-reveal] descendant on this page. --}}
+    <main class="relative z-10" x-data="revealOnScroll">
 
         {{-- ══════════ 1. HERO ══════════ --}}
         <section class="relative w-full min-h-[100svh] overflow-hidden bg-gray-900 flex flex-col">
@@ -490,28 +471,34 @@ class extends Component
                  width="1600"
                  height="900">
             <div class="absolute inset-0 bg-gradient-to-b from-black/60 via-black/35 to-black/85"></div>
+            <div class="absolute inset-x-0 top-0 h-1/3 bg-gradient-to-b from-amber-500/15 via-amber-500/5 to-transparent pointer-events-none" aria-hidden="true"></div>
 
+            {{-- Inner content padding. --}}
             <div class="relative z-10 flex flex-col items-center justify-center flex-1
-                        px-4 sm:px-6 lg:px-12 pt-16 pb-12 sm:pt-20 sm:pb-16 text-center">
+                        px-4 sm:px-6 lg:px-12 pt-6 pb-12 sm:pt-10 sm:pb-16 text-center">
 
-                <p class="text-white/75 font-semibold tracking-[0.35em] uppercase
+                <p data-reveal
+                   class="text-amber-200/90 font-semibold tracking-[0.35em] uppercase
                           text-[11px] sm:text-xs md:text-sm mb-4">
                     {{ $this->hero['title'] }}
                 </p>
 
-                <h1 class="text-white font-display font-bold leading-[1.05] tracking-tight
+                <h1 data-reveal style="--reveal-delay: 60ms"
+                    class="text-white font-display font-bold leading-[1.05] tracking-tight
                            text-4xl sm:text-5xl md:text-6xl lg:text-7xl
                            max-w-4xl">
                     {{ $this->hero['subtitle'] }}
                 </h1>
 
-                <p class="mt-4 sm:mt-5 max-w-2xl text-sm sm:text-base md:text-lg leading-relaxed
+                <p data-reveal style="--reveal-delay: 120ms"
+                   class="mt-4 sm:mt-5 max-w-2xl text-sm sm:text-base md:text-lg leading-relaxed
                           text-white/85 line-clamp-3 sm:line-clamp-none">
                     {{ $this->hero['description'] }}
                 </p>
 
                 <form wire:submit="search"
                       x-ref="heroSearch"
+                      data-reveal style="--reveal-delay: 180ms"
                       class="mt-7 sm:mt-9 w-full max-w-3xl">
 
                     {{-- MOBILE: stacked --}}
@@ -519,7 +506,7 @@ class extends Component
                                 rounded-2xl bg-white/95 dark:bg-gray-800/95
                                 backdrop-blur border border-white/20 dark:border-gray-700
                                 shadow-2xl p-2.5
-                                focus-within:ring-4 focus-within:ring-primary-500/20
+                                focus-within:ring-4 focus-within:ring-amber-500/25
                                 transition-shadow duration-200">
                         <div class="flex items-center gap-2 px-3 py-2.5
                                     rounded-xl bg-gray-50 dark:bg-gray-900/60">
@@ -541,7 +528,9 @@ class extends Component
                                 wire:target="search"
                                 class="w-full h-11 rounded-xl bg-primary-600 hover:bg-primary-700
                                        text-white text-sm font-bold
+                                       shadow-lg shadow-primary-600/20
                                        transition-all duration-200 active:scale-[0.98]
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
                                        disabled:opacity-60 disabled:cursor-not-allowed">
                             <span wire:loading.remove wire:target="search">Search</span>
@@ -561,7 +550,7 @@ class extends Component
                                 border-2 border-primary-600 dark:border-primary-500
                                 shadow-2xl rounded-full pl-6 pr-2 h-16 md:h-20
                                 transition-shadow duration-200
-                                focus-within:ring-4 focus-within:ring-primary-500/20">
+                                focus-within:ring-4 focus-within:ring-amber-500/25">
                         <svg xmlns="http://www.w3.org/2000/svg" class="shrink-0 text-gray-400 dark:text-gray-500 mr-3 w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
                         </svg>
@@ -580,6 +569,7 @@ class extends Component
                                 class="ml-4 px-8 py-3 md:px-10 md:py-3.5 rounded-full
                                        bg-primary-600 hover:bg-primary-700 text-white
                                        text-sm md:text-base font-bold shrink-0
+                                       shadow-lg shadow-primary-600/20
                                        transition-all duration-200 active:scale-95
                                        focus-visible:ring-2 focus-visible:ring-primary-500/50
                                        disabled:opacity-60 disabled:cursor-not-allowed">
@@ -595,18 +585,61 @@ class extends Component
                     </div>
                 </form>
 
-                {{-- ── QUICK ACTIONS ──
-                     Glass pills inside the hero, right below the search.
-                     No backdrop-blur (perf); neutral white/alpha only. --}}
-                <div class="mt-6 sm:mt-7 flex flex-wrap items-center justify-center gap-2 sm:gap-2.5 max-w-3xl">
-                    {{-- Explore Map --}}
+                {{-- ── POPULAR SHORTCUTS ── --}}
+                @php
+                    $popularTerms = $this->popularSearchTerms;
+                @endphp
+                @if(count($popularTerms) > 0)
+                    <div data-reveal style="--reveal-delay: 240ms"
+                         class="mt-5 sm:mt-6 w-full max-w-2xl mx-auto">
+                        <p class="mb-2.5 flex items-center justify-center gap-2
+                                  text-[10px] sm:text-[11px] font-bold uppercase tracking-[0.2em]
+                                  text-amber-300/90">
+                            <span class="h-px w-4 bg-amber-400/70" aria-hidden="true"></span>
+                            Popular
+                            <span class="h-px w-4 bg-amber-400/70" aria-hidden="true"></span>
+                        </p>
+                        <div class="grid grid-cols-2 sm:flex sm:flex-wrap sm:justify-center gap-2">
+                            @foreach($popularTerms as $term)
+                                <a href="{{ $term['url'] }}"
+                                   wire:navigate
+                                   wire:key="popular-term-{{ $term['id'] }}"
+                                   class="group inline-flex items-center justify-center gap-1.5
+                                          min-w-0
+                                          rounded-full
+                                          bg-white/[0.08] hover:bg-white/[0.16]
+                                          ring-1 ring-inset ring-white/15 hover:ring-white/35
+                                          text-white/90 hover:text-white
+                                          text-[11px] sm:text-xs font-medium
+                                          px-3 min-h-[44px] sm:min-h-[36px]
+                                          transition-all duration-200 active:scale-[0.97]
+                                          [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300/60 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900">
+                                    <span class="truncate max-w-full">{{ $term['name'] }}</span>
+                                    <svg xmlns="http://www.w3.org/2000/svg"
+                                         class="hidden sm:block w-3 h-3 shrink-0 -ml-0.5 opacity-0 -translate-x-1
+                                                group-hover:opacity-60 group-hover:translate-x-0
+                                                transition-all duration-200"
+                                         fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/>
+                                    </svg>
+                                </a>
+                            @endforeach
+                        </div>
+                    </div>
+                @endif
+
+                {{-- ── QUICK ACTIONS ── --}}
+                <div data-reveal style="--reveal-delay: 300ms"
+                     class="mt-6 sm:mt-7 flex flex-wrap items-center justify-center gap-2 sm:gap-2.5 max-w-3xl">
                     <a href="{{ route('explore.map') }}" wire:navigate
                        class="group inline-flex items-center gap-2 rounded-full
                               bg-white/10 hover:bg-white/20
                               border border-white/20 hover:border-white/40
                               text-white text-xs sm:text-sm font-semibold
-                              pl-3 pr-3.5 sm:pl-3.5 sm:pr-4 py-2 min-h-[38px] sm:min-h-[40px]
+                              pl-3 pr-3.5 sm:pl-3.5 sm:pr-4 min-h-[44px]
                               transition-all duration-200 active:scale-95
+                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 opacity-90" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
@@ -614,14 +647,14 @@ class extends Component
                         Explore Map
                     </a>
 
-                    {{-- Tourist Spots --}}
                     <a href="{{ route('tourist-spots.index') }}" wire:navigate
                        class="group inline-flex items-center gap-2 rounded-full
                               bg-white/10 hover:bg-white/20
                               border border-white/20 hover:border-white/40
                               text-white text-xs sm:text-sm font-semibold
-                              pl-3 pr-3.5 sm:pl-3.5 sm:pr-4 py-2 min-h-[38px] sm:min-h-[40px]
+                              pl-3 pr-3.5 sm:pl-3.5 sm:pr-4 min-h-[44px]
                               transition-all duration-200 active:scale-95
+                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 opacity-90" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5Zm10.5-11.25h.008v.008h-.008V8.25Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"/>
@@ -629,14 +662,14 @@ class extends Component
                         Tourist Spots
                     </a>
 
-                    {{-- Events --}}
                     <a href="{{ route('events') }}" wire:navigate
                        class="group inline-flex items-center gap-2 rounded-full
                               bg-white/10 hover:bg-white/20
                               border border-white/20 hover:border-white/40
                               text-white text-xs sm:text-sm font-semibold
-                              pl-3 pr-3.5 sm:pl-3.5 sm:pr-4 py-2 min-h-[38px] sm:min-h-[40px]
+                              pl-3 pr-3.5 sm:pl-3.5 sm:pr-4 min-h-[44px]
                               transition-all duration-200 active:scale-95
+                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 opacity-90" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5"/>
@@ -644,18 +677,15 @@ class extends Component
                         Events
                     </a>
 
-                    {{-- My Bookings (auth) / Sign In (guest).
-                         Uses @if($this->isAuthenticated) instead of
-                         @auth / @else / @endauth — see isAuthenticated()
-                         in the PHP class for why. --}}
                     @if($this->isAuthenticated)
                         <a href="{{ route('my-bookings') }}" wire:navigate
                            class="group inline-flex items-center gap-2 rounded-full
                                   bg-white/10 hover:bg-white/20
                                   border border-white/20 hover:border-white/40
                                   text-white text-xs sm:text-sm font-semibold
-                                  pl-3 pr-3.5 sm:pl-3.5 sm:pr-4 py-2 min-h-[38px] sm:min-h-[40px]
+                                  pl-3 pr-3.5 sm:pl-3.5 sm:pr-4 min-h-[44px]
                                   transition-all duration-200 active:scale-95
+                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900">
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 opacity-90" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z"/>
@@ -668,8 +698,9 @@ class extends Component
                                   bg-white/10 hover:bg-white/20
                                   border border-white/20 hover:border-white/40
                                   text-white text-xs sm:text-sm font-semibold
-                                  pl-3 pr-3.5 sm:pl-3.5 sm:pr-4 py-2 min-h-[38px] sm:min-h-[40px]
+                                  pl-3 pr-3.5 sm:pl-3.5 sm:pr-4 min-h-[44px]
                                   transition-all duration-200 active:scale-95
+                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900">
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 opacity-90" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"/>
@@ -679,15 +710,12 @@ class extends Component
                     @endif
                 </div>
 
-                {{-- ── TRUST STRIP ──
-                     @php in BLOCK form, not inline @php(...) — the inline
-                     form produces malformed PHP under Livewire v4's
-                     ExtendBlade compiler. --}}
                 @php
                     $stats = $this->heroStats;
                 @endphp
                 @if($stats['destinations'] > 0 || $stats['events'] > 0)
-                    <div class="mt-6 sm:mt-8 flex flex-wrap items-center justify-center
+                    <div data-reveal style="--reveal-delay: 360ms"
+                         class="mt-6 sm:mt-8 flex flex-wrap items-center justify-center
                                 gap-x-3 gap-y-2 sm:gap-x-5
                                 text-[11px] sm:text-xs text-white/65 font-medium">
                         @if($stats['destinations'] > 0)
@@ -706,15 +734,14 @@ class extends Component
                         @endif
                         <span class="inline-flex items-center gap-1.5">
                             <span class="h-1 w-1 rounded-full bg-white/50" aria-hidden="true"></span>
-                            <strong class="text-white/90 font-semibold">100%</strong>
-                            <span>Local</span>
+                            <strong class="text-white/90 font-semibold">Nov–May</strong>
+                            <span>Best season</span>
                         </span>
                     </div>
                 @endif
             </div>
 
-            {{-- Scroll indicator — hidden on landscape phones (no room) --}}
-            <div class="hidden landscape:hidden sm:flex absolute bottom-8 left-1/2 -translate-x-1/2 z-20
+            <div class="hidden sm:flex absolute bottom-8 left-1/2 -translate-x-1/2 z-20
                         animate-bounce motion-reduce:animate-none
                         w-6 h-10 border-2 border-white/40 rounded-full items-start justify-center p-1"
                  aria-hidden="true">
@@ -726,25 +753,26 @@ class extends Component
 
         {{-- ══════════ 2. POPULAR PICKS ══════════ --}}
         <section class="max-w-6xl px-4 sm:px-6 lg:px-8 mx-auto mt-16 md:mt-24 mb-12 md:mb-16">
-            <div class="flex items-end justify-between mb-6 md:mb-8 gap-4">
+            <div data-reveal class="flex items-end justify-between mb-6 md:mb-8 gap-4">
                 <div>
-                    <p class="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400">
+                    <p class="mb-1 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400">
                         <span class="h-px w-4 bg-amber-500"></span>
                         Featured
                     </p>
-                    <h2 class="text-2xl md:text-3xl font-display font-semibold text-gray-900 dark:text-white">
+                    <h2 class="text-2xl md:text-3xl font-display font-bold tracking-tight text-gray-900 dark:text-white">
                         Popular <em class="italic text-primary-600 dark:text-primary-400">Picks</em>
                     </h2>
                 </div>
                 <a href="{{ route('explore.map') }}" wire:navigate
-                   class="inline-flex items-center gap-1 text-sm font-semibold text-primary-600 hover:text-primary-700
+                   class="group inline-flex items-center gap-1 text-sm font-semibold text-primary-600 hover:text-primary-700
                           dark:text-primary-400 dark:hover:text-primary-300
                           transition-all duration-200
                           focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded
                           active:scale-95 shrink-0
+                          [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                           min-h-[44px] px-2 -my-2">
                     View All
-                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 transform group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                     </svg>
                 </a>
@@ -752,28 +780,58 @@ class extends Component
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 md:gap-6">
                 @forelse($this->popularDestinations as $tenant)
                     @php
+                        // Rule J: relative /storage path.
                         $cardImage = $tenant->logo
-                            ? asset('storage/' . $tenant->logo)
+                            ? '/storage/' . ltrim($tenant->logo, '/')
                             : 'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?q=80&w=800&auto=format&fit=crop';
+                        $typeLabel = $tenant->typeOfTenant?->type ?? 'Destination';
+                        $bookingCount = (int) ($tenant->bookings_count ?? 0);
                     @endphp
                     <a href="{{ route('business.offerings', $tenant->slug) }}" wire:navigate
-                       wire:key="popular-{{ $tenant->id }}"
+                       wire:key="popular-{{ $tenant['id'] }}"
+                       data-reveal
+                       style="--reveal-delay: {{ min($loop->index, 5) * 70 }}ms"
                        class="group relative block rounded-2xl overflow-hidden
                               aspect-[4/5]
                               bg-gray-200 dark:bg-gray-800 shadow-sm
-                              hover:shadow-2xl transition-all duration-300
-                              transform hover:-translate-y-1
+                              hover:shadow-2xl hover:shadow-amber-500/10
+                              ring-1 ring-transparent hover:ring-amber-400/30
+                              transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]
+                              transform hover:-translate-y-1 hover:scale-[1.02]
                               active:scale-[0.98]
+                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                               focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:outline-none">
                         <img src="{{ $cardImage }}" alt="{{ $tenant->name }}"
-                             class="w-full h-full object-cover group-hover:scale-110 transition duration-700"
+                             class="w-full h-full object-cover group-hover:scale-110 transition duration-700 ease-out"
                              loading="lazy"
                              decoding="async"
                              onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?q=80&w=800&auto=format&fit=crop'">
-                        <div class="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-transparent"></div>
-                        <div class="absolute bottom-0 p-4 md:p-5 text-left">
+                        <div class="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent"></div>
+
+                        <span class="absolute top-3 left-3 inline-flex items-center gap-1.5
+                                     rounded-full bg-white/95 dark:bg-gray-900/90
+                                     backdrop-blur-sm
+                                     px-2.5 py-1 min-h-[24px]
+                                     text-[10px] font-bold uppercase tracking-wider
+                                     text-gray-900 dark:text-white
+                                     shadow-sm">
+                            <span class="w-1 h-1 rounded-full bg-gray-400" aria-hidden="true"></span>
+                            {{ $typeLabel }}
+                        </span>
+
+                        <div class="absolute bottom-0 p-4 md:p-5 text-left w-full">
                             <h3 class="text-white font-bold text-lg md:text-xl leading-tight">{{ $tenant->name }}</h3>
-                            <p class="text-white/80 text-xs md:text-sm mt-0.5">{{ $tenant->typeOfTenant?->type ?? 'Destination' }}</p>
+                            @if($bookingCount > 0)
+                                <p class="text-white/75 text-xs md:text-sm mt-1 inline-flex items-center gap-1.5">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
+                                    </svg>
+                                    <span class="tabular-nums">{{ number_format($bookingCount) }}</span>
+                                    <span>{{ Str::plural('booking', $bookingCount) }}</span>
+                                </p>
+                            @else
+                                <p class="text-white/70 text-xs md:text-sm mt-1">{{ $typeLabel }}</p>
+                            @endif
                         </div>
                     </a>
                 @empty
@@ -787,11 +845,97 @@ class extends Component
                            class="inline-flex items-center gap-1 rounded-full bg-primary-600 hover:bg-primary-700
                                   text-white text-sm font-semibold px-4 py-2 min-h-[44px]
                                   transition active:scale-95
+                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                   focus-visible:ring-2 focus-visible:ring-primary-500/50">
                             Browse the map
                         </a>
                     </div>
                 @endforelse
+            </div>
+        </section>
+
+        {{-- ══════════ 2b. HOW IT WORKS ══════════ --}}
+        <section class="max-w-6xl px-4 sm:px-6 lg:px-8 mx-auto mt-12 md:mt-16 mb-16 md:mb-24">
+            <div data-reveal class="text-center mb-8 md:mb-10">
+                <p class="mb-2 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400">
+                    <span class="h-px w-4 bg-amber-500"></span>
+                    Planning a trip
+                    <span class="h-px w-4 bg-amber-500"></span>
+                </p>
+                <h2 class="text-2xl md:text-3xl font-display font-bold tracking-tight text-gray-900 dark:text-white">
+                    How it works
+                </h2>
+                <p class="max-w-xl mx-auto mt-3 text-sm md:text-base text-gray-600 dark:text-gray-300 leading-relaxed">
+                    Three steps from idea to arrival.
+                </p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-5">
+                <div data-reveal
+                     class="group relative rounded-2xl border border-gray-200 dark:border-gray-700
+                            bg-white dark:bg-gray-800/60
+                            p-5 md:p-6
+                            transition-all duration-300
+                            hover:shadow-lg hover:shadow-emerald-500/5 hover:-translate-y-0.5
+                            [content-visibility:auto] [contain-intrinsic-size:auto_180px]">
+                    <span class="absolute top-5 right-5 text-[10px] font-bold tracking-[0.2em] text-gray-300 dark:text-gray-600 tabular-nums" aria-hidden="true">01</span>
+                    <div class="w-11 h-11 rounded-2xl flex items-center justify-center mb-4
+                                bg-emerald-50 dark:bg-emerald-500/10
+                                text-emerald-600 dark:text-emerald-400
+                                transition-transform duration-300 group-hover:scale-105">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                        </svg>
+                    </div>
+                    <h3 class="text-base md:text-lg font-bold text-gray-900 dark:text-white mb-1.5">Discover</h3>
+                    <p class="text-sm text-gray-600 dark:text-gray-300 leading-relaxed">
+                        Browse destinations, spots, and events across Victorias City.
+                    </p>
+                </div>
+
+                <div data-reveal style="--reveal-delay: 120ms"
+                     class="group relative rounded-2xl border border-gray-200 dark:border-gray-700
+                            bg-white dark:bg-gray-800/60
+                            p-5 md:p-6
+                            transition-all duration-300
+                            hover:shadow-lg hover:shadow-amber-500/5 hover:-translate-y-0.5
+                            [content-visibility:auto] [contain-intrinsic-size:auto_180px]">
+                    <span class="absolute top-5 right-5 text-[10px] font-bold tracking-[0.2em] text-gray-300 dark:text-gray-600 tabular-nums" aria-hidden="true">02</span>
+                    <div class="w-11 h-11 rounded-2xl flex items-center justify-center mb-4
+                                bg-amber-50 dark:bg-amber-500/10
+                                text-amber-600 dark:text-amber-400
+                                transition-transform duration-300 group-hover:scale-105">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5"/>
+                        </svg>
+                    </div>
+                    <h3 class="text-base md:text-lg font-bold text-gray-900 dark:text-white mb-1.5">Plan</h3>
+                    <p class="text-sm text-gray-600 dark:text-gray-300 leading-relaxed">
+                        Check availability, pick a date, and reserve your visit in minutes.
+                    </p>
+                </div>
+
+                <div data-reveal style="--reveal-delay: 240ms"
+                     class="group relative rounded-2xl border border-gray-200 dark:border-gray-700
+                            bg-white dark:bg-gray-800/60
+                            p-5 md:p-6
+                            transition-all duration-300
+                            hover:shadow-lg hover:shadow-primary-500/5 hover:-translate-y-0.5
+                            [content-visibility:auto] [contain-intrinsic-size:auto_180px]">
+                    <span class="absolute top-5 right-5 text-[10px] font-bold tracking-[0.2em] text-gray-300 dark:text-gray-600 tabular-nums" aria-hidden="true">03</span>
+                    <div class="w-11 h-11 rounded-2xl flex items-center justify-center mb-4
+                                bg-primary-50 dark:bg-primary-500/10
+                                text-primary-600 dark:text-primary-400
+                                transition-transform duration-300 group-hover:scale-105">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
+                        </svg>
+                    </div>
+                    <h3 class="text-base md:text-lg font-bold text-gray-900 dark:text-white mb-1.5">Explore</h3>
+                    <p class="text-sm text-gray-600 dark:text-gray-300 leading-relaxed">
+                        Navigate with our interactive map and uncover hidden local gems.
+                    </p>
+                </div>
             </div>
         </section>
 
@@ -808,37 +952,53 @@ class extends Component
             <div class="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-amber-900/15 to-transparent"></div>
 
             <div class="relative z-10 grid items-center max-w-6xl grid-cols-1 md:grid-cols-2 gap-8 md:gap-12 mx-auto">
-                <div>
-                    <h2 class="mb-4 text-2xl md:text-3xl font-display font-bold leading-snug">
+                <div data-reveal>
+                    <p class="mb-3 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-amber-400">
+                        <span class="h-px w-4 bg-amber-400"></span>
+                        The City
+                    </p>
+                    <h2 class="mb-4 text-2xl md:text-3xl font-display font-bold leading-snug tracking-tight">
                         {{ $this->hero['discoverTitle'] }}
                     </h2>
                     <p class="max-w-sm text-sm md:text-base leading-relaxed text-slate-200">
                         {{ $this->hero['discoverDescription'] }}
                     </p>
+                    <a href="{{ route('tourist-spots.index') }}" wire:navigate
+                       class="group mt-6 inline-flex items-center gap-1.5 text-sm font-semibold
+                              text-amber-300 hover:text-amber-200
+                              transition-colors duration-200
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300/60 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900
+                              active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
+                        Explore tourist spots
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 transform group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                        </svg>
+                    </a>
                 </div>
 
-                <div>
-                    {{-- Mobile scroll gallery --}}
+                <div data-reveal style="--reveal-delay: 140ms">
+                    {{-- Mobile horizontal-scroll rail. --}}
                     <div class="md:hidden -mx-4 px-4 flex gap-3 overflow-x-auto snap-x snap-mandatory
-                                scrollbar-hide pb-2">
+                                pb-2
+                                [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                         @foreach($this->hero['sideImages'] as $index => $image)
                             <img src="{{ $image }}"
                                  alt=""
                                  aria-hidden="true"
-                                 class="shrink-0 snap-start w-40 h-40 object-cover rounded-2xl shadow-lg"
+                                 class="shrink-0 snap-start w-40 h-40 object-cover rounded-2xl shadow-lg ring-1 ring-white/10"
                                  loading="lazy"
                                  decoding="async"
                                  wire:key="hero-side-m-{{ $index }}">
                         @endforeach
                     </div>
 
-                    {{-- Tablet & desktop grid --}}
                     <div class="hidden md:grid grid-cols-2 gap-3 md:gap-4">
                         @foreach($this->hero['sideImages'] as $index => $image)
                             <img src="{{ $image }}"
                                  alt=""
                                  aria-hidden="true"
-                                 class="object-cover w-full aspect-square rounded-xl shadow-lg"
+                                 class="object-cover w-full aspect-square rounded-xl shadow-lg ring-1 ring-white/10
+                                        hover:scale-[1.02] transition-transform duration-500"
                                  loading="lazy"
                                  decoding="async"
                                  wire:key="hero-side-{{ $index }}">
@@ -856,54 +1016,75 @@ class extends Component
             );
         @endphp
         <section wire:ignore
+                 role="region"
+                 aria-label="Most visited places carousel"
                  class="w-full py-16 md:py-20 bg-white dark:bg-gray-900 overflow-hidden"
                  x-data="{
                     items: JSON.parse($el.dataset.carouselItems || '[]'),
                     active: 0,
                     interval: null,
                     observer: null,
+                    onVisibilityChange: null,
+                    _swipeHintTimer: null,
+                    _visible: true,
                     touchStartX: 0,
                     touchEndX: 0,
                     showSwipeHint: false,
                     prefersReduced: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
                     init() {
-                        if (this.prefersReduced) {
-                            return;
-                        }
+                        if (this.prefersReduced) return;
+                        if (this.items.length <= 1) return;
 
-                        if (window.matchMedia('(hover: none)').matches && this.items.length > 1) {
+                        if (window.matchMedia('(hover: none)').matches) {
                             this.showSwipeHint = true;
-                            setTimeout(() => { this.showSwipeHint = false; }, 3500);
+                            this._swipeHintTimer = setTimeout(() => {
+                                this.showSwipeHint = false;
+                                this._swipeHintTimer = null;
+                            }, 3500);
                         }
 
                         if (!('IntersectionObserver' in window)) {
-                            this.startAutoPlay();
-                            return;
+                            if (!document.hidden) this.startAutoPlay();
+                        } else {
+                            this.observer = new IntersectionObserver((entries) => {
+                                entries.forEach(entry => {
+                                    this._visible = entry.isIntersecting;
+                                    if (entry.isIntersecting && !document.hidden) {
+                                        this.startAutoPlay();
+                                    } else {
+                                        this.stopAutoPlay();
+                                    }
+                                });
+                            }, { threshold: 0.15 });
+                            this.observer.observe(this.$el);
                         }
 
-                        this.observer = new IntersectionObserver((entries) => {
-                            entries.forEach(entry => {
-                                if (entry.isIntersecting && !document.hidden) {
-                                    this.startAutoPlay();
-                                } else {
-                                    this.stopAutoPlay();
-                                }
-                            });
-                        }, { threshold: 0.15 });
-                        this.observer.observe(this.$el);
-
-                        document.addEventListener('visibilitychange', () => {
-                            if (document.hidden) this.stopAutoPlay();
-                        }, { passive: true });
+                        this.onVisibilityChange = () => {
+                            if (document.hidden) {
+                                this.stopAutoPlay();
+                            } else if (this._visible) {
+                                this.startAutoPlay();
+                            }
+                        };
+                        document.addEventListener('visibilitychange', this.onVisibilityChange, { passive: true });
                     },
                     destroy() {
                         this.stopAutoPlay();
                         if (this.observer) this.observer.disconnect();
+                        if (this.onVisibilityChange) {
+                            document.removeEventListener('visibilitychange', this.onVisibilityChange);
+                            this.onVisibilityChange = null;
+                        }
+                        if (this._swipeHintTimer) {
+                            clearTimeout(this._swipeHintTimer);
+                            this._swipeHintTimer = null;
+                        }
                     },
                     startAutoPlay() {
                         if (this.prefersReduced) return;
+                        if (document.hidden) return;
                         if (this.interval) clearInterval(this.interval);
-                        this.interval = setInterval(() => this.goTo(this.active + 1), 4000);
+                        this.interval = setInterval(() => this.goTo(this.active + 1), 5500);
                     },
                     stopAutoPlay() {
                         if (this.interval) clearInterval(this.interval);
@@ -972,14 +1153,21 @@ class extends Component
                  data-carousel-items="{{ $carouselJson }}"
                  @mouseenter="stopAutoPlay()"
                  @mouseleave="startAutoPlay()"
+                 @focusin="stopAutoPlay()"
+                 @focusout="startAutoPlay()"
                  @touchstart.passive="handleTouchStart($event)"
                  @touchend="handleTouchEnd($event)">
 
-            <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 text-center mb-10 md:mb-14">
-                <p class="text-primary-600 dark:text-primary-400 font-bold tracking-[0.2em] uppercase text-xs mb-2">Popular Spots</p>
-                <h2 class="text-2xl md:text-3xl font-display font-bold text-gray-900 dark:text-white">Most Visited Places</h2>
-                <div class="w-24 h-1 bg-primary-600 dark:bg-primary-500 mx-auto rounded-full mt-5"></div>
-                <p class="max-w-xl mx-auto mt-3 text-sm md:text-base font-medium text-gray-600 dark:text-gray-300">
+            <div data-reveal class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 text-center mb-10 md:mb-14">
+                <p class="mb-2 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400">
+                    <span class="h-px w-4 bg-amber-500"></span>
+                    Most Visited
+                    <span class="h-px w-4 bg-amber-500"></span>
+                </p>
+                <h2 class="text-2xl md:text-3xl font-display font-bold tracking-tight text-gray-900 dark:text-white">
+                    Places Worth the Journey
+                </h2>
+                <p class="max-w-xl mx-auto mt-3 text-sm md:text-base font-medium text-gray-600 dark:text-gray-300 leading-relaxed">
                     Discover the most popular destinations in Victorias City and experience the places visitors love the most.
                 </p>
             </div>
@@ -1010,7 +1198,8 @@ class extends Component
                     <div class="absolute rounded-3xl overflow-hidden shadow-xl"
                          :style="getPositionStyle(index)">
                         <a :href="item.url"
-                           class="block h-full w-full focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-3xl">
+                           class="block h-full w-full focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-3xl
+                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                             <img :src="item.image" :alt="item.name" class="object-cover w-full h-full" loading="lazy" decoding="async">
                             <div :class="index === active ? 'opacity-100' : 'opacity-0'"
                                  class="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent flex items-end justify-center pb-4 transition-opacity duration-500 pointer-events-none">
@@ -1028,23 +1217,26 @@ class extends Component
                                hover:text-primary-600 dark:hover:text-primary-400
                                transition-colors
                                focus-visible:ring-2 focus-visible:ring-primary-500/50
-                               active:scale-95"
+                               active:scale-95
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]"
                         aria-label="Previous slide">
                     <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                     </svg>
                 </button>
 
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-0">
                     <template x-for="(item, index) in items" :key="`dot-${index}`">
                         <button type="button" @click="goTo(index)"
                                 :aria-label="'Go to slide ' + (index + 1)"
                                 :aria-current="index === active ? 'true' : 'false'"
-                                :class="index === active ? 'w-3 h-3 bg-primary-600' : 'w-2 h-2 bg-gray-300 dark:bg-gray-600 hover:bg-gray-400'"
-                                class="rounded-full transition-all duration-300
-                                       focus-visible:ring-2 focus-visible:ring-primary-500/50
+                                class="flex items-center justify-center w-11 h-11 rounded-full
+                                       focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:outline-none
                                        active:scale-95
-                                       [touch-action:manipulation]"></button>
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
+                            <span :class="index === active ? 'w-3 h-3 bg-primary-600' : 'w-2 h-2 bg-gray-300 dark:bg-gray-600 hover:bg-gray-400'"
+                                  class="block rounded-full transition-all duration-300"></span>
+                        </button>
                     </template>
                 </div>
 
@@ -1054,7 +1246,8 @@ class extends Component
                                hover:text-primary-600 dark:hover:text-primary-400
                                transition-colors
                                focus-visible:ring-2 focus-visible:ring-primary-500/50
-                               active:scale-95"
+                               active:scale-95
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]"
                         aria-label="Next slide">
                     <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
@@ -1068,23 +1261,24 @@ class extends Component
                  x-data
                  x-init="if (typeof Alpine.store('mapZoom') === 'undefined') Alpine.store('mapZoom', 13)"
                  x-on:map:zoom-changed.window="Alpine.store('mapZoom', Number($event.detail?.zoom) || 13)">
-            <div class="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-8">
+            <div data-reveal class="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-8">
                 <div>
-                    <span class="text-sm font-bold uppercase tracking-widest text-primary-600 dark:text-primary-400 mb-2 block">
+                    <p class="mb-2 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400">
+                        <span class="h-px w-4 bg-amber-500"></span>
                         Interactive Directory
-                    </span>
-                    <h2 class="text-3xl md:text-4xl font-display font-bold text-gray-900 dark:text-white tracking-tight">
+                    </p>
+                    <h2 class="text-2xl md:text-3xl font-display font-bold tracking-tight text-gray-900 dark:text-white">
                         Explore Victorias City
                     </h2>
                 </div>
                 <a href="{{ route('explore.map') }}" wire:navigate
-                   class="group inline-flex items-center justify-center gap-2 px-5 py-2.5 min-h-[44px]
+                   class="group inline-flex items-center justify-center gap-2 px-5 min-h-[44px]
                           text-sm font-bold text-primary-700 dark:text-primary-300
                           bg-primary-50 dark:bg-primary-900/30
                           hover:bg-primary-100 dark:hover:bg-primary-900/50
                           rounded-full transition-all duration-300
                           focus-visible:ring-2 focus-visible:ring-primary-500/50
-                          active:scale-95">
+                          active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                     Open Full Map
                     <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 transform group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/>
@@ -1093,7 +1287,8 @@ class extends Component
             </div>
 
             <div class="grid items-start grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12">
-                <div class="relative bg-white dark:bg-gray-800 rounded-[2rem] p-3 md:p-4 shadow-xl
+                <div data-reveal
+                     class="relative bg-white dark:bg-gray-800 rounded-[2rem] p-3 md:p-4 shadow-xl
                             border border-gray-100 dark:border-gray-700
                             h-[350px] sm:h-[450px] md:h-[500px] group">
 
@@ -1213,12 +1408,12 @@ class extends Component
                                                 <div class="mt-4 flex gap-2">
                                                     <a href="{{ route('business.offerings', $loc['slug']) }}"
                                                        wire:navigate
-                                                       class="flex-1 rounded-xl bg-gray-900 dark:bg-white px-3 py-2 text-center text-xs font-bold text-white dark:text-gray-900 shadow-sm hover:bg-gray-800 dark:hover:bg-gray-100 transition focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95">
+                                                       class="flex-1 rounded-xl bg-gray-900 dark:bg-white px-3 py-2 text-center text-xs font-bold text-white dark:text-gray-900 shadow-sm hover:bg-gray-800 dark:hover:bg-gray-100 transition focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                                                         View
                                                     </a>
                                                     <a href="{{ route('explore.map', ['marker' => $loc['id']]) }}"
                                                        wire:navigate
-                                                       class="flex-1 rounded-xl border-2 border-gray-200 dark:border-gray-600 px-3 py-2 text-center text-xs font-bold text-gray-700 dark:text-gray-300 hover:border-gray-900 dark:hover:border-white transition focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95">
+                                                       class="flex-1 rounded-xl border-2 border-gray-200 dark:border-gray-600 px-3 py-2 text-center text-xs font-bold text-gray-700 dark:text-gray-300 hover:border-gray-900 dark:hover:border-white transition focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                                                         Route
                                                     </a>
                                                 </div>
@@ -1258,7 +1453,7 @@ class extends Component
                                                      style="border-color: {{ $subColor }};">
                                                     @if($subIconSvg)
                                                         <div class="h-4 w-4 text-gray-800 dark:text-white">
-                                                            {!! str_replace('<svg ', '<svg xmlns="http://www.w3.org/2000/svg" class="h-full w-full fill-none stroke-current stroke-2" ', $subIconSvg) !!}
+                                                            <x-safe-svg :svg="$subIconSvg" class="h-full w-full fill-none stroke-current stroke-2" />
                                                         </div>
                                                     @else
                                                         <span class="text-xs font-bold text-gray-800 dark:text-white">
@@ -1305,13 +1500,13 @@ class extends Component
                            wire:navigate
                            class="inline-flex items-center gap-2 rounded-2xl
                                   bg-white/90 dark:bg-gray-900/90 backdrop-blur-md
-                                  px-5 py-3 min-h-[44px]
+                                  px-5 min-h-[44px]
                                   text-sm font-bold text-gray-900 dark:text-white
                                   shadow-lg border border-white/20 dark:border-gray-700/50
                                   hover:scale-105 hover:bg-white dark:hover:bg-gray-900
                                   transition-all duration-300
                                   focus-visible:ring-2 focus-visible:ring-primary-500/50
-                                  active:scale-95">
+                                  active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                             <div class="p-1.5 bg-primary-100 dark:bg-primary-900/50 rounded-lg text-primary-600 dark:text-primary-400">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
@@ -1322,7 +1517,7 @@ class extends Component
                     </div>
                 </div>
 
-                <div class="flex flex-col gap-5">
+                <div data-reveal style="--reveal-delay: 140ms" class="flex flex-col gap-5">
                     <p class="text-sm md:text-base font-medium leading-relaxed text-gray-700 dark:text-gray-300">
                         Find your way around and discover the places, attractions, and hidden gems that make Victorias City special.
                     </p>
@@ -1346,9 +1541,10 @@ class extends Component
                                                 {{ $isActive ? 'ring-2 ring-primary-600/50 bg-blue-50 dark:bg-blue-900/20' : '' }}">
                                         <button type="button"
                                                 wire:click="flyToLocation({{ $locIndex }}, 0)"
-                                                class="flex items-center gap-3 flex-1 min-w-0 text-left rounded-lg px-2 py-1.5 min-h-[40px]
+                                                class="flex items-center gap-3 flex-1 min-w-0 text-left rounded-lg px-2 py-1.5 min-h-[44px]
                                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                                                       active:scale-[0.98] transition">
+                                                       active:scale-[0.98] transition
+                                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                                             @if($loc['logo'])
                                                 <img src="{{ $loc['logo'] }}" class="w-9 h-9 rounded-full object-cover border border-gray-200 dark:border-gray-600 shrink-0" alt="{{ $loc['name'] }}" loading="lazy" decoding="async" width="36" height="36">
                                             @else
@@ -1364,7 +1560,7 @@ class extends Component
                                                     @click.stop="expanded = !expanded"
                                                     class="shrink-0 p-2 rounded-md text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-200 dark:hover:bg-gray-700 transition
                                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                                                           active:scale-95"
+                                                           active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]"
                                                     :aria-expanded="expanded.toString()"
                                                     aria-label="Toggle nearby places">
                                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 transition-transform" :class="expanded ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -1387,15 +1583,16 @@ class extends Component
                                                         wire:click="flyToLocation({{ $locIndex }}, {{ $subIndex + 1 }})"
                                                         class="w-full text-left text-xs text-gray-700 dark:text-gray-300
                                                                hover:text-gray-900 dark:hover:text-white
-                                                               px-3 py-2 min-h-[36px] rounded-lg
+                                                               px-3 py-2 min-h-[44px] rounded-lg
                                                                bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700
                                                                transition
                                                                focus-visible:ring-2 focus-visible:ring-primary-500/50
                                                                active:scale-[0.98]
+                                                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                                {{ $homeHighlightedLocation === $locIndex ? 'bg-blue-50 dark:bg-blue-900/20' : '' }}">
                                                     @if($subIconSvg)
                                                         <span class="inline-block mr-1 align-middle text-gray-800 dark:text-white">
-                                                            {!! str_replace('<svg ', '<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 stroke-current fill-none" ', $subIconSvg) !!}
+                                                            <x-safe-svg :svg="$subIconSvg" class="h-4 w-4 stroke-current fill-none" />
                                                         </span>
                                                     @else
                                                         <span class="inline-block w-1.5 h-1.5 rounded-full mr-2" style="background: {{ $subColor }}"></span>
@@ -1409,7 +1606,8 @@ class extends Component
                             @endforeach
                         </div>
 
-                        <div class="lg:hidden flex overflow-x-auto gap-3 pb-2 -mx-1 px-1 snap-x">
+                        <div class="lg:hidden flex overflow-x-auto gap-3 pb-2 -mx-1 px-1 snap-x
+                                    [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                             @foreach($this->mapLocations as $locIndex => $loc)
                                 @php
                                     $subBranches = array_slice($loc['coordinates'], 1);
@@ -1422,6 +1620,7 @@ class extends Component
                                                rounded-xl p-3.5 text-left transition
                                                active:scale-95
                                                focus-visible:ring-2 focus-visible:ring-primary-500/50
+                                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                {{ $isActive ? 'ring-2 ring-primary-600/50 bg-blue-50 dark:bg-blue-900/20' : '' }}">
                                     <div class="flex items-center gap-2.5 mb-2">
                                         @if($loc['logo'])
@@ -1449,10 +1648,15 @@ class extends Component
         <section class="py-16 md:py-20 bg-gray-50 dark:bg-gray-800/50
                         [content-visibility:auto] [contain-intrinsic-size:auto_520px]">
             <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-                <div class="text-center mb-10 md:mb-12">
-                    <p class="text-amber-600 dark:text-amber-400 font-bold tracking-[0.2em] uppercase text-xs mb-2">Don't Miss Out</p>
-                    <h2 class="font-display text-3xl md:text-4xl font-bold text-gray-900 dark:text-white">Featured Events</h2>
-                    <div class="w-24 h-1 bg-amber-500 mx-auto rounded-full mt-5"></div>
+                <div data-reveal class="text-center mb-10 md:mb-12">
+                    <p class="mb-2 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400">
+                        <span class="h-px w-4 bg-amber-500"></span>
+                        Don't Miss Out
+                        <span class="h-px w-4 bg-amber-500"></span>
+                    </p>
+                    <h2 class="font-display text-2xl md:text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
+                        Featured Events
+                    </h2>
                 </div>
 
                 @if($this->featuredEvents->isNotEmpty())
@@ -1460,29 +1664,43 @@ class extends Component
                         @foreach($this->featuredEvents as $event)
                             <a href="{{ route('events', ['event' => $event->id]) }}" wire:navigate
                                wire:key="event-{{ $event->id }}"
+                               data-reveal
+                               style="--reveal-delay: {{ min($loop->index, 3) * 90 }}ms"
                                class="group bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700
                                       rounded-3xl overflow-hidden shadow-sm hover:shadow-xl
                                       transition-all duration-300 block
+                                      hover:-translate-y-1
                                       focus-visible:ring-2 focus-visible:ring-primary-500/50
-                                      active:scale-[0.98]">
-                                @if($event->image_path)
-                                    <div class="h-52 overflow-hidden">
-                                        <img src="{{ asset('storage/' . $event->image_path) }}" alt="{{ $event->name }}"
-                                             class="w-full h-full object-cover group-hover:scale-105 transition duration-700"
-                                             loading="lazy" decoding="async">
-                                    </div>
-                                @else
-                                    <div class="h-52 bg-gray-100 dark:bg-gray-700 flex items-center justify-center">
-                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
-                                        </svg>
-                                    </div>
-                                @endif
+                                      active:scale-[0.98]
+                                      [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
+                                <div class="relative">
+                                    @if($event->image_path)
+                                        <div class="h-52 overflow-hidden">
+                                            <img src="/storage/{{ ltrim($event->image_path, '/') }}" alt="{{ $event->name }}"
+                                                 class="w-full h-full object-cover group-hover:scale-105 transition duration-700 ease-out"
+                                                 loading="lazy" decoding="async">
+                                        </div>
+                                    @else
+                                        <div class="h-52 bg-gray-100 dark:bg-gray-700 flex items-center justify-center">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                                            </svg>
+                                        </div>
+                                    @endif
+                                    <span class="absolute top-3 left-3 inline-flex items-center gap-1.5
+                                                 rounded-full bg-white/95 dark:bg-gray-900/90 backdrop-blur-sm
+                                                 px-2.5 py-1 min-h-[24px]
+                                                 text-[10px] font-bold uppercase tracking-wider
+                                                 text-gray-900 dark:text-white
+                                                 shadow-sm">
+                                        <span class="w-1 h-1 rounded-full bg-amber-500" aria-hidden="true"></span>
+                                        {{ $event->type }}
+                                    </span>
+                                </div>
                                 <div class="p-5 md:p-6">
                                     <div class="flex items-center justify-between mb-2">
-                                        <span class="text-xs font-semibold uppercase tracking-wider text-primary-600 dark:text-primary-400">{{ $event->type }}</span>
                                         <time datetime="{{ $event->start_date?->toIso8601String() ?? '' }}"
-                                              class="text-xs text-gray-500 dark:text-gray-400 font-mono tabular-nums">
+                                              class="text-xs text-gray-500 dark:text-gray-400 font-medium tabular-nums">
                                             {{ $event->start_date?->format('M d, Y') ?? '—' }}
                                         </time>
                                     </div>
@@ -1508,22 +1726,23 @@ class extends Component
                            class="inline-flex items-center gap-1 rounded-full bg-primary-600 hover:bg-primary-700
                                   text-white text-sm font-semibold px-4 py-2 min-h-[44px]
                                   transition active:scale-95
+                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                   focus-visible:ring-2 focus-visible:ring-primary-500/50">
                             Browse all events
                         </a>
                     </div>
                 @endif
 
-                <div class="text-center mt-10">
+                <div data-reveal style="--reveal-delay: 200ms" class="text-center mt-10">
                     <a href="{{ route('events') }}" wire:navigate
-                       class="inline-flex items-center gap-2 py-3 px-6 min-h-[48px] rounded-full
+                       class="group inline-flex items-center gap-2 py-3 px-6 min-h-[48px] rounded-full
                               bg-primary-600 hover:bg-primary-700 text-white font-semibold
                               shadow-lg shadow-primary-600/20
                               transition
                               focus-visible:ring-2 focus-visible:ring-primary-500/50
-                              active:scale-95">
+                              active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                         View All Events
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 transform group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3"/>
                         </svg>
                     </a>
@@ -1531,18 +1750,7 @@ class extends Component
             </div>
         </section>
 
-        {{-- ══════════ 7. FINAL CTA ══════════
-             Background image and all copy are editable from the
-             superadmin homepage editor via five SiteSetting keys:
-               cta_eyebrow, cta_title, cta_description,
-               cta_button_text, cta_background_image
-             See finalCta() in the PHP class above.
-
-             Overlay note: the image sits at opacity-55 with a single
-             soft gradient on top — enough to keep the text legible
-             without burying the photo. If the image URL 404s, the
-             onerror handler hides the <img> so only the gradient
-             shows (no broken-image glyph). --}}
+        {{-- ══════════ 7. FINAL CTA ══════════ --}}
         @php
             $cta = $this->finalCta;
         @endphp
@@ -1555,15 +1763,11 @@ class extends Component
                  loading="lazy"
                  decoding="async"
                  onerror="this.onerror=null; this.style.display='none';">
-            {{-- Single soft gradient — replaced the previous triple-stack. --}}
             <div class="absolute inset-0 bg-gradient-to-t from-gray-900/95 via-gray-900/65 to-gray-900/40"></div>
-            {{-- Amber wash — kept from the original, primes the eye for the CTA. --}}
             <div class="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-amber-900/20 to-transparent pointer-events-none"></div>
 
-            <div class="relative z-10 flex flex-col items-center max-w-2xl px-4 sm:px-6 mx-auto text-center text-white">
+            <div data-reveal class="relative z-10 flex flex-col items-center max-w-2xl px-4 sm:px-6 mx-auto text-center text-white">
 
-                {{-- Eyebrow — matches the editorial pattern used in every
-                     other section. --}}
                 <p class="mb-4 inline-flex items-center gap-2
                           text-amber-400 text-xs sm:text-sm font-bold
                           tracking-[0.25em] uppercase">
@@ -1572,7 +1776,7 @@ class extends Component
                     <span class="h-px w-4 bg-amber-400" aria-hidden="true"></span>
                 </p>
 
-                <h2 class="mb-4 text-3xl sm:text-4xl md:text-5xl font-display font-bold leading-[1.1]">
+                <h2 class="mb-4 text-3xl sm:text-4xl md:text-5xl font-display font-bold leading-[1.1] tracking-tight">
                     {{ $cta['title'] }}
                 </h2>
 
@@ -1580,10 +1784,9 @@ class extends Component
                     {{ $cta['description'] }}
                 </p>
 
-                {{-- Two buttons side by side on tablet+ / stacked on mobile. --}}
                 <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-3 w-full sm:w-auto">
                     <a href="{{ route('explore.map') }}" wire:navigate
-                       class="inline-flex items-center justify-center gap-2
+                       class="group inline-flex items-center justify-center gap-2
                               px-8 sm:px-10 py-3.5 min-h-[52px]
                               text-sm md:text-base font-bold text-slate-900
                               bg-amber-400 hover:bg-amber-300
@@ -1591,9 +1794,9 @@ class extends Component
                               shadow-xl shadow-amber-500/25
                               transition-all duration-200
                               focus-visible:ring-2 focus-visible:ring-amber-300 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900
-                              active:scale-95">
+                              active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                         {{ $cta['buttonText'] }}
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 transform group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3"/>
                         </svg>
                     </a>
@@ -1606,12 +1809,11 @@ class extends Component
                               rounded-full
                               transition-all duration-200
                               focus-visible:ring-2 focus-visible:ring-white/60 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900
-                              active:scale-95">
+                              active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                         Browse Events
                     </a>
                 </div>
 
-                {{-- Location meta strip --}}
                 <p class="mt-8 inline-flex items-center gap-2 text-xs sm:text-sm text-white/60">
                     <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657 13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>

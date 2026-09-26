@@ -1,167 +1,278 @@
 {{-- resources/views/superadmin/partials/⚡notification-bell.blade.php --}}
 <?php
 
-use App\Services\SuperadminNotificationService;
+use App\Models\User;
+use App\Models\UserNotification;
+use App\Services\UserNotificationService;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Attributes\Computed;
 use Livewire\Component;
 
 new class extends Component
 {
-    /** Polling interval in seconds. Set to 0 to disable. */
-    public int $pollInterval = 60;
+    private const SCOPE = UserNotification::SCOPE_PLATFORM;
 
-    public function mount(): void
+    #[Computed]
+    public function unreadCount(): int
     {
-        // Defense in depth — route middleware guards the initial page
-        // load, but Livewire update requests hit /livewire-{hash}/update
-        // which BYPASSES route middleware. Without this, any authenticated
-        // user could invoke the poll endpoint and see pending KYB counts.
-        abort_unless(
-            Auth::check() && Auth::user()->hasRole('super-admin'),
-            403
-        );
-    }
+        /** @var User|null $user */
+        $user = Auth::user();
+        if (! $user) {
+            return 0;
+        }
 
-    public function hydrate(): void
-    {
-        // Same guard on every subsequent request. If the session ends
-        // or the role is revoked mid-session, the next poll 403s and
-        // the client stops retrying.
-        abort_unless(
-            Auth::check() && Auth::user()->hasRole('super-admin'),
-            403
-        );
+        return app(UserNotificationService::class)->unreadCount($user, self::SCOPE);
     }
 
     #[Computed]
-    public function count(): int
+    public function recent()
     {
-        return app(SuperadminNotificationService::class)->pendingCount();
+        /** @var User|null $user */
+        $user = Auth::user();
+        if (! $user) {
+            return collect();
+        }
+
+        return app(UserNotificationService::class)->recent($user, self::SCOPE, 6);
     }
 
+    /** @return array<string, string> */
     #[Computed]
-    public function items()
+    public function iconPaths(): array
     {
-        return app(SuperadminNotificationService::class)->recentApplications();
+        return [
+            'inbox'        => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"/>',
+            'clock'        => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>',
+            'alert'        => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>',
+            'check-circle' => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>',
+            'x-circle'     => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/>',
+        ];
     }
 
-    public function render()
+    /** @return array<string, string> */
+    #[Computed]
+    public function colorClasses(): array
     {
-        return $this->view();
+        return [
+            'amber'   => 'bg-amber-50 dark:bg-amber-500/15 text-amber-600 dark:text-amber-400',
+            'rose'    => 'bg-rose-50 dark:bg-rose-500/15 text-rose-600 dark:text-rose-400',
+            'blue'    => 'bg-blue-50 dark:bg-blue-500/15 text-blue-600 dark:text-blue-400',
+            'emerald' => 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
+            'slate'   => 'bg-gray-100 dark:bg-gray-700/40 text-gray-500 dark:text-gray-400',
+        ];
+    }
+
+    public function timeAgo(Carbon $time): string
+    {
+        return $time->diffForHumans();
+    }
+
+    public function open(int $notificationId): void
+    {
+        /** @var User|null $user */
+        $user = Auth::user();
+        if (! $user) {
+            return;
+        }
+
+        $notification = UserNotification::query()
+            ->forUser($user->id)
+            ->forScope(self::SCOPE)
+            ->whereKey($notificationId)
+            ->first();
+
+        if (! $notification) {
+            return;
+        }
+
+        $notification->markRead();
+
+        $url = $notification->resolvedUrl($user);
+
+        if ($url) {
+            $this->redirect($url, navigate: true);
+        }
+    }
+
+    public function markAllRead(): void
+    {
+        /** @var User|null $user */
+        $user = Auth::user();
+        if (! $user) {
+            return;
+        }
+
+        app(UserNotificationService::class)->markAllRead($user, self::SCOPE);
+        unset($this->unreadCount, $this->recent);
     }
 };
 ?>
 
-{{-- Visibility uses :class toggling — NOT x-show. Livewire v4's morph
-     engine can call Alpine's show() handler on a detached node and
-     crash with cloneNode on undefined (Rule 69 — same fix pattern as
-     explore-map's HUD pills). The dropdown also carries
-     wire:ignore.self so Livewire doesn't strip Alpine's applied
-     classes on the next poll — while still morphing the CHILDREN so
-     @foreach ($this->items) keeps updating. --}}
-<div
-    @if ($pollInterval > 0) wire:poll.{{ $pollInterval }}s @endif
-    x-data="{ open: false }"
-    x-on:click.outside="open = false"
-    x-on:keydown.escape.window="open = false"
-    class="relative">
+@push('styles')
+    @once
+        <style>
+            .sa-notif-dropdown {
+                animation: saNotifDropdownIn .15s cubic-bezier(.16,1,.3,1);
+            }
+            @keyframes saNotifDropdownIn {
+                from { opacity: 0; transform: scale(.96) translateY(-4px); }
+                to   { opacity: 1; transform: scale(1) translateY(0); }
+            }
+            @media (prefers-reduced-motion: reduce) {
+                .sa-notif-dropdown { animation: none; }
+            }
+        </style>
+    @endonce
+@endpush
 
-    {{-- Bell button.
-         Mobile: min-h-[44px] meets the Apple HIG tap target minimum.
-         Desktop: min-h-0 releases the constraint so the pill stays
-         compact (matches the header's other controls). --}}
+<div
+    x-data="{
+        open: false,
+        toggle() {
+            this.open = ! this.open;
+            if (this.open && $wire.unreadCount > 0) {
+                $wire.markAllRead();
+            }
+        }
+    }"
+    @click.outside="open = false"
+    @keydown.escape.window="open = false"
+    class="relative"
+    wire:poll.30s
+>
     <button type="button"
-            @click="open = !open"
+            @click="toggle()"
             :aria-expanded="open.toString()"
             aria-haspopup="true"
-            aria-label="Pending applications"
-            class="relative flex items-center gap-2 min-h-[44px] md:min-h-0 rounded-full border border-gray-300 bg-white px-3 md:px-2.5 py-2 md:py-1.5 text-gray-700 transition-all duration-200 hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 active:scale-95 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700">
-
-        <svg xmlns="http://www.w3.org/2000/svg" class="size-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+            aria-label="Notifications"
+            class="relative flex items-center justify-center size-11 sm:size-9 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800
+                   text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white
+                   transition-all duration-200 active:scale-95 touch-manipulation
+                   [-webkit-tap-highlight-color:transparent]
+                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+        <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
         </svg>
 
-        <span class="hidden text-xs font-medium md:inline">Notifications</span>
-
-        @if ($this->count > 0)
-            <span class="absolute -top-1 -right-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-bold text-white ring-2 ring-white dark:ring-gray-900">
-                {{ $this->count > 99 ? '99+' : $this->count }}
+        @if($this->unreadCount > 0)
+            <span class="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center min-w-4.5 h-4.5 px-1 rounded-full
+                         bg-rose-500 text-white text-[10px] font-bold ring-2 ring-white dark:ring-gray-900 tabular-nums"
+                  aria-hidden="true">
+                {{ $this->unreadCount > 99 ? '99+' : $this->unreadCount }}
             </span>
+            <span class="sr-only">{{ $this->unreadCount }} unread notifications</span>
         @endif
     </button>
 
-    {{-- Dropdown --}}
-    <div wire:ignore.self
-         x-cloak
-         :class="open
-             ? 'opacity-100 scale-100 translate-y-0 pointer-events-auto'
-             : 'opacity-0 scale-95 translate-y-1 pointer-events-none'"
-         class="absolute right-0 z-50 mt-2 w-72 sm:w-80 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-800 origin-top-right transition-all duration-150 ease-out"
-         role="dialog"
-         aria-label="Pending applications">
+    {{-- Mobile: fixed, viewport-anchored, 12px side margins, 8px below the sticky header.
+         sm+: absolute, anchored to the bell (the bell is no longer the only right element,
+         but on ≥640px the header is wide enough that right-0 relative to the bell fits). --}}
+    <div x-cloak
+         :class="open ? 'sa-notif-dropdown' : 'hidden'"
+         class="fixed inset-x-3 top-[calc(4rem+env(safe-area-inset-top)+0.5rem)] z-50
+                sm:absolute sm:inset-auto sm:right-0 sm:mt-2 sm:w-80 md:w-96
+                bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700
+                rounded-2xl shadow-2xl overflow-hidden"
+         role="menu"
+         aria-label="Notifications">
 
-        <div class="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-gray-700">
-            <p class="text-sm font-semibold text-gray-900 dark:text-white">Notifications</p>
-            @if ($this->count > 0)
-                <span class="text-xs text-gray-500 dark:text-gray-400">{{ $this->count }} pending</span>
-            @endif
+        <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between gap-3">
+            <div class="flex items-center gap-2 min-w-0">
+                <span class="w-5 h-px bg-primary-600 shrink-0"></span>
+                <p class="text-sm font-bold text-gray-900 dark:text-white">Notifications</p>
+                @if($this->unreadCount > 0)
+                    <span class="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-rose-500 text-white text-[10px] font-bold tabular-nums shrink-0">
+                        {{ $this->unreadCount }}
+                    </span>
+                @endif
+            </div>
+            <button type="button"
+                    @click="open = false"
+                    aria-label="Close notifications"
+                    class="inline-flex items-center justify-center size-11 sm:size-9 shrink-0 rounded-md text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700
+                           transition-all duration-200 touch-manipulation
+                           [-webkit-tap-highlight-color:transparent]
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+                </svg>
+            </button>
         </div>
 
-        @if ($this->items->isEmpty())
-            <div class="p-6 text-center">
-                <svg xmlns="http://www.w3.org/2000/svg" class="mx-auto mb-2 h-8 w-8 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
-                </svg>
-                <p class="text-sm text-gray-500 dark:text-gray-400">No pending applications</p>
-            </div>
-        @else
-            <div class="max-h-80 overflow-y-auto">
-                @foreach ($this->items as $application)
-                    <a href="{{ route('superadmin.business-applications.show', $application) }}"
-                       wire:navigate
-                       wire:key="notif-app-{{ $application->id }}"
-                       @click="open = false"
-                       class="flex items-start gap-3 border-b border-gray-100 px-4 py-3 transition-colors last:border-0 hover:bg-gray-50 active:scale-[0.99] dark:border-gray-700 dark:hover:bg-gray-700/50">
-                        @if ($application->user?->avatar)
-                            <img src="{{ asset('storage/' . $application->user->avatar) }}"
-                                 alt="{{ $application->user->name }}"
-                                 class="h-8 w-8 shrink-0 rounded-full object-cover"
-                                 loading="lazy" decoding="async" width="32" height="32">
-                        @else
-                            <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-100 text-xs font-bold text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
-                                {{ strtoupper(substr($application->business_name ?? $application->user?->name ?? '?', 0, 1)) }}
-                            </div>
-                        @endif
-                        <div class="min-w-0 flex-1">
-                            <p class="truncate text-sm font-medium text-gray-900 dark:text-white">
-                                {{ $application->business_name ?? 'Untitled Application' }}
-                            </p>
-                            <p class="mt-0.5 truncate text-xs text-gray-500 dark:text-gray-400">
-                                by {{ $application->user?->name ?? 'Unknown' }}
-                            </p>
-                            @if ($application->submitted_at)
-                                <p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">
-                                    {{ $application->submitted_at->diffForHumans() }}
-                                </p>
-                            @endif
-                        </div>
-                        <span class="shrink-0 text-xs font-medium text-primary-600 dark:text-primary-400">Review</span>
-                    </a>
-                @endforeach
-            </div>
-
-            <div class="border-t border-gray-200 p-2 dark:border-gray-700">
-                <a href="{{ route('superadmin.business-applications.index') }}"
-                   wire:navigate
+        <div class="max-h-[420px] overflow-y-auto">
+            @forelse($this->recent as $item)
+                @php
+                    $isUnread = $item->isUnread();
+                    $itemUrl  = $item->resolvedUrl(auth()->user());
+                @endphp
+                <a href="{{ $itemUrl ?? '#' }}"
+                   wire:key="notif-{{ $item->id }}"
+                   wire:click.prevent="open({{ $item->id }})"
                    @click="open = false"
-                   class="flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-primary-600 transition-colors hover:bg-primary-50 active:scale-[0.98] dark:hover:bg-primary-500/10">
-                    View all applications
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                   role="menuitem"
+                   class="flex items-start gap-3 px-4 py-3 min-h-[44px] border-b border-gray-100 dark:border-gray-700/60 last:border-b-0
+                          {{ $isUnread ? 'bg-primary-50/40 dark:bg-primary-500/5' : '' }}
+                          hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors touch-manipulation
+                          [-webkit-tap-highlight-color:transparent]
+                          focus-visible:outline-none focus-visible:bg-gray-50 dark:focus-visible:bg-gray-700/40">
+                    <span class="shrink-0 inline-flex items-center justify-center size-9 rounded-lg
+                                 {{ $this->colorClasses[$item->color] ?? $this->colorClasses['slate'] }}">
+                        <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                            {!! $this->iconPaths[$item->icon] ?? $this->iconPaths['inbox'] !!}
+                        </svg>
+                    </span>
+                    <div class="min-w-0 flex-1">
+                        <div class="flex items-center gap-1.5">
+                            @if($isUnread)
+                                <span class="w-1.5 h-1.5 rounded-full bg-primary-500 shrink-0" aria-hidden="true"></span>
+                            @endif
+                            <p class="text-sm {{ $isUnread ? 'font-bold' : 'font-medium' }} text-gray-900 dark:text-white truncate">
+                                {{ $item->title }}
+                            </p>
+                        </div>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 line-clamp-2 leading-relaxed">
+                            {{ $item->message }}
+                        </p>
+                        <p class="text-[10px] text-gray-400 dark:text-gray-500 mt-1 tabular-nums">
+                            {{ $this->timeAgo($item->created_at) }}
+                        </p>
+                    </div>
+                    <svg class="size-3.5 shrink-0 text-gray-400 mt-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                     </svg>
                 </a>
-            </div>
-        @endif
+            @empty
+                <div class="px-5 py-10 text-center">
+                    <div class="inline-flex items-center justify-center size-12 rounded-2xl bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 mb-3">
+                        <svg class="size-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                        </svg>
+                    </div>
+                    <p class="text-sm font-semibold text-gray-900 dark:text-white">You're all caught up</p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 max-w-[240px] mx-auto">
+                        New business applications, deletions, and tenant activity will show up here.
+                    </p>
+                </div>
+            @endforelse
+        </div>
+
+        <div class="border-t border-gray-200 dark:border-gray-700 px-3 py-2 bg-gray-50/60 dark:bg-gray-900/40">
+            <a href="{{ route('superadmin.notifications.index') }}"
+               wire:navigate
+               @click="open = false"
+               class="flex items-center justify-center gap-1.5 h-11 sm:h-10 rounded-lg text-xs font-semibold text-primary-600 dark:text-primary-400
+                      hover:bg-primary-50 dark:hover:bg-primary-500/10
+                      transition-all duration-200 active:scale-95 touch-manipulation
+                      [-webkit-tap-highlight-color:transparent]
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                <span>View all notifications</span>
+                <svg class="size-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                </svg>
+            </a>
+        </div>
     </div>
 </div>

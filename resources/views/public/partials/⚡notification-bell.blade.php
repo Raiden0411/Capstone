@@ -1,281 +1,288 @@
 {{-- resources/views/public/partials/⚡notification-bell.blade.php --}}
 <?php
 
-use App\Services\PublicNotificationService;
+use App\Models\User;
+use App\Models\UserNotification;
+use App\Services\UserNotificationService;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Attributes\Computed;
 use Livewire\Component;
 
 new class extends Component
 {
-    /**
-     * Polling interval in seconds. Set to 0 to disable.
-     *
-     * Guests never see a value here — mount() zeroes it so the poll
-     * directive never renders for unauthenticated visitors. That keeps
-     * the header's mobile bandwidth cost at zero for guests.
-     */
-    public int $pollInterval = 60;
-
-    public function mount(): void
-    {
-        // If the header renders this component for a guest (some
-        // layouts do, as a placeholder), disable polling. There is
-        // nothing to poll for, and mobile users should not pay for
-        // empty network roundtrips.
-        if (! Auth::check()) {
-            $this->pollInterval = 0;
-        }
-    }
-
-    public function hydrate(): void
-    {
-        // If the user logged out from another tab mid-session,
-        // subsequent poll requests hydrate the component with a
-        // still-live poll interval. Re-check and stop the poll.
-        if (! Auth::check()) {
-            $this->pollInterval = 0;
-        }
-    }
+    private const SCOPE = UserNotification::SCOPE_TOURIST;
 
     #[Computed]
-    public function payload(): array
+    public function unreadCount(): int
     {
-        /** @var \App\Models\User|null $user */
+        /** @var User|null $user */
         $user = Auth::user();
         if (! $user) {
-            return ['items' => [], 'count' => 0];
+            return 0;
         }
 
-        return app(PublicNotificationService::class)->forUser($user);
+        return app(UserNotificationService::class)->unreadCount($user, self::SCOPE);
     }
 
     #[Computed]
-    public function count(): int
+    public function recent()
     {
-        return (int) ($this->payload['count'] ?? 0);
+        /** @var User|null $user */
+        $user = Auth::user();
+        if (! $user) {
+            return collect();
+        }
+
+        return app(UserNotificationService::class)->recent($user, self::SCOPE, 6);
     }
 
+    /** @return array<string, string> */
     #[Computed]
-    public function items(): array
+    public function iconPaths(): array
     {
-        return $this->payload['items'] ?? [];
+        return [
+            'inbox'        => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"/>',
+            'clock'        => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>',
+            'alert'        => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>',
+            'check-circle' => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>',
+            'x-circle'     => '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/>',
+        ];
     }
 
-    public function iconPath(string $icon): string
+    /** @return array<string, string> */
+    #[Computed]
+    public function colorClasses(): array
     {
-        return match ($icon) {
-            'clock'        => 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z',
-            'check-circle' => 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z',
-            'alert'        => 'M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z',
-            'inbox'        => 'M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4',
-            default        => 'M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9',
-        };
+        return [
+            'amber'   => 'bg-amber-50 dark:bg-amber-500/15 text-amber-600 dark:text-amber-400',
+            'rose'    => 'bg-rose-50 dark:bg-rose-500/15 text-rose-600 dark:text-rose-400',
+            'blue'    => 'bg-blue-50 dark:bg-blue-500/15 text-blue-600 dark:text-blue-400',
+            'emerald' => 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
+            'slate'   => 'bg-gray-100 dark:bg-gray-700/40 text-gray-500 dark:text-gray-400',
+        ];
     }
 
-    /** @return array{bg: string, text: string, border: string} */
-    public function colorClasses(string $color): array
+    public function timeAgo(Carbon $time): string
     {
-        return match ($color) {
-            'emerald' => [
-                'bg'     => 'bg-emerald-100 dark:bg-emerald-500/20',
-                'text'   => 'text-emerald-700 dark:text-emerald-300',
-                'border' => 'border-emerald-200 dark:border-emerald-500/30',
-            ],
-            'rose' => [
-                'bg'     => 'bg-rose-100 dark:bg-rose-500/20',
-                'text'   => 'text-rose-700 dark:text-rose-300',
-                'border' => 'border-rose-200 dark:border-rose-500/30',
-            ],
-            'amber' => [
-                'bg'     => 'bg-amber-100 dark:bg-amber-500/20',
-                'text'   => 'text-amber-700 dark:text-amber-300',
-                'border' => 'border-amber-200 dark:border-amber-500/30',
-            ],
-            'blue' => [
-                'bg'     => 'bg-blue-100 dark:bg-blue-500/20',
-                'text'   => 'text-blue-700 dark:text-blue-300',
-                'border' => 'border-blue-200 dark:border-blue-500/30',
-            ],
-            default => [
-                'bg'     => 'bg-gray-100 dark:bg-gray-500/20',
-                'text'   => 'text-gray-700 dark:text-gray-300',
-                'border' => 'border-gray-200 dark:border-gray-500/30',
-            ],
-        };
+        return $time->diffForHumans();
     }
 
-    public function render()
+    public function open(int $notificationId): void
     {
-        return $this->view();
+        /** @var User|null $user */
+        $user = Auth::user();
+        if (! $user) {
+            return;
+        }
+
+        $notification = UserNotification::query()
+            ->forUser($user->id)
+            ->forScope(self::SCOPE)
+            ->whereKey($notificationId)
+            ->first();
+
+        if (! $notification) {
+            return;
+        }
+
+        $notification->markRead();
+
+        $url = $notification->resolvedUrl($user);
+
+        if ($url) {
+            $this->redirect($url, navigate: true);
+        }
+    }
+
+    public function markAllRead(): void
+    {
+        /** @var User|null $user */
+        $user = Auth::user();
+        if (! $user) {
+            return;
+        }
+
+        app(UserNotificationService::class)->markAllRead($user, self::SCOPE);
+        unset($this->unreadCount, $this->recent);
     }
 };
 ?>
 
-{{--
-    Livewire polls here; Alpine owns the open/close state AND the
-    mobile positioning. On viewports < 640px the dropdown is not
-    anchored to the bell (which sits ~150px from the viewport's right
-    edge because of the dark-mode toggle, user dropdown, and mobile
-    hamburger to its right). Anchoring `right-0` to the bell would push
-    a 320px-wide panel ~85px off the left edge of a 375px screen.
-    Instead we compute width and left-offset from the wrapper's
-    viewport rect and write them as an inline style. On sm+ the
-    override is cleared and Tailwind's w-80 sm:w-96 apply as normal.
-
-    Visibility uses :class toggling — NOT x-show. Livewire v4's morph
-    engine can call Alpine's show() handler on a detached node and
-    crash with cloneNode on undefined (Rule 69). The dropdown also
-    carries wire:ignore.self so Livewire doesn't strip Alpine's
-    applied classes on the next poll — while still morphing the
-    CHILDREN so @foreach ($this->items) keeps updating.
---}}
-
-@php
-    // Aria-label for the bell button. The count appears in the label
-    // when there are notifications, so screen-reader users get the
-    // same signal that sighted users get from the badge.
-    $bellAriaLabel = $this->count > 0
-        ? "Notifications ({$this->count})"
-        : 'Notifications';
-@endphp
+@push('styles')
+    @once
+        <style>
+            .public-notif-dropdown {
+                animation: publicNotifDropdownIn .15s cubic-bezier(.16,1,.3,1);
+            }
+            @keyframes publicNotifDropdownIn {
+                from { opacity: 0; transform: translateY(-4px); }
+                to   { opacity: 1; transform: translateY(0); }
+            }
+            @media (prefers-reduced-motion: reduce) {
+                .public-notif-dropdown { animation: none; }
+            }
+        </style>
+    @endonce
+@endpush
 
 <div
-    @if ($pollInterval > 0) wire:poll.{{ $pollInterval }}s @endif
     x-data="{
         open: false,
-        dropdownStyle: '',
-
-        reposition() {
-            if (! this.open) return;
-
-            const dropdown = this.$refs.dropdown;
-            const wrapper  = this.$refs.wrapper;
-            if (! dropdown || ! wrapper) return;
-
-            const isMobile = window.innerWidth < 640;
-
-            if (! isMobile) {
-                this.dropdownStyle = '';
-                return;
+        toggle() {
+            this.open = ! this.open;
+            if (this.open) {
+                $wire.markAllRead();
             }
-
-            const margin      = 12;
-            const maxWidth    = 384;
-            const wrapperRect = wrapper.getBoundingClientRect();
-            const width       = Math.min(window.innerWidth - margin * 2, maxWidth);
-            const left        = margin - wrapperRect.left;
-
-            this.dropdownStyle = `width: ${width}px; left: ${left}px; right: auto;`;
         }
     }"
-    x-ref="wrapper"
-    x-on:resize.window.throttle.100ms="reposition()"
-    x-on:click.outside="open = false"
-    x-on:keydown.escape.window="open = false"
-    class="relative">
-
-    {{-- Bell button.
-         size-9 md:size-10 matches the dark-mode toggle and the mobile
-         hamburger exactly, so all three controls in the header cluster
-         read as one visual group. The Apple HIG minimum of 44px is
-         intentionally traded off here for header consistency — if you
-         ever want to bump all three to 44px on mobile, change the
-         class to `size-11 md:size-10` HERE **and** in the header's
-         dark-mode toggle and hamburger together. Do them as a set or
-         not at all. --}}
+    @click.outside="open = false"
+    @keydown.escape.window="open = false"
+    class="relative"
+    wire:poll.30s
+>
     <button type="button"
-            @click="open = !open; if (open) $nextTick(() => reposition())"
+            @click="toggle()"
             :aria-expanded="open.toString()"
             aria-haspopup="true"
-            aria-label="{{ $bellAriaLabel }}"
-            class="relative flex items-center justify-center size-9 md:size-10 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition-all duration-200 active:scale-95">
-
-        <svg xmlns="http://www.w3.org/2000/svg" class="shrink-0 size-[18px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+            aria-label="Notifications"
+            class="relative flex items-center justify-center size-11 sm:size-9 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800
+                   text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white
+                   transition-all duration-200 active:scale-95 touch-manipulation
+                   [-webkit-tap-highlight-color:transparent]
+                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+        <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
         </svg>
 
-        @if ($this->count > 0)
-            <span class="absolute -top-1 -right-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-bold text-white ring-2 ring-white dark:ring-gray-900 tabular-nums"
+        @if($this->unreadCount > 0)
+            <span class="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center min-w-4.5 h-4.5 px-1 rounded-full
+                         bg-rose-500 text-white text-[10px] font-bold ring-2 ring-white dark:ring-gray-900 tabular-nums"
                   aria-hidden="true">
-                {{ $this->count > 9 ? '9+' : $this->count }}
+                {{ $this->unreadCount > 99 ? '99+' : $this->unreadCount }}
             </span>
+            <span class="sr-only">{{ $this->unreadCount }} unread notifications</span>
         @endif
     </button>
 
-    {{-- Dropdown --}}
-    <div x-ref="dropdown"
-         wire:ignore.self
-         x-cloak
-         :style="dropdownStyle"
-         :class="open
-             ? 'opacity-100 scale-100 translate-y-0 pointer-events-auto'
-             : 'opacity-0 scale-95 -translate-y-1 pointer-events-none'"
-         class="absolute right-0 z-50 mt-2 w-80 sm:w-96 max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-2xl origin-top sm:origin-top-right transition-all duration-150 ease-out"
-         role="dialog"
+    {{-- Dropdown.
+         ── RESPONSIVE POSITIONING ──
+         On mobile (< sm): the dropdown is positioned relative to the
+         VIEWPORT via `fixed`, spanning `left-3 right-3`. This prevents
+         the off-screen clipping that occurred when the dropdown was
+         anchored `right-0` to a bell that isn't at the far right of
+         the header — the previous 320px-wide absolute dropdown would
+         extend past the left edge of the viewport and clip the header
+         text. `top-[calc(...)]` puts it just below the public header,
+         accounting for the notch safe-area inset.
+
+         On desktop (sm+): reverts to bell-relative `absolute right-0`
+         positioning with a fixed 384px width. There's plenty of
+         horizontal room at ≥640px, so the anchor-based approach is
+         correct and gives the tighter, more "attached" feel. --}}
+    <div x-cloak
+         :class="open ? 'public-notif-dropdown' : 'hidden'"
+         class="z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-2xl overflow-hidden
+                fixed left-3 right-3 top-[calc(4rem+env(safe-area-inset-top)+0.5rem)]
+                sm:absolute sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:w-96"
+         role="menu"
          aria-label="Notifications">
 
-        <div class="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-4 py-3">
-            <p class="text-sm font-semibold text-gray-900 dark:text-white">Notifications</p>
-            @if ($this->count > 0)
-                <span class="text-xs text-gray-500 dark:text-gray-400">
-                    {{ $this->count }} {{ \Illuminate\Support\Str::plural('notification', $this->count) }}
-                </span>
-            @endif
+        <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between gap-3">
+            <div class="flex items-center gap-2 min-w-0">
+                <span class="w-5 h-px bg-primary-600 shrink-0"></span>
+                <p class="text-sm font-bold text-gray-900 dark:text-white truncate">Notifications</p>
+                @if($this->unreadCount > 0)
+                    <span class="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-rose-500 text-white text-[10px] font-bold tabular-nums shrink-0">
+                        {{ $this->unreadCount > 99 ? '99+' : $this->unreadCount }}
+                    </span>
+                @endif
+            </div>
+            <button type="button"
+                    @click="open = false"
+                    aria-label="Close notifications"
+                    class="inline-flex items-center justify-center size-11 sm:size-9 shrink-0 rounded-md text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700
+                           transition-all duration-200 touch-manipulation
+                           [-webkit-tap-highlight-color:transparent]
+                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+                </svg>
+            </button>
         </div>
 
-        @if (empty($this->items))
-            <div class="p-8 text-center">
-                <div class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-gray-100 dark:bg-gray-800 mb-3">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M9.143 17.082a24.248 24.248 0 003.844.148m-3.844-.148a23.856 23.856 0 01-5.455-1.31 8.964 8.964 0 002.3-5.542m3.155 6.852a3 3 0 005.667 1.97m1.965-2.277L21 21m-4.225-4.225a23.81 23.81 0 003.536-1.003A8.967 8.967 0 0118 9.75V9A6 6 0 006.53 6.53m10.245 10.245L6.53 6.53M3 3l3.53 3.53"/>
-                    </svg>
-                </div>
-                <p class="text-sm font-semibold text-gray-900 dark:text-white">You're all caught up</p>
-                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">No notifications right now.</p>
-            </div>
-        @else
-            <div class="max-h-[min(28rem,60vh)] overflow-y-auto">
-                @foreach ($this->items as $notification)
-                    @php
-                        $colors   = $this->colorClasses($notification['color'] ?? 'gray');
-                        $iconPath = $this->iconPath($notification['icon'] ?? 'bell');
-                        $ts       = $notification['time'] ?? null;
-                    @endphp
-                    <a href="{{ $notification['url'] }}"
-                       wire:navigate
-                       wire:key="notif-{{ $notification['id'] }}"
-                       @click="open = false"
-                       class="flex items-start gap-3 px-4 py-3 border-b border-gray-100 dark:border-gray-700/60 last:border-0 hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors">
-                        <div class="flex items-center justify-center shrink-0 w-9 h-9 rounded-xl border {{ $colors['bg'] }} {{ $colors['text'] }} {{ $colors['border'] }}">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="{{ $iconPath }}"/>
-                            </svg>
-                        </div>
-                        <div class="flex-1 min-w-0">
-                            <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">
-                                {{ $notification['title'] }}
-                            </p>
-                            <p class="mt-0.5 text-xs text-gray-600 dark:text-gray-400 leading-relaxed line-clamp-2">
-                                {{ $notification['message'] }}
-                            </p>
-                            @if ($ts)
-                                {{-- <time> is the semantic element for a machine-
-                                     generated timestamp. datetime carries the ISO
-                                     representation; the human-readable relative
-                                     string is the visible text. --}}
-                                <time datetime="{{ \Carbon\Carbon::createFromTimestamp($ts)->toIso8601String() }}"
-                                      class="mt-1 block text-[10px] font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500">
-                                    {{ \Carbon\Carbon::createFromTimestamp($ts)->diffForHumans() }}
-                                </time>
-                            @endif
-                        </div>
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0 text-gray-300 dark:text-gray-600 mt-2.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/>
+        <div class="max-h-[min(420px,60vh)] overflow-y-auto">
+            @forelse($this->recent as $item)
+                @php
+                    $isUnread = $item->isUnread();
+                    $itemUrl  = $item->resolvedUrl(auth()->user());
+                @endphp
+                <a href="{{ $itemUrl ?? '#' }}"
+                   wire:key="notif-{{ $item->id }}"
+                   wire:click.prevent="open({{ $item->id }})"
+                   @click="open = false"
+                   class="flex items-start gap-3 px-4 py-3 min-h-[44px] border-b border-gray-100 dark:border-gray-700/60 last:border-b-0
+                          {{ $isUnread ? 'bg-primary-50/40 dark:bg-primary-500/5' : '' }}
+                          hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors touch-manipulation
+                          [-webkit-tap-highlight-color:transparent]
+                          focus-visible:outline-none focus-visible:bg-gray-50 dark:focus-visible:bg-gray-700/40">
+                    <span class="shrink-0 inline-flex items-center justify-center size-9 rounded-lg
+                                 {{ $this->colorClasses[$item->color] ?? $this->colorClasses['slate'] }}">
+                        <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                            {!! $this->iconPaths[$item->icon] ?? $this->iconPaths['inbox'] !!}
                         </svg>
-                    </a>
-                @endforeach
-            </div>
-        @endif
+                    </span>
+                    <div class="min-w-0 flex-1">
+                        <div class="flex items-center gap-1.5">
+                            @if($isUnread)
+                                <span class="w-1.5 h-1.5 rounded-full bg-primary-500 shrink-0" aria-hidden="true"></span>
+                            @endif
+                            <p class="text-sm {{ $isUnread ? 'font-bold' : 'font-medium' }} text-gray-900 dark:text-white truncate">
+                                {{ $item->title }}
+                            </p>
+                        </div>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 line-clamp-2 leading-relaxed">
+                            {{ $item->message }}
+                        </p>
+                        <p class="text-[10px] text-gray-400 dark:text-gray-500 mt-1 tabular-nums">
+                            {{ $this->timeAgo($item->created_at) }}
+                        </p>
+                    </div>
+                    <svg class="size-3.5 shrink-0 text-gray-400 mt-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                    </svg>
+                </a>
+            @empty
+                <div class="px-5 py-10 text-center">
+                    <div class="inline-flex items-center justify-center size-12 rounded-2xl bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 mb-3">
+                        <svg class="size-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                        </svg>
+                    </div>
+                    <p class="text-sm font-semibold text-gray-900 dark:text-white">You're all caught up</p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 max-w-[240px] mx-auto">
+                        Booking confirmations and platform updates will show up here.
+                    </p>
+                </div>
+            @endforelse
+        </div>
+
+        <div class="border-t border-gray-200 dark:border-gray-700 px-3 py-2 bg-gray-50/60 dark:bg-gray-900/40">
+            <a href="{{ route('notifications.index') }}"
+               wire:navigate
+               @click="open = false"
+               class="flex items-center justify-center gap-1.5 h-11 sm:h-10 rounded-lg text-xs font-semibold text-primary-600 dark:text-primary-400
+                      hover:bg-primary-50 dark:hover:bg-primary-500/10
+                      transition-all duration-200 active:scale-95 touch-manipulation
+                      [-webkit-tap-highlight-color:transparent]
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                <span>View all notifications</span>
+                <svg class="size-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                </svg>
+            </a>
+        </div>
     </div>
 </div>

@@ -1,4 +1,4 @@
-{{-- resources/views/superadmin/pages/map-marker/manage-map-markers.blade.php --}}
+{{-- resources/views/superadmin/pages/map-marker/⚡manage-map-markers.blade.php --}}
 <?php
 
 use Livewire\Component;
@@ -120,11 +120,13 @@ class extends Component
                     return null;
                 }
 
+                // Rule J: relative /storage path, never asset() — APP_URL
+                // may not match the current host.
                 return [
                     'id'      => $tenant->id,
                     'name'    => $tenant->name,
                     'slug'    => $tenant->slug,
-                    'logo'    => $tenant->logo ? asset('storage/' . $tenant->logo) : null,
+                    'logo'    => $tenant->logo ? '/storage/' . ltrim($tenant->logo, '/') : null,
                     'markers' => $tenant->coordinates,
                 ];
             })
@@ -716,7 +718,7 @@ class extends Component
                                                             shadow-xl
                                                             overflow-hidden">
                                                     @if($this->activeTenant?->logo)
-                                                        <img src="{{ asset('storage/' . $this->activeTenant->logo) }}"
+                                                        <img src="/storage/{{ ltrim($this->activeTenant->logo, '/') }}"
                                                              alt="{{ $this->activeTenant->name }}"
                                                              class="w-full h-full object-cover"
                                                              loading="lazy">
@@ -753,7 +755,7 @@ class extends Component
                                                 </svg>
                                                 @if($iconSvg)
                                                     <div class="absolute mb-1 size-[16px] text-gray-800 dark:text-white">
-                                                        {!! str_replace('<svg ', '<svg class="size-full stroke-current fill-none" ', $iconSvg) !!}
+                                                        <x-safe-svg :svg="$iconSvg" class="size-full stroke-current fill-none" />
                                                     </div>
                                                 @else
                                                     <span class="absolute mb-1 text-[10px] font-bold text-gray-800 dark:text-white">
@@ -777,7 +779,7 @@ class extends Component
                                                                 bg-gray-100 dark:bg-gray-700
                                                                 border border-emerald-300 dark:border-emerald-500/40">
                                                         @if($this->activeTenant?->logo)
-                                                            <img src="{{ asset('storage/' . $this->activeTenant->logo) }}"
+                                                            <img src="/storage/{{ ltrim($this->activeTenant->logo, '/') }}"
                                                                  alt=""
                                                                  class="w-full h-full object-cover">
                                                         @else
@@ -888,7 +890,7 @@ class extends Component
                                                 bg-gray-100 dark:bg-gray-700
                                                 border border-gray-200 dark:border-gray-700">
                                         @if($t->logo)
-                                            <img src="{{ asset('storage/' . $t->logo) }}"
+                                            <img src="/storage/{{ ltrim($t->logo, '/') }}"
                                                  alt=""
                                                  class="w-full h-full object-cover"
                                                  loading="lazy">
@@ -978,7 +980,7 @@ class extends Component
                                         bg-gray-100 dark:bg-gray-700
                                         border-2 border-white dark:border-gray-800 shadow-sm">
                                 @if($active->logo)
-                                    <img src="{{ asset('storage/' . $active->logo) }}"
+                                    <img src="/storage/{{ ltrim($active->logo, '/') }}"
                                          alt=""
                                          class="w-full h-full object-cover">
                                 @else

@@ -8,9 +8,11 @@
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <meta name="color-scheme" content="light dark">
 
-    {{-- Android Chrome address-bar tint, matched to the page background. --}}
-    <meta name="theme-color" content="#F8F7F3" media="(prefers-color-scheme: light)">
-    <meta name="theme-color" content="#111827" media="(prefers-color-scheme: dark)">
+    {{-- Theme-color: single tag, updated by applyTheme() below.
+         See the public layout's note — this replaces the two-tag
+         prefers-color-scheme pair, which didn't account for the app's
+         own stored theme. --}}
+    <meta name="theme-color" content="#F8F7F3">
 
     <link rel="icon" href="{{ asset('favicon.ico') }}" sizes="any">
 
@@ -23,6 +25,9 @@
             var t = localStorage.getItem('hs_theme');
             var dark = t === 'dark' || (t !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
             document.documentElement.classList.toggle('dark', dark);
+
+            var meta = document.querySelector('meta[name="theme-color"]');
+            if (meta) meta.setAttribute('content', dark ? '#111827' : '#F8F7F3');
         }
         applyTheme();
         document.addEventListener('livewire:navigated', applyTheme);
@@ -30,18 +35,18 @@
 
     <title>{{ $title ?? 'Super Admin Platform' }}</title>
 
-    {{-- Fonts – Inter + Playfair Display (non-blocking) --}}
+    {{-- Fonts – Inter. Playfair Display retired; see resources/css/app.css. --}}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="preload" as="style"
-          href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600&display=swap">
+          href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap">
     <link rel="stylesheet"
           media="print"
           onload="this.media='all'"
-          href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600&display=swap">
+          href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap">
     <noscript>
         <link rel="stylesheet"
-              href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600&display=swap">
+              href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap">
     </noscript>
 
     @vite(['resources/css/app.css', 'resources/js/app.js'])
@@ -69,7 +74,12 @@
     }"
     @sidebar-minified.window="minified = $event.detail"
     x-init="
-        $watch('minified', v => localStorage.setItem('sidebar_minified', v ? '1' : '0'));
+        $watch('minified', v => {
+            // localStorage can throw in private browsing or when the
+            // storage quota is exhausted. Swallow it — the sidebar state
+            // is a preference, not a critical value.
+            try { localStorage.setItem('sidebar_minified', v ? '1' : '0'); } catch (e) {}
+        });
     "
     class="font-sans antialiased min-h-screen min-h-[100dvh] bg-[#F8F7F3] dark:bg-gray-900 text-gray-900 dark:text-gray-100"
 >

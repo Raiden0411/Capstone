@@ -61,3 +61,21 @@ Schedule::command('slow-queries:harvest')
     ->everyFiveMinutes()
     ->withoutOverlapping(10)
     ->runInBackground();
+
+// Permit expiry reminders — daily morning cadence.
+//
+// Four escalating buckets per tenant per expiry year: 60d, 30d, 7d,
+// expired. Deduplicated via `user_notifications.type` — each bucket's
+// type carries the expiry year (`permit_expiry_60d_2026`), so a
+// renewal naturally starts a fresh cycle when the year rolls over.
+//
+// 08:00 Asia/Manila — business hours, before most operators have
+// checked their inbox, so it lands at the top of the morning queue.
+//
+// `withoutOverlapping(30)`: a 30-minute lock window. The command
+// completes in milliseconds, but the lock guarantees a stuck run
+// doesn't get a second instance stacked behind it.
+Schedule::command('tenants:remind-permit-expiry')
+    ->dailyAt('08:00')
+    ->withoutOverlapping(30)
+    ->runInBackground();

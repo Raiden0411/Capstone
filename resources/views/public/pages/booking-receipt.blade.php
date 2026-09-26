@@ -62,6 +62,8 @@
         };
 
         // Short, uppercase status stamp used in the boxed indicator.
+        // This is a STATUS, not a monetary label — "Paid in Full" is
+        // correct English here because it describes the booking state.
         $statusStamp = match (true) {
             $isCancelled                            => 'Cancelled',
             $isSettled                              => 'Paid in Full',
@@ -569,7 +571,7 @@
                     </div>
                     <div class="flex justify-between pt-2 mt-2 border-t border-gray-200 dark:border-gray-700">
                         <span class="font-semibold {{ $isSettled ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-700 dark:text-rose-400' }}">
-                            {{ $isSettled ? 'Paid in Full' : 'Balance Due' }}
+                            {{ $isSettled ? 'Balance' : 'Balance Due' }}
                         </span>
                         <span class="font-bold tabular-nums {{ $isSettled ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400' }}">
                             ₱{{ number_format($balance, 2) }}
@@ -793,7 +795,7 @@
             @endif
 
             <div class="receipt-row receipt-row-total">
-                <span class="receipt-row-label">{{ $isSettled ? 'Paid in Full' : 'Balance Due' }}</span>
+                <span class="receipt-row-label">{{ $isSettled ? 'Balance' : 'Balance Due' }}</span>
                 <span class="receipt-row-value receipt-mono">₱{{ number_format($balance, 2) }}</span>
             </div>
 

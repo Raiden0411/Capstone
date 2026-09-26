@@ -4,7 +4,6 @@
 use Livewire\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
-use Livewire\Attributes\Computed;
 use Livewire\WithFileUploads;
 use App\Traits\HandlesImageUploads;
 use App\Models\SiteSetting;
@@ -235,6 +234,12 @@ class extends Component
     The Alpine factory `homepageEditor()` is defined in resources/js/app.js
     (Rule 119). It is NOT in an @script/@endscript block here — that
     wrapper is dead syntax in Livewire v4 (Rule 120).
+
+    ── TEXT INPUTS use the platform's `.input` / `.textarea` classes ──
+    These carry `text-base sm:text-sm`, which is what stops iOS Safari
+    from force-zooming the viewport when a < 16px input receives focus.
+    The previous inline utility chain used `text-sm` (14px) → every
+    iPhone user got the zoom jump on every field.
 --}}
 <div
     x-data="homepageEditor()"
@@ -344,7 +349,7 @@ class extends Component
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Hero Title</label>
                         <input type="text" wire:model="heroTitle"
-                               class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
+                               class="input"
                                x-on:input="bindField($event, 'heroTitle')">
                         @error('heroTitle') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
@@ -352,7 +357,7 @@ class extends Component
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Hero Subtitle</label>
                         <input type="text" wire:model="heroSubtitle"
-                               class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
+                               class="input"
                                x-on:input="bindField($event, 'heroSubtitle')">
                         @error('heroSubtitle') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
@@ -360,7 +365,7 @@ class extends Component
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Hero Description</label>
                         <textarea wire:model="heroDescription" rows="3"
-                                  class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
+                                  class="textarea"
                                   x-on:input="bindField($event, 'heroDescription')"></textarea>
                         @error('heroDescription') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
@@ -465,7 +470,7 @@ class extends Component
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Discover Title</label>
                         <input type="text" wire:model="discoverTitle"
-                               class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
+                               class="input"
                                x-on:input="bindField($event, 'discoverTitle')">
                         @error('discoverTitle') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
@@ -473,7 +478,7 @@ class extends Component
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Discover Description</label>
                         <textarea wire:model="discoverDescription" rows="4"
-                                  class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
+                                  class="textarea"
                                   x-on:input="bindField($event, 'discoverDescription')"></textarea>
                         @error('discoverDescription') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
@@ -566,7 +571,7 @@ class extends Component
                             <span class="text-xs text-gray-400 font-normal ml-1">— short label above the title</span>
                         </label>
                         <input type="text" wire:model="ctaEyebrow" maxlength="100"
-                               class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
+                               class="input"
                                x-on:input="bindField($event, 'ctaEyebrow')">
                         @error('ctaEyebrow') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
@@ -574,7 +579,7 @@ class extends Component
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Title</label>
                         <input type="text" wire:model="ctaTitle"
-                               class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
+                               class="input"
                                x-on:input="bindField($event, 'ctaTitle')">
                         @error('ctaTitle') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
@@ -582,7 +587,7 @@ class extends Component
                     <div>
                         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Description</label>
                         <textarea wire:model="ctaDescription" rows="3"
-                                  class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
+                                  class="textarea"
                                   x-on:input="bindField($event, 'ctaDescription')"></textarea>
                         @error('ctaDescription') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>
@@ -593,7 +598,7 @@ class extends Component
                             <span class="text-xs text-gray-400 font-normal ml-1">— e.g. "Explore Now"</span>
                         </label>
                         <input type="text" wire:model="ctaButtonText" maxlength="60"
-                               class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-xl py-3 px-4 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary-500/50 transition"
+                               class="input"
                                x-on:input="bindField($event, 'ctaButtonText')">
                         @error('ctaButtonText') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                     </div>

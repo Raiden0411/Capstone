@@ -73,6 +73,44 @@ class extends Component
         return $this->search !== '' || $this->status !== '';
     }
 
+    /**
+     * Per-accent class strings for the KPI strip.
+     *
+     * Complete class strings ONLY — no runtime concatenation. Tailwind v4's
+     * JIT scans source text; `'ring-' . $x . '-500/50'` produces the
+     * fragments `ring-` and `-500/50` but never the actual class, so the
+     * compiled CSS omits it entirely. Return complete strings from a
+     * lookup and Tailwind finds them.
+     *
+     * @return array<string, array{ring: string, active: string, hover: string}>
+     */
+    #[Computed]
+    public function accentClasses(): array
+    {
+        return [
+            'primary' => [
+                'ring'   => 'focus-visible:ring-primary-500/50',
+                'active' => 'border-primary-500/60 ring-2 ring-primary-500/20',
+                'hover'  => 'border-gray-200/80 dark:border-gray-700/80 hover:border-primary-500/30',
+            ],
+            'amber' => [
+                'ring'   => 'focus-visible:ring-amber-500/50',
+                'active' => 'border-amber-500/60 ring-2 ring-amber-500/20',
+                'hover'  => 'border-gray-200/80 dark:border-gray-700/80 hover:border-amber-500/30',
+            ],
+            'emerald' => [
+                'ring'   => 'focus-visible:ring-emerald-500/50',
+                'active' => 'border-emerald-500/60 ring-2 ring-emerald-500/20',
+                'hover'  => 'border-gray-200/80 dark:border-gray-700/80 hover:border-emerald-500/30',
+            ],
+            'rose' => [
+                'ring'   => 'focus-visible:ring-rose-500/50',
+                'active' => 'border-rose-500/60 ring-2 ring-rose-500/20',
+                'hover'  => 'border-gray-200/80 dark:border-gray-700/80 hover:border-rose-500/30',
+            ],
+        ];
+    }
+
     #[Computed]
     public function applications()
     {
@@ -115,9 +153,8 @@ class extends Component
     /**
      * Aggregate counts for the four stat cards.
      *
-     * Uses the query builder instead of Eloquent — the result is a plain
-     * stdClass with the four SUM aliases, not a Model with phantom
-     * attributes. This matters if anyone ever adds caching here:
+     * Uses the query builder — the result is a plain stdClass, not a Model
+     * with phantom attributes. Matters if caching is ever added here:
      * Rule 79 forbids caching Eloquent instances with the database driver.
      */
     #[Computed]
@@ -162,9 +199,11 @@ class extends Component
 };
 ?>
 
-@php $stats = $this->stats; @endphp
-
 <div class="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
+    @php
+        $stats   = $this->stats;
+        $accents = $this->accentClasses;
+    @endphp
 
     {{-- ═══ Page header ═══ --}}
     <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
@@ -196,7 +235,7 @@ class extends Component
             </div>
             <button type="button" @click="show = false"
                     class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
-                           transition-all duration-200 active:scale-95
+                           transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
                     aria-label="Dismiss">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -220,7 +259,7 @@ class extends Component
             </div>
             <button type="button" @click="show = false"
                     class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
-                           transition-all duration-200 active:scale-95
+                           transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
                     aria-label="Dismiss">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -230,10 +269,7 @@ class extends Component
         </div>
     @endif
 
-    {{-- ═══ Compact KPI strip — clickable to filter ═══
-         Clicking a card filters by that status. Clicking the currently-active
-         card clears the filter (filterBy() toggles). This preserves the
-         existing interaction from the pre-redesign version. --}}
+    {{-- ═══ Compact KPI strip — clickable to filter ═══ --}}
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
         @php
             $kpis = [
@@ -245,17 +281,18 @@ class extends Component
         @endphp
 
         @foreach($kpis as $kpi)
-            @php $isActive = $status === $kpi['value']; @endphp
+            @php
+                $isActive = $status === $kpi['value'];
+                $a = $accents[$kpi['accent']];
+            @endphp
             <button type="button"
                     wire:click="filterBy('{{ $kpi['value'] }}')"
                     wire:key="kpi-{{ $kpi['value'] !== '' ? $kpi['value'] : 'all' }}"
                     aria-pressed="{{ $isActive ? 'true' : 'false' }}"
                     class="text-left bg-white dark:bg-gray-800/90 rounded-xl border shadow-sm p-3.5
-                           transition-all duration-200 active:scale-[0.98]
-                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-{{ $kpi['accent'] }}-500/50
-                           {{ $isActive
-                              ? 'border-' . $kpi['accent'] . '-500/60 ring-2 ring-' . $kpi['accent'] . '-500/20'
-                              : 'border-gray-200/80 dark:border-gray-700/80 hover:border-' . $kpi['accent'] . '-500/30' }}">
+                           transition-all duration-200 active:scale-[0.98] [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                           focus-visible:outline-none {{ $a['ring'] }}
+                           {{ $isActive ? $a['active'] : $a['hover'] }}">
                 <div class="flex items-center gap-1.5">
                     <span class="w-1.5 h-1.5 rounded-full {{ $kpi['dot'] }}"></span>
                     <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ $kpi['label'] }}</span>
@@ -278,13 +315,13 @@ class extends Component
                        enterkeyhint="search"
                        aria-label="Search applications"
                        placeholder="Search business, owner, email, TIN, or reg #…"
-                       class="input w-full"
+                       class="input w-full text-base sm:text-sm"
                        style="padding-left: 2.5rem;">
             </div>
 
             <select wire:model.live="status"
                     aria-label="Filter by status"
-                    class="input w-full sm:w-auto sm:min-w-[180px]">
+                    class="input w-full sm:w-auto sm:min-w-[180px] text-base sm:text-sm">
                 <option value="">All statuses</option>
                 <option value="awaiting_review">Awaiting Review</option>
                 @foreach ($this->statusLabels as $value => $label)
@@ -294,10 +331,10 @@ class extends Component
 
             @if ($this->hasActiveFilter)
                 <button type="button" wire:click="clearFilters"
-                        class="inline-flex items-center gap-1 h-9 px-3.5 rounded-full text-xs font-semibold uppercase tracking-wide
+                        class="inline-flex items-center gap-1 h-11 sm:h-9 px-3.5 rounded-full text-xs font-semibold uppercase tracking-wide
                                border border-rose-300 dark:border-rose-500/40
                                bg-white dark:bg-gray-800 text-rose-700 dark:text-rose-300
-                               transition-all duration-200 active:scale-95
+                               transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                hover:bg-rose-50 dark:hover:bg-rose-500/10
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -329,7 +366,7 @@ class extends Component
                 @if ($this->hasActiveFilter)
                     <button type="button" wire:click="clearFilters"
                             class="mt-5 inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
-                                   transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                   transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent] hover:bg-gray-50 dark:hover:bg-gray-700
                                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                         Clear Filters
                     </button>
@@ -396,7 +433,6 @@ class extends Component
                     {{-- Content --}}
                     <div class="p-4 flex-1 flex flex-col gap-3">
 
-                        {{-- Business name --}}
                         <div>
                             <h3 class="font-semibold text-gray-900 dark:text-white text-base leading-snug line-clamp-2 min-h-[2.5rem]">
                                 {{ $app->business_name ?? '—' }}
@@ -470,11 +506,11 @@ class extends Component
                         <div class="mt-auto pt-3 border-t border-gray-100 dark:border-gray-700/60">
                             <a href="{{ route('superadmin.business-applications.show', $app) }}" wire:navigate
                                aria-label="Review application for {{ $app->business_name }}"
-                               class="w-full inline-flex items-center justify-center gap-2 h-9 px-3.5 rounded-lg
+                               class="w-full inline-flex items-center justify-center gap-2 h-11 px-3.5 rounded-lg
                                       border border-primary-300 dark:border-primary-500/40
                                       bg-white dark:bg-gray-800 text-primary-700 dark:text-primary-300
                                       text-xs font-semibold
-                                      transition-all duration-200 active:scale-95
+                                      transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                       hover:bg-primary-50 dark:hover:bg-primary-500/10
                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                                 <span>Review application</span>

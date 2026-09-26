@@ -14,7 +14,6 @@ window.axios.defaults.headers.common['X-Requested-With'] = 'XMLHttpRequest';
 | Loading it from the Vite bundle instead of a CDN <script> tag means:
 |
 |   • No dependency on the tenant layout having a @stack('scripts') slot.
-|     Any layout, any theme, works.
 |   • No CSP issues (no external script source).
 |   • No network round-trip on cold load; works offline and on local dev.
 |
@@ -285,12 +284,10 @@ window.mapApp = function () {
         _handlers:      [],
         _token:         null,
 
-        // ── Imperative route layer state ────────────────────
         _routeHadData:  false,
         _routeListener: null,
         _boundsListener: null,
 
-        // ── Imperative user marker state ────────────────────
         _userMarker:     null,
         _userMarkerEl:   null,
         _userWatchers:   [],
@@ -311,9 +308,6 @@ window.mapApp = function () {
                 && !this._tornDown;
         },
 
-        /**
-         * Rounds a coordinate array for compact GeoJSON.
-         */
         _compactCoords(coords) {
             if (!Array.isArray(coords)) return [];
             return coords.map(c => {
@@ -325,9 +319,6 @@ window.mapApp = function () {
             }).filter(Boolean);
         },
 
-        /**
-         * Draw (or update) the active route on the map imperatively.
-         */
         _updateRouteLayer(coords) {
             const map = this._map;
             if (!map) return;
@@ -384,24 +375,6 @@ window.mapApp = function () {
             }
         },
 
-        /**
-         * Imperative user-location marker.
-         *
-         * WHY NOT <x-map-marker>:
-         *   The mapcn <x-map-marker> component is created once during
-         *   Alpine's initial walk. Livewire's morph engine swaps the
-         *   underlying DOM node out on every @if toggle or wire:key
-         *   change — but MapLibre's marker instance (which lives inside
-         *   MapLibre's own overlay container, outside Livewire's tree)
-         *   is not reconciled. Result: the marker exists in the map's
-         *   layer container but points at a detached (invisible) DOM
-         *   node. The user only sees it again after a full map rebuild
-         *   (theme toggle, satellite toggle, Retry).
-         *
-         * This method draws the marker imperatively instead. It's the
-         * same pattern as `_updateRouteLayer` above — nothing Livewire
-         * touches, so nothing Livewire can break.
-         */
         _syncUserMarker() {
             if (!this.isActive) return;
             if (!this._map) return;
@@ -417,7 +390,6 @@ window.mapApp = function () {
                 && Math.abs(lat) <= 90
                 && Math.abs(lng) <= 180;
 
-            // During navigation, the nav puck replaces this marker.
             if (!hasCoords || navigating) {
                 if (this._userMarker) {
                     try { this._userMarker.remove(); } catch (e) { /* noop */ }
@@ -427,13 +399,26 @@ window.mapApp = function () {
                 return;
             }
 
-            // Existing marker → just move it.
             if (this._userMarker) {
-                try { this._userMarker.setLngLat([lng, lat]); } catch (e) { /* noop */ }
-                return;
+                // SELF-HEAL: if the marker's DOM element is detached (its map
+                // instance was replaced — e.g. on a satellite/theme remount)
+                // then setLngLat() updates a dead element and nothing appears.
+                // Detect that and rebuild from scratch.
+                let el = null;
+                try {
+                    el = (typeof this._userMarker.getElement === 'function')
+                        ? this._userMarker.getElement()
+                        : null;
+                } catch (e) { /* noop */ }
+
+                if (!el || el.isConnected === false) {
+                    this._clearUserMarker();
+                } else {
+                    try { this._userMarker.setLngLat([lng, lat]); } catch (e) { /* noop */ }
+                    return;
+                }
             }
 
-            // Create a fresh marker element.
             const el = document.createElement('div');
             el.className = 'tourist-user-marker';
             el.setAttribute('role', 'img');
@@ -443,8 +428,6 @@ window.mapApp = function () {
                 '<div class="tourist-user-marker-halo"></div>' +
                 '<div class="tourist-user-marker-dot"></div>';
 
-            // Click → share-location link (preserves the popup's old
-            // "Share Location" affordance without needing a Popup).
             el.addEventListener('click', () => {
                 try { this.$wire.shareLocation(); } catch (e) { /* noop */ }
             });
@@ -468,9 +451,21 @@ window.mapApp = function () {
         },
 
         /**
-         * Install the watchers that keep the marker in sync with the
-         * server-side userLat / userLng / navigationActive state.
+         * Drop the current user-marker and forget it.
+         *
+         * Called whenever a NEW MapLibre Map instance is adopted — the
+         * old marker's DOM lives in the destroyed map container, so the
+         * reference becomes a stale pointer that setLngLat() cannot
+         * revive. Clearing it here forces _syncUserMarker() to build a
+         * fresh marker on the new map.
          */
+        _clearUserMarker() {
+            if (!this._userMarker) return;
+            try { this._userMarker.remove(); } catch (e) { /* noop */ }
+            this._userMarker = null;
+            this._userMarkerEl = null;
+        },
+
         _installUserMarkerWatchers() {
             if (this._userWatchers.length > 0) return;
 
@@ -489,10 +484,6 @@ window.mapApp = function () {
             }
         },
 
-        /**
-         * Compute a bounding box from a route polyline and fly the
-         * camera to it with a single, smooth easeOutCubic animation.
-         */
         _fitRouteBounds(coords) {
             const map = this._map;
             if (!map || !Array.isArray(coords) || coords.length < 2) return;
@@ -576,6 +567,11 @@ window.mapApp = function () {
                 console.log('[explore-map] Received maplibre:captured — attaching nav');
                 this._map = map;
                 this._nav?.attach(map);
+
+                // Map instance replaced → old user marker's DOM is gone.
+                // Drop the stale pointer so _syncUserMarker() rebuilds it.
+                this._clearUserMarker();
+
                 if (window.__mapCanvasPoll) window.__mapCanvasPoll.stop();
                 this.mapLoading = false;
                 this.mapStuck   = false;
@@ -586,7 +582,6 @@ window.mapApp = function () {
                     map.setMinZoom(5);
                 } catch (err) { /* noop */ }
 
-                // Route + user marker — both imperative.
                 const existing = Array.isArray(this.$wire.routePolyline) ? this.$wire.routePolyline : [];
                 this._updateRouteLayer(existing);
                 this._routeHadData = existing.length >= 2;
@@ -598,7 +593,6 @@ window.mapApp = function () {
                     }, 120);
                 }
 
-                // Install watchers + draw the user marker NOW.
                 this._installUserMarkerWatchers();
                 this._syncUserMarker();
 
@@ -622,11 +616,6 @@ window.mapApp = function () {
 
             this._tryAttachMap();
 
-            /*
-            |──────────────────────────────────────────────────────
-            | Imperative route updates — mobile camera fix.
-            |──────────────────────────────────────────────────────
-            */
             try {
                 this._routeListener = this.$wire.$watch('routePolyline', (coords) => {
                     if (!this.isActive) return;
@@ -646,11 +635,6 @@ window.mapApp = function () {
                 console.warn('[explore-map] routePolyline watcher failed', e);
             }
 
-            /*
-            |──────────────────────────────────────────────────────
-            | Fallback: server-driven fit-bounds (URL deep-link case)
-            |──────────────────────────────────────────────────────
-            */
             try {
                 this._boundsListener = this.$wire.$watch('pendingRouteBounds', (bounds) => {
                     if (!this.isActive) return;
@@ -813,6 +797,11 @@ window.mapApp = function () {
             if (map) {
                 this._map = map;
                 this._nav?.attach(map);
+
+                // Adopting a fresh map instance — clear any stale marker
+                // pointer so _syncUserMarker() rebuilds it on this map.
+                this._clearUserMarker();
+
                 console.log('[explore-map] Map attached via discovery (attempt ' + this._attachTries + ')');
                 if (window.__mapCanvasPoll) window.__mapCanvasPoll.stop();
                 this.mapLoading = false;
@@ -953,6 +942,9 @@ window.mapApp = function () {
             if (!map) return;
 
             this._map = map;
+
+            // Fresh map instance adopted — drop stale user-marker pointer.
+            this._clearUserMarker();
 
             try {
                 map.setRenderWorldCopies(false);
@@ -1393,24 +1385,17 @@ window.mapApp = function () {
 | Server supplies (via dateSelectorDataJson):
 |   checkIn, checkOut, bookedDates, today, maxDate, firstAvailable
 |
-| `firstAvailable` is the first day within the booking window that
-| is not already booked. It's what mount() defaults to so the user
-| never lands on a booked day.
-|
 | `selectDate` state machine:
 |   1. If no selection, OR the current start is itself invalid (booked,
 |      past, beyond max), OR a completed range is present → the click
 |      becomes a fresh single-day selection.
 |   2. If a valid single-day selection exists and the click is AFTER it
 |      → extend IF free. If the range spans a booked day, restart the
-|      selection at the clicked day (no dead-ends — this was the bug
-|      that trapped users).
+|      selection at the clicked day (no dead-ends).
 |   3. If the click is BEFORE the current start → fresh selection.
 |
 | `durationLabel` and `hasRange` are PLAIN properties updated by
 | `_recomputeDerived()`, which fires from $watch on the source values.
-| (Alpine doesn't reliably track getters inside a Livewire-morphed
-| scope — this is a workaround for that.)
 |==========================================================================
 */
 window.dateSelector = function () {
@@ -1425,7 +1410,6 @@ window.dateSelector = function () {
         currentYear: new Date().getFullYear(),
         error: '',
 
-        // Derived (plain properties — see header comment).
         durationLabel: '',
         hasRange: false,
 
@@ -1446,7 +1430,6 @@ window.dateSelector = function () {
             this.maxDate        = data.maxDate  || '';
             this.firstAvailable = data.firstAvailable || this.today;
 
-            // Land on the month containing the start date (or first available)
             const anchor = this.checkIn || this.firstAvailable || this.today;
             if (anchor) {
                 const d = new Date(anchor + 'T00:00:00');
@@ -1494,8 +1477,6 @@ window.dateSelector = function () {
             this.durationLabel = days === 1 ? '1 day' : days + ' days';
         },
 
-        /* ── Formatting ──────────────────────────────── */
-
         formatDate(dateStr, opts) {
             if (! dateStr) return '';
             const d = new Date(dateStr + 'T00:00:00');
@@ -1508,8 +1489,6 @@ window.dateSelector = function () {
             return this.formatDate(dateStr, { month: 'short', day: 'numeric' });
         },
 
-        /* ── Predicates ──────────────────────────────── */
-
         isBooked(dateStr)    { return this.bookedDates.includes(dateStr); },
         isPast(dateStr)      { return dateStr < this.today; },
         isBeyondMax(dateStr) { return dateStr > this.maxDate; },
@@ -1520,8 +1499,6 @@ window.dateSelector = function () {
             if (this.checkIn === this.checkOut)    return false;
             return dateStr > this.checkIn && dateStr < this.checkOut;
         },
-
-        /* ── Calendar grid ───────────────────────────── */
 
         get daysInMonth() {
             const days = [];
@@ -1547,8 +1524,6 @@ window.dateSelector = function () {
             return new Date(this.currentYear, this.currentMonth)
                 .toLocaleDateString('en-US', { month: 'long' });
         },
-
-        /* ── Navigation bounds ───────────────────────── */
 
         get canGoPrevMonth() {
             const curYM   = this.currentYear * 12 + this.currentMonth;
@@ -1578,8 +1553,6 @@ window.dateSelector = function () {
             if (this.currentMonth > 11) { this.currentMonth = 0; this.currentYear++; }
         },
 
-        /* ── Helpers ─────────────────────────────────── */
-
         toIso(d) {
             return d.getFullYear() + '-'
                 + String(d.getMonth() + 1).padStart(2, '0') + '-'
@@ -1598,8 +1571,6 @@ window.dateSelector = function () {
             }
             return true;
         },
-
-        /* ── Quick ranges ────────────────────────────── */
 
         quickSelect(kind) {
             const base = new Date(this.today + 'T00:00:00');
@@ -1635,9 +1606,6 @@ window.dateSelector = function () {
             const e = this.toIso(end);
 
             if (! this.isRangeFree(s, e)) {
-                // Shift forward one day at a time until a valid range
-                // is found. Gives the user a working selection instead
-                // of an error they can't act on.
                 for (let attempt = 0; attempt < 14; attempt++) {
                     start.setDate(start.getDate() + 1);
                     end.setDate(end.getDate() + 1);
@@ -1666,17 +1634,11 @@ window.dateSelector = function () {
             try { this.$wire.setDates(s, e); } catch (err) { /* noop */ }
         },
 
-        /* ── Selection (2-click range; 3rd click resets) ── */
-
         selectDate(dateStr) {
             if (this.isBooked(dateStr) || this.isPast(dateStr) || this.isBeyondMax(dateStr)) {
                 return;
             }
 
-            // If the current start is itself invalid (booked, past,
-            // beyond max), treat this click as a fresh selection.
-            // This is what unblocks the user when the server defaulted
-            // them onto a day that is already booked.
             const startInvalid = this.checkIn === ''
                 || this.isBooked(this.checkIn)
                 || this.isPast(this.checkIn)
@@ -1687,22 +1649,16 @@ window.dateSelector = function () {
                 && this.checkOut !== this.checkIn;
 
             if (startInvalid || hasCompleteRange) {
-                // Fresh selection
                 this.checkIn  = dateStr;
                 this.checkOut = dateStr;
                 this.error    = '';
             } else {
-                // We have a valid single-day selection; try to extend.
                 if (dateStr < this.checkIn) {
-                    // Clicked before start → new start
                     this.checkIn  = dateStr;
                     this.checkOut = dateStr;
                     this.error    = '';
                 } else {
                     if (! this.isRangeFree(this.checkIn, dateStr)) {
-                        // The range spans a booked day. Rather than
-                        // dead-ending the user, restart the selection
-                        // at the clicked day. They can extend from there.
                         this.checkIn  = dateStr;
                         this.checkOut = dateStr;
                         this.error    = '';
@@ -1715,8 +1671,6 @@ window.dateSelector = function () {
 
             try { this.$wire.setDates(this.checkIn, this.checkOut); } catch (err) { /* noop */ }
         },
-
-        /* ── Reset ───────────────────────────────────── */
 
         clearSelection() {
             const target = this.firstAvailable || this.today;
@@ -1733,39 +1687,10 @@ window.dateSelector = function () {
 | HOMEPAGE EDITOR — Alpine factory
 |==========================================================================
 |
-| Used by the superadmin homepage editor SFC at:
-|   resources/views/superadmin/pages/homepage/⚡homepage-editor.blade.php
-|
-| WHY THIS LIVES IN app.js AND NOT IN THE SFC <script> TAG:
-|
-| Livewire v4 extracts <script> tags from view-based components and
-| serves them as separate, async-loaded, cached files. By the time those
-| files execute, Alpine has already walked the DOM and evaluated
-| `x-data="homepageEditor()"` — producing "homepageEditor is not defined"
-| on a cold load.
-|
-| Vite loads app.js as a module script. Module scripts run after HTML
-| parsing completes but BEFORE DOMContentLoaded — which is when Livewire
-| boots Alpine. So the factory below is guaranteed to exist in time.
-|
-| STATE SHAPE:
-|   preview      — object mirrored from `data-preview` on the root element.
-|                  Keys: heroTitle, heroSubtitle, heroDescription,
-|                        discoverTitle, discoverDescription,
-|                        ctaEyebrow, ctaTitle, ctaDescription,
-|                        ctaButtonText
-|   filePreviews — object holding ObjectURL strings for images the user
-|                  picked but hasn't saved yet. Null when no pick.
-|                  Keys match the Livewire image properties:
-|                        heroBackgroundImage, heroSideImage1..4,
-|                        ctaBackgroundImage
-|   draggingKey  — tracking the currently-hovered drop target's key.
-|                  Only used for the visual drag state on the uploader.
+| Used by the superadmin homepage editor SFC.
 |
 | NOTE: after a successful save() the SFC redirects (Rule 133), so
-| this factory is disposed and re-created on the fresh page load. The
-| 'preview-reset' event listener below is defensive only — no current
-| code path dispatches it.
+| this factory is disposed and re-created on the fresh page load.
 |==========================================================================
 */
 window.homepageEditor = function () {
@@ -1824,42 +1749,10 @@ window.homepageEditor = function () {
 | ABOUT EDITOR — Alpine factory
 |==========================================================================
 |
-| Used by the superadmin About page editor SFC at:
-|   resources/views/superadmin/pages/homepage/⚡about-editor.blade.php
-|
-| WHY THIS LIVES IN app.js AND NOT IN THE SFC <script> TAG:
-|
-| Livewire v4 extracts <script> tags from view-based components and
-| serves them as separate, async-loaded, cached files. By the time those
-| files execute, Alpine has already walked the DOM and evaluated
-| `x-data="aboutEditor()"` — producing "aboutEditor is not defined" on a
-| cold load.
-|
-| Vite loads app.js as a module script. Module scripts run after HTML
-| parsing completes but BEFORE DOMContentLoaded — which is when Livewire
-| boots Alpine. So the factory below is guaranteed to exist in time.
-|
-| STATE SHAPE:
-|   preview      — object mirrored from `data-preview` on the root element.
-|                  Keys: heroSubheading, heroHeading, heroDescription,
-|                        storyHeading, storyText1, storyText2,
-|                        highlight1Title/Text, highlight2Title/Text,
-|                        highlight3Title/Text,
-|                        ctaHeading, ctaText
-|   filePreviews — object holding ObjectURL strings for images the user
-|                  picked but hasn't saved yet. Null when no pick.
-|                  Keys match the Livewire image properties:
-|                        heroImage, storyImage1..3,
-|                        highlight1..3Image, ctaBackgroundImage
-|   draggingKey  — tracking the currently-hovered drop target's key.
-|                  Only used for the visual drag state on the uploader.
+| Used by the superadmin About page editor SFC.
 |
 | NOTE: after a successful save() the SFC redirects (Rule 133), so this
-| factory is disposed and re-created on the fresh page load. The
-| 'preview-reset' event listener is defensive only — no current code path
-| dispatches it. `clearFile()` IS used by the shared image-uploader
-| partial to discard a pending upload from the "Remove" button in the
-| preview tile.
+| factory is disposed and re-created on the fresh page load.
 |==========================================================================
 */
 window.aboutEditor = function () {
@@ -1884,8 +1777,6 @@ window.aboutEditor = function () {
                 this.preview = {};
             }
 
-            // Defensive only — save() now redirects (Rule 133), so
-            // filePreviews is refreshed by a full re-mount.
             window.addEventListener('preview-reset', () => {
                 this.filePreviews = {
                     heroImage:          null,
@@ -1915,13 +1806,129 @@ window.aboutEditor = function () {
 
         clearFile(key) {
             this.filePreviews[key] = null;
-            // Reset the underlying Livewire property so the pending
-            // upload is discarded on save.
             try { this.$wire.set(key, null); } catch (e) { /* noop */ }
         },
 
         bindField(event, field) {
             this.preview[field] = event.target.value;
+        },
+    };
+};
+
+/*
+|==========================================================================
+| GLOBAL SCROLL REVEALS — Alpine factory
+|==========================================================================
+|
+| Usage: on any page wrapper, add `x-data="revealOnScroll"`. Any
+| descendant marked with `data-reveal` will fade + slide up the first
+| time it enters the viewport. Optional per-element stagger via
+| `style="--reveal-delay: 100ms"`.
+|
+| FAILS OPEN — WHY THIS MATTERS:
+|
+| Nothing is hidden by default CSS. The hide class `.js-reveal-pending`
+| is added BY THIS FACTORY, on init, only for elements that are BELOW
+| the viewport. If this factory never runs (stale bundle, JS error,
+| factory not defined), the class is never added, nothing is hidden,
+| and the page renders normally. Worst case: no animation.
+|
+| This is the reverse of a CSS-hides-by-default design, which fails
+| open into a blank page. That failure mode is unacceptable for
+| content pages.
+|
+| WHY WE DON'T HIDE IN-VIEWPORT ELEMENTS:
+|
+| If we did, the user would see a flash of hidden-then-visible on
+| load. So we only hide elements the user can't see yet, and let
+| the observer reveal them as they scroll.
+|
+| PERFORMANCE:
+|
+|   • ONE IntersectionObserver per wrapper — not one per element.
+|   • ONE MutationObserver watches for morph-added [data-reveal] nodes
+|     (Livewire grid updates, @if toggles) and preps them too.
+|   • Each element is unobserved after its first reveal.
+|   • prefers-reduced-motion short-circuits: no observers, no hiding.
+|   • Only opacity + translate animated — both GPU-composited.
+|   • `translate` (not `transform`) so it composes with Tailwind's
+|     hover:-translate-y-* utilities.
+|==========================================================================
+*/
+window.revealOnScroll = function () {
+    return {
+        _observer: null,
+        _mutationObserver: null,
+        _prepped: new WeakSet(),
+
+        init() {
+            const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            if (prefersReduced || !('IntersectionObserver' in window)) {
+                // Don't hide anything. Skip entirely.
+                return;
+            }
+
+            this._observer = new IntersectionObserver((entries, obs) => {
+                for (const entry of entries) {
+                    if (!entry.isIntersecting) continue;
+                    const el = entry.target;
+                    el.classList.add('is-visible');
+                    obs.unobserve(el);
+                    setTimeout(() => el.classList.add('is-revealed'), 1200);
+                }
+            }, {
+                rootMargin: '0px 0px -10% 0px',
+                threshold: 0,
+            });
+
+            this._observeAll();
+
+            if ('MutationObserver' in window) {
+                this._mutationObserver = new MutationObserver((mutations) => {
+                    for (const m of mutations) {
+                        for (const node of m.addedNodes) {
+                            if (node.nodeType !== 1) continue;
+                            if (node.matches?.('[data-reveal]')) this._prep(node);
+                            node.querySelectorAll?.('[data-reveal]').forEach(el => this._prep(el));
+                        }
+                    }
+                });
+                this._mutationObserver.observe(this.$el, { childList: true, subtree: true });
+            }
+        },
+
+        _observeAll() {
+            this.$el.querySelectorAll('[data-reveal]').forEach(el => this._prep(el));
+        },
+
+        _prep(el) {
+            if (this._prepped.has(el)) return;
+            this._prepped.add(el);
+
+            // If the element is already in the viewport on load, DON'T
+            // hide it — the user would see a flash. Mark it visible
+            // immediately and move on.
+            const rect = el.getBoundingClientRect();
+            const inViewport = rect.top < window.innerHeight && rect.bottom > 0;
+
+            if (inViewport) {
+                el.classList.add('is-visible', 'is-revealed');
+                return;
+            }
+
+            el.classList.add('js-reveal-pending');
+            this._observer.observe(el);
+        },
+
+        destroy() {
+            if (this._observer) {
+                this._observer.disconnect();
+                this._observer = null;
+            }
+            if (this._mutationObserver) {
+                this._mutationObserver.disconnect();
+                this._mutationObserver = null;
+            }
         },
     };
 };

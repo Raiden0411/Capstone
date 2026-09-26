@@ -25,10 +25,6 @@ class extends Component
     public string $customStart = '';
     public string $customEnd   = '';
 
-    // ─────────────────────────────────────────────────────────
-    //  Lifecycle
-    // ─────────────────────────────────────────────────────────
-
     public function mount(): void
     {
         $this->authorizeViewAnalytics();
@@ -53,9 +49,7 @@ class extends Component
         $this->requirePermission('view analytics');
     }
 
-    /**
-     * @return array{0: Carbon, 1: Carbon}
-     */
+    /** @return array{0: Carbon, 1: Carbon} */
     #[Computed]
     public function dateBounds(): array
     {
@@ -80,13 +74,7 @@ class extends Component
         };
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  KPI stats
-    // ─────────────────────────────────────────────────────────
-
-    /**
-     * @return array<string, float|int>
-     */
+    /** @return array<string, float|int> */
     #[Computed]
     public function stats(): array
     {
@@ -159,13 +147,7 @@ class extends Component
         return $total > 0 ? round(($repeat / $total) * 100, 1) : 0.0;
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Chart data
-    // ─────────────────────────────────────────────────────────
-
-    /**
-     * @return array<string, float>
-     */
+    /** @return array<string, float> */
     #[Computed]
     public function revenueTrend(): array
     {
@@ -183,9 +165,7 @@ class extends Component
             ->all();
     }
 
-    /**
-     * @return array<string, int>
-     */
+    /** @return array<string, int> */
     #[Computed]
     public function bookingTrend(): array
     {
@@ -202,9 +182,7 @@ class extends Component
             ->all();
     }
 
-    /**
-     * @return array<int, array{method: string, total: float}>
-     */
+    /** @return array<int, array{method: string, total: float}> */
     #[Computed]
     public function paymentMethodBreakdown(): array
     {
@@ -225,9 +203,7 @@ class extends Component
             ->all();
     }
 
-    /**
-     * @return array<string, float>
-     */
+    /** @return array<string, float> */
     #[Computed]
     public function occupancyTrend(): array
     {
@@ -264,11 +240,7 @@ class extends Component
         return $trend;
     }
 
-    /**
-     * Top 5 properties by revenue for the selected period.
-     *
-     * @return array<int, array{name: string, bookings: int, revenue: float}>
-     */
+    /** @return array<int, array{name: string, bookings: int, revenue: float}> */
     #[Computed]
     public function propertyPerformance(): array
     {
@@ -298,11 +270,7 @@ class extends Component
             ->all();
     }
 
-    /**
-     * Booking status counts for the selected period.
-     *
-     * @return array<string, int>
-     */
+    /** @return array<string, int> */
     #[Computed]
     public function bookingStatusDistribution(): array
     {
@@ -326,11 +294,7 @@ class extends Component
         ];
     }
 
-    /**
-     * Guest composition — new vs repeat guests across all-time bookings.
-     *
-     * @return array{new: int, repeat: int, total: int}
-     */
+    /** @return array{new: int, repeat: int, total: int} */
     #[Computed]
     public function guestComposition(): array
     {
@@ -353,13 +317,7 @@ class extends Component
         ];
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Breakdowns & activity
-    // ─────────────────────────────────────────────────────────
-
-    /**
-     * @return \Illuminate\Support\Collection<int, object>
-     */
+    /** @return \Illuminate\Support\Collection<int, object> */
     #[Computed]
     public function topServices()
     {
@@ -381,9 +339,7 @@ class extends Component
             ->get();
     }
 
-    /**
-     * @return array<int, array{name: string, share: float, total: float}>
-     */
+    /** @return array<int, array{name: string, share: float, total: float}> */
     #[Computed]
     public function revenueBreakdown(): array
     {
@@ -401,9 +357,7 @@ class extends Component
         ])->all();
     }
 
-    /**
-     * @return array{arrivals: \Illuminate\Support\Collection, departures: \Illuminate\Support\Collection}
-     */
+    /** @return array{arrivals: \Illuminate\Support\Collection, departures: \Illuminate\Support\Collection} */
     #[Computed]
     public function upcomingActivity(): array
     {
@@ -429,10 +383,6 @@ class extends Component
         ];
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Actions
-    // ─────────────────────────────────────────────────────────
-
     public function clearCustomRange(): void
     {
         $this->authorizeViewAnalytics();
@@ -442,6 +392,58 @@ class extends Component
     }
 };
 ?>
+
+@push('styles')
+    @once
+        <style>
+            /* ─── Canvas sizing (unchanged) ─── */
+            .analytics-page canvas {
+                display:    block !important;
+                width:      100%  !important;
+                height:     100%  !important;
+                max-height: 100% !important;
+            }
+
+            /* ─── Ambient background ─── */
+            .tenant-analytics-ambient {
+                background:
+                    radial-gradient(ellipse 70% 50% at 8% 5%,  rgba(245,158,11,.06) 0%, transparent 55%),
+                    radial-gradient(ellipse 60% 55% at 95% 15%, rgba(59,130,246,.05) 0%, transparent 55%),
+                    radial-gradient(ellipse 80% 60% at 50% 100%, rgba(139,92,246,.04) 0%, transparent 60%);
+            }
+            .dark .tenant-analytics-ambient {
+                background:
+                    radial-gradient(ellipse 70% 50% at 8% 5%,  rgba(245,158,11,.08) 0%, transparent 55%),
+                    radial-gradient(ellipse 60% 55% at 95% 15%, rgba(59,130,246,.07) 0%, transparent 55%),
+                    radial-gradient(ellipse 80% 60% at 50% 100%, rgba(139,92,246,.06) 0%, transparent 60%);
+            }
+
+            @media print {
+                @page { size: auto; margin: 12mm; }
+
+                html, body {
+                    background: #fff !important;
+                    color: #000 !important;
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    min-height: 0 !important;
+                    height: auto !important;
+                }
+
+                .analytics-page { padding: 0 !important; margin: 0 !important; }
+
+                .no-print { display: none !important; }
+
+                canvas { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+
+                .analytics-page > * {
+                    break-inside: avoid;
+                    page-break-inside: avoid;
+                }
+            }
+        </style>
+    @endonce
+@endpush
 
 @php
     $s             = $this->stats;
@@ -457,9 +459,12 @@ class extends Component
     $paymentHasData = !empty($paymentBreak);
 @endphp
 
-<div class="analytics-page p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-4 sm:space-y-6" wire:poll.60s>
+<div class="analytics-page relative min-h-[100dvh] bg-[#F8F7F3] dark:bg-[#0F172A]" wire:poll.60s>
 
-    {{-- ═══ Hidden data bridge ═══ --}}
+    {{-- Ambient background --}}
+    <div class="tenant-analytics-ambient fixed inset-0 -z-10 pointer-events-none" aria-hidden="true"></div>
+
+    {{-- Hidden data bridge — JS reads from here, hooks watch for morph. --}}
     <div id="analytics-chart-data"
          data-revenue="{{ json_encode($this->revenueTrend, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
          data-bookings="{{ json_encode($this->bookingTrend, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
@@ -471,987 +476,896 @@ class extends Component
          hidden
          aria-hidden="true"></div>
 
-    {{-- ═══ Page header ═══ --}}
-    <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700 no-print">
-        <div>
-            <div class="flex items-center gap-2 mb-2">
-                <span class="w-5 h-px bg-primary-600"></span>
-                <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">Analytics</span>
-            </div>
-            <div class="flex flex-wrap items-center gap-2">
-                <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
-                    Performance Overview
-                </h1>
-                <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider
-                             bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300
-                             border border-emerald-200 dark:border-emerald-500/30">
-                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse motion-reduce:animate-none"></span>
-                    Live · 60s
-                </span>
-            </div>
-            <p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1">
-                Track your property metrics, revenue, and guest insights.
-            </p>
-        </div>
+    <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-10 space-y-8 sm:space-y-12">
 
-        <div class="flex flex-wrap items-center gap-2">
-            <button type="button" onclick="window.print()"
-                    class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
-                           transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
-                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
-                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2m-6-4h.01M6 18v4h12v-4"/>
-                </svg>
-                <span>Print Report</span>
-            </button>
-        </div>
-    </div>
+        {{-- ═══════════════════════════════════════════════════════
+             HERO — revenue is the page's focal point
+             ═══════════════════════════════════════════════════════ --}}
+        <section class="relative overflow-hidden rounded-3xl
+                        bg-white/70 dark:bg-gray-800/40
+                        backdrop-blur-xl
+                        border border-gray-200/60 dark:border-white/[0.06]
+                        shadow-sm">
+            <div class="relative px-6 sm:px-10 py-8 sm:py-12">
 
-    {{-- ═══ Date range ═══ --}}
-    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4 space-y-3 no-print">
-        <div class="flex flex-wrap gap-2 items-center">
-            @foreach([
-                'today'      => 'Today',
-                'yesterday'  => 'Yesterday',
-                'last-7'     => '7 Days',
-                'last-30'    => '30 Days',
-                'this-month' => 'This Month',
-                'last-month' => 'Last Month',
-                'custom'     => 'Custom',
-            ] as $val => $label)
-                @php $isActive = $dateRange === $val; @endphp
-                <button type="button"
-                        wire:key="range-{{ $val }}"
-                        wire:click="$set('dateRange', '{{ $val }}')"
-                        aria-pressed="{{ $isActive ? 'true' : 'false' }}"
-                        class="inline-flex items-center gap-2 h-9 px-3.5 rounded-full text-xs font-semibold uppercase tracking-wide border
-                               transition-all duration-200 active:scale-95 shrink-0
-                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
-                               {{ $isActive
-                                  ? 'bg-primary-600 border-primary-600 text-white shadow-sm'
-                                  : 'border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:border-primary-400 hover:text-primary-600 dark:hover:text-primary-400' }}">
-                    {{ $label }}
-                </button>
-            @endforeach
-        </div>
-
-        @if($dateRange === 'custom')
-            <div class="flex flex-wrap items-center gap-2 pt-2 border-t border-gray-100 dark:border-gray-700/60">
-                <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Custom range</span>
-                <input type="date" wire:model.live="customStart"
-                       aria-label="Start date"
-                       class="h-11 px-3 text-sm font-medium bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded-xl
-                              focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:border-primary-500">
-                <span class="text-gray-400 dark:text-gray-500 text-xs font-medium">to</span>
-                <input type="date" wire:model.live="customEnd"
-                       aria-label="End date"
-                       class="h-11 px-3 text-sm font-medium bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded-xl
-                              focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:border-primary-500">
-            </div>
-        @endif
-    </div>
-
-    {{-- ═══ KPI strip — 4 hero cards ═══ --}}
-    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-
-        {{-- Revenue --}}
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4 sm:p-5">
-            <div class="flex items-center gap-2">
-                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" aria-hidden="true"></span>
-                <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Total Revenue</p>
-            </div>
-            <p class="mt-2 text-xl sm:text-2xl font-bold text-gray-900 dark:text-white tabular-nums leading-tight truncate">
-                ₱{{ number_format($s['revenue'], 2) }}
-            </p>
-            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
-                Paid this period
-            </p>
-        </div>
-
-        {{-- Bookings --}}
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4 sm:p-5">
-            <div class="flex items-center gap-2">
-                <span class="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" aria-hidden="true"></span>
-                <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Total Bookings</p>
-            </div>
-            <p class="mt-2 text-xl sm:text-2xl font-bold text-gray-900 dark:text-white tabular-nums leading-tight truncate">
-                {{ number_format($s['total_bookings']) }}
-            </p>
-            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
-                Created this period
-            </p>
-        </div>
-
-        {{-- Occupancy --}}
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-4 sm:p-5">
-            <div class="flex items-center gap-2">
-                <span class="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" aria-hidden="true"></span>
-                <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Occupancy</p>
-            </div>
-            <p class="mt-2 text-xl sm:text-2xl font-bold text-gray-900 dark:text-white tabular-nums leading-tight truncate">
-                {{ $s['occupancy_rate'] }}%
-            </p>
-            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
-                {{ $s['active_bookings'] }} of {{ $s['total_properties'] }} active
-            </p>
-        </div>
-
-        {{-- Outstanding --}}
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border {{ $s['outstanding_balance'] > 0 ? 'border-amber-300 dark:border-amber-500/40 bg-amber-50/50 dark:bg-amber-500/[0.05]' : 'border-gray-200/80 dark:border-gray-700/80' }} shadow-sm p-4 sm:p-5">
-            <div class="flex items-center gap-2">
-                <span class="w-1.5 h-1.5 rounded-full {{ $s['outstanding_balance'] > 0 ? 'bg-amber-500' : 'bg-emerald-500' }} shrink-0" aria-hidden="true"></span>
-                <p class="text-[10px] font-bold uppercase tracking-wider {{ $s['outstanding_balance'] > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-gray-500 dark:text-gray-400' }}">Outstanding</p>
-            </div>
-            <p class="mt-2 text-xl sm:text-2xl font-bold tabular-nums leading-tight truncate {{ $s['outstanding_balance'] > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-gray-900 dark:text-white' }}">
-                ₱{{ number_format($s['outstanding_balance'], 2) }}
-            </p>
-            <p class="text-[11px] mt-1 {{ $s['outstanding_balance'] > 0 ? 'text-amber-700/80 dark:text-amber-400/80' : 'text-gray-500 dark:text-gray-400' }}">
-                {{ $s['outstanding_balance'] > 0 ? 'Awaiting collection' : 'All settled' }}
-            </p>
-        </div>
-    </div>
-
-    {{-- ═══ Secondary metrics row ═══ --}}
-    <div class="grid grid-cols-3 gap-3 sm:gap-4">
-        <div class="bg-white dark:bg-gray-800/90 rounded-xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-3.5">
-            <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Avg Booking</p>
-            <p class="mt-1.5 text-lg font-bold text-gray-900 dark:text-white tabular-nums truncate">
-                ₱{{ number_format($s['avg_booking_value'], 2) }}
-            </p>
-        </div>
-        <div class="bg-white dark:bg-gray-800/90 rounded-xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-3.5">
-            <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Repeat Guests</p>
-            <p class="mt-1.5 text-lg font-bold text-gray-900 dark:text-white tabular-nums truncate">
-                {{ $s['repeat_guest_rate'] }}%
-            </p>
-        </div>
-        <div class="bg-white dark:bg-gray-800/90 rounded-xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-3.5">
-            <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Unique Guests</p>
-            <p class="mt-1.5 text-lg font-bold text-gray-900 dark:text-white tabular-nums truncate">
-                {{ number_format($s['total_guests']) }}
-            </p>
-        </div>
-    </div>
-
-    {{-- ═══ Row 1: Revenue Trend + Payment Methods ═══ --}}
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-
-        <div class="lg:col-span-2 bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6">
-            <div class="flex items-center justify-between gap-3 mb-4">
-                <div class="min-w-0">
-                    <div class="flex items-center gap-2">
-                        <span class="w-4 h-px bg-primary-600"></span>
-                        <h2 class="text-base font-bold text-gray-900 dark:text-white">Revenue Trend</h2>
-                    </div>
-                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Daily paid revenue across the selected period.</p>
-                </div>
-                <span class="text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400 shrink-0 tabular-nums">
-                    ₱{{ number_format($s['revenue'], 0) }}
-                </span>
-            </div>
-            <div class="w-full h-56 sm:h-64 relative" wire:ignore>
-                <canvas id="revenueChart" role="img" aria-label="Bar chart: daily paid revenue"></canvas>
-            </div>
-        </div>
-
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 flex flex-col">
-            <div class="mb-4">
-                <div class="flex items-center gap-2">
-                    <span class="w-4 h-px bg-primary-600"></span>
-                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Payment Methods</h2>
-                </div>
-                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Revenue split by method.</p>
-            </div>
-
-            @if($paymentHasData)
-                <div class="flex-1 min-h-[200px] relative flex items-center justify-center" wire:ignore>
-                    <canvas id="paymentChart" role="img" aria-label="Doughnut chart: revenue by payment method"></canvas>
-                </div>
-            @else
-                <div class="flex-1 min-h-[200px] flex flex-col items-center justify-center text-center rounded-xl border border-dashed border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40">
-                    <div class="p-3 rounded-2xl bg-white dark:bg-gray-800 text-gray-400 dark:text-gray-500 shadow-sm">
-                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
-                        </svg>
-                    </div>
-                    <p class="mt-3 text-sm font-semibold text-gray-900 dark:text-white">No payments yet</p>
-                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Method breakdown appears once payments are collected.</p>
-                </div>
-            @endif
-        </div>
-    </div>
-
-    {{-- ═══ Row 2: Booking Activity + Occupancy History ═══ --}}
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6">
-            <div class="mb-4">
-                <div class="flex items-center gap-2">
-                    <span class="w-4 h-px bg-primary-600"></span>
-                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Booking Activity</h2>
-                </div>
-                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">New bookings created per day.</p>
-            </div>
-            <div class="w-full h-56 relative" wire:ignore>
-                <canvas id="bookingChart" role="img" aria-label="Line chart: bookings per day"></canvas>
-            </div>
-        </div>
-
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6">
-            <div class="mb-4">
-                <div class="flex items-center gap-2">
-                    <span class="w-4 h-px bg-primary-600"></span>
-                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Occupancy History</h2>
-                </div>
-                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Percentage of properties booked per day.</p>
-            </div>
-            <div class="w-full h-56 relative" wire:ignore>
-                <canvas id="occupancyChart" role="img" aria-label="Line chart: occupancy percentage"></canvas>
-            </div>
-        </div>
-    </div>
-
-    {{-- ═══ Row 3: Property Performance + Booking Status ═══ --}}
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-
-        <div class="lg:col-span-2 bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6">
-            <div class="flex items-center justify-between gap-3 mb-4">
-                <div class="min-w-0">
-                    <div class="flex items-center gap-2">
-                        <span class="w-4 h-px bg-primary-600"></span>
-                        <h2 class="text-base font-bold text-gray-900 dark:text-white">Property Performance</h2>
-                    </div>
-                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Top 5 properties by revenue in this period.</p>
-                </div>
-                <span class="text-[10px] font-bold uppercase tracking-wider text-primary-600 dark:text-primary-400 shrink-0">
-                    Top 5
-                </span>
-            </div>
-
-            @if($propHasData)
-                <div class="w-full h-56 sm:h-64 relative" wire:ignore>
-                    <canvas id="propertyPerformanceChart" role="img" aria-label="Horizontal bar chart: top performing properties"></canvas>
-                </div>
-            @else
-                <div class="w-full h-56 sm:h-64 flex flex-col items-center justify-center text-center rounded-xl border border-dashed border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40">
-                    <div class="p-3 rounded-2xl bg-white dark:bg-gray-800 text-gray-400 dark:text-gray-500 shadow-sm">
-                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
-                        </svg>
-                    </div>
-                    <p class="mt-3 text-sm font-semibold text-gray-900 dark:text-white">No property bookings yet</p>
-                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Rankings populate once properties receive bookings.</p>
-                </div>
-            @endif
-        </div>
-
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 flex flex-col">
-            <div class="mb-4">
-                <div class="flex items-center gap-2">
-                    <span class="w-4 h-px bg-primary-600"></span>
-                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Booking Status</h2>
-                </div>
-                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Operations snapshot for this period.</p>
-            </div>
-
-            @if($statusHasData)
-                <div class="flex-1 min-h-[200px] relative flex items-center justify-center" wire:ignore>
-                    <canvas id="statusChart" role="img" aria-label="Doughnut chart: booking status distribution"></canvas>
-                </div>
-            @else
-                <div class="flex-1 min-h-[200px] flex flex-col items-center justify-center text-center rounded-xl border border-dashed border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40">
-                    <div class="p-3 rounded-2xl bg-white dark:bg-gray-800 text-gray-400 dark:text-gray-500 shadow-sm">
-                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
-                        </svg>
-                    </div>
-                    <p class="mt-3 text-sm font-semibold text-gray-900 dark:text-white">No bookings yet</p>
-                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Status breakdown appears once bookings are created.</p>
-                </div>
-            @endif
-        </div>
-    </div>
-
-    {{-- ═══ Row 4: Guest Composition + Top Services Breakdown ═══ --}}
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 flex flex-col">
-            <div class="mb-4">
-                <div class="flex items-center gap-2">
-                    <span class="w-4 h-px bg-primary-600"></span>
-                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Guest Composition</h2>
-                </div>
-                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Repeat vs first-time guests.</p>
-            </div>
-
-            @if($guestHasData)
-                <div class="flex-1 min-h-[200px] relative flex items-center justify-center" wire:ignore>
-                    <canvas id="guestChart" role="img" aria-label="Doughnut chart: repeat versus new guests"></canvas>
-                </div>
-            @else
-                <div class="flex-1 min-h-[200px] flex flex-col items-center justify-center text-center rounded-xl border border-dashed border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40">
-                    <div class="p-3 rounded-2xl bg-white dark:bg-gray-800 text-gray-400 dark:text-gray-500 shadow-sm">
-                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
-                        </svg>
-                    </div>
-                    <p class="mt-3 text-sm font-semibold text-gray-900 dark:text-white">No guests yet</p>
-                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Composition appears once bookings are recorded.</p>
-                </div>
-            @endif
-        </div>
-
-        <div class="lg:col-span-2 bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6">
-            <div class="mb-5">
-                <div class="flex items-center gap-2">
-                    <span class="w-4 h-px bg-primary-600"></span>
-                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Top Services Breakdown</h2>
-                </div>
-                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Revenue contribution by add-on service.</p>
-            </div>
-
-            @if(!empty($breakdowns))
-                <div class="space-y-4">
-                    @foreach($breakdowns as $b)
-                        <div wire:key="svc-{{ md5($b['name']) }}">
-                            <div class="flex justify-between text-sm mb-1.5">
-                                <span class="font-medium text-gray-700 dark:text-gray-300 truncate pr-2">{{ $b['name'] }}</span>
-                                <span class="text-gray-900 dark:text-white font-semibold tabular-nums shrink-0">₱{{ number_format($b['total'], 2) }}</span>
-                            </div>
-                            <div class="w-full h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
-                                <div class="h-full bg-primary-500 rounded-full transition-all duration-500" style="width: {{ $b['share'] }}%"></div>
-                            </div>
-                            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-1 text-right tabular-nums">{{ $b['share'] }}% of total</p>
+                {{-- Title + period selector --}}
+                <div class="flex flex-wrap items-start justify-between gap-4 mb-10 sm:mb-14">
+                    <div class="min-w-0">
+                        <div class="flex items-center gap-2.5 mb-2">
+                            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full
+                                         bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300
+                                         text-[10px] font-bold uppercase tracking-wider shrink-0">
+                                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse motion-reduce:animate-none"></span>
+                                Live
+                            </span>
+                            <span class="text-[11px] text-gray-500 dark:text-gray-400 truncate">Updates every 60s</span>
                         </div>
-                    @endforeach
-                </div>
-            @else
-                <div class="flex flex-col items-center justify-center h-40 text-center rounded-xl border border-dashed border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/40">
-                    <div class="p-3 rounded-2xl bg-white dark:bg-gray-800 text-gray-400 dark:text-gray-500 shadow-sm">
-                        <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
-                        </svg>
+                        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white tracking-tight leading-tight">
+                            Performance
+                        </h1>
                     </div>
-                    <p class="mt-3 text-sm font-semibold text-gray-900 dark:text-white">No service data</p>
-                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Service revenue breakdown appears once services are booked.</p>
-                </div>
-            @endif
-        </div>
-    </div>
 
-    {{-- ═══ Row 5: Arrivals + Departures ═══ --}}
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-
-        {{-- Arrivals --}}
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 flex flex-col">
-            <div class="flex items-center justify-between mb-4">
-                <div class="flex items-center gap-2">
-                    <span class="w-4 h-px bg-emerald-500"></span>
-                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Arrivals Today</h2>
+                    <div class="flex items-center gap-2 shrink-0 flex-wrap">
+                        <div class="flex items-center gap-0.5 p-0.5 rounded-full
+                                    bg-gray-100/80 dark:bg-gray-900/60
+                                    border border-gray-200/60 dark:border-white/[0.04]"
+                             role="group"
+                             aria-label="Date range">
+                            @foreach([
+                                'today'      => 'Today',
+                                'yesterday'  => 'Y\'day',
+                                'last-7'     => '7D',
+                                'last-30'    => '30D',
+                                'this-month' => 'Month',
+                                'last-month' => 'Last',
+                                'custom'     => 'Custom',
+                            ] as $val => $label)
+                                @php $isActive = $dateRange === $val; @endphp
+                                <button type="button"
+                                        wire:key="rng-{{ $val }}"
+                                        wire:click="$set('dateRange', '{{ $val }}')"
+                                        aria-pressed="{{ $isActive ? 'true' : 'false' }}"
+                                        class="inline-flex items-center justify-center h-9 px-3 rounded-full
+                                               text-[11px] font-semibold tracking-wide
+                                               transition-all duration-200 active:scale-95
+                                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                                               {{ $isActive
+                                                  ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm'
+                                                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100' }}">
+                                    {{ $label }}
+                                </button>
+                            @endforeach
+                        </div>
+                        <button type="button" onclick="window.print()"
+                                class="no-print inline-flex items-center justify-center w-9 h-9 rounded-full
+                                       text-gray-500 dark:text-gray-400
+                                       bg-gray-100/80 dark:bg-gray-900/60
+                                       border border-gray-200/60 dark:border-white/[0.04]
+                                       hover:text-gray-900 dark:hover:text-gray-100
+                                       transition-all duration-200 active:scale-95
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2m-6-4h.01M6 18v4h12v-4"/>
+                            </svg>
+                            <span class="sr-only">Print report</span>
+                        </button>
+                    </div>
                 </div>
-                <span class="inline-flex items-center gap-1.5 h-6 px-2.5 rounded-full text-[10px] font-bold uppercase tracking-wider
-                             bg-emerald-100 dark:bg-emerald-500/15 text-emerald-800 dark:text-emerald-300 tabular-nums">
-                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden="true"></span>
-                    {{ count($this->upcomingActivity['arrivals']) }}
-                </span>
+
+                {{-- Custom range --}}
+                @if($dateRange === 'custom')
+                    <div class="flex flex-wrap items-center gap-2 mb-10 pb-10 border-b border-gray-200/60 dark:border-white/[0.06] no-print">
+                        <input type="date" wire:model.live="customStart" aria-label="Start date"
+                               class="h-10 px-3 text-sm bg-white/70 dark:bg-gray-900/60 border border-gray-200/70 dark:border-white/[0.06] rounded-xl
+                                      focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                        <span class="text-gray-400 dark:text-gray-500 text-xs">to</span>
+                        <input type="date" wire:model.live="customEnd" aria-label="End date"
+                               class="h-10 px-3 text-sm bg-white/70 dark:bg-gray-900/60 border border-gray-200/70 dark:border-white/[0.06] rounded-xl
+                                      focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                    </div>
+                @endif
+
+                {{-- The number --}}
+                <div class="mb-8">
+                    <p class="text-[10px] font-bold uppercase tracking-[0.22em] text-gray-500 dark:text-gray-400 mb-2">
+                        Total revenue
+                    </p>
+                    <div class="flex items-baseline gap-2 flex-wrap">
+                        <span class="text-3xl sm:text-4xl font-bold text-gray-400 dark:text-gray-500 tabular-nums">₱</span>
+                        <span class="text-5xl sm:text-6xl lg:text-7xl font-bold text-gray-900 dark:text-white tabular-nums tracking-tight leading-none">
+                            {{ number_format((int) $s['revenue']) }}
+                        </span>
+                        <span class="text-2xl sm:text-3xl font-bold text-gray-400 dark:text-gray-500 tabular-nums">
+                            .{{ str_pad((string) (int) round(((float) $s['revenue'] - (int) $s['revenue']) * 100), 2, '0', STR_PAD_LEFT) }}
+                        </span>
+                    </div>
+                </div>
+
+                {{-- Revenue chart — tall, the hero's body --}}
+                <div class="w-full h-64 sm:h-80 relative overflow-hidden mb-10" wire:ignore>
+                    <canvas id="revenueChart" role="img" aria-label="Bar chart: daily paid revenue"></canvas>
+                </div>
+
+                {{-- Quiet KPI strip --}}
+                <div class="pt-6 border-t border-gray-200/60 dark:border-white/[0.06]">
+                    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-y-6 gap-x-4 sm:divide-x sm:divide-gray-200/60 dark:sm:divide-white/[0.06]">
+
+                        <div class="sm:pr-4">
+                            <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Bookings</p>
+                            <p class="mt-1.5 text-xl font-bold text-gray-900 dark:text-white tabular-nums leading-none">{{ number_format($s['total_bookings']) }}</p>
+                        </div>
+
+                        <div class="sm:px-4">
+                            <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Guests</p>
+                            <p class="mt-1.5 text-xl font-bold text-gray-900 dark:text-white tabular-nums leading-none">{{ number_format($s['total_guests']) }}</p>
+                        </div>
+
+                        <div class="sm:px-4">
+                            <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Avg value</p>
+                            <p class="mt-1.5 text-xl font-bold text-gray-900 dark:text-white tabular-nums leading-none">₱{{ number_format((int) $s['avg_booking_value']) }}</p>
+                        </div>
+
+                        <div class="sm:px-4">
+                            <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Occupancy</p>
+                            <p class="mt-1.5 text-xl font-bold text-gray-900 dark:text-white tabular-nums leading-none">{{ $s['occupancy_rate'] }}<span class="text-sm font-medium text-gray-400 dark:text-gray-500">%</span></p>
+                        </div>
+
+                        <div class="sm:px-4">
+                            <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Repeat</p>
+                            <p class="mt-1.5 text-xl font-bold text-gray-900 dark:text-white tabular-nums leading-none">{{ $s['repeat_guest_rate'] }}<span class="text-sm font-medium text-gray-400 dark:text-gray-500">%</span></p>
+                        </div>
+
+                        <div class="sm:pl-4">
+                            <p class="text-[10px] font-bold uppercase tracking-[0.18em] {{ $s['outstanding_balance'] > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-gray-500 dark:text-gray-400' }}">
+                                Outstanding
+                            </p>
+                            <p class="mt-1.5 text-xl font-bold tabular-nums leading-none {{ $s['outstanding_balance'] > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-gray-900 dark:text-white' }}">
+                                ₱{{ number_format((int) $s['outstanding_balance']) }}
+                            </p>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div class="flex-1 overflow-y-auto pr-1 max-h-72">
-                <div class="divide-y divide-gray-100 dark:divide-gray-700/60">
-                    @forelse($this->upcomingActivity['arrivals'] as $b)
-                        <div wire:key="arrival-{{ $b->id }}" class="py-3 flex justify-between items-center">
-                            <div class="flex items-center gap-3 min-w-0">
+        </section>
+
+        {{-- ═══════════════════════════════════════════════════════
+             TRENDS — bookings + occupancy side by side
+             ═══════════════════════════════════════════════════════ --}}
+        <section>
+            <h2 class="text-[10px] font-bold uppercase tracking-[0.22em] text-gray-500 dark:text-gray-400 mb-4">
+                Trends
+            </h2>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+                <div class="rounded-3xl p-5 sm:p-6
+                            bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
+                            border border-gray-200/60 dark:border-white/[0.06]">
+                    <div class="flex items-baseline justify-between gap-3 mb-4">
+                        <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">Booking activity</h3>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 shrink-0">per day</span>
+                    </div>
+                    <div class="w-full h-56 relative overflow-hidden" wire:ignore>
+                        <canvas id="bookingChart" role="img" aria-label="Line chart: bookings per day"></canvas>
+                    </div>
+                </div>
+
+                <div class="rounded-3xl p-5 sm:p-6
+                            bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
+                            border border-gray-200/60 dark:border-white/[0.06]">
+                    <div class="flex items-baseline justify-between gap-3 mb-4">
+                        <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">Occupancy history</h3>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 shrink-0">per day</span>
+                    </div>
+                    <div class="w-full h-56 relative overflow-hidden" wire:ignore>
+                        <canvas id="occupancyChart" role="img" aria-label="Line chart: occupancy percentage"></canvas>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        {{-- ═══════════════════════════════════════════════════════
+             PERFORMANCE — property ranking + status snapshot
+             ═══════════════════════════════════════════════════════ --}}
+        <section>
+            <h2 class="text-[10px] font-bold uppercase tracking-[0.22em] text-gray-500 dark:text-gray-400 mb-4">
+                Performance
+            </h2>
+
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+                <div class="lg:col-span-2 rounded-3xl p-5 sm:p-6
+                            bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
+                            border border-gray-200/60 dark:border-white/[0.06]">
+                    <div class="flex items-baseline justify-between gap-3 mb-4">
+                        <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">Top properties</h3>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 shrink-0">by revenue</span>
+                    </div>
+
+                    @if($propHasData)
+                        <div class="w-full h-64 relative overflow-hidden" wire:ignore>
+                            <canvas id="propertyPerformanceChart" role="img" aria-label="Horizontal bar chart: top performing properties"></canvas>
+                        </div>
+                    @else
+                        <div class="h-64 flex flex-col items-center justify-center text-center rounded-2xl border border-dashed border-gray-200/80 dark:border-gray-700/60">
+                            <p class="text-sm font-semibold text-gray-900 dark:text-white">No property bookings yet</p>
+                            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Rankings populate once properties receive bookings.</p>
+                        </div>
+                    @endif
+                </div>
+
+                <div class="rounded-3xl p-5 sm:p-6
+                            bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
+                            border border-gray-200/60 dark:border-white/[0.06]">
+                    <div class="flex items-baseline justify-between gap-3 mb-4">
+                        <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">Status</h3>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 shrink-0">snapshot</span>
+                    </div>
+
+                    @if($statusHasData)
+                        <div class="w-full h-56 relative overflow-hidden" wire:ignore>
+                            <canvas id="statusChart" role="img" aria-label="Doughnut chart: booking status distribution"></canvas>
+                        </div>
+                    @else
+                        <div class="h-56 flex flex-col items-center justify-center text-center rounded-2xl border border-dashed border-gray-200/80 dark:border-gray-700/60">
+                            <p class="text-sm font-semibold text-gray-900 dark:text-white">No bookings yet</p>
+                            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Status breakdown appears once bookings are created.</p>
+                        </div>
+                    @endif
+                </div>
+            </div>
+        </section>
+
+        {{-- ═══════════════════════════════════════════════════════
+             INSIGHTS — guests + payment methods + top services
+             ═══════════════════════════════════════════════════════ --}}
+        <section>
+            <h2 class="text-[10px] font-bold uppercase tracking-[0.22em] text-gray-500 dark:text-gray-400 mb-4">
+                Insights
+            </h2>
+
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+                {{-- Guest composition --}}
+                <div class="rounded-3xl p-5 sm:p-6
+                            bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
+                            border border-gray-200/60 dark:border-white/[0.06]">
+                    <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight mb-4">Guest mix</h3>
+
+                    @if($guestHasData)
+                        <div class="w-full h-56 relative overflow-hidden" wire:ignore>
+                            <canvas id="guestChart" role="img" aria-label="Doughnut chart: repeat versus new guests"></canvas>
+                        </div>
+                    @else
+                        <div class="h-56 flex flex-col items-center justify-center text-center rounded-2xl border border-dashed border-gray-200/80 dark:border-gray-700/60">
+                            <p class="text-sm font-semibold text-gray-900 dark:text-white">No guests yet</p>
+                            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Appears once bookings are recorded.</p>
+                        </div>
+                    @endif
+                </div>
+
+                {{-- Payment methods --}}
+                <div class="rounded-3xl p-5 sm:p-6
+                            bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
+                            border border-gray-200/60 dark:border-white/[0.06]">
+                    <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight mb-4">Payments</h3>
+
+                    @if($paymentHasData)
+                        <div class="w-full h-56 relative overflow-hidden" wire:ignore>
+                            <canvas id="paymentChart" role="img" aria-label="Doughnut chart: revenue by payment method"></canvas>
+                        </div>
+                    @else
+                        <div class="h-56 flex flex-col items-center justify-center text-center rounded-2xl border border-dashed border-gray-200/80 dark:border-gray-700/60">
+                            <p class="text-sm font-semibold text-gray-900 dark:text-white">No payments yet</p>
+                            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Method breakdown appears once collected.</p>
+                        </div>
+                    @endif
+                </div>
+
+                {{-- Top services list --}}
+                <div class="rounded-3xl p-5 sm:p-6
+                            bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
+                            border border-gray-200/60 dark:border-white/[0.06]">
+                    <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight mb-4">Top services</h3>
+
+                    @if(!empty($breakdowns))
+                        <div class="space-y-4">
+                            @foreach($breakdowns as $b)
+                                <div wire:key="svc-{{ md5($b['name']) }}">
+                                    <div class="flex justify-between items-baseline gap-2 text-sm mb-1.5">
+                                        <span class="font-medium text-gray-700 dark:text-gray-300 truncate">{{ $b['name'] }}</span>
+                                        <span class="text-gray-900 dark:text-white font-semibold tabular-nums shrink-0 text-xs">₱{{ number_format((int) $b['total']) }}</span>
+                                    </div>
+                                    <div class="w-full h-1.5 bg-gray-100 dark:bg-gray-700/60 rounded-full overflow-hidden">
+                                        <div class="h-full bg-primary-500 rounded-full transition-all duration-500" style="width: {{ $b['share'] }}%"></div>
+                                    </div>
+                                    <p class="text-[10px] text-gray-400 dark:text-gray-500 mt-1 text-right tabular-nums">{{ $b['share'] }}%</p>
+                                </div>
+                            @endforeach
+                        </div>
+                    @else
+                        <div class="h-40 flex flex-col items-center justify-center text-center rounded-2xl border border-dashed border-gray-200/80 dark:border-gray-700/60">
+                            <p class="text-sm font-semibold text-gray-900 dark:text-white">No service data</p>
+                            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Appears once services are booked.</p>
+                        </div>
+                    @endif
+                </div>
+            </div>
+        </section>
+
+        {{-- ═══════════════════════════════════════════════════════
+             OPERATIONS — quiet footer
+             ═══════════════════════════════════════════════════════ --}}
+        <section>
+            <h2 class="text-[10px] font-bold uppercase tracking-[0.22em] text-gray-500 dark:text-gray-400 mb-4">
+                Today
+            </h2>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+                {{-- Arrivals --}}
+                <div class="rounded-3xl overflow-hidden
+                            bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
+                            border border-gray-200/60 dark:border-white/[0.06]">
+                    <div class="px-5 sm:px-6 py-4 flex items-baseline justify-between gap-3
+                                border-b border-gray-100/80 dark:border-white/[0.04]">
+                        <div class="flex items-baseline gap-2">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden="true"></span>
+                            <h3 class="text-sm font-semibold text-gray-900 dark:text-white tracking-tight">Arrivals</h3>
+                        </div>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400 tabular-nums shrink-0">
+                            {{ count($this->upcomingActivity['arrivals']) }}
+                        </span>
+                    </div>
+                    <div class="divide-y divide-gray-100/80 dark:divide-white/[0.04] max-h-72 overflow-y-auto">
+                        @forelse($this->upcomingActivity['arrivals'] as $b)
+                            <a href="{{ route('tenant.bookings.show', $b->id) }}" wire:navigate
+                               wire:key="arrival-{{ $b->id }}"
+                               class="flex items-center gap-3 px-5 sm:px-6 py-3 min-h-[56px]
+                                      hover:bg-white/80 dark:hover:bg-gray-800/50
+                                      transition-colors [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                      focus-visible:outline-none focus-visible:bg-white/80 dark:focus-visible:bg-gray-800/50">
                                 <div class="w-8 h-8 rounded-full bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 flex items-center justify-center text-xs font-bold shrink-0">
                                     {{ strtoupper(substr($b->user->name ?? 'G', 0, 1)) }}
                                 </div>
-                                <div class="min-w-0">
+                                <div class="min-w-0 flex-1">
                                     <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ $b->user->name ?? 'Guest' }}</p>
-                                    <p class="text-xs text-gray-500 dark:text-gray-400 font-mono truncate">#{{ $b->booking_reference }}</p>
+                                    <p class="text-[11px] text-gray-500 dark:text-gray-400 font-mono truncate mt-0.5">{{ $b->booking_reference }}</p>
                                 </div>
+                            </a>
+                        @empty
+                            <div class="px-5 sm:px-6 py-10 text-center">
+                                <p class="text-xs text-gray-500 dark:text-gray-400">No arrivals scheduled today.</p>
                             </div>
-                            <span class="text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400 shrink-0">
-                                Check-in
-                            </span>
-                        </div>
-                    @empty
-                        <div class="py-10 text-center">
-                            <svg class="w-8 h-8 mx-auto text-gray-300 dark:text-gray-600 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
-                            </svg>
-                            <p class="text-sm text-gray-500 dark:text-gray-400">No arrivals scheduled today.</p>
-                        </div>
-                    @endforelse
+                        @endforelse
+                    </div>
                 </div>
-            </div>
-        </div>
 
-        {{-- Departures --}}
-        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 flex flex-col">
-            <div class="flex items-center justify-between mb-4">
-                <div class="flex items-center gap-2">
-                    <span class="w-4 h-px bg-rose-500"></span>
-                    <h2 class="text-base font-bold text-gray-900 dark:text-white">Departures Today</h2>
-                </div>
-                <span class="inline-flex items-center gap-1.5 h-6 px-2.5 rounded-full text-[10px] font-bold uppercase tracking-wider
-                             bg-rose-100 dark:bg-rose-500/15 text-rose-800 dark:text-rose-300 tabular-nums">
-                    <span class="w-1.5 h-1.5 rounded-full bg-rose-500" aria-hidden="true"></span>
-                    {{ count($this->upcomingActivity['departures']) }}
-                </span>
-            </div>
-            <div class="flex-1 overflow-y-auto pr-1 max-h-72">
-                <div class="divide-y divide-gray-100 dark:divide-gray-700/60">
-                    @forelse($this->upcomingActivity['departures'] as $b)
-                        <div wire:key="departure-{{ $b->id }}" class="py-3 flex justify-between items-center">
-                            <div class="flex items-center gap-3 min-w-0">
+                {{-- Departures --}}
+                <div class="rounded-3xl overflow-hidden
+                            bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
+                            border border-gray-200/60 dark:border-white/[0.06]">
+                    <div class="px-5 sm:px-6 py-4 flex items-baseline justify-between gap-3
+                                border-b border-gray-100/80 dark:border-white/[0.04]">
+                        <div class="flex items-baseline gap-2">
+                            <span class="w-1.5 h-1.5 rounded-full bg-rose-500" aria-hidden="true"></span>
+                            <h3 class="text-sm font-semibold text-gray-900 dark:text-white tracking-tight">Departures</h3>
+                        </div>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-rose-600 dark:text-rose-400 tabular-nums shrink-0">
+                            {{ count($this->upcomingActivity['departures']) }}
+                        </span>
+                    </div>
+                    <div class="divide-y divide-gray-100/80 dark:divide-white/[0.04] max-h-72 overflow-y-auto">
+                        @forelse($this->upcomingActivity['departures'] as $b)
+                            <a href="{{ route('tenant.bookings.show', $b->id) }}" wire:navigate
+                               wire:key="departure-{{ $b->id }}"
+                               class="flex items-center gap-3 px-5 sm:px-6 py-3 min-h-[56px]
+                                      hover:bg-white/80 dark:hover:bg-gray-800/50
+                                      transition-colors [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                      focus-visible:outline-none focus-visible:bg-white/80 dark:focus-visible:bg-gray-800/50">
                                 <div class="w-8 h-8 rounded-full bg-rose-50 dark:bg-rose-500/15 text-rose-700 dark:text-rose-400 flex items-center justify-center text-xs font-bold shrink-0">
                                     {{ strtoupper(substr($b->user->name ?? 'G', 0, 1)) }}
                                 </div>
-                                <div class="min-w-0">
+                                <div class="min-w-0 flex-1">
                                     <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ $b->user->name ?? 'Guest' }}</p>
-                                    <p class="text-xs text-gray-500 dark:text-gray-400 font-mono truncate">#{{ $b->booking_reference }}</p>
+                                    <p class="text-[11px] text-gray-500 dark:text-gray-400 font-mono truncate mt-0.5">{{ $b->booking_reference }}</p>
                                 </div>
+                            </a>
+                        @empty
+                            <div class="px-5 sm:px-6 py-10 text-center">
+                                <p class="text-xs text-gray-500 dark:text-gray-400">No departures scheduled today.</p>
                             </div>
-                            <span class="text-[10px] font-bold uppercase tracking-wider text-rose-600 dark:text-rose-400 shrink-0">
-                                Check-out
-                            </span>
-                        </div>
-                    @empty
-                        <div class="py-10 text-center">
-                            <svg class="w-8 h-8 mx-auto text-gray-300 dark:text-gray-600 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
-                            </svg>
-                            <p class="text-sm text-gray-500 dark:text-gray-400">No departures scheduled today.</p>
-                        </div>
-                    @endforelse
+                        @endforelse
+                    </div>
                 </div>
             </div>
-        </div>
+        </section>
     </div>
 </div>
 
-{{-- ═══════════════════════════════════════════════════════════════════════
-     CHART.JS WIRING
+@push('scripts')
+    @once
+        {{-- Chart.js is bundled via resources/js/app.js — no CDN, no @script wrapper. --}}
+        <script>
+            if (! window.__tenantAnalyticsRegistered) {
+                window.__tenantAnalyticsRegistered = true;
 
-     Chart is now provided by the Vite bundle (see resources/js/app.js).
-     No CDN script, no @stack('scripts') dependency.
+                (function () {
+                    'use strict';
 
-     Bug fixes preserved from the previous revision:
-
-     1. DETACHED CANVAS AFTER SPA NAVIGATION
-        When the user navigates away and back via wire:navigate, Livewire
-        morphs in new <canvas> elements. `state.revenue`, `state.payment`,
-        etc. may still point at detached canvases from the previous visit.
-        `chart.update()` on a detached chart is a silent no-op, leaving
-        the fresh canvas blank. isChartAlive() detects this and rebuilds.
-
-     2. livewire:init HAD ALREADY FIRED
-        `@script` blocks run AFTER Livewire boots, so attaching a listener
-        to `livewire:init` inside one is a no-op. We hook morph.updated
-        directly if Livewire is already present.
-
-     3. SPA arrivals also re-render
-        livewire:navigated fires on every wire:navigate arrival. This is
-        the safety net for the "first visit after SPA nav" case.
-     ═══════════════════════════════════════════════════════════════════════ --}}
-@script
-<script>
-    if (! window.__tenantAnalyticsRegistered) {
-        window.__tenantAnalyticsRegistered = true;
-
-        (function () {
-            'use strict';
-
-            const state = window.__tenantAnalytics = window.__tenantAnalytics || {
-                revenue: null,
-                booking: null,
-                payment: null,
-                occupancy: null,
-                propPerf: null,
-                status: null,
-                guest: null,
-                hooked: false,
-                lastDark: document.documentElement.classList.contains('dark'),
-                retries: 0,
-            };
-
-            const MAX_CHART_RETRIES = 30;
-
-            const STATUS_ORDER = ['pending', 'confirmed', 'reserved', 'checked_in', 'completed', 'cancelled'];
-
-            const STATUS_COLORS = {
-                pending:    '#f59e0b',
-                confirmed:  '#6366f1',
-                reserved:   '#3b82f6',
-                checked_in: '#8b5cf6',
-                completed:  '#10b981',
-                cancelled:  '#ef4444',
-            };
-
-            function isChartAlive(chart) {
-                return !!(chart && chart.canvas && chart.canvas.isConnected);
-            }
-
-            function getChartData() {
-                const el = document.getElementById('analytics-chart-data');
-                if (!el) return null;
-
-                try {
-                    return {
-                        revenue:    JSON.parse(el.dataset.revenue    || '{}'),
-                        bookings:   JSON.parse(el.dataset.bookings   || '{}'),
-                        payment:    JSON.parse(el.dataset.payment    || '[]'),
-                        occupancy:  JSON.parse(el.dataset.occupancy  || '{}'),
-                        propPerf:   JSON.parse(el.dataset.propertyPerformance || '[]'),
-                        status:     JSON.parse(el.dataset.status     || '{}'),
-                        guests:     JSON.parse(el.dataset.guests     || '{}'),
+                    const state = window.__tenantAnalytics = window.__tenantAnalytics || {
+                        revenue: null,
+                        booking: null,
+                        payment: null,
+                        occupancy: null,
+                        propPerf: null,
+                        status: null,
+                        guest: null,
+                        hooked: false,
+                        lastDark: document.documentElement.classList.contains('dark'),
+                        retries: 0,
                     };
-                } catch (e) {
-                    console.error('Failed to parse analytics chart data', e);
-                    return null;
-                }
-            }
 
-            function isDark() {
-                return document.documentElement.classList.contains('dark');
-            }
+                    const MAX_CHART_RETRIES = 30;
 
-            function getTheme() {
-                return isDark() ? {
-                    textColor:     '#9ca3af',
-                    gridColor:     'rgba(255,255,255,0.05)',
-                    barColor:      '#10b981',
-                    lineBooking:   '#3b82f6',
-                    lineOccupancy: '#f59e0b',
-                    fillOpacity:   '0.15',
-                    doughnutBorder: '#1f2937',
-                } : {
-                    textColor:     '#6b7280',
-                    gridColor:     'rgba(0,0,0,0.05)',
-                    barColor:      '#059669',
-                    lineBooking:   '#2563eb',
-                    lineOccupancy: '#d97706',
-                    fillOpacity:   '0.1',
-                    doughnutBorder: '#ffffff',
-                };
-            }
+                    const STATUS_ORDER = ['pending', 'confirmed', 'reserved', 'checked_in', 'completed', 'cancelled'];
 
-            function destroyAll() {
-                ['revenue', 'booking', 'payment', 'occupancy', 'propPerf', 'status', 'guest'].forEach(key => {
-                    if (state[key]) { try { state[key].destroy(); } catch (e) {} state[key] = null; }
-                });
-            }
+                    const STATUS_COLORS = {
+                        pending:    '#f59e0b',
+                        confirmed:  '#6366f1',
+                        reserved:   '#3b82f6',
+                        checked_in: '#8b5cf6',
+                        completed:  '#10b981',
+                        cancelled:  '#ef4444',
+                    };
 
-            function destroyOne(key) {
-                if (state[key]) {
-                    try { state[key].destroy(); } catch (e) { /* noop */ }
-                    state[key] = null;
-                }
-            }
+                    function isChartAlive(chart) {
+                        return !!(chart && chart.canvas && chart.canvas.isConnected);
+                    }
 
-            function gradient(ctx, rgb, opacity) {
-                const g = ctx.createLinearGradient(0, 0, 0, 300);
-                g.addColorStop(0, `rgba(${rgb}, ${opacity})`);
-                g.addColorStop(1, 'rgba(255,255,255,0)');
-                return g;
-            }
+                    function getChartData() {
+                        const el = document.getElementById('analytics-chart-data');
+                        if (!el) return null;
 
-            function tooltipBase() {
-                return {
-                    backgroundColor: isDark() ? '#374151' : '#fff',
-                    titleColor:      isDark() ? '#fff'    : '#111827',
-                    bodyColor:       isDark() ? '#d1d5db' : '#4b5563',
-                    borderColor:     isDark() ? '#4b5563' : '#e5e7eb',
-                    borderWidth:     1,
-                    padding:         12,
-                    displayColors:   false,
-                    cornerRadius:    10,
-                };
-            }
+                        try {
+                            return {
+                                revenue:    JSON.parse(el.dataset.revenue    || '{}'),
+                                bookings:   JSON.parse(el.dataset.bookings   || '{}'),
+                                payment:    JSON.parse(el.dataset.payment    || '[]'),
+                                occupancy:  JSON.parse(el.dataset.occupancy  || '{}'),
+                                propPerf:   JSON.parse(el.dataset.propertyPerformance || '[]'),
+                                status:     JSON.parse(el.dataset.status     || '{}'),
+                                guests:     JSON.parse(el.dataset.guests     || '{}'),
+                            };
+                        } catch (e) {
+                            console.error('Failed to parse analytics chart data', e);
+                            return null;
+                        }
+                    }
 
-            function barChart(canvasId, labels, values, label, color) {
-                const canvas = document.getElementById(canvasId);
-                if (!canvas) return null;
-                const theme = getTheme();
+                    function isDark() {
+                        return document.documentElement.classList.contains('dark');
+                    }
 
-                return new Chart(canvas.getContext('2d'), {
-                    type: 'bar',
-                    data: {
-                        labels,
-                        datasets: [{
-                            label,
-                            data: values,
-                            backgroundColor: color,
-                            borderRadius: 6,
-                            borderSkipped: false,
-                            barPercentage: 0.4,
-                            categoryPercentage: 0.75,
-                            maxBarThickness: 24,
-                        }],
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: {
-                            legend: { display: false },
-                            tooltip: {
-                                ...tooltipBase(),
-                                callbacks: {
-                                    label: (ctx) => '₱' + (ctx.parsed.y || 0).toLocaleString(),
+                    function getTheme() {
+                        return isDark() ? {
+                            textColor:     '#9ca3af',
+                            gridColor:     'rgba(255,255,255,0.05)',
+                            barColor:      '#10b981',
+                            lineBooking:   '#3b82f6',
+                            lineOccupancy: '#f59e0b',
+                            fillOpacity:   '0.15',
+                            doughnutBorder: '#1f2937',
+                        } : {
+                            textColor:     '#6b7280',
+                            gridColor:     'rgba(0,0,0,0.05)',
+                            barColor:      '#059669',
+                            lineBooking:   '#2563eb',
+                            lineOccupancy: '#d97706',
+                            fillOpacity:   '0.1',
+                            doughnutBorder: '#ffffff',
+                        };
+                    }
+
+                    function destroyAll() {
+                        ['revenue', 'booking', 'payment', 'occupancy', 'propPerf', 'status', 'guest'].forEach(key => {
+                            if (state[key]) { try { state[key].destroy(); } catch (e) {} state[key] = null; }
+                        });
+                    }
+
+                    function destroyOne(key) {
+                        if (state[key]) {
+                            try { state[key].destroy(); } catch (e) { /* noop */ }
+                            state[key] = null;
+                        }
+                    }
+
+                    function gradient(ctx, rgb, opacity) {
+                        const g = ctx.createLinearGradient(0, 0, 0, 300);
+                        g.addColorStop(0, `rgba(${rgb}, ${opacity})`);
+                        g.addColorStop(1, 'rgba(255,255,255,0)');
+                        return g;
+                    }
+
+                    function tooltipBase() {
+                        return {
+                            backgroundColor: isDark() ? '#374151' : '#fff',
+                            titleColor:      isDark() ? '#fff'    : '#111827',
+                            bodyColor:       isDark() ? '#d1d5db' : '#4b5563',
+                            borderColor:     isDark() ? '#4b5563' : '#e5e7eb',
+                            borderWidth:     1,
+                            padding:         12,
+                            displayColors:   false,
+                            cornerRadius:    10,
+                        };
+                    }
+
+                    function barChart(canvasId, labels, values, label, color) {
+                        const canvas = document.getElementById(canvasId);
+                        if (!canvas) return null;
+                        const theme = getTheme();
+
+                        return new Chart(canvas.getContext('2d'), {
+                            type: 'bar',
+                            data: {
+                                labels,
+                                datasets: [{
+                                    label,
+                                    data: values,
+                                    backgroundColor: color,
+                                    borderRadius: 6,
+                                    borderSkipped: false,
+                                    barPercentage: 0.4,
+                                    categoryPercentage: 0.75,
+                                    maxBarThickness: 24,
+                                }],
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: {
+                                    legend: { display: false },
+                                    tooltip: {
+                                        ...tooltipBase(),
+                                        callbacks: {
+                                            label: (ctx) => '₱' + (ctx.parsed.y || 0).toLocaleString(),
+                                        },
+                                    },
                                 },
-                            },
-                        },
-                        scales: {
-                            y: {
-                                beginAtZero: true,
-                                ticks: { color: theme.textColor },
-                                grid:  { color: theme.gridColor, drawBorder: false },
-                                border: { display: false },
-                            },
-                            x: {
-                                ticks: { color: theme.textColor },
-                                grid:  { display: false },
-                                border: { display: false },
-                            },
-                        },
-                    },
-                });
-            }
-
-            function horizontalBarChart(canvasId, labels, values, colors) {
-                const canvas = document.getElementById(canvasId);
-                if (!canvas) return null;
-                const theme = getTheme();
-
-                return new Chart(canvas.getContext('2d'), {
-                    type: 'bar',
-                    data: {
-                        labels,
-                        datasets: [{
-                            data: values,
-                            backgroundColor: colors,
-                            borderRadius: 6,
-                            borderSkipped: false,
-                            barPercentage: 0.7,
-                            categoryPercentage: 0.75,
-                            maxBarThickness: 20,
-                        }],
-                    },
-                    options: {
-                        indexAxis: 'y',
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        layout: { padding: { right: 32 } },
-                        plugins: {
-                            legend: { display: false },
-                            tooltip: {
-                                ...tooltipBase(),
-                                callbacks: {
-                                    label: (ctx) => '₱' + Number(ctx.parsed.x || 0).toLocaleString(),
-                                },
-                            },
-                        },
-                        scales: {
-                            y: {
-                                grid:   { display: false },
-                                border: { display: false },
-                                ticks: {
-                                    color: theme.textColor,
-                                    font: { size: 11, weight: '600' },
-                                    autoSkip: false,
-                                    padding: 4,
-                                    callback: function (v) {
-                                        const label = this.getLabelForValue(v);
-                                        return label.length > 24 ? label.slice(0, 22) + '…' : label;
+                                scales: {
+                                    y: {
+                                        beginAtZero: true,
+                                        ticks: { color: theme.textColor },
+                                        grid:  { color: theme.gridColor, drawBorder: false },
+                                        border: { display: false },
+                                    },
+                                    x: {
+                                        ticks: { color: theme.textColor },
+                                        grid:  { display: false },
+                                        border: { display: false },
                                     },
                                 },
                             },
-                            x: {
-                                beginAtZero: true,
-                                grid:  { color: theme.gridColor, drawBorder: false },
-                                border: { display: false },
-                                ticks: { color: theme.textColor, precision: 0 },
+                        });
+                    }
+
+                    function horizontalBarChart(canvasId, labels, values, colors) {
+                        const canvas = document.getElementById(canvasId);
+                        if (!canvas) return null;
+                        const theme = getTheme();
+
+                        return new Chart(canvas.getContext('2d'), {
+                            type: 'bar',
+                            data: {
+                                labels,
+                                datasets: [{
+                                    data: values,
+                                    backgroundColor: colors,
+                                    borderRadius: 6,
+                                    borderSkipped: false,
+                                    barPercentage: 0.7,
+                                    categoryPercentage: 0.75,
+                                    maxBarThickness: 20,
+                                }],
                             },
-                        },
-                    },
-                });
-            }
-
-            function lineChart(canvasId, labels, values, label, color, rgb) {
-                const canvas = document.getElementById(canvasId);
-                if (!canvas) return null;
-                const theme = getTheme();
-                const ctx = canvas.getContext('2d');
-
-                return new Chart(ctx, {
-                    type: 'line',
-                    data: {
-                        labels,
-                        datasets: [{
-                            label,
-                            data: values,
-                            borderColor: color,
-                            backgroundColor: gradient(ctx, rgb, theme.fillOpacity),
-                            tension: 0.4,
-                            fill: true,
-                            borderWidth: 2,
-                            pointRadius: 0,
-                            pointHoverRadius: 6,
-                            pointBackgroundColor: '#fff',
-                            pointBorderColor: color,
-                            pointBorderWidth: 2,
-                        }],
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        interaction: { intersect: false, mode: 'index' },
-                        plugins: {
-                            legend: { display: false },
-                            tooltip: tooltipBase(),
-                        },
-                        scales: {
-                            y: {
-                                beginAtZero: true,
-                                ticks: { color: theme.textColor, maxTicksLimit: 6 },
-                                grid:  { color: theme.gridColor, drawBorder: false, borderDash: [5, 5] },
-                                border: { display: false },
-                            },
-                            x: {
-                                ticks: { color: theme.textColor, maxTicksLimit: 8 },
-                                grid:  { display: false },
-                                border: { display: false },
-                            },
-                        },
-                    },
-                });
-            }
-
-            function doughnutChart(canvasId, labels, values, colors, legendPosition) {
-                const canvas = document.getElementById(canvasId);
-                if (!canvas) return null;
-                const theme = getTheme();
-
-                return new Chart(canvas.getContext('2d'), {
-                    type: 'doughnut',
-                    data: {
-                        labels,
-                        datasets: [{
-                            data: values,
-                            backgroundColor: colors || ['#059669', '#3b82f6', '#f59e0b', '#8b5cf6', '#ef4444', '#94a3b8'],
-                            borderWidth: isDark() ? 2 : 1,
-                            borderColor: theme.doughnutBorder,
-                            hoverOffset: 4,
-                            spacing: 2,
-                        }],
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        cutout: '72%',
-                        plugins: {
-                            legend: {
-                                position: legendPosition || 'bottom',
-                                labels: {
-                                    color: theme.textColor,
-                                    padding: 10,
-                                    usePointStyle: true,
-                                    pointStyle: 'circle',
-                                    boxWidth: 8,
-                                    boxHeight: 8,
-                                    font: { size: 10, weight: '600' },
+                            options: {
+                                indexAxis: 'y',
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                layout: { padding: { right: 32 } },
+                                plugins: {
+                                    legend: { display: false },
+                                    tooltip: {
+                                        ...tooltipBase(),
+                                        callbacks: {
+                                            label: (ctx) => '₱' + Number(ctx.parsed.x || 0).toLocaleString(),
+                                        },
+                                    },
+                                },
+                                scales: {
+                                    y: {
+                                        grid:   { display: false },
+                                        border: { display: false },
+                                        ticks: {
+                                            color: theme.textColor,
+                                            font: { size: 11, weight: '600' },
+                                            autoSkip: false,
+                                            padding: 4,
+                                            callback: function (v) {
+                                                const label = this.getLabelForValue(v);
+                                                return label.length > 24 ? label.slice(0, 22) + '…' : label;
+                                            },
+                                        },
+                                    },
+                                    x: {
+                                        beginAtZero: true,
+                                        grid:  { color: theme.gridColor, drawBorder: false },
+                                        border: { display: false },
+                                        ticks: { color: theme.textColor, precision: 0 },
+                                    },
                                 },
                             },
-                            tooltip: {
-                                ...tooltipBase(),
-                                callbacks: {
-                                    label: (ctx) => ' ' + ctx.label + ': ' + Number(ctx.parsed || 0).toLocaleString(),
+                        });
+                    }
+
+                    function lineChart(canvasId, labels, values, label, color, rgb) {
+                        const canvas = document.getElementById(canvasId);
+                        if (!canvas) return null;
+                        const theme = getTheme();
+                        const ctx = canvas.getContext('2d');
+
+                        return new Chart(ctx, {
+                            type: 'line',
+                            data: {
+                                labels,
+                                datasets: [{
+                                    label,
+                                    data: values,
+                                    borderColor: color,
+                                    backgroundColor: gradient(ctx, rgb, theme.fillOpacity),
+                                    tension: 0.4,
+                                    fill: true,
+                                    borderWidth: 2,
+                                    pointRadius: 0,
+                                    pointHoverRadius: 6,
+                                    pointBackgroundColor: '#fff',
+                                    pointBorderColor: color,
+                                    pointBorderWidth: 2,
+                                }],
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                interaction: { intersect: false, mode: 'index' },
+                                plugins: {
+                                    legend: { display: false },
+                                    tooltip: tooltipBase(),
+                                },
+                                scales: {
+                                    y: {
+                                        beginAtZero: true,
+                                        ticks: { color: theme.textColor, maxTicksLimit: 6 },
+                                        grid:  { color: theme.gridColor, drawBorder: false, borderDash: [5, 5] },
+                                        border: { display: false },
+                                    },
+                                    x: {
+                                        ticks: { color: theme.textColor, maxTicksLimit: 8 },
+                                        grid:  { display: false },
+                                        border: { display: false },
+                                    },
                                 },
                             },
-                        },
-                    },
-                });
-            }
-
-            window.renderTenantAnalytics = function (force) {
-                if (typeof Chart === 'undefined') {
-                    if (state.retries >= MAX_CHART_RETRIES) {
-                        console.warn('Chart.js failed to load — giving up after ' + MAX_CHART_RETRIES + ' retries.');
-                        return;
-                    }
-                    state.retries++;
-                    setTimeout(() => window.renderTenantAnalytics(force), 100);
-                    return;
-                }
-
-                state.retries = 0;
-
-                const data = getChartData();
-                if (!data) return;
-
-                if (force) destroyAll();
-
-                const theme = getTheme();
-
-                if (document.getElementById('revenueChart')) {
-                    if (!isChartAlive(state.revenue)) {
-                        destroyOne('revenue');
-                        state.revenue = barChart(
-                            'revenueChart',
-                            Object.keys(data.revenue),
-                            Object.values(data.revenue),
-                            'Revenue',
-                            theme.barColor,
-                        );
-                    } else {
-                        state.revenue.data.labels = Object.keys(data.revenue);
-                        state.revenue.data.datasets[0].data = Object.values(data.revenue);
-                        state.revenue.update('none');
-                    }
-                }
-
-                if (document.getElementById('paymentChart')) {
-                    if (!isChartAlive(state.payment)) {
-                        destroyOne('payment');
-                        state.payment = doughnutChart(
-                            'paymentChart',
-                            data.payment.map(p => p.method.charAt(0).toUpperCase() + p.method.slice(1)),
-                            data.payment.map(p => p.total),
-                            null,
-                            'bottom',
-                        );
-                    } else {
-                        state.payment.data.labels = data.payment.map(p => p.method.charAt(0).toUpperCase() + p.method.slice(1));
-                        state.payment.data.datasets[0].data = data.payment.map(p => p.total);
-                        state.payment.update('none');
-                    }
-                }
-
-                if (document.getElementById('bookingChart')) {
-                    if (!isChartAlive(state.booking)) {
-                        destroyOne('booking');
-                        state.booking = lineChart(
-                            'bookingChart',
-                            Object.keys(data.bookings),
-                            Object.values(data.bookings),
-                            'Bookings',
-                            theme.lineBooking,
-                            isDark() ? '59, 130, 246' : '37, 99, 235',
-                        );
-                    } else {
-                        state.booking.data.labels = Object.keys(data.bookings);
-                        state.booking.data.datasets[0].data = Object.values(data.bookings);
-                        state.booking.update('none');
-                    }
-                }
-
-                if (document.getElementById('occupancyChart')) {
-                    if (!isChartAlive(state.occupancy)) {
-                        destroyOne('occupancy');
-                        state.occupancy = lineChart(
-                            'occupancyChart',
-                            Object.keys(data.occupancy),
-                            Object.values(data.occupancy),
-                            'Occupancy %',
-                            theme.lineOccupancy,
-                            isDark() ? '245, 158, 11' : '217, 119, 6',
-                        );
-                    } else {
-                        state.occupancy.data.labels = Object.keys(data.occupancy);
-                        state.occupancy.data.datasets[0].data = Object.values(data.occupancy);
-                        state.occupancy.update('none');
-                    }
-                }
-
-                if (document.getElementById('propertyPerformanceChart')) {
-                    if (!isChartAlive(state.propPerf)) {
-                        destroyOne('propPerf');
-                        const ramp = ['#1e3a8a', '#2563eb', '#3b82f6', '#60a5fa', '#93c5fd'];
-                        state.propPerf = horizontalBarChart(
-                            'propertyPerformanceChart',
-                            data.propPerf.map(p => p.name),
-                            data.propPerf.map(p => p.revenue),
-                            ramp.slice(0, data.propPerf.length),
-                        );
-                    } else {
-                        state.propPerf.data.labels = data.propPerf.map(p => p.name);
-                        state.propPerf.data.datasets[0].data = data.propPerf.map(p => p.revenue);
-                        state.propPerf.update('none');
-                    }
-                }
-
-                if (document.getElementById('statusChart')) {
-                    const present = STATUS_ORDER.filter(k => (data.status[k] || 0) > 0);
-                    const labels  = present.map(k => k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()));
-                    const values  = present.map(k => data.status[k]);
-                    const colors  = present.map(k => STATUS_COLORS[k]);
-
-                    if (!isChartAlive(state.status)) {
-                        destroyOne('status');
-                        state.status = doughnutChart('statusChart', labels, values, colors, 'bottom');
-                    } else {
-                        state.status.data.labels = labels;
-                        state.status.data.datasets[0].data = values;
-                        state.status.data.datasets[0].backgroundColor = colors;
-                        state.status.update('none');
-                    }
-                }
-
-                if (document.getElementById('guestChart')) {
-                    const guestValues = [data.guests.new || 0, data.guests.repeat || 0];
-
-                    if (!isChartAlive(state.guest)) {
-                        destroyOne('guest');
-                        state.guest = doughnutChart(
-                            'guestChart',
-                            ['New Guests', 'Repeat Guests'],
-                            guestValues,
-                            ['#3b82f6', '#8b5cf6'],
-                            'bottom',
-                        );
-                    } else {
-                        state.guest.data.datasets[0].data = guestValues;
-                        state.guest.update('none');
-                    }
-                }
-            };
-
-            window.renderTenantAnalytics(false);
-
-            if (!state.hooked) {
-                state.hooked = true;
-
-                const registerMorphHook = () => {
-                    if (!window.Livewire || typeof window.Livewire.hook !== 'function') {
-                        return false;
+                        });
                     }
 
-                    window.Livewire.hook('morph.updated', ({ el }) => {
-                        if (el && el.id === 'analytics-chart-data') {
-                            setTimeout(() => window.renderTenantAnalytics(false), 30);
+                    function doughnutChart(canvasId, labels, values, colors, legendPosition) {
+                        const canvas = document.getElementById(canvasId);
+                        if (!canvas) return null;
+                        const theme = getTheme();
+
+                        return new Chart(canvas.getContext('2d'), {
+                            type: 'doughnut',
+                            data: {
+                                labels,
+                                datasets: [{
+                                    data: values,
+                                    backgroundColor: colors || ['#059669', '#3b82f6', '#f59e0b', '#8b5cf6', '#ef4444', '#94a3b8'],
+                                    borderWidth: isDark() ? 2 : 1,
+                                    borderColor: theme.doughnutBorder,
+                                    hoverOffset: 4,
+                                    spacing: 2,
+                                }],
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                cutout: '72%',
+                                plugins: {
+                                    legend: {
+                                        position: legendPosition || 'bottom',
+                                        labels: {
+                                            color: theme.textColor,
+                                            padding: 10,
+                                            usePointStyle: true,
+                                            pointStyle: 'circle',
+                                            boxWidth: 8,
+                                            boxHeight: 8,
+                                            font: { size: 10, weight: '600' },
+                                        },
+                                    },
+                                    tooltip: {
+                                        ...tooltipBase(),
+                                        callbacks: {
+                                            label: (ctx) => ' ' + ctx.label + ': ' + Number(ctx.parsed || 0).toLocaleString(),
+                                        },
+                                    },
+                                },
+                            },
+                        });
+                    }
+
+                    window.renderTenantAnalytics = function (force) {
+                        if (typeof Chart === 'undefined') {
+                            if (state.retries >= MAX_CHART_RETRIES) {
+                                console.warn('Chart.js failed to load — giving up after ' + MAX_CHART_RETRIES + ' retries.');
+                                return;
+                            }
+                            state.retries++;
+                            setTimeout(() => window.renderTenantAnalytics(force), 100);
+                            return;
                         }
+
+                        state.retries = 0;
+
+                        const data = getChartData();
+                        if (!data) return;
+
+                        if (force) destroyAll();
+
+                        const theme = getTheme();
+
+                        if (document.getElementById('revenueChart')) {
+                            if (!isChartAlive(state.revenue)) {
+                                destroyOne('revenue');
+                                state.revenue = barChart('revenueChart', Object.keys(data.revenue), Object.values(data.revenue), 'Revenue', theme.barColor);
+                            } else {
+                                state.revenue.data.labels = Object.keys(data.revenue);
+                                state.revenue.data.datasets[0].data = Object.values(data.revenue);
+                                state.revenue.update('none');
+                            }
+                        }
+
+                        if (document.getElementById('paymentChart')) {
+                            const labels = data.payment.map(p => p.method.charAt(0).toUpperCase() + p.method.slice(1));
+                            const values = data.payment.map(p => p.total);
+                            if (!isChartAlive(state.payment)) {
+                                destroyOne('payment');
+                                state.payment = doughnutChart('paymentChart', labels, values, null, 'bottom');
+                            } else {
+                                state.payment.data.labels = labels;
+                                state.payment.data.datasets[0].data = values;
+                                state.payment.update('none');
+                            }
+                        }
+
+                        if (document.getElementById('bookingChart')) {
+                            if (!isChartAlive(state.booking)) {
+                                destroyOne('booking');
+                                state.booking = lineChart('bookingChart', Object.keys(data.bookings), Object.values(data.bookings), 'Bookings', theme.lineBooking, isDark() ? '59, 130, 246' : '37, 99, 235');
+                            } else {
+                                state.booking.data.labels = Object.keys(data.bookings);
+                                state.booking.data.datasets[0].data = Object.values(data.bookings);
+                                state.booking.update('none');
+                            }
+                        }
+
+                        if (document.getElementById('occupancyChart')) {
+                            if (!isChartAlive(state.occupancy)) {
+                                destroyOne('occupancy');
+                                state.occupancy = lineChart('occupancyChart', Object.keys(data.occupancy), Object.values(data.occupancy), 'Occupancy %', theme.lineOccupancy, isDark() ? '245, 158, 11' : '217, 119, 6');
+                            } else {
+                                state.occupancy.data.labels = Object.keys(data.occupancy);
+                                state.occupancy.data.datasets[0].data = Object.values(data.occupancy);
+                                state.occupancy.update('none');
+                            }
+                        }
+
+                        if (document.getElementById('propertyPerformanceChart')) {
+                            const labels = data.propPerf.map(p => p.name);
+                            const values = data.propPerf.map(p => p.revenue);
+                            const ramp   = ['#1e3a8a', '#2563eb', '#3b82f6', '#60a5fa', '#93c5fd'];
+                            if (!isChartAlive(state.propPerf)) {
+                                destroyOne('propPerf');
+                                state.propPerf = horizontalBarChart('propertyPerformanceChart', labels, values, ramp.slice(0, values.length));
+                            } else {
+                                state.propPerf.data.labels = labels;
+                                state.propPerf.data.datasets[0].data = values;
+                                state.propPerf.update('none');
+                            }
+                        }
+
+                        if (document.getElementById('statusChart')) {
+                            const present = STATUS_ORDER.filter(k => (data.status[k] || 0) > 0);
+                            const labels  = present.map(k => k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()));
+                            const values  = present.map(k => data.status[k]);
+                            const colors  = present.map(k => STATUS_COLORS[k]);
+
+                            if (!isChartAlive(state.status)) {
+                                destroyOne('status');
+                                state.status = doughnutChart('statusChart', labels, values, colors, 'bottom');
+                            } else {
+                                state.status.data.labels = labels;
+                                state.status.data.datasets[0].data = values;
+                                state.status.data.datasets[0].backgroundColor = colors;
+                                state.status.update('none');
+                            }
+                        }
+
+                        if (document.getElementById('guestChart')) {
+                            const values = [data.guests.new || 0, data.guests.repeat || 0];
+                            if (!isChartAlive(state.guest)) {
+                                destroyOne('guest');
+                                state.guest = doughnutChart('guestChart', ['New Guests', 'Repeat Guests'], values, ['#3b82f6', '#8b5cf6'], 'bottom');
+                            } else {
+                                state.guest.data.datasets[0].data = values;
+                                state.guest.update('none');
+                            }
+                        }
+                    };
+
+                    requestAnimationFrame(() => {
+                        requestAnimationFrame(() => window.renderTenantAnalytics(false));
                     });
 
-                    return true;
-                };
+                    if (!state.hooked) {
+                        state.hooked = true;
 
-                if (!registerMorphHook()) {
-                    document.addEventListener('livewire:init', registerMorphHook, { once: true });
-                }
+                        const registerMorphHook = () => {
+                            if (!window.Livewire || typeof window.Livewire.hook !== 'function') return false;
+                            window.Livewire.hook('morph.updated', ({ el }) => {
+                                if (el && el.id === 'analytics-chart-data') {
+                                    setTimeout(() => window.renderTenantAnalytics(false), 30);
+                                }
+                            });
+                            return true;
+                        };
 
-                document.addEventListener('livewire:navigated', () => {
-                    if (document.getElementById('analytics-chart-data')) {
-                        setTimeout(() => window.renderTenantAnalytics(false), 60);
+                        if (!registerMorphHook()) {
+                            document.addEventListener('livewire:init', registerMorphHook, { once: true });
+                        }
+
+                        document.addEventListener('livewire:navigated', () => {
+                            if (document.getElementById('analytics-chart-data')) {
+                                setTimeout(() => window.renderTenantAnalytics(false), 60);
+                            }
+                        });
+
+                        if ('ResizeObserver' in window) {
+                            ['revenueChart', 'paymentChart', 'bookingChart', 'occupancyChart', 'propertyPerformanceChart', 'statusChart', 'guestChart'].forEach(id => {
+                                const canvas = document.getElementById(id);
+                                const wrapper = canvas && canvas.parentElement;
+                                if (!wrapper) return;
+                                new ResizeObserver(() => {
+                                    const keys = ['revenue', 'payment', 'booking', 'occupancy', 'propPerf', 'status', 'guest'];
+                                    keys.forEach(k => {
+                                        if (state[k]) { try { state[k].resize(); } catch (e) {} }
+                                    });
+                                }).observe(wrapper);
+                            });
+                        }
+
+                        new MutationObserver(() => {
+                            const dark = isDark();
+                            if (dark !== state.lastDark) {
+                                state.lastDark = dark;
+                                window.renderTenantAnalytics(true);
+                            }
+                        }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
                     }
-                });
-
-                new MutationObserver(() => {
-                    const dark = isDark();
-                    if (dark !== state.lastDark) {
-                        state.lastDark = dark;
-                        window.renderTenantAnalytics(true);
-                    }
-                }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+                })();
             }
-        })();
-    }
-</script>
-@endscript
+        </script>
+    @endonce
+@endpush

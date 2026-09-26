@@ -44,11 +44,7 @@ class extends Component
 };
 ?>
 
-@php
-    $request = $this->deletionRequest;
-@endphp
-
-@if(!$request)
+@if(! $this->deletionRequest)
     <div class="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto">
         <div class="rounded-2xl border border-rose-200 dark:border-rose-500/30 bg-rose-50 dark:bg-rose-500/10 p-6 text-center">
             <div class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-rose-100 dark:bg-rose-500/15 text-rose-600 dark:text-rose-400">
@@ -59,7 +55,8 @@ class extends Component
             <p class="text-sm font-semibold text-rose-900 dark:text-rose-200">This deletion request no longer exists.</p>
             <a href="{{ route('superadmin.deletion-requests.index') }}" wire:navigate
                class="mt-4 inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-rose-300 dark:border-rose-500/40 bg-white dark:bg-gray-800 text-rose-700 dark:text-rose-300 text-sm font-semibold
-                      transition-all duration-200 active:scale-95 hover:bg-rose-50 dark:hover:bg-rose-500/10
+                      transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                      hover:bg-rose-50 dark:hover:bg-rose-500/10
                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                 <span>Back to all requests</span>
                 <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -70,6 +67,93 @@ class extends Component
     </div>
 @else
     <div class="p-4 sm:p-6 lg:p-8 max-w-3xl mx-auto space-y-6">
+        @php
+            $request = $this->deletionRequest;
+
+            $statusConfig = match ($request->status) {
+                \App\Models\AccountDeletionRequest::STATUS_PENDING  => [
+                    'label'   => 'Pending Review',
+                    'classes' => 'bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300 border-amber-200 dark:border-amber-500/30',
+                    'pulse'   => true,
+                ],
+                \App\Models\AccountDeletionRequest::STATUS_APPROVED => [
+                    'label'   => 'Approved',
+                    'classes' => 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300 border-emerald-200 dark:border-emerald-500/30',
+                    'pulse'   => false,
+                ],
+                \App\Models\AccountDeletionRequest::STATUS_REJECTED => [
+                    'label'   => 'Rejected',
+                    'classes' => 'bg-rose-100 text-rose-800 dark:bg-rose-500/15 dark:text-rose-300 border-rose-200 dark:border-rose-500/30',
+                    'pulse'   => false,
+                ],
+                default => [
+                    'label'   => ucfirst($request->status),
+                    'classes' => 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-600',
+                    'pulse'   => false,
+                ],
+            };
+        @endphp
+
+        {{-- ═══ Back link ═══ --}}
+        <a href="{{ route('superadmin.deletion-requests.index') }}" wire:navigate
+           class="inline-flex items-center gap-2 text-xs sm:text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400
+                  transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+            </svg>
+            <span>All requests</span>
+        </a>
+
+        {{-- ═══ Page header — CARD, matching analytics / dashboard / business-applications ═══ --}}
+        <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6">
+            <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
+
+                {{-- Left: brand block --}}
+                <div class="flex items-center gap-4 min-w-0">
+                    <div class="hidden sm:flex w-12 h-12 rounded-xl bg-rose-600 text-white items-center justify-center shrink-0 shadow-md shadow-rose-500/30">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                        </svg>
+                    </div>
+                    <div class="min-w-0">
+                        <div class="flex items-center gap-2 mb-1">
+                            <span class="w-5 h-px bg-primary-600"></span>
+                            <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">
+                                Platform · Request #{{ $request->id }}
+                            </span>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <h1 class="font-display text-2xl sm:text-3xl font-semibold text-gray-900 dark:text-white tracking-tight leading-tight truncate">
+                                {{ $request->user?->name ?? 'Unknown user' }}
+                            </h1>
+                            <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border {{ $statusConfig['classes'] }}">
+                                <span class="w-1 h-1 rounded-full bg-current @if($statusConfig['pulse']) animate-pulse motion-reduce:animate-none @endif"></span>
+                                {{ $statusConfig['label'] }}
+                            </span>
+                        </div>
+                        <p class="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1 tabular-nums truncate">
+                            {{ $request->user?->email ?? '—' }}
+                            · Requested {{ $request->created_at->format('M j, Y \a\t g:i A') }}
+                            <span class="font-normal text-gray-400 dark:text-gray-500">({{ $request->created_at->diffForHumans() }})</span>
+                        </p>
+                    </div>
+                </div>
+
+                {{-- Right: primary nav action --}}
+                <div class="flex flex-wrap items-center gap-2 shrink-0 no-print">
+                    <a href="{{ route('superadmin.deletion-requests.index') }}" wire:navigate
+                       class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                              transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent] hover:bg-gray-50 dark:hover:bg-gray-700
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
+                        </svg>
+                        <span>View all requests</span>
+                    </a>
+                </div>
+            </div>
+        </div>
 
         {{-- ═══ Flash: success ═══ --}}
         @if(session()->has('message'))
@@ -85,7 +169,7 @@ class extends Component
                 </div>
                 <button type="button" @click="show = false"
                         class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
-                               transition-all duration-200 active:scale-95
+                               transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
                         aria-label="Dismiss">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -109,7 +193,7 @@ class extends Component
                 </div>
                 <button type="button" @click="show = false"
                         class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
-                               transition-all duration-200 active:scale-95
+                               transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
                         aria-label="Dismiss">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -140,7 +224,7 @@ class extends Component
                 </div>
                 <button type="button" @click="show = false"
                         class="inline-flex items-center justify-center h-7 w-7 shrink-0 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
-                               transition-all duration-200 active:scale-95
+                               transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
                         aria-label="Dismiss">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -149,45 +233,6 @@ class extends Component
                 </button>
             </div>
         @endif
-
-        {{-- ═══ Back link ═══ --}}
-        <a href="{{ route('superadmin.deletion-requests.index') }}" wire:navigate
-           class="inline-flex items-center gap-2 text-xs sm:text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400
-                  transition-all duration-200 active:scale-95
-                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
-            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
-            </svg>
-            <span>All requests</span>
-        </a>
-
-        {{-- ═══ Page header ═══ --}}
-        <div>
-            <div class="flex items-center gap-2 mb-2">
-                <span class="w-5 h-px bg-primary-600"></span>
-                <span class="text-xs tracking-[0.22em] uppercase text-primary-600 dark:text-primary-400 font-bold">
-                    Deletion Request #{{ $request->id }}
-                </span>
-            </div>
-            <div class="flex items-start justify-between flex-wrap gap-3">
-                <h1 class="font-display text-3xl md:text-4xl font-semibold text-gray-900 dark:text-white">
-                    {{ $request->user?->name ?? 'Unknown user' }}
-                </h1>
-
-                @php
-                    $statusClasses = match ($request->status) {
-                        \App\Models\AccountDeletionRequest::STATUS_PENDING  => 'bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300 border-amber-200 dark:border-amber-500/30',
-                        \App\Models\AccountDeletionRequest::STATUS_APPROVED => 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300 border-emerald-200 dark:border-emerald-500/30',
-                        \App\Models\AccountDeletionRequest::STATUS_REJECTED => 'bg-rose-100 text-rose-800 dark:bg-rose-500/15 dark:text-rose-300 border-rose-200 dark:border-rose-500/30',
-                        default                                             => 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-600',
-                    };
-                @endphp
-                <span class="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold uppercase tracking-wider border {{ $statusClasses }}">
-                    <span class="w-1 h-1 rounded-full bg-current"></span>
-                    {{ $request->statusLabel() }}
-                </span>
-            </div>
-        </div>
 
         {{-- ═══ Summary card ═══ --}}
         <div class="rounded-2xl border border-gray-200/80 dark:border-gray-700/80 bg-white dark:bg-gray-800/90 p-5 sm:p-6 space-y-5 shadow-sm">
@@ -258,8 +303,11 @@ class extends Component
         </div>
 
         {{-- ═══ Action card ═══
-             Plain form POST with `formaction` override + `onclick="return confirm(...)"`.
-             Handoff fact #19: prefer this over wire:confirm for destructive flows. --}}
+             Plain form POST with `formaction` override. Per Rule 155, the
+             Approve action uses a two-click arm pattern — no native browser
+             confirm dialog. First click arms the button (label + color change);
+             second click within 4 seconds lets the default submit through with
+             the button's own formaction, which the browser honors on click. --}}
         @if($request->isPending())
             <div class="rounded-2xl border-2 border-rose-200 dark:border-rose-500/30 bg-rose-50 dark:bg-rose-500/[0.06] p-5 sm:p-6 space-y-5">
 
@@ -296,7 +344,7 @@ class extends Component
                                   rows="3"
                                   maxlength="1000"
                                   placeholder="Optional context…"
-                                  class="input w-full resize-y placeholder:text-gray-400 dark:placeholder:text-gray-500 focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:border-primary-500">{{ old('review_notes') }}</textarea>
+                                  class="input w-full resize-y text-base sm:text-sm placeholder:text-gray-400 dark:placeholder:text-gray-500 focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:border-primary-500">{{ old('review_notes') }}</textarea>
                         @error('review_notes')
                             <p class="mt-1 text-xs text-rose-500 dark:text-rose-400">{{ $message }}</p>
                         @enderror
@@ -306,7 +354,7 @@ class extends Component
                         {{-- Reject — uses the form's default action --}}
                         <button type="submit"
                                 class="flex-1 inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
-                                       transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                       transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent] hover:bg-gray-50 dark:hover:bg-gray-700
                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                             <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
@@ -314,18 +362,43 @@ class extends Component
                             <span>Reject request</span>
                         </button>
 
-                        {{-- Approve — overrides form action + skips client-side validation --}}
+                        {{-- Approve — two-click arm pattern (Rule 155).
+                             First click: arm (label + color change) and preventDefault.
+                             Second click within 4s: unarm and let the submit through,
+                             which uses the button's own formaction. --}}
                         <button type="submit"
+                                x-data="{
+                                    armed: false,
+                                    _t: null,
+                                    arm() {
+                                        this.armed = true;
+                                        clearTimeout(this._t);
+                                        this._t = setTimeout(() => { this.armed = false; this._t = null; }, 4000);
+                                    },
+                                    unarm() {
+                                        clearTimeout(this._t);
+                                        this._t = null;
+                                        this.armed = false;
+                                    },
+                                    destroy() { clearTimeout(this._t); }
+                                }"
+                                @click="armed ? unarm() : (arm(), $event.preventDefault())"
+                                :class="armed
+                                    ? 'bg-amber-500 hover:bg-amber-600 border-amber-500 ring-2 ring-amber-400/60'
+                                    : 'bg-rose-600 hover:bg-rose-700 border-rose-600'"
                                 formaction="{{ route('superadmin.deletion-requests.approve', ['deletionRequest' => $request->id]) }}"
                                 formnovalidate
-                                onclick="return confirm('Approve this deletion? This will permanently delete the account(s) and cannot be undone.')"
-                                class="flex-1 inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold shadow-sm
-                                       transition-all duration-200 active:scale-95
+                                class="flex-1 inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border text-white text-sm font-semibold shadow-sm
+                                       transition-all duration-200 active:scale-95 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
-                            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <svg :class="armed ? 'hidden' : 'block'" class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
                             </svg>
-                            <span>Approve &amp; delete</span>
+                            <svg :class="armed ? 'block' : 'hidden'" class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            <span :class="armed ? 'hidden' : 'inline'">Approve &amp; delete</span>
+                            <span :class="armed ? 'inline' : 'hidden'">Click again to confirm</span>
                         </button>
                     </div>
                 </form>
