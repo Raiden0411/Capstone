@@ -9,12 +9,7 @@
     <meta name="color-scheme" content="light dark">
     <meta name="description" content="{{ $description ?? config('app.name') . ' — Book your perfect stay.' }}">
 
-    {{-- Theme-color: single tag, updated by applyTheme() below.
-         The previous approach used two tags with media="(prefers-color-scheme: ...)"
-         — which resolves against the OS setting, not the app's stored
-         preference. A user who chose dark in-app but has their OS on light
-         got a light-tinted address bar over a dark body. Applying the
-         resolved value from JS keeps them in sync in every case. --}}
+    {{-- Theme-color: single tag, updated by applyTheme() below. --}}
     <meta name="theme-color" content="#F8F7F3">
 
     <meta property="og:title" content="{{ $title ?? config('app.name') }}">
@@ -44,10 +39,18 @@
 
     {{-- Fonts – Inter. Playfair Display was retired when --font-display
          was re-pointed at Inter in resources/css/app.css; loading it here
-         would download four unused weights per page load. --}}
-    <link rel="preconnect" href="https://fonts.googleapis.com">
+         would download four unused weights per page load.
+
+         `crossorigin` on both preconnects is REQUIRED: Google Fonts is
+         CORS-enabled, so a preconnect without it opens a throwaway
+         connection that the subsequent fetch cannot reuse.
+
+         `crossorigin="anonymous"` on the preload of the CSS is also
+         required — without it, the browser fetches the stylesheet
+         twice (once for the preload, once for the actual <link>). --}}
+    <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="preload" as="style"
+    <link rel="preload" as="style" crossorigin="anonymous"
           href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700;14..32,800&display=swap">
     <link rel="stylesheet"
           media="print"
@@ -75,18 +78,7 @@
 
     <x-headers.public-header />
 
-    {{-- Content offset must clear the fixed header.
-
-         The header's own height is now: base (64px mobile / 80px md+) PLUS
-         `env(safe-area-inset-top)` when the device has a notch or dynamic
-         island. The offset here has to match, otherwise on notched iPhones
-         the first ~47–59px of every page's content would be hidden behind
-         the header.
-
-         Non-notched devices: env() = 0, so pt-[calc(4rem+0)] = 64px and
-         pt-[calc(5rem+0)] = 80px — identical to the previous pt-16 / pt-20.
-         Notched devices: pt = 64 + 47 (or 59) and 80 + 47 (or 59), which
-         matches the header's actual rendered height. --}}
+    {{-- Content offset must clear the fixed header. --}}
     <main class="flex-1 pt-[calc(4rem+env(safe-area-inset-top))] md:pt-[calc(5rem+env(safe-area-inset-top))]">
         {{ $slot }}
     </main>
@@ -96,7 +88,6 @@
     {{-- Alpine Collapse is registered in resources/js/app.js via
          `Alpine.plugin(collapse)` on `alpine:init`. No CDN script here. --}}
 
-    {{-- Livewire Scripts (asset pipeline — required for @livewireMapScripts and wire:navigate). --}}
     @livewireScripts
 
     @livewireMapScripts

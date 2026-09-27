@@ -1128,6 +1128,22 @@ class extends Component
 };
 ?>
 
+{{-- ═══════════════════════════════════════════════════════════════════
+     Preconnect hint — warm TLS connection to the map's tile CDNs.
+
+     The map page's LCP is bounded by the first tile fetch. Opening a
+     TLS handshake to CARTO (voyager basemap) and OSM (fallback tiles)
+     during the initial HTML parse saves ~200-400ms per origin on
+     4G/mobile. Capped at 4 preconnect/dns-prefetch total — Lighthouse
+     warns above 4 because each consumes a connection slot.
+     ═══════════════════════════════════════════════════════════════════ --}}
+@push('styles')
+    <link rel="preconnect" href="https://basemaps.cartocdn.com" crossorigin>
+    <link rel="preconnect" href="https://tile.openstreetmap.org" crossorigin>
+    <link rel="dns-prefetch" href="https://router.project-osrm.org">
+    <link rel="dns-prefetch" href="https://nominatim.openstreetmap.org">
+@endpush
+
 {{-- ✅ Single root --}}
 <div class="relative flex overflow-hidden font-sans dark:bg-gray-950
             h-[calc(100dvh-4rem)] md:h-[calc(100dvh-5rem)]"
@@ -1299,8 +1315,6 @@ class extends Component
                 />
 
                 @php
-                    // Resolved once per render — avoids N new Collection
-                    // instances inside the coordinate loops.
                     $markerCats = $this->markerCategories;
                     $markerColors = ['#f97316','#a855f7','#3b82f6','#14b8a6','#eab308','#10b981','#8b5cf6','#f43f5e'];
                 @endphp
@@ -1311,8 +1325,6 @@ class extends Component
                             $tc      = $markerColors[$loop->index % count($markerColors)];
                             $isRoute = $routeTenantId === $tenant->id && !empty($routeCoords);
                             $isHL    = $highlightedId === $tenant->id;
-                            // Rule J: relative /storage path, never asset() —
-                            // APP_URL may not match the current host.
                             $logo    = $tenant->logo ? '/storage/' . ltrim($tenant->logo, '/') : null;
 
                             $coordCount   = count($tenant->coordinates);
@@ -1578,7 +1590,7 @@ class extends Component
 
             <button type="button"
                     @click="stopNavigation()"
-                    class="shrink-0 inline-flex items-center gap-1.5 h-10 px-4 rounded-full
+                    class="shrink-0 inline-flex items-center gap-1.5 h-11 sm:h-10 px-4 rounded-full
                            bg-rose-600 hover:bg-rose-500 text-white
                            text-[11px] font-bold uppercase tracking-wider
                            transition active:scale-95
@@ -1681,7 +1693,6 @@ class extends Component
                     </svg>
                 </button>
 
-                {{-- Map theme toggle — decoupled from global site theme. --}}
                 <button type="button" data-tip="Toggle map theme"
                         wire:click="toggleMapTheme"
                         wire:loading.attr="disabled"
@@ -1696,7 +1707,6 @@ class extends Component
                             'text-gray-500 dark:text-gray-400',
                             'disabled:opacity-60 disabled:cursor-wait',
                         ])>
-                    {{-- Sun when map theme is dark (tap → light); moon when light (tap → dark). --}}
                     @if($mapTheme === 'dark')
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
                             <circle cx="12" cy="12" r="4"/>
@@ -1815,7 +1825,6 @@ class extends Component
                     </svg>
                 </button>
 
-                {{-- Recenter on user location. --}}
                 <button type="button"
                         wire:click="recenterOnMe"
                         wire:loading.attr="disabled"
@@ -1911,8 +1920,6 @@ class extends Component
                             <span class="text-[10px] font-bold uppercase tracking-wider">Follow</span>
                         </button>
 
-                        {{-- Recenter — now calls a server action that works
-                             regardless of navigation state. --}}
                         <button type="button"
                                 wire:click="recenterOnMe"
                                 wire:loading.attr="disabled"
@@ -1949,7 +1956,6 @@ class extends Component
                             <span class="text-[10px] font-bold uppercase tracking-wider">Satellite</span>
                         </button>
 
-                        {{-- Map theme toggle --}}
                         <button type="button"
                                 wire:click="toggleMapTheme"
                                 wire:loading.attr="disabled"
@@ -2892,8 +2898,6 @@ class extends Component
         border-radius: 50%;
         background: #2563EB;
         border: 2.5px solid #ffffff;
-        /* Strengthened glow so the dot reads clearly against complex
-           satellite imagery (dark forest, bright sand, busy urban). */
         box-shadow:
             0 2px 12px rgba(37, 99, 235, 0.75),
             0 0 0 1px rgba(255, 255, 255, 0.35);
@@ -2992,20 +2996,6 @@ class extends Component
             0 0 0 4.5px rgba(37, 99, 235, 0.4);
     }
 
-    /* ─── User-location marker z-order fix ───
-       Bug: user-location icon disappeared under satellite raster.
-       Cause: MapLibre's DOM markers share a stacking context; the
-       user marker was rendering behind newer markers or the raster
-       imagery after a style swap.
-
-       Fix: bump the MapLibre marker WRAPPER (.maplibregl-marker)
-       that contains the user-location or nav-marker inner element.
-       :has() support — Chrome 105+, Firefox 121+, Safari 15.4+.
-
-       If the marker is NOT a MapLibre DOM marker (i.e. it's a
-       MapLibre *Layer* added via addLayer), this CSS does nothing
-       and the fix must be applied in mapApp() by re-adding the
-       layer after every setStyle() call. */
     .maplibregl-marker:has(.tourist-user-marker),
     .maplibregl-marker:has(.tourist-nav-marker) {
         z-index: 9999 !important;
