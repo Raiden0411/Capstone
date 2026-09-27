@@ -51,13 +51,6 @@ class extends Component
     public bool   $followMode  = false;
     public bool   $satellite   = false;
 
-    /**
-     * Map theme — decoupled from the global site theme.
-     *
-     * 'light' | 'dark'. Persisted in session so it survives navigation.
-     * Toggled only via the dedicated map control (desktop toolbar /
-     * mobile actions sheet) — see toggleMapTheme().
-     */
     public string $mapTheme = 'light';
 
     public bool   $sidebarOpen = true;
@@ -836,14 +829,6 @@ class extends Component
         $this->mapEpoch++;
     }
 
-    /**
-     * Recenter the map on the user's location.
-     *
-     * Works regardless of navigation state — unlike the Alpine-side
-     * recenterNavigation(), which early-returns when nav is inactive.
-     * If we don't yet know the user's location, kick off a locate
-     * request; when it resolves, setUserLocation() flies the camera.
-     */
     public function recenterOnMe(): void
     {
         if ($this->userLat && $this->userLng) {
@@ -856,13 +841,6 @@ class extends Component
         $this->notify('Finding your location…', 'info');
     }
 
-    /**
-     * Toggle the MAP theme — decoupled from the global site theme.
-     *
-     * Bumps $mapEpoch so the <x-map> wrapper re-keys and MapLibre
-     * reinitialises with the new theme. Users see the loading overlay
-     * briefly (via the wrapper's x-init="mapLoading = true").
-     */
     public function toggleMapTheme(): void
     {
         $this->mapTheme = $this->mapTheme === 'dark' ? 'light' : 'dark';
@@ -964,15 +942,6 @@ class extends Component
         if ($zoom) $this->currentZoom = max(5, $zoom);
     }
 
-    /**
-     * Global site theme changed.
-     *
-     * Map theme is now DECOUPLED from the global theme (see
-     * toggleMapTheme + :theme="$mapTheme" on <x-map>). We no longer
-     * bump $themeVersion, so toggling site dark mode does NOT remount
-     * the map. Just nudge MapLibre to recalc in case the surrounding
-     * chrome changed dimensions.
-     */
     public function handleThemeChange(): void
     {
         $this->dispatch('map:resize');
@@ -1049,6 +1018,45 @@ class extends Component
     public function getPitch(mixed $value = null): float
     {
         return 0.0;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | mapcn server-state contract — layer / source presence queries
+    |--------------------------------------------------------------------------
+    | The mapcn Alpine factory calls back into the Livewire component to
+    | ask whether a given map layer or source is currently defined. The
+    | layers and sources themselves live CLIENT-SIDE on the MapLibre
+    | instance — the server has no knowledge of them. These methods
+    | exist to satisfy the contract without throwing
+    | MethodNotFoundException, which Livewire's JS treats as a session
+    | failure and surfaces as "This page has expired".
+    |
+    | Returning `false` from getLayer/getSource tells the client "no such
+    | layer" — which is accurate, since the server never tracks them. The
+    | removeLayer/removeSource methods are no-ops for the same reason:
+    | the client's own `map.removeLayer()` / `map.removeSource()` calls
+    | (fired directly against the MapLibre instance in app.js) are the
+    | real removals.
+    */
+    public function getLayer(string $id): bool
+    {
+        return false;
+    }
+
+    public function removeLayer(string $id): void
+    {
+        // No-op — layers are client-side state.
+    }
+
+    public function getSource(string $id): bool
+    {
+        return false;
+    }
+
+    public function removeSource(string $id): void
+    {
+        // No-op — sources are client-side state.
     }
 
     #[On('map:loaded')]
