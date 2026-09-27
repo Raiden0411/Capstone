@@ -9,7 +9,6 @@ use Illuminate\Support\Facades\Auth;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Models\Event;
-use Spatie\Permission\Models\Role;
 
 new
 #[Layout('superadmin.layouts.app')]
@@ -54,7 +53,6 @@ class extends Component
             'new_this_week'   => (int) ($tenantStats?->new_this_week ?? 0),
             'new_this_month'  => (int) ($tenantStats?->new_this_month ?? 0),
             'total_users'     => User::query()->count(),
-            'total_roles'     => Role::query()->where('name', '!=', 'super-admin')->count(),
             'total_events'    => (int) ($eventStats?->total ?? 0),
             'upcoming_events' => (int) ($eventStats?->upcoming ?? 0),
             'featured_events' => (int) ($eventStats?->featured ?? 0),
@@ -446,7 +444,9 @@ class extends Component
 
 @php $s = $this->stats; @endphp
 
-<div class="dashboard-page relative min-h-[100dvh] bg-[#F8F7F3] dark:bg-[#0F172A]" wire:poll.60s>
+{{-- Polling interval: 5 minutes. A stat dashboard doesn't change
+     minute-to-minute; 5m cuts noise and DB load 5×. --}}
+<div class="dashboard-page relative min-h-[100dvh] bg-[#F8F7F3] dark:bg-[#0F172A]" wire:poll.5m>
 
     <div class="superadmin-dashboard-ambient fixed inset-0 -z-10 pointer-events-none" aria-hidden="true"></div>
 
@@ -488,7 +488,10 @@ class extends Component
                            class="inline-flex items-center justify-center gap-2 h-9 px-4 rounded-full
                                   bg-primary-600 hover:bg-primary-700 text-white
                                   text-xs font-semibold
-                                  transition-all duration-200 active:scale-95
+                                  shadow-lg shadow-primary-500/20
+                                  transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]
+                                  hover:-translate-y-0.5
+                                  active:scale-[0.98]
                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                             <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -850,7 +853,9 @@ class extends Component
                                   border border-gray-200/60 dark:border-white/[0.06]
                                   hover:bg-white/80 dark:hover:bg-gray-800/50
                                   hover:border-primary-300/80 dark:hover:border-primary-500/40
-                                  transition-all duration-200 active:scale-[0.99]
+                                  transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]
+                                  hover:-translate-y-0.5
+                                  active:scale-[0.99]
                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                             <div class="w-14 h-14 rounded-xl overflow-hidden shrink-0
@@ -929,7 +934,9 @@ class extends Component
                               hover:bg-white dark:hover:bg-gray-700/60
                               hover:border-primary-300 dark:hover:border-primary-500/40
                               hover:text-primary-600 dark:hover:text-primary-400
-                              transition-all duration-200 active:scale-[0.98]
+                              transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]
+                              hover:-translate-y-0.5
+                              active:scale-[0.98]
                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                         <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
