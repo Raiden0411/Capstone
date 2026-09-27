@@ -38,14 +38,12 @@ class extends Component {
 
     public Tenant $tenantRecord;
 
-    /** Locked — loaded in mount, never trusted from client. */
     #[Locked]
     public ?int $adminUserRecordId = null;
 
     #[Locked]
     public ?int $businessApplicationId = null;
 
-    // ═══ Philippine government ID formats ═══
     public const OWNER_ID_PATTERNS = [
         'national_id'     => '/^[0-9]{4}[-\s]?[0-9]{4}[-\s]?[0-9]{4}[-\s]?[0-9]{4}$/',
         'passport'        => '/^[A-Z]{1,2}[0-9]{6,7}[A-Z]?$/',
@@ -90,7 +88,6 @@ class extends Component {
         'pagibig_id'      => 14,
     ];
 
-    // ═══ Business Details ═══
     public string $name = '';
     public string $slug = '';
     public bool $slugEditable = true;
@@ -107,14 +104,12 @@ class extends Component {
     public string $opening_time = '08:00';
     public string $closing_time = '17:00';
 
-    // ═══ Brand assets (stored on upload) ═══
     public $logo;
     public ?string $logo_path = null;
 
     public $cover_photo;
     public ?string $cover_photo_path = null;
 
-    // ═══ Legal & Identity ═══
     public string $business_type = '';
     public string $business_registration_number = '';
     public string $tin_number = '';
@@ -125,11 +120,9 @@ class extends Component {
     /** @var array<string, mixed> */
     public array $document_uploads = [];
 
-    // ═══ Visibility ═══
     public bool $is_active = true;
     public bool $is_recommended = false;
 
-    // ═══ Location ═══
     public float $latitude = 10.900977766937142;
     public float $longitude = 123.07055771888716;
     public bool $satellite = false;
@@ -141,12 +134,10 @@ class extends Component {
         'zoom' => 13,
     ];
 
-    // ═══ Nearby markers ═══
     public array $markers = [];
     public ?int $selectedMarkerIndex = null;
     public array $markerCategories = [];
 
-    // ═══ Admin Account ═══
     public string $admin_name = '';
     public string $admin_email = '';
     public string $admin_password = '';
@@ -154,7 +145,6 @@ class extends Component {
     public $admin_avatar;
     public ?string $admin_avatar_path = null;
 
-    // ═══ Modals ═══
     public bool $showAddCategoryModal = false;
     public string $newCategoryKey = '';
     public string $newCategoryLabel = '';
@@ -164,10 +154,6 @@ class extends Component {
     public bool $showNewTenantTypeModal = false;
     public string $newTenantTypeName = '';
     public string $newTenantTypeDescription = '';
-
-    // ─────────────────────────────────────────────────────
-    //  Lifecycle
-    // ─────────────────────────────────────────────────────
 
     public function mount(Tenant $tenant): void
     {
@@ -245,10 +231,6 @@ class extends Component {
 
         $this->markerCategories = SiteSetting::getValue('marker_categories', []);
     }
-
-    // ─────────────────────────────────────────────────────
-    //  Computed
-    // ─────────────────────────────────────────────────────
 
     #[Computed]
     public function tenantTypes()
@@ -373,11 +355,6 @@ class extends Component {
             ->count();
     }
 
-    // ─────────────────────────────────────────────────────
-    //  Asset preview URLs — Rule J: relative /storage paths only.
-    //  asset() prefixes APP_URL, which may not match the current host.
-    // ─────────────────────────────────────────────────────
-
     public function logoPreviewUrl(): ?string
     {
         return $this->logo_path
@@ -412,10 +389,6 @@ class extends Component {
     {
         return str_starts_with((string) $doc->mime_type, 'image/');
     }
-
-    // ─────────────────────────────────────────────────────
-    //  Validation
-    // ─────────────────────────────────────────────────────
 
     protected function rules(): array
     {
@@ -533,10 +506,6 @@ class extends Component {
         ];
     }
 
-    // ─────────────────────────────────────────────────────
-    //  Field hooks
-    // ─────────────────────────────────────────────────────
-
     public function updatedName($value): void
     {
         $this->name = trim((string) $value);
@@ -598,14 +567,6 @@ class extends Component {
             $this->slug = Str::slug($this->name);
         }
     }
-
-    // ─────────────────────────────────────────────────────
-    //  Asset uploads — routed through HandlesImageUploads
-    //  so every image is compressed against its config context:
-    //    logo         → 'tenant-logo'  (512 KB / 1024×1024)
-    //    cover_photo  → 'tenant-cover' (2 MB  / 2560×1440)
-    //    admin_avatar → 'avatars'      (512 KB / 800×800)
-    // ─────────────────────────────────────────────────────
 
     public function updatedLogo(): void
     {
@@ -722,10 +683,6 @@ class extends Component {
         $this->{$pathProperty} = null;
         $this->dispatch('toast', message: $successMessage, type: 'info');
     }
-
-    // ─────────────────────────────────────────────────────
-    //  Document upload / removal
-    // ─────────────────────────────────────────────────────
 
     public function updatedDocumentUploads($value, $key): void
     {
@@ -875,10 +832,6 @@ class extends Component {
         });
     }
 
-    // ─────────────────────────────────────────────────────
-    //  Reverse geocode
-    // ─────────────────────────────────────────────────────
-
     public function resolveAddress(float|string $lat, float|string $lng): void
     {
         $lat = (float) $lat;
@@ -912,10 +865,6 @@ class extends Component {
         if ($result['city'] !== '')     { $this->city     = $result['city'];     }
         if ($result['province'] !== '') { $this->province = $result['province']; }
     }
-
-    // ─────────────────────────────────────────────────────
-    //  Map interactions
-    // ─────────────────────────────────────────────────────
 
     public function setLocationMode(string $mode): void
     {
@@ -1063,6 +1012,13 @@ class extends Component {
 
     // ─────────────────────────────────────────────────────
     //  Save
+    //
+    //  IMPORTANT — the try/catch wraps ONLY the DB::transaction
+    //  block. Wrapping the whole method body (including the
+    //  return $this->redirectRoute(...)) interferes with
+    //  Livewire 4's internal redirect signal handling and causes
+    //  the transaction to appear rolled back in tests.
+    //  Do not widen this scope.
     // ─────────────────────────────────────────────────────
 
     public function update()
@@ -1073,7 +1029,7 @@ class extends Component {
         $passwordChanged = false;
 
         try {
-            DB::transaction(function () use (&$passwordChanged, $oldLogoPath) {
+            DB::transaction(function () use (&$passwordChanged) {
                 $tenant = Tenant::query()
                     ->whereKey($this->tenantRecord->id)
                     ->lockForUpdate()
@@ -1209,35 +1165,6 @@ class extends Component {
                     'owner_avatar_path'            => $this->admin_avatar_path,
                 ]);
             });
-
-            if ($oldLogoPath && $oldLogoPath !== $this->logo_path && Storage::disk('public')->exists($oldLogoPath)) {
-                Storage::disk('public')->delete($oldLogoPath);
-            }
-
-            if ($passwordChanged && $this->admin_password) {
-                try {
-                    Mail::to($this->admin_email)->send(new TenantAdminPasswordReset(
-                        adminName:    $this->admin_name,
-                        adminEmail:   $this->admin_email,
-                        newPassword:  $this->admin_password,
-                        businessName: $this->name,
-                        loginUrl:     route('login'),
-                    ));
-                } catch (\Throwable $mailError) {
-                    Log::warning('Tenant password reset email failed', [
-                        'tenant_id' => $this->tenantRecord->id,
-                        'email'     => $this->admin_email,
-                        'error'     => $mailError->getMessage(),
-                    ]);
-                }
-            }
-
-            session()->flash('message', $passwordChanged
-                ? 'Business details updated. Password reset email sent to the admin.'
-                : 'Business details successfully updated!');
-
-            return $this->redirectRoute('superadmin.tenants.index', navigate: true);
-
         } catch (\Throwable $e) {
             Log::error('Tenant update failed', [
                 'tenant_id' => $this->tenantRecord->id,
@@ -1246,12 +1173,41 @@ class extends Component {
             ]);
 
             $this->dispatch('toast', message: 'Something went wrong while updating the tenant. Please try again.', type: 'error');
-        }
-    }
 
-    // ─────────────────────────────────────────────────────
-    //  Add Category modal
-    // ─────────────────────────────────────────────────────
+            return null;
+        }
+
+        // Everything below runs OUTSIDE any try/catch so Livewire's
+        // internal redirect signal propagates untouched.
+
+        if ($oldLogoPath && $oldLogoPath !== $this->logo_path && Storage::disk('public')->exists($oldLogoPath)) {
+            Storage::disk('public')->delete($oldLogoPath);
+        }
+
+        if ($passwordChanged && $this->admin_password) {
+            try {
+                Mail::to($this->admin_email)->send(new TenantAdminPasswordReset(
+                    adminName:    $this->admin_name,
+                    adminEmail:   $this->admin_email,
+                    newPassword:  $this->admin_password,
+                    businessName: $this->name,
+                    loginUrl:     route('login'),
+                ));
+            } catch (\Throwable $mailError) {
+                Log::warning('Tenant password reset email failed', [
+                    'tenant_id' => $this->tenantRecord->id,
+                    'email'     => $this->admin_email,
+                    'error'     => $mailError->getMessage(),
+                ]);
+            }
+        }
+
+        session()->flash('message', $passwordChanged
+            ? 'Business details updated. Password reset email sent to the admin.'
+            : 'Business details successfully updated!');
+
+        return $this->redirectRoute('superadmin.tenants.index', navigate: true);
+    }
 
     public function openAddCategoryModal(): void
     {
@@ -1283,8 +1239,6 @@ class extends Component {
         $iconPath = null;
         $iconSvg  = null;
 
-        // Same rationale as create-tenant: sanitize before persisting so
-        // stored icon_svg values can never carry a payload into render.
         if ($this->newCategoryIcon) {
             $iconPath = $this->newCategoryIcon->store('marker-icons', 'public');
 
@@ -1307,10 +1261,6 @@ class extends Component {
         $this->closeAddCategoryModal();
         $this->dispatch('toast', message: 'Category added successfully.', type: 'success');
     }
-
-    // ─────────────────────────────────────────────────────
-    //  Add Business Type modal
-    // ─────────────────────────────────────────────────────
 
     public function openNewTenantTypeModal(): void
     {
@@ -1366,7 +1316,6 @@ class extends Component {
 
 <div class="p-4 sm:p-6 lg:p-8 max-w-[1440px] mx-auto space-y-6">
 
-    {{-- Toast notifications --}}
     <div
         x-data="{ toasts: [] }"
         x-on:toast.window="
@@ -1396,7 +1345,6 @@ class extends Component {
         </template>
     </div>
 
-    {{-- Loading overlay --}}
     <div wire:loading.delay.longer wire:target="update"
          class="fixed inset-0 z-40 bg-white/60 dark:bg-gray-900/60 backdrop-blur-sm flex items-center justify-center pointer-events-none">
         <div class="flex items-center gap-3 bg-white dark:bg-gray-800 rounded-2xl shadow-xl px-6 py-4 pointer-events-auto">
@@ -1414,7 +1362,6 @@ class extends Component {
         </div>
     @endif
 
-    {{-- Header --}}
     <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
         <div>
             <div class="flex items-center gap-2 mb-2">
@@ -1433,7 +1380,6 @@ class extends Component {
         </a>
     </div>
 
-    {{-- Error summary --}}
     @if ($errors->any())
         <div role="alert" class="rounded-xl border border-rose-200 bg-rose-50 dark:border-rose-500/30 dark:bg-rose-500/10 p-4 text-sm text-rose-700 dark:text-rose-300">
             <p class="font-semibold mb-1">Please fix {{ $errors->count() }} field{{ $errors->count() === 1 ? '' : 's' }} before saving:</p>
@@ -1447,7 +1393,6 @@ class extends Component {
 
     <form wire:submit="update" class="space-y-5">
 
-        {{-- ═══════════ COVER PHOTO (crop modal) ═══════════ --}}
         <section class="card p-6">
             <div class="flex items-center gap-2 mb-4">
                 <span class="w-5 h-px bg-primary-600"></span>
@@ -1504,7 +1449,6 @@ class extends Component {
             @error('cover_photo') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
         </section>
 
-        {{-- ═══════════ BUSINESS LOGO (crop modal) ═══════════ --}}
         <section class="card p-6">
             <div class="flex items-center gap-5">
                 <div class="shrink-0 w-20 h-20 rounded-2xl border-2 border-dashed border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 flex items-center justify-center overflow-hidden">
@@ -1560,7 +1504,6 @@ class extends Component {
             </div>
         </section>
 
-        {{-- ═══════════ BUSINESS INFORMATION ═══════════ --}}
         <section class="card p-6">
             <div class="flex items-center gap-3 mb-5">
                 <span class="w-5 h-px bg-primary-600"></span>
@@ -1655,7 +1598,6 @@ class extends Component {
             </div>
         </section>
 
-        {{-- ═══════════ LEGAL & IDENTITY ═══════════ --}}
         <section class="card p-6">
             <div class="flex items-center gap-3 mb-5">
                 <span class="w-5 h-px bg-primary-600"></span>
@@ -1770,7 +1712,6 @@ class extends Component {
             </div>
         </section>
 
-        {{-- ═══════════ REQUIRED DOCUMENTS ═══════════ --}}
         <section class="card p-6">
             <div class="flex items-center justify-between mb-4">
                 <div class="flex items-center gap-3">
@@ -1952,7 +1893,6 @@ class extends Component {
             </details>
         </section>
 
-        {{-- ═══════════ VISIBILITY ═══════════ --}}
         <section class="card p-6">
             <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                 <div class="flex items-center justify-between gap-3">
@@ -1975,7 +1915,6 @@ class extends Component {
             </div>
         </section>
 
-        {{-- ═══════════ LOCATION — map, then addresses below ═══════════ --}}
         <section class="card p-6 space-y-4">
             <div class="flex items-center gap-2">
                 <span class="w-5 h-px bg-primary-600"></span>
@@ -2016,8 +1955,6 @@ class extends Component {
                 </button>
             </div>
 
-            {{-- Map — dynamic wire:key needed because sub-markers must
-                 re-render when markers array changes. --}}
             <div class="card overflow-hidden relative" style="height: 420px;">
                 <div wire:key="tenant-edit-map-{{ $mapVersion }}">
                     <x-map
@@ -2101,7 +2038,6 @@ class extends Component {
                     </x-map>
                 </div>
 
-                {{-- Looking-up-address chip --}}
                 <div wire:loading wire:target="resolveAddress"
                      class="absolute bottom-3 left-3 z-10 pointer-events-none">
                     <span class="inline-flex items-center gap-1.5 rounded-full bg-gray-900/85 backdrop-blur-sm text-white text-[11px] font-semibold px-3 py-1.5 shadow-lg">
@@ -2114,7 +2050,6 @@ class extends Component {
                 </div>
             </div>
 
-            {{-- Coordinates display --}}
             <p class="text-[11px] font-mono text-gray-500 dark:text-gray-400 tabular-nums">
                 {{ number_format($latitude, 6) }}, {{ number_format($longitude, 6) }}
             </p>
@@ -2122,7 +2057,6 @@ class extends Component {
             @error('latitude') <p class="text-xs text-rose-500">{{ $message }}</p> @enderror
             @error('longitude') <p class="text-xs text-rose-500">{{ $message }}</p> @enderror
 
-            {{-- Address fields — auto-filled by reverse geocoder --}}
             <div class="pt-3 border-t border-gray-100 dark:border-gray-700/60">
                 <div class="flex items-center gap-2 mb-3">
                     <span class="w-5 h-px bg-primary-600"></span>
@@ -2199,7 +2133,6 @@ class extends Component {
             @endif
         </section>
 
-        {{-- ═══════════ ADMIN ACCOUNT ═══════════ --}}
         <section class="card p-6 space-y-6">
             <div class="flex items-center gap-2">
                 <span class="w-5 h-px bg-primary-600"></span>
@@ -2220,7 +2153,6 @@ class extends Component {
                 </div>
             </div>
 
-            {{-- Admin photo — cropper + live preview --}}
             <div
                 x-data="avatarPreview()"
                 x-on:avatar-preview.window="setUrl($event.detail.url)"
@@ -2312,7 +2244,6 @@ class extends Component {
             </div>
         </section>
 
-        {{-- Save --}}
         <div class="flex justify-end pt-4 border-t border-gray-200 dark:border-gray-700">
             <button type="submit" wire:loading.attr="disabled" wire:target="update"
                     class="btn-primary active:scale-95 transition-transform focus-visible:ring-2 focus-visible:ring-primary-500/50">
@@ -2328,7 +2259,6 @@ class extends Component {
         </div>
     </form>
 
-    {{-- Add Category Modal --}}
     @if($showAddCategoryModal)
         <div class="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-4"
              x-on:keydown.escape.window="$wire.closeAddCategoryModal()"
@@ -2378,7 +2308,6 @@ class extends Component {
         </div>
     @endif
 
-    {{-- Add Business Type Modal --}}
     @if($showNewTenantTypeModal)
         <div class="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
              x-on:keydown.escape.window="$wire.closeNewTenantTypeModal()"
@@ -2435,6 +2364,5 @@ class extends Component {
         </div>
     @endif
 
-    {{-- Image crop modal — singleton --}}
     <x-image-crop-modal />
 </div>
