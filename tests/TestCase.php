@@ -29,9 +29,64 @@ abstract class TestCase extends BaseTestCase
      */
     protected function setUp(): void
     {
+        $this->purgePoisonedCaches();
+
         parent::setUp();
 
         $this->seedStandardRoles();
+    }
+
+    /**
+     * Purge caches that poison the test suite when stale.
+     *
+     * TWO KNOWN POISONS:
+     *
+     * 1. bootstrap/cache/config.php
+     *    If `php artisan config:cache` has ever been run, the cached
+     *    file wins over phpunit.xml's APP_ENV=testing override.
+     *    Laravel thinks it is in production. RefreshDatabase then tries
+     *    to run migrate:fresh, which prompts "Are you sure?" — no test
+     *    can answer, so every DB test fails with:
+     *        BadMethodCallException: Received Mockery_1_Illuminate_
+     *        Console_OutputStyle::askQuestion(), but no expectations
+     *        were specified
+     *
+     * 2. storage/framework/views/livewire/classes/*.php
+     *    Livewire 4 compiles each SFC into a cached PHP class keyed by
+     *    file hash. If the underlying .blade.php was edited but the
+     *    cache was not purged, tests run against the OLD compiled class.
+     *    Symptom: 13 Livewire tests fail with "null does not match
+     *    expected" or "Component did not perform a redirect" — the
+     *    stale class has the pre-edit behaviour, not the fresh source.
+     *
+     * MUST run BEFORE parent::setUp() — the framework boots, reads
+     * config, and resolves compiled paths during that call. Purging
+     * after is too late.
+     */
+    protected function purgePoisonedCaches(): void
+    {
+        $base = __DIR__ . '/..';
+
+        // ─── Poison 1: config cache ───
+        $configCache = $base . '/bootstrap/cache/config.php';
+        if (file_exists($configCache)) {
+            @unlink($configCache);
+        }
+
+        // ─── Poison 2: compiled Livewire SFCs ───
+        $livewireDirs = [
+            $base . '/storage/framework/views/livewire/classes',
+            $base . '/storage/framework/views/livewire/views',
+        ];
+
+        foreach ($livewireDirs as $dir) {
+            if (! is_dir($dir)) {
+                continue;
+            }
+            foreach (glob($dir . '/*.php') as $file) {
+                @unlink($file);
+            }
+        }
     }
 
     /**
