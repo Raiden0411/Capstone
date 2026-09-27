@@ -13,10 +13,6 @@
                 .sidebar-filter-panel { animation: none; }
             }
 
-            /* Expanded-hit-area utility for small icon-only buttons.
-               The button keeps its visual size; the ::before pseudo
-               element extends the clickable region by 10px on each
-               side, giving a 44px+ effective tap target. */
             .tap-area {
                 position: relative;
             }
@@ -27,7 +23,6 @@
                 border-radius: 9999px;
                 pointer-events: auto;
             }
-            /* Prevent overlap with adjacent controls in tight rows */
             .tap-area--tight::before {
                 inset: -8px;
             }
@@ -72,9 +67,10 @@
             </div>
         </div>
 
-        {{-- Toggle row — Saved / Events / My Bookings. --}}
+        {{-- Toggle row — Rule M: min-h-11 on each label so the whole row
+             is a 44px tap target on mobile. --}}
         <div class="px-3.5 pb-3 flex items-center gap-x-3 gap-y-1 flex-wrap">
-            <label class="inline-flex items-center gap-2 cursor-pointer select-none py-2 -my-1
+            <label class="inline-flex items-center gap-2 cursor-pointer select-none py-2 -my-1 min-h-11
                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                 <input type="checkbox" wire:model.live="favoritesOnly" class="sr-only peer">
                 <span class="relative inline-block w-8 h-[18px] rounded-full
@@ -97,7 +93,7 @@
                 </span>
             </label>
 
-            <label class="inline-flex items-center gap-2 cursor-pointer select-none py-2 -my-1
+            <label class="inline-flex items-center gap-2 cursor-pointer select-none py-2 -my-1 min-h-11
                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                 <input type="checkbox" wire:model.live="showEvents" class="sr-only peer">
                 <span class="relative inline-block w-8 h-[18px] rounded-full
@@ -179,12 +175,13 @@
         <div class="px-3 pb-2.5 flex items-stretch gap-1.5">
             <div class="flex-1 flex gap-0.5 rounded-lg border border-gray-200/80 bg-gray-50 p-0.5 dark:border-gray-700/60 dark:bg-gray-800/60 min-w-0">
                 @foreach(['name'=>'A–Z','distance'=>'Near','newest'=>'New'] as $v=>$l)
+                    {{-- Rule M: min-h-11 raises each sort button to 44px tap floor. --}}
                     <button
                         type="button"
                         wire:key="sort-{{ $v }}"
                         wire:click="$set('sortBy','{{ $v }}')"
                         @class([
-                            'flex-1 rounded-md px-1 py-2 text-[10px] sm:text-xs font-bold uppercase tracking-wide transition-all duration-200 active:scale-95
+                            'flex-1 min-h-11 inline-flex items-center justify-center rounded-md px-1 py-2 text-[10px] sm:text-xs font-bold uppercase tracking-wide transition-all duration-200 active:scale-95
                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50',
                             'bg-white text-gray-900 shadow-sm dark:bg-gray-600 dark:text-white' => $sortBy === $v,
@@ -202,13 +199,14 @@
                 ]));
             @endphp
 
+            {{-- Rule M: min-h-11 on the Filters button. --}}
             <button
                 type="button"
                 @click="filtersOpen = !filtersOpen"
                 :aria-expanded="filtersOpen.toString()"
                 aria-controls="explore-filters-panel"
                 @class([
-                    'shrink-0 inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-[10px] sm:text-xs font-bold uppercase tracking-wider transition-all duration-200 active:scale-95
+                    'shrink-0 min-h-11 inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-[10px] sm:text-xs font-bold uppercase tracking-wider transition-all duration-200 active:scale-95
                      [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50',
                     'border-primary-600 bg-primary-600 text-white shadow-sm' => $activeFilterCount > 0,
@@ -437,8 +435,6 @@
                 $isFav = in_array($tenant->id, $favorites, true);
                 $isHL  = $highlightedId === $tenant->id;
 
-                // Rule J: relative /storage path, never asset() — APP_URL
-                // may not match the current host.
                 $logo  = $tenant->logo ? '/storage/' . ltrim($tenant->logo, '/') : null;
 
                 $primaryLat = $tenant->coordinates[0]['lat'] ?? null;

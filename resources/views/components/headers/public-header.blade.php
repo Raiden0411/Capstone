@@ -134,24 +134,7 @@
          behind other paints (carousel, map tiles). `transition-[...]`
          narrows the transition to only the properties that actually
          animate (border-color, box-shadow, background-color) — no more
-         `transition-all` invalidating on every cascade.
-
-         ── SAFE-AREA TOP ──────────────────────────────────────────────
-         The header is `fixed top-0`. On notched iPhones with
-         `viewport-fit=cover`, the top ~47–59px of the screen is behind
-         the notch / dynamic island. `pt-[env(safe-area-inset-top)]`
-         pushes the header's CONTENT (logo, nav, buttons) below that
-         zone, while the header's own background (bg-white/90 +
-         backdrop-blur) still fills the full area — so the top of the
-         viewport reads as opaque, and content never sits behind the
-         notch.
-
-         `h-16 md:h-20` became `min-h-16 md:min-h-20` so the header can
-         GROW when the safe area is non-zero. On every other device
-         env(safe-area-inset-top) resolves to 0, the padding adds
-         nothing, and the header renders at exactly 64px / 80px — same
-         as before. See `layouts/app.blade.php` <main> for the matching
-         content offset. --}}
+         `transition-all` invalidating on every cascade. --}}
     <header
         class="fixed top-0 left-0 right-0 z-50 flex items-center w-full
                min-h-16 md:min-h-20 pt-[env(safe-area-inset-top)]
@@ -168,8 +151,11 @@
                     lg:ps-[max(2rem,env(safe-area-inset-left))]
                     lg:pe-[max(2rem,env(safe-area-inset-right))]">
 
-            {{-- Logo & Brand — min-w-0 lets the brand shrink and truncate --}}
+            {{-- Logo & Brand — Rule M: min-h-11 on mobile ensures the whole
+                 brand cluster is a 44px tap target. Desktop drops to
+                 min-h-10 to match the header's compact rhythm. --}}
             <a class="flex items-center gap-2 sm:gap-3 group min-w-0
+                      min-h-11 md:min-h-10
                       transition-all duration-200 active:scale-95
                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-md"
                href="{{ route('home') }}" wire:navigate>
@@ -189,11 +175,7 @@
                 </span>
             </a>
 
-            {{-- Desktop Nav — discovery links first, "About" last.
-                 Active link carries a small amber underline that mirrors
-                 the editorial eyebrow rule used elsewhere on the
-                 platform. Pure CSS via ::after — no extra elements, no
-                 extra listeners. --}}
+            {{-- Desktop Nav — discovery links first, "About" last. --}}
             <div class="hidden lg:flex items-center gap-8 shrink-0">
                 @foreach($navLinks as $link)
                     @php $isActive = request()->routeIs($link['route']); @endphp
@@ -221,10 +203,7 @@
             {{-- Actions --}}
             <div class="flex items-center gap-1 sm:gap-1.5 md:gap-3 shrink-0">
 
-                {{-- Mode switcher — dual-role accounts only.
-                     min-h-[44px] guarantees the WCAG AAA tap floor on
-                     tablets (md breakpoint — iPad mini is a touch device).
-                     Was min-h-[40px], which passed AA but not AAA. --}}
+                {{-- Mode switcher — dual-role accounts only. --}}
                 @if($canSwitchModes)
                     <form method="POST" action="{{ route('mode.switch') }}" class="hidden md:block">
                         @csrf
@@ -250,17 +229,12 @@
                     </form>
                 @endif
 
-                {{-- Notifications (Livewire SFC — auto-refreshes).
-                     Auth-gated: the component reads Auth::user()->id, so
-                     rendering it for a guest would throw. --}}
+                {{-- Notifications (Livewire SFC — auto-refreshes). --}}
                 @auth
                     <livewire:public::partials.notification-bell />
                 @endauth
 
-                {{-- Dark mode toggle — Rule 69: :class swap on the icons.
-                     size-11 md:size-10 raises the mobile tap target to 44px.
-                     Pre-fix it was size-9 (36px) on mobile, which failed
-                     the WCAG AAA tap floor the platform's brief mandates. --}}
+                {{-- Dark mode toggle --}}
                 <button type="button"
                         @click="
                             dark = !dark;
@@ -275,8 +249,6 @@
                 </button>
 
                 @guest
-                    {{-- min-h-[44px] added — py-2.5 alone gives ~40px on
-                         tablets, which is below the AAA tap floor. --}}
                     <a href="{{ route('login') }}" wire:navigate
                        class="hidden sm:inline-flex items-center justify-center min-h-[44px] px-4 lg:px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 bg-primary-600 rounded-full hover:bg-primary-700 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 shrink-0">
                         Login / Sign Up
@@ -319,7 +291,6 @@
                             </svg>
                         </button>
 
-                        {{-- Rule 69: :class toggle + CSS keyframe for entry. --}}
                         <div x-cloak
                              :class="userDropdownOpen ? 'public-header-dropdown' : 'hidden'"
                              class="absolute right-0 mt-2 w-64 max-w-[calc(100vw-2rem)] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-2 shadow-xl z-50 origin-top-right">
@@ -474,9 +445,7 @@
                     </div>
                 @endauth
 
-                {{-- Mobile hamburger — Rule 69: :class swap on the icons.
-                     size-11 raises the tap target to 44px on mobile.
-                     Pre-fix it was size-9 (36px), below the AAA floor. --}}
+                {{-- Mobile hamburger --}}
                 <div class="lg:hidden shrink-0">
                     <button type="button"
                             @click="mobileOpen = !mobileOpen"
@@ -494,18 +463,7 @@
             </div>
         </nav>
 
-        {{-- Mobile drawer — Rule 69: :class toggle + CSS keyframe.
-
-             `top-full` anchors it to the BOTTOM of the header. Because the
-             header grows on notched devices (see pt-[env(safe-area-inset-
-             top)] above), the drawer starts lower too — that's correct.
-
-             The max-height must therefore also subtract the safe-area
-             inset: on notched devices the header is ~64px + 47px tall,
-             and the drawer needs the remaining `100dvh - that`. Pre-fix
-             the subtraction was a hard 4rem / 5rem, which on notched
-             devices would leave the drawer overflowing past the bottom
-             of the viewport (clipping the last menu item). --}}
+        {{-- Mobile drawer --}}
         <div x-cloak
              :class="mobileOpen ? 'public-header-drawer' : 'hidden'"
              data-mobile-drawer
@@ -523,7 +481,6 @@
                     max-h-[calc(100dvh-4rem-env(safe-area-inset-top))] md:max-h-[calc(100dvh-5rem-env(safe-area-inset-top))]
                     overflow-y-auto overscroll-contain">
 
-            {{-- Nav section — eyebrow matches the platform's editorial pattern --}}
             <p class="mb-2 inline-flex items-center gap-2
                       text-[10px] font-bold uppercase tracking-[0.2em]
                       text-amber-600 dark:text-amber-400">
@@ -636,7 +593,6 @@
         </div>
     </header>
 
-    {{-- Mobile drawer backdrop — Rule 69: :class + transition-opacity. --}}
     <div x-cloak
          :class="mobileOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'"
          class="fixed inset-0 z-40 bg-black/50 lg:hidden transition-opacity duration-200"

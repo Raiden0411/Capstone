@@ -470,6 +470,56 @@ html.dark select option {
     filter: invert(1) brightness(0.8);
 }
 
+/* ─────────────────────────────────────────────────────────────
+   Rule M — MapLibre control tap-targets.
+
+   MapLibre ships its controls at 29×29px, below the 44×44 CSS-px
+   minimum required by WCAG 2.5.5 (Target Size) and by design
+   language §7.9. On mobile viewports (≤640px), force each control
+   button to the minimum and scale the icon glyph proportionally
+   so the visual weight stays balanced.
+
+   Applied only under a media query so desktop rendering — where
+   the 29×29 default reads as tighter and more precise — is
+   unchanged.
+
+   Selector scope:
+   - .maplibregl-ctrl-group button     → grouped controls (zoom,
+                                          compass, fullscreen)
+   - .maplibregl-ctrl button           → stand-alone controls
+   - .maplibregl-ctrl button > span/svg → the icon glyph
+
+   The mapcn package renders its "recenter" control as a
+   standalone `.maplibregl-ctrl button`, so it is covered by the
+   second selector. If a future mapcn release switches to a
+   different wrapper, the `.maplibregl-ctrl button` selector
+   remains the widest catch.
+   ───────────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+    .maplibregl-ctrl-group button,
+    .maplibregl-ctrl button {
+        min-width: 44px !important;
+        min-height: 44px !important;
+    }
+
+    /* Scale the icon glyph to match the larger button so the
+       control doesn't look like a 29px icon floating in a 44px
+       square. The scale factor is 44/29 ≈ 1.5, capped at 1.2 so
+       the icon doesn't clip against the button border. */
+    .maplibregl-ctrl-group button > span,
+    .maplibregl-ctrl-group button > svg,
+    .maplibregl-ctrl button > span,
+    .maplibregl-ctrl button > svg {
+        transform: scale(1.2);
+    }
+
+    /* Keep the group flush with the safe-area inset in the corner. */
+    .maplibregl-ctrl-top-right {
+        top: max(0.75rem, env(safe-area-inset-top)) !important;
+        right: max(0.75rem, env(safe-area-inset-right)) !important;
+    }
+}
+
 /* ════════════════════════════════════════════════════════════════
    SCROLL-TRIGGERED REVEALS — SAFE-BY-DEFAULT
    ════════════════════════════════════════════════════════════════
