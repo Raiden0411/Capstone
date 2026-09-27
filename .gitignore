@@ -22,3 +22,9 @@
 Homestead.json
 Homestead.yaml
 Thumbs.db
+
+# Build artifacts — never commit
+/storage/framework/views/*
+!/storage/framework/views/.gitkeep
+/public/vendor/livewire/
+/capstone-evidence/
