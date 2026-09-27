@@ -244,6 +244,7 @@ class extends Component
 
 <div class="min-h-screen flex flex-col md:flex-row bg-white dark:bg-gray-900">
 
+    {{-- ═══════════════ HERO ═══════════════ --}}
     <div class="relative w-full md:w-1/2 min-h-[200px] sm:min-h-[260px] md:min-h-screen md:h-screen md:sticky md:top-0 overflow-hidden">
 
         <img src="{{ $this->heroUrl }}"
@@ -330,6 +331,7 @@ class extends Component
         </div>
     </div>
 
+    {{-- ═══════════════ FORM ═══════════════ --}}
     <div class="auth-form-panel flex items-center justify-center w-full min-w-0
                 px-5 sm:px-8 md:px-10 lg:px-16 py-10 md:py-12
                 bg-white dark:bg-gray-900 md:w-1/2">
@@ -350,6 +352,7 @@ class extends Component
                 Back to Home
             </a>
 
+            {{-- Brand row --}}
             <div class="flex items-center gap-3 mb-8 min-w-0">
                 @if($this->logoUrl)
                     <img src="{{ $this->logoUrl }}"
@@ -368,6 +371,7 @@ class extends Component
                 </span>
             </div>
 
+            {{-- Eyebrow --}}
             <p class="mb-2 inline-flex items-center gap-2
                       text-[10px] font-bold uppercase tracking-[0.22em]
                       text-amber-600 dark:text-amber-400">
@@ -383,6 +387,7 @@ class extends Component
                 Sign in to manage your bookings, saved spots, and account.
             </p>
 
+            {{-- Errors --}}
             @if ($errors->any())
                 <div role="alert" aria-live="polite"
                      class="mb-5 flex items-start gap-3
@@ -400,9 +405,11 @@ class extends Component
                 </div>
             @endif
 
+            {{-- Form --}}
             <form wire:submit="login" class="space-y-5"
                   x-data="{ showPassword: false, capsLock: false }">
 
+                {{-- Email --}}
                 <div>
                     <label for="email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         Email address
@@ -427,6 +434,7 @@ class extends Component
                     @enderror
                 </div>
 
+                {{-- Password --}}
                 <div>
                     <div class="flex items-center justify-between gap-3 mb-1.5">
                         <label for="password" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -498,8 +506,10 @@ class extends Component
                     @enderror
                 </div>
 
+                {{-- Remember me — Rule M: min-h-[44px] on the label so the
+                     whole row is a 44px tap target, not just the 16px box. --}}
                 <div class="flex items-center pt-1">
-                    <label class="flex items-center text-sm text-gray-600 dark:text-gray-300 cursor-pointer select-none
+                    <label class="flex items-center min-h-[44px] text-sm text-gray-600 dark:text-gray-300 cursor-pointer select-none
                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
                         <input type="checkbox"
                                id="remember"
@@ -513,6 +523,7 @@ class extends Component
                     </label>
                 </div>
 
+                {{-- Submit --}}
                 <button type="submit"
                         wire:loading.attr="disabled"
                         wire:target="login"
@@ -539,8 +550,7 @@ class extends Component
             {{-- Rule M note: "Create an account", "Register your business",
                  and "Continue browsing" are inline text links / inline
                  buttons inside prose. WCAG 2.5.5 exempts them, and the
-                 design language §7.9 echoes that exemption. Their
-                 before:-inset-2 expansion is a nicety, not a requirement. --}}
+                 design language §7.9 echoes that exemption. --}}
             <div class="mt-8 pt-6 border-t border-gray-100 dark:border-gray-800 space-y-2.5"
                  x-data="{ showBusinessNotice: false }">
 
@@ -618,6 +628,7 @@ class extends Component
                 </div>
             </div>
 
+            {{-- Footer row --}}
             <div class="mt-10 pt-5 border-t border-gray-100 dark:border-gray-800
                         flex items-center justify-between gap-3
                         text-[11px] text-gray-400 dark:text-gray-600">

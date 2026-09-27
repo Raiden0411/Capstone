@@ -58,7 +58,9 @@
          `x-show`. `wire:navigate` morphs the body; Livewire v4's morph
          engine calls Alpine's `show()` handler on detached nodes, which
          throws `Cannot read properties of undefined (reading 'cloneNode')`.
-         Same class of bug as the notification-bell toast icons. --}}
+         Same class of bug as the notification-bell toast icons.
+
+         Rule M: size-11 (44px) on mobile, size-9 (36px) at sm+. --}}
     <div
         x-data="{
             dark: localStorage.getItem('hs_theme') === 'dark'
@@ -76,7 +78,7 @@
     >
         <button type="button"
                 @click="dark = !dark"
-                class="flex items-center justify-center size-10 md:size-9 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 shadow-sm transition-all duration-200 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                class="flex items-center justify-center size-11 sm:size-9 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700 shadow-sm transition-all duration-200 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
                 aria-label="Toggle dark mode">
             <svg :class="dark ? 'block' : 'hidden'" class="shrink-0 size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="12" cy="12" r="4"/>
