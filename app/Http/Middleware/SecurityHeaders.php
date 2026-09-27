@@ -68,7 +68,9 @@ class SecurityHeaders
             "font-src 'self' data: https://fonts.gstatic.com",
             "img-src 'self' data: blob: https:",
             // OSRM: routes. CARTO + OSM: tiles. PayMongo: API. wss: Livewire (if broadcasting).
-            "connect-src 'self' https://api.paymongo.com https://router.project-osrm.org https://*.basemaps.cartocdn.com https://*.tile.openstreetmap.org https://nominatim.openstreetmap.org https://server.arcgisonline.com wss:",
+            // CSP wildcards do NOT match the apex — both the apex and the
+            // wildcard must be listed for cartocdn.com and openstreetmap.org.
+            "connect-src 'self' https://api.paymongo.com https://router.project-osrm.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://nominatim.openstreetmap.org https://server.arcgisonline.com wss:",
             "worker-src 'self' blob:",
             "frame-src 'self' https://js.paymongo.com https://checkout.paymongo.com",
             "frame-ancestors 'self'",
