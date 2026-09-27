@@ -137,12 +137,14 @@ class extends Component
         return (string) SiteSetting::getValue('site_name', config('app.name'));
     }
 
+    // Rule J: relative /storage paths — asset() prefixes APP_URL,
+    // which may not match the current host.
     #[Computed]
     public function logoUrl(): ?string
     {
         $path = SiteSetting::getValue('site_logo');
 
-        return $path ? asset('storage/' . $path) : null;
+        return $path ? '/storage/' . ltrim($path, '/') : null;
     }
 
     #[Computed]
@@ -151,7 +153,7 @@ class extends Component
         $path = SiteSetting::getValue('hero_background_image');
 
         return $path
-            ? asset('storage/' . $path)
+            ? '/storage/' . ltrim($path, '/')
             : 'https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1600&q=80';
     }
 
@@ -175,7 +177,8 @@ class extends Component
                 'name' => (string) $tenant->name,
                 'slug' => (string) $tenant->slug,
                 'type' => (string) ($tenant->typeOfTenant?->type ?? 'Destination'),
-                'logo' => asset('storage/' . $tenant->logo),
+                // Rule J: relative path
+                'logo' => '/storage/' . ltrim($tenant->logo, '/'),
                 'url'  => route('business.offerings', $tenant->slug),
             ])
             ->all();
@@ -194,7 +197,6 @@ class extends Component
 @push('styles')
     @once
         <style>
-            /* ── Ambient glow on the form panel ── */
             .auth-form-panel {
                 background-image:
                     radial-gradient(ellipse 70% 50% at 50% 0%, rgba(245,158,11,.05) 0%, transparent 55%),
@@ -206,12 +208,10 @@ class extends Component
                     radial-gradient(ellipse 60% 60% at 100% 100%, rgba(59,130,246,.07) 0%, transparent 55%);
             }
 
-            /* ── Soft vignette over the hero photo ── */
             .auth-hero-vignette {
                 background: radial-gradient(ellipse 90% 80% at 50% 50%, transparent 40%, rgba(0,0,0,.35) 100%);
             }
 
-            /* ── Featured chip entrance ── */
             @keyframes authChipIn {
                 from { opacity: 0; transform: translateY(6px); }
                 to   { opacity: 1; transform: translateY(0); }
@@ -223,14 +223,12 @@ class extends Component
             .auth-chip:nth-child(2) { animation-delay: .35s; }
             .auth-chip:nth-child(3) { animation-delay: .45s; }
 
-            /* ── Caps Lock warning ── */
             @keyframes authCapsIn {
                 from { opacity: 0; transform: translateY(-4px); }
                 to   { opacity: 1; transform: translateY(0); }
             }
             .auth-caps { animation: authCapsIn .18s ease-out; }
 
-            /* ── Business-notice inline collapse ── */
             @keyframes authNoticeIn {
                 from { opacity: 0; transform: translateY(-4px); }
                 to   { opacity: 1; transform: translateY(0); }
@@ -246,16 +244,6 @@ class extends Component
 
 <div class="min-h-screen flex flex-col md:flex-row bg-white dark:bg-gray-900">
 
-    {{-- ═══════════════ HERO ═══════════════
-         Unified treatment across all four auth pages:
-           • Photo + 3-layer overlay (directional + bottom + vignette)
-           • Amber top wash
-           • Brand badge pinned top-left
-           • Copy + featured chip strip anchored bottom-left
-
-         md:sticky + md:h-screen keeps the hero pinned while the form
-         scrolls on tall pages (register). On short pages (login) the
-         whole viewport fits and sticky is a no-op. --}}
     <div class="relative w-full md:w-1/2 min-h-[200px] sm:min-h-[260px] md:min-h-screen md:h-screen md:sticky md:top-0 overflow-hidden">
 
         <img src="{{ $this->heroUrl }}"
@@ -267,18 +255,14 @@ class extends Component
              width="1600" height="900"
              class="absolute inset-0 object-cover w-full h-full">
 
-        {{-- Overlay: directional + bottom + vignette --}}
         <div class="absolute inset-0 bg-gradient-to-br from-black/30 via-black/40 to-black/85"></div>
         <div class="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/85 via-black/40 to-transparent"></div>
         <div class="absolute inset-0 auth-hero-vignette pointer-events-none" aria-hidden="true"></div>
-
-        {{-- Warm amber top wash --}}
         <div class="absolute inset-x-0 top-0 h-1/3 bg-gradient-to-b from-amber-500/12 via-amber-500/4 to-transparent pointer-events-none" aria-hidden="true"></div>
 
         <div class="relative h-full flex flex-col justify-between
                     p-5 sm:p-8 md:p-12 lg:p-16 text-white">
 
-            {{-- Brand badge --}}
             <div>
                 <span class="inline-flex max-w-full items-center gap-2 px-3 py-1.5
                              text-[11px] font-bold tracking-[0.22em] uppercase
@@ -289,7 +273,6 @@ class extends Component
                 </span>
             </div>
 
-            {{-- Copy + featured chips --}}
             <div class="mt-8 md:mt-auto">
 
                 <h1 class="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight
@@ -347,17 +330,18 @@ class extends Component
         </div>
     </div>
 
-    {{-- ═══════════════ FORM ═══════════════ --}}
     <div class="auth-form-panel flex items-center justify-center w-full min-w-0
                 px-5 sm:px-8 md:px-10 lg:px-16 py-10 md:py-12
                 bg-white dark:bg-gray-900 md:w-1/2">
         <div class="w-full max-w-md min-w-0">
 
-            {{-- Back link --}}
+            {{-- Back link — Rule M: before:-inset-2 expands 28px visual
+                 to 44px effective tap area on mobile. --}}
             <a href="{{ route('home') }}" wire:navigate
-               class="inline-flex items-center gap-1.5 text-sm font-medium
+               class="relative inline-flex items-center gap-1.5 text-sm font-medium
                       text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400
                       transition-colors mb-8 -mx-1 px-1 py-1 rounded
+                      before:absolute before:content-[''] before:-inset-2 before:rounded
                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                 <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -366,7 +350,6 @@ class extends Component
                 Back to Home
             </a>
 
-            {{-- Brand row --}}
             <div class="flex items-center gap-3 mb-8 min-w-0">
                 @if($this->logoUrl)
                     <img src="{{ $this->logoUrl }}"
@@ -385,7 +368,6 @@ class extends Component
                 </span>
             </div>
 
-            {{-- Eyebrow --}}
             <p class="mb-2 inline-flex items-center gap-2
                       text-[10px] font-bold uppercase tracking-[0.22em]
                       text-amber-600 dark:text-amber-400">
@@ -401,7 +383,6 @@ class extends Component
                 Sign in to manage your bookings, saved spots, and account.
             </p>
 
-            {{-- Errors --}}
             @if ($errors->any())
                 <div role="alert" aria-live="polite"
                      class="mb-5 flex items-start gap-3
@@ -419,11 +400,9 @@ class extends Component
                 </div>
             @endif
 
-            {{-- Form --}}
             <form wire:submit="login" class="space-y-5"
                   x-data="{ showPassword: false, capsLock: false }">
 
-                {{-- Email --}}
                 <div>
                     <label for="email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         Email address
@@ -448,17 +427,17 @@ class extends Component
                     @enderror
                 </div>
 
-                {{-- Password --}}
                 <div>
                     <div class="flex items-center justify-between gap-3 mb-1.5">
                         <label for="password" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
                             Password
                         </label>
+                        {{-- Rule M: -inset-2.5 expands 24px visual to 44px effective tap area. --}}
                         <a href="{{ route('password.request') }}" wire:navigate
                            class="relative text-xs font-semibold
                                   text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300
                                   hover:underline transition-all duration-200 active:scale-95 shrink-0
-                                  before:absolute before:content-[''] before:-inset-2 before:rounded
+                                  before:absolute before:content-[''] before:-inset-2.5 before:rounded
                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded px-1 -mx-1 py-1">
                             Forgot password?
@@ -519,7 +498,6 @@ class extends Component
                     @enderror
                 </div>
 
-                {{-- Remember me --}}
                 <div class="flex items-center pt-1">
                     <label class="flex items-center text-sm text-gray-600 dark:text-gray-300 cursor-pointer select-none
                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
@@ -535,7 +513,6 @@ class extends Component
                     </label>
                 </div>
 
-                {{-- Submit --}}
                 <button type="submit"
                         wire:loading.attr="disabled"
                         wire:target="login"
@@ -559,7 +536,11 @@ class extends Component
                 </button>
             </form>
 
-            {{-- Secondary links --}}
+            {{-- Rule M note: "Create an account", "Register your business",
+                 and "Continue browsing" are inline text links / inline
+                 buttons inside prose. WCAG 2.5.5 exempts them, and the
+                 design language §7.9 echoes that exemption. Their
+                 before:-inset-2 expansion is a nicety, not a requirement. --}}
             <div class="mt-8 pt-6 border-t border-gray-100 dark:border-gray-800 space-y-2.5"
                  x-data="{ showBusinessNotice: false }">
 
@@ -637,7 +618,6 @@ class extends Component
                 </div>
             </div>
 
-            {{-- Footer row --}}
             <div class="mt-10 pt-5 border-t border-gray-100 dark:border-gray-800
                         flex items-center justify-between gap-3
                         text-[11px] text-gray-400 dark:text-gray-600">
