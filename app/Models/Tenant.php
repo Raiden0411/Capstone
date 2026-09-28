@@ -33,6 +33,11 @@ use Illuminate\Support\Carbon;
  * @property-read \App\Models\TypeOfTenant|null $typeOfTenant
  * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\User> $users
  * @property-read int|null $users_count
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\BusinessMembership> $memberships
+ * @property-read int|null $memberships_count
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\BusinessMembership> $owners
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\BusinessMembership> $admins
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\BusinessMembership> $employees
  * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\Property> $properties
  * @property-read int|null $properties_count
  * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\Service> $services
@@ -107,6 +112,7 @@ class Tenant extends Model
     }
 
     // ── Relationships ────────────────────────────────────
+
     /** @return BelongsTo<TypeOfTenant, $this> */
     public function typeOfTenant(): BelongsTo
     {
@@ -161,6 +167,44 @@ class Tenant extends Model
         return $this->hasMany(PermitRenewalReminder::class);
     }
 
+    // ── 1a: Multi-business relations ─────────────────────
+
+    /** @return HasMany<BusinessMembership, $this> */
+    public function memberships(): HasMany
+    {
+        return $this->hasMany(BusinessMembership::class);
+    }
+
+    /** @return HasMany<BusinessMembership, $this> */
+    public function owners(): HasMany
+    {
+        return $this->memberships()
+            ->where('role', BusinessMembership::ROLE_OWNER);
+    }
+
+    /**
+     * Owners + admins. The set that may administer this business.
+     *
+     * @return HasMany<BusinessMembership, $this>
+     */
+    public function admins(): HasMany
+    {
+        return $this->memberships()
+            ->whereIn('role', [
+                BusinessMembership::ROLE_OWNER,
+                BusinessMembership::ROLE_ADMIN,
+            ]);
+    }
+
+    /** @return HasMany<BusinessMembership, $this> */
+    public function employees(): HasMany
+    {
+        return $this->memberships()
+            ->where('role', BusinessMembership::ROLE_EMPLOYEE);
+    }
+
+    // ── Permit / document helpers (unchanged) ────────────
+
     public function latestMayorsPermit(): ?BusinessDocument
     {
         /** @var BusinessApplication|null $app */
@@ -180,6 +224,7 @@ class Tenant extends Model
     }
 
     // ── Coordinates helpers ──────────────────────────────
+
     public function getPrimaryCoordinates(): ?array
     {
         /** @var array<int, array<string, mixed>>|null $coords */
@@ -198,6 +243,7 @@ class Tenant extends Model
     }
 
     // ── Scopes ───────────────────────────────────────────
+
     public function scopeRecommended(Builder $query): Builder
     {
         return $query->where('is_recommended', true);
@@ -215,6 +261,7 @@ class Tenant extends Model
     }
 
     // ── Helpers ──────────────────────────────────────────
+
     public function isRecommended(): bool
     {
         return (bool) $this->is_recommended;

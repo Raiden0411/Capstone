@@ -8,6 +8,7 @@ use App\Mail\BusinessApplicationRejected;
 use App\Mail\BusinessApplicationSubmitted;
 use App\Models\BusinessApplication;
 use App\Models\BusinessDocument;
+use App\Models\BusinessMembership;
 use App\Models\Tenant;
 use App\Models\TenantSetting;
 use App\Models\User;
@@ -49,12 +50,6 @@ class BusinessApplicationService
                 // fall back to generic name
             }
 
-            // storeImage() runs the file through ImageCompressionService
-            // for image mimes only — PDFs and other non-images are stored
-            // as-is. Context key 'kyb-document' selects the ceiling from
-            // config/images.php. Returns null on any failure (store or
-            // compression); we translate that into the same RuntimeException
-            // the previous inline path threw.
             $storedPath = $this->storeImage(
                 $uploadedFile,
                 "kyb-documents/{$application->id}",
@@ -73,10 +68,6 @@ class BusinessApplicationService
                 throw new RuntimeException('Stored file is not readable at ' . $storedFullPath);
             }
 
-            // ── Metadata is read AFTER compression ──
-            // storeImage() has already written the (possibly re-encoded)
-            // file to disk, so the mime, size, and hash computed below all
-            // reflect the final stored bytes — not the raw upload.
             $mime = 'application/octet-stream';
             if (function_exists('mime_content_type')) {
                 $detected = @mime_content_type($storedFullPath);
@@ -166,10 +157,6 @@ class BusinessApplicationService
             ]);
         });
 
-        // Status just moved draft/needs_revision → pending, which is
-        // inside the "awaiting review" set the superadmin badge counts.
-        // Refresh the cached badge so reviewers see the new count on
-        // their next page load.
         $this->notifications->flush();
 
         $this->kyb->verify($application->fresh(['documents']));
@@ -264,14 +251,51 @@ class BusinessApplicationService
 
             /** @var User|null $applicant */
             $applicant = $locked->user;
+
             if ($applicant) {
-                $applicant->update([
-                    'tenant_id'   => $tenant->id,
-                    'active_mode' => User::MODE_BUSINESS,
-                    'avatar'      => $locked->owner_avatar_path ?: $applicant->avatar,
+                // ── 1a: durable pivot row ────────────────────────
+                //
+                // This is the AUTHORITATIVE record that this user is
+                // an owner of this business. `users.tenant_id` below
+                // is the ACTIVE pointer — separate concern.
+                //
+                // is_active is true ONLY when this is the applicant's
+                // first business. An existing owner approving a second
+                // business does NOT get their active context switched —
+                // they keep operating wherever they were.
+                $isFirstBusiness = $applicant->businessMemberships()->count() === 0;
+
+                BusinessMembership::create([
+                    'user_id'   => $applicant->id,
+                    'tenant_id' => $tenant->id,
+                    'role'      => BusinessMembership::ROLE_OWNER,
+                    'is_active' => $isFirstBusiness,
+                    'joined_at' => now(),
                 ]);
 
-                if (!$applicant->hasRole('admin')) {
+                // ── 1a: preserve the existing owner's active tenant ──
+                $updates = [];
+
+                if ($locked->owner_avatar_path) {
+                    $updates['avatar'] = $locked->owner_avatar_path;
+                }
+
+                if (! $applicant->tenant_id) {
+                    // First business — light up the active pointer so
+                    // every existing SFC that reads `user->tenant_id`
+                    // sees the new business immediately.
+                    $updates['tenant_id']   = $tenant->id;
+                    $updates['active_mode'] = User::MODE_BUSINESS;
+                }
+
+                if (! empty($updates)) {
+                    $applicant->update($updates);
+                }
+
+                // ── Spatie role ──────────────────────────────────
+                // Pre-1b: global role assignment. 1b replaces this with
+                // a team-scoped assignment keyed on $tenant->id.
+                if (! $applicant->hasRole('admin')) {
                     $applicant->assignRole('admin');
                 }
             }
@@ -291,8 +315,6 @@ class BusinessApplicationService
             return $tenant;
         });
 
-        // Status moved to approved (outside the counted set). Refresh the
-        // superadmin badge so reviewers see the reduced count on reload.
         $this->notifications->flush();
 
         $fresh = $application->fresh(['user']);
@@ -321,8 +343,6 @@ class BusinessApplicationService
             ]);
         });
 
-        // Status moved to rejected (outside the counted set). Refresh the
-        // superadmin badge.
         $this->notifications->flush();
 
         $fresh = $application->fresh(['user']);
@@ -349,8 +369,6 @@ class BusinessApplicationService
             ]);
         });
 
-        // Status moved to needs_revision (outside the counted set).
-        // Refresh the superadmin badge.
         $this->notifications->flush();
 
         $fresh = $application->fresh(['user']);
