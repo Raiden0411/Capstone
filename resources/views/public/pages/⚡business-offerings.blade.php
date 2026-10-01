@@ -4,10 +4,13 @@
 use App\Models\BusinessApplication;
 use App\Models\Service;
 use App\Models\Tenant;
+use App\Models\User;
 use App\Scopes\TenantScope;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Layout;
+use Livewire\Attributes\Locked;
 use Livewire\Attributes\Title;
 use Livewire\Component;
 
@@ -16,6 +19,7 @@ new
 #[Title('What We Offer')]
 class extends Component
 {
+    #[Locked]
     public Tenant $tenant;
 
     public ?string $coverPhoto      = null;
@@ -99,8 +103,16 @@ class extends Component
         }
 
         if (! $this->owner) {
-            $admin = $this->tenant->users()
-                ->whereHas('roles', fn ($q) => $q->where('name', 'admin'))
+            $adminIds = DB::table('model_has_roles')
+                ->join('roles', 'roles.id', '=', 'model_has_roles.role_id')
+                ->where('roles.name', 'admin')
+                ->where('roles.guard_name', 'web')
+                ->where('model_has_roles.model_type', User::class)
+                ->where('model_has_roles.team_id', $this->tenant->id)
+                ->pluck('model_has_roles.model_id');
+
+            $admin = User::query()
+                ->whereIn('id', $adminIds)
                 ->select('id', 'name', 'avatar', 'tenant_id')
                 ->first();
 
@@ -137,7 +149,7 @@ class extends Component
     public function galleryImageUrls(): array
     {
         return array_values(array_map(
-            fn ($path) => asset('storage/' . $path),
+            fn ($path) => '/storage/' . ltrim($path, '/'),
             $this->galleryImages,
         ));
     }
@@ -166,13 +178,13 @@ class extends Component
     #[Computed]
     public function coverPhotoUrl(): ?string
     {
-        return $this->coverPhoto ? asset('storage/' . $this->coverPhoto) : null;
+        return $this->coverPhoto ? '/storage/' . ltrim($this->coverPhoto, '/') : null;
     }
 
     #[Computed]
     public function logoUrl(): ?string
     {
-        return $this->tenant->logo ? asset('storage/' . $this->tenant->logo) : null;
+        return $this->tenant->logo ? '/storage/' . ltrim($this->tenant->logo, '/') : null;
     }
 
     #[Computed]
@@ -295,7 +307,7 @@ class extends Component
     {
         $path = $this->owner['avatar_path'] ?? null;
 
-        return $path ? asset('storage/' . $path) : null;
+        return $path ? '/storage/' . ltrim($path, '/') : null;
     }
 
     #[Computed]
@@ -394,13 +406,6 @@ class extends Component
 @push('styles')
     @once
         <style>
-            /* ── Gallery modal overlay ──
-               padding-top was hardcoded 64px, which clears the public
-               header (h-16 = 64px) on non-notched devices but sits
-               under the notch / Dynamic Island on notched iPhones.
-               max(64px, safe-area + 12px buffer) keeps the previous
-               64px floor on every device, and grows on notched
-               devices so the modal header isn't obscured. */
             .gal-overlay {
                 position: fixed;
                 inset: 0;
@@ -408,7 +413,7 @@ class extends Component
                 background: rgba(0,0,0,0.97);
                 display: flex;
                 flex-direction: column;
-                padding-top: max(64px, calc(env(safe-area-inset-top) + 12px));
+                padding-top: max(64px, calc(env(safe-area-inset-top, 0px) + 12px));
                 box-sizing: border-box;
                 animation: galFadeIn .25s ease;
             }
@@ -472,7 +477,7 @@ class extends Component
                 background: rgba(255,255,255,.15);
                 color: #fff;
             }
-            .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+            .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
             .hero-radial {
                 background:
                     radial-gradient(ellipse 80% 60% at 15% 20%, rgba(59,130,246,.22) 0%, transparent 55%),
@@ -556,7 +561,6 @@ class extends Component
         @keydown.arrow-right.window="lbSrc && nextLb()"
     >
 
-        {{-- ═══════════════ GALLERY MODAL ═══════════════ --}}
         <div x-cloak
              :class="galleryOpen ? 'gal-overlay' : 'hidden'"
              role="dialog"
@@ -577,10 +581,9 @@ class extends Component
                     </h2>
                 </div>
                 <div class="flex items-center gap-4">
-                    @php $galleryCount = count($galleryImages); @endphp
-                    @if($galleryCount > 0)
+                    @if($this->heroThumbCount > 0)
                         <span class="text-xs text-white/25 hidden sm:block tabular-nums">
-                            {{ $galleryCount }} {{ $galleryCount === 1 ? 'photo' : 'photos' }}
+                            {{ $this->heroThumbCount }} {{ $this->heroThumbCount === 1 ? 'photo' : 'photos' }}
                         </span>
                     @endif
                     <button type="button" @click="closeGallery()"
@@ -601,7 +604,7 @@ class extends Component
                             <div class="gal-item relative overflow-hidden rounded-xl cursor-pointer group"
                                  wire:key="gal-{{ $idx }}"
                                  @click="openLb({{ $idx }})">
-                                <img src="{{ asset('storage/'.$imgPath) }}"
+                                <img src="/storage/{{ ltrim($imgPath, '/') }}"
                                      class="w-full h-full object-cover"
                                      alt="{{ $tenant->name }} photo {{ $idx + 1 }}"
                                      loading="lazy" decoding="async">
@@ -626,7 +629,6 @@ class extends Component
             @endif
         </div>
 
-        {{-- ═══════════════ LIGHTBOX ═══════════════ --}}
         <div x-cloak
              :class="lbSrc ? 'lb-wrap' : 'hidden'"
              @click.self="lbSrc=null"
@@ -634,7 +636,7 @@ class extends Component
              @touchend="touchEnd($event)"
              role="dialog"
              aria-modal="true">
-            <button type="button" @click="prevLb()" class="lb-nav" style="left:16px" aria-label="Previous">
+            <button type="button" @click="prevLb()" class="lb-nav left-4" aria-label="Previous">
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
             </button>
             <div class="relative">
@@ -647,34 +649,20 @@ class extends Component
                     </button>
                 </div>
             </div>
-            <button type="button" @click="nextLb()" class="lb-nav" style="right:16px" aria-label="Next">
+            <button type="button" @click="nextLb()" class="lb-nav right-4" aria-label="Next">
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
             </button>
         </div>
 
-        {{-- ═══════════════ HERO ═══════════════
-             pt trimmed from pt-10 md:pt-16 → pt-8 md:pt-12. The layout
-             <main> already offsets by pt-[calc(4rem+env(safe-area-inset-
-             top))], so the hero's own top padding was stacking an extra
-             ~40–64px of dead space above the fold. Trimming recovers
-             above-the-fold room without changing the vertical rhythm. --}}
         <section id="offerings-hero" class="relative overflow-hidden bg-neutral-950">
 
-            {{-- Background priority: COVER → logo wash → gradient.
-                 The cover photo fills the section as a full-bleed
-                 background. The gradient overlay is left-heavy so the
-                 copy column is guaranteed contrast while the right side
-                 (brand card) sees more of the photo. --}}
             @if($this->coverPhotoUrl)
                 <img src="{{ $this->coverPhotoUrl }}"
                      class="absolute inset-0 w-full h-full object-cover"
                      style="filter:brightness(.7) saturate(1.1)"
                      alt="" loading="eager" decoding="async" fetchpriority="high">
 
-                {{-- Left-heavy horizontal gradient: dense over the copy,
-                     lighter towards the brand card. --}}
                 <div class="absolute inset-0 bg-gradient-to-r from-neutral-950/95 via-neutral-950/70 to-neutral-950/40"></div>
-                {{-- Bottom wash: anchors the section into the page. --}}
                 <div class="absolute inset-0 bg-gradient-to-t from-neutral-950 via-transparent to-neutral-950/20"></div>
             @elseif($this->logoUrl)
                 <img src="{{ $this->logoUrl }}"
@@ -694,11 +682,6 @@ class extends Component
             <div class="relative z-10 max-w-7xl mx-auto px-6 md:px-16 pt-8 md:pt-12 pb-16 md:pb-20">
 
                 <div data-reveal class="mb-10 md:mb-14">
-                    {{-- Back pill — returns to the Tourist Spots grid, which
-                         is the primary discovery surface users arrive from.
-                         Tap target expanded to 44×44 via a transparent
-                         pseudo-element (before:-inset-2.5 = -10px on every
-                         side). Visual stays compact; the click area changed. --}}
                     <a href="{{ route('tourist-spots.index') }}" wire:navigate
                        class="relative inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/[0.06] border border-white/12 hover:bg-white/12 hover:border-white/25 text-[10px] tracking-[0.22em] uppercase text-white/80 hover:text-white transition-all group active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/50
                               before:absolute before:content-[''] before:-inset-2.5 before:rounded-full
@@ -710,7 +693,6 @@ class extends Component
 
                 <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-start">
 
-                    {{-- ─────────── CONTENT (mobile-first) ─────────── --}}
                     <div data-reveal class="lg:col-span-7 lg:order-1">
 
                         <div class="flex flex-wrap items-center gap-2 mb-5">
@@ -787,8 +769,6 @@ class extends Component
                         @if($hasAnyPill)
                             <div class="mt-8 flex flex-wrap items-center gap-2.5">
                                 @if($this->directionsUrl)
-                                    {{-- Action pills min-h-[44px] (WCAG AAA tap floor).
-                                         Was min-h-[40px], which passed AA but not AAA. --}}
                                     <a href="{{ $this->directionsUrl }}" wire:navigate
                                        class="inline-flex items-center gap-2 px-4 min-h-[44px] rounded-full bg-primary-600 hover:bg-primary-700 border border-primary-500/40 hover:border-primary-400 text-xs font-bold text-white transition-all active:scale-95
                                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
@@ -828,7 +808,6 @@ class extends Component
                         @endif
                     </div>
 
-                    {{-- ─────────── BRAND CARD (mobile-second) ─────────── --}}
                     <div data-reveal style="--reveal-delay: 120ms" class="lg:col-span-5 lg:order-2">
                         <div class="relative rounded-3xl bg-neutral-950/75 backdrop-blur-xl border border-white/12 shadow-2xl shadow-black/50 overflow-hidden">
 
@@ -979,7 +958,7 @@ class extends Component
                                     <div class="flex gap-2 cursor-pointer group" @click="openGallery()">
                                         @foreach($this->heroThumbs as $i => $img)
                                             <div class="flex-1 aspect-square rounded-lg overflow-hidden ring-1 ring-white/12 group-hover:ring-primary-400/50 transition">
-                                                <img src="{{ asset('storage/'.$img) }}"
+                                                <img src="/storage/{{ ltrim($img, '/') }}"
                                                      class="w-full h-full object-cover brightness-90 group-hover:brightness-110 group-hover:scale-110 transition duration-500"
                                                      alt="" loading="lazy" decoding="async">
                                             </div>
@@ -1017,10 +996,8 @@ class extends Component
             </div>
         </section>
 
-        {{-- ═══════════════ MAIN CONTENT ═══════════════ --}}
         <div class="max-w-7xl mx-auto px-6 md:px-16 py-12 md:py-16 space-y-16">
 
-            {{-- ═══ ACTIVITIES ═══ --}}
             <div id="activities">
                 <div data-reveal class="mb-10">
                     <p class="mb-2 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400">
@@ -1033,11 +1010,11 @@ class extends Component
                     <p class="mt-2 text-sm text-gray-500 dark:text-gray-400 max-w-md">All activities are listed below. Select your dates to book.</p>
                 </div>
 
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 auto-rows-fr">
                     @forelse($this->properties as $property)
                         @php
                             $imageUrls = array_values(array_map(
-                                fn ($p) => asset('storage/' . $p),
+                                fn ($p) => '/storage/' . ltrim($p, '/'),
                                 $property->images->pluck('image_path')->all(),
                             ));
 
@@ -1049,14 +1026,14 @@ class extends Component
 
                         <article data-reveal
                                  style="--reveal-delay: {{ min($loop->index % 3, 2) * 80 }}ms"
-                                 class="group bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl overflow-hidden shadow-sm hover:shadow-lg hover:-translate-y-1 transition-all duration-300 flex flex-col
+                                 class="card card-hover group h-full overflow-hidden flex flex-col
                                         [touch-action:manipulation]"
                                  wire:key="prop-{{ $property->id }}"
                                  data-images="{{ $imageUrlsJson }}"
                                  data-prop-name="{{ $property->name }}"
                                  x-data="{ imgIndex: 0, images: JSON.parse($el.dataset.images || '[]') }">
 
-                            <div class="relative overflow-hidden aspect-[16/10]">
+                            <div class="relative overflow-hidden aspect-[16/10] shrink-0">
                                 <img :src="images.length > 0 ? images[imgIndex] : 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'"
                                      :alt="images.length > 0 ? ($el.dataset.propName + ' — photo ' + (imgIndex + 1)) : ''"
                                      :class="images.length > 0 ? 'block' : 'hidden'"
@@ -1069,12 +1046,6 @@ class extends Component
                                 </div>
 
                                 <div :class="images.length > 1 ? 'block' : 'hidden'">
-                                    {{-- Prev / next arrows.
-                                         40×40 visual is fine on desktop but below
-                                         the AAA floor on mobile. Expanded via
-                                         pseudo-element (before:-inset-1 = -4px
-                                         each side, giving 48×48 tap area) — the
-                                         visual stays 40×40. --}}
                                     <button type="button" @click.prevent="imgIndex=(imgIndex-1+images.length)%images.length"
                                             class="absolute left-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/55 border border-white/15 flex items-center justify-center text-white/80 hover:bg-black/80 hover:text-white transition-all opacity-0 group-hover:opacity-100 focus-visible:opacity-100 active:scale-95
                                                    before:absolute before:content-[''] before:-inset-1 before:rounded-full
@@ -1122,28 +1093,34 @@ class extends Component
                                     {{ $property->name }}
                                 </h3>
                                 @if($property->description)
-                                    <p class="text-sm text-gray-600 dark:text-gray-400 line-clamp-2 mb-4 flex-1 leading-relaxed">{{ $property->description }}</p>
-                                @else
-                                    <div class="flex-1"></div>
+                                    <p class="text-sm text-gray-600 dark:text-gray-400 line-clamp-2 mb-4 leading-relaxed">{{ $property->description }}</p>
                                 @endif
 
-                                <div class="flex flex-col sm:flex-row sm:items-center justify-between pt-4 mt-auto border-t border-gray-200 dark:border-gray-700 gap-3">
-                                    <div>
+                                <div class="mt-auto pt-4 border-t border-gray-200 dark:border-gray-700 flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+                                    <div class="min-w-0">
                                         <span class="font-display text-2xl font-semibold text-primary-600 dark:text-primary-400 tabular-nums">₱{{ number_format($property->price, 2) }}</span>
                                         <span class="text-[10px] text-gray-500 dark:text-gray-400 ml-1 uppercase tracking-wider">/ unit</span>
                                     </div>
                                     @auth
                                         <a href="{{ route('booking.create', ['publicproperty' => $property->id]) }}" wire:navigate
-                                           class="block w-full sm:w-auto text-center py-2.5 px-5 min-h-[44px] rounded-full bg-primary-600 hover:bg-primary-700 text-white text-[10px] font-bold uppercase tracking-widest transition-all shadow-lg shadow-primary-500/20 hover:-translate-y-0.5 active:scale-95
+                                           class="inline-flex items-center justify-center w-full sm:w-auto sm:pb-0.5 px-5 min-h-[44px] rounded-full
+                                                  bg-primary-600 hover:bg-primary-700 text-white
+                                                  text-xs font-semibold tracking-wide
+                                                  shadow-md shadow-primary-500/25 hover:shadow-lg hover:shadow-primary-500/35 hover:-translate-y-0.5 active:scale-95
+                                                  transition-all
                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                                             Book Now
                                         </a>
                                     @else
                                         <a href="{{ route('login', ['redirect' => url()->current()]) }}"
-                                           class="block w-full sm:w-auto text-center py-2.5 px-5 min-h-[44px] rounded-full border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 text-[10px] font-bold uppercase tracking-widest transition-all active:scale-95
+                                           class="inline-flex items-center justify-center w-full sm:w-auto sm:pb-0.5 px-5 min-h-[44px] rounded-full
+                                                  border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700
+                                                  text-gray-700 dark:text-gray-300
+                                                  text-xs font-semibold tracking-wide
+                                                  transition-all active:scale-95
                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                                             Login to Book
                                         </a>
                                     @endauth
@@ -1160,7 +1137,6 @@ class extends Component
                 </div>
             </div>
 
-            {{-- ═══ SERVICES ═══ --}}
             @if($this->services->isNotEmpty())
             <div id="services" class="pt-8 border-t border-gray-200 dark:border-gray-700">
                 <div data-reveal class="mb-10">
@@ -1174,11 +1150,11 @@ class extends Component
                     <p class="mt-2 text-sm text-gray-500 dark:text-gray-400 max-w-md">Extras available to elevate your experience.</p>
                 </div>
 
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 auto-rows-fr">
                     @foreach($this->services as $service)
                         <div data-reveal
                              style="--reveal-delay: {{ min($loop->index % 3, 2) * 80 }}ms"
-                             class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-6 shadow-sm hover:shadow-lg hover:-translate-y-1 transition-all duration-300 flex flex-col
+                             class="card card-hover h-full p-6 flex flex-col
                                     [touch-action:manipulation]"
                              wire:key="svc-{{ $service->id }}">
 
@@ -1190,7 +1166,7 @@ class extends Component
 
                             <h3 class="font-display text-lg font-semibold text-gray-900 dark:text-white mb-2 leading-snug">{{ $service->name }}</h3>
 
-                            <div class="flex-1 mb-5"></div>
+                            <div class="flex-1"></div>
 
                             <div class="flex items-center justify-between pt-4 mt-auto border-t border-gray-200 dark:border-gray-700">
                                 <span class="font-display text-2xl font-semibold text-gray-900 dark:text-white tabular-nums">₱{{ number_format($service->price, 2) }}</span>
@@ -1199,9 +1175,6 @@ class extends Component
                                         Add at checkout
                                     </span>
                                 @else
-                                    {{-- Small text link — tap area expanded to
-                                         ~44px via pseudo-element. Visual stays
-                                         compact (10px text). --}}
                                     <a href="{{ route('login', ['redirect' => url()->current()]) }}"
                                        class="relative inline-flex items-center gap-1 px-2 -mx-2 py-2 -my-2 text-[10px] font-bold uppercase tracking-widest text-primary-600 hover:text-primary-700 transition-colors active:scale-95
                                               before:absolute before:content-[''] before:inset-0 before:rounded
@@ -1220,19 +1193,6 @@ class extends Component
 
         </div>
 
-        {{-- ═══ GALLERY FOOTER TEASER ═══
-             Mobile polish:
-               • Vertical padding reduced from py-14 → pt-8 pb-12 so the
-                 section doesn't dominate a 375×667 viewport for one line
-                 of text + button.
-               • Three circular thumbnail previews + a "+N" counter appear
-                 only below `sm` — gives an immediate visual cue of what's
-                 inside, matching the pattern used elsewhere on the
-                 platform.
-               • CTA button is w-full on mobile (block-level, centred) and
-                 content-width on desktop. Previously the mobile button
-                 was centred in a narrow column with too much dead air.
-               • min-h-[52px] on the CTA — more prominent touch target. --}}
         @if(!empty($galleryImages))
             <div class="h-px bg-gradient-to-r from-transparent via-gray-200 dark:via-gray-700 to-transparent mx-6 md:mx-16"></div>
             <section data-reveal class="max-w-7xl mx-auto px-6 md:px-16 pt-8 pb-12 md:py-14">
@@ -1242,7 +1202,7 @@ class extends Component
                         @php $previewThumbs = array_slice($galleryImages, 0, 3); @endphp
                         <div class="flex sm:hidden items-center -space-x-2.5 mb-5">
                             @foreach($previewThumbs as $thumb)
-                                <img src="{{ asset('storage/'.$thumb) }}"
+                                <img src="/storage/{{ ltrim($thumb, '/') }}"
                                      class="w-12 h-12 rounded-full object-cover ring-2 ring-white dark:ring-gray-900 shrink-0"
                                      alt="" loading="lazy" decoding="async">
                             @endforeach
@@ -1276,8 +1236,7 @@ class extends Component
             </section>
         @endif
 
-        {{-- ═══ STICKY MOBILE BOOK BAR ═══ --}}
-        <div class="fixed bottom-0 left-0 right-0 z-[900] bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-700 shadow-lg lg:hidden transition-transform duration-300 pb-safe"
+        <div class="glass fixed bottom-0 left-0 right-0 z-[900] border-x-0 border-b-0 shadow-lg lg:hidden transition-transform duration-300 pb-safe"
              :class="stickyVisible ? 'translate-y-0' : 'translate-y-full'">
             <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
                 <div class="flex-1 min-w-0">

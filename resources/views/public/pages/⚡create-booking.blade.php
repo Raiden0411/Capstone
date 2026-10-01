@@ -12,11 +12,13 @@ use App\Models\Booking;
 use App\Models\BookingItem;
 use App\Models\BookingService;
 use App\Models\Payment;
+use App\Services\BookingAvailabilityService;
 use App\Services\PayMongoService;
 use App\Scopes\TenantScope;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Str;
 use Carbon\Carbon;
 
@@ -28,73 +30,74 @@ class extends Component
     #[Locked]
     public int $propertyId;
 
+    #[Locked]
     public ?Property $property = null;
 
-    // ── Guest ──
     public string $customerName  = '';
     public string $customerEmail = '';
     public string $customerPhone = '';
 
-    // ── Stay ──
     public string $check_in     = '';
     public string $check_out    = '';
     public string $checkInTime  = '09:00';
 
     public bool $dateRangeValid = true;
 
-    // ── Selection ──
-    /** @var array<int, int> service_id => quantity */
     public array $selectedServices = [];
 
-    // ── Totals (display-only; recomputed server-side on submit) ──
     public float $totalAmount      = 0;
     public int   $totalDays        = 1;
     public float $reservationFee   = 0;
     public float $balanceOnArrival = 0;
 
-    // ── Payment ──
     public string $bookingMode   = 'full';
     public string $paymentMethod = 'gcash';
+
+    public array $blockedHoursForSelection = [];
 
     public function mount($publicproperty): void
     {
         $this->propertyId = (int) $publicproperty;
-
-        $this->property = Property::withoutGlobalScope(TenantScope::class)
-            ->with(['tenant', 'images', 'propertyType'])
-            ->findOrFail($this->propertyId);
-
+        $this->loadProperty(true);
         $this->assertPropertyIsBookable();
 
-        $this->customerName  = (string) Auth::user()?->name;
-        $this->customerEmail = (string) Auth::user()?->email;
-        $this->customerPhone = (string) (Auth::user()?->phone ?? '');
+        $account = Auth::user();
+        $this->customerName  = (string) ($account?->name  ?? '');
+        $this->customerEmail = (string) ($account?->email ?? '');
+        $this->customerPhone = (string) ($account?->phone ?? '');
 
-        $firstAvailable    = $this->firstAvailableDate;
+        $firstAvailable = $this->firstAvailableDate;
+
         $this->check_in    = $firstAvailable;
         $this->check_out   = $firstAvailable;
         $this->checkInTime = now()->format('H:i');
 
+        $this->enforceOperatingHours();
+        $this->refreshAvailability();
+        $this->enforceMinCheckInTime();
         $this->calculateTotal();
     }
 
     public function hydrate(): void
     {
-        $this->property = Property::withoutGlobalScope(TenantScope::class)
-            ->with(['tenant', 'images', 'propertyType'])
-            ->find($this->propertyId);
-
+        $this->loadProperty(false);
         $this->assertPropertyIsBookable();
+    }
+
+    protected function loadProperty(bool $orFail): void
+    {
+        $query = Property::withoutGlobalScope(TenantScope::class)->with([
+            'tenant',
+            'images'       => fn ($q) => $q->withoutGlobalScope(TenantScope::class),
+            'propertyType' => fn ($q) => $q->withoutGlobalScope(TenantScope::class),
+        ]);
+
+        $this->property = $orFail ? $query->findOrFail($this->propertyId) : $query->find($this->propertyId);
     }
 
     protected function assertPropertyIsBookable(): void
     {
-        if (
-            !$this->property
-            || !$this->property->tenant_id
-            || !$this->property->is_active
-            || !$this->property->tenant
-        ) {
+        if (! $this->property || ! $this->property->tenant_id || ! $this->property->is_active || ! $this->property->tenant) {
             abort(404);
         }
     }
@@ -104,22 +107,229 @@ class extends Component
         return [
             'customerName'  => ['required', 'string', 'max:255'],
             'customerEmail' => ['required', 'email', 'max:255'],
-            'customerPhone' => ['nullable', 'string', 'max:20', 'regex:/^(09|\+639)\d{9}$/'],
+            'customerPhone' => ['required', 'string', 'max:20', 'regex:/^(09|\+639)\d{9}$/'],
             'check_in'      => ['required', 'date', 'after_or_equal:today'],
-            'check_out'     => ['required', 'date', 'after_or_equal:check_in'],
-            'checkInTime'   => ['required', 'date_format:H:i'],
-            'bookingMode'   => ['required', 'in:full,reservation'],
-            'paymentMethod' => ['required', 'in:gcash,paymaya,card'],
+            'check_out'     => [
+                'required',
+                'date',
+                'after_or_equal:check_in',
+                function ($attribute, $value, $fail) {
+                    if (! $this->check_in || ! $this->check_out) return;
+                    try {
+                        $in  = Carbon::parse($this->check_in)->startOfDay();
+                        $out = Carbon::parse($this->check_out)->startOfDay();
+                    } catch (\Throwable) {
+                        return;
+                    }
+
+                    if ($out->lt($in)) {
+                        $fail('End date must be on or after the start date.');
+                        return;
+                    }
+
+                    $days   = (int) $in->diffInDays($out) + 1;
+                    $limits = $this->durationLimits;
+
+                    if ($days < $limits['min']) {
+                        $label = $limits['min'] === 1 ? 'day' : 'days';
+                        $fail("Minimum stay for this property is {$limits['min']} {$label}.");
+                        return;
+                    }
+
+                    if ($limits['max'] !== null && $days > $limits['max']) {
+                        $label = $limits['max'] === 1 ? 'day' : 'days';
+                        $fail("Maximum stay for this property is {$limits['max']} {$label}.");
+                    }
+                },
+            ],
+            'checkInTime'   => [
+                'required',
+                'date_format:H:i',
+                function ($attribute, $value, $fail) {
+                    if ($this->check_in !== now()->format('Y-m-d') || ! is_string($value) || $value === '') {
+                        return;
+                    }
+                    if ($value < now()->format('H:i')) {
+                        $fail('Start time cannot be earlier than the current time when booking for today.');
+                    }
+                },
+            ],
+            'bookingMode'        => ['required', 'in:full,reservation'],
+            'paymentMethod'      => ['required', 'in:gcash,paymaya,card'],
             'selectedServices'   => ['array'],
             'selectedServices.*' => ['integer', 'min:1', 'max:100'],
         ];
     }
 
-    public function setDates($checkIn, $checkOut): void
+    protected function enforceMinCheckInTime(): void
     {
-        if (!is_string($checkIn) || !is_string($checkOut)) {
+        if ($this->check_in !== now()->format('Y-m-d')) return;
+
+        $now = now()->format('H:i');
+
+        if ($this->checkInTime === '' || $this->checkInTime < $now) {
+            $this->checkInTime = $now;
+        }
+    }
+
+    protected function enforceOperatingHours(): void
+    {
+        if (! $this->property) return;
+
+        $hours = $this->operatingHoursForProperty;
+        if ($hours['is_24hr']) return;
+
+        $current = $this->toMinutes($this->checkInTime);
+        $opening = $this->toMinutes($hours['opening']);
+        $closing = $this->toMinutes($hours['closing']);
+
+        if ($current < $opening || $current > $closing) {
+            $this->checkInTime = $hours['opening'];
+        }
+    }
+
+    protected function refreshAvailability(): void
+    {
+        if (! $this->property || $this->check_in === '' || $this->check_out === '') {
+            $this->blockedHoursForSelection = [];
             return;
         }
+
+        try {
+            $blocked = app(BookingAvailabilityService::class)
+                ->blockedHoursForSelection($this->property, $this->check_in, $this->check_out);
+
+            $this->blockedHoursForSelection = $blocked;
+
+            $pickedHour = (int) explode(':', $this->checkInTime)[0];
+
+            if (in_array($pickedHour, $blocked, true)) {
+                $hours       = $this->operatingHoursForProperty;
+                $openingHour = $hours['is_24hr'] ? 0 : (int) explode(':', $hours['opening'])[0];
+                $closingHour = $hours['is_24hr'] ? 23 : (int) explode(':', $hours['closing'])[0];
+
+                for ($h = $pickedHour; $h <= $closingHour; $h++) {
+                    if (! in_array($h, $blocked, true)) {
+                        $this->checkInTime = sprintf('%02d:00', $h);
+                        return;
+                    }
+                }
+
+                for ($h = $openingHour; $h <= $closingHour; $h++) {
+                    if (! in_array($h, $blocked, true)) {
+                        $this->checkInTime = sprintf('%02d:00', $h);
+                        return;
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Availability refresh failed', [
+                'property_id' => $this->property->id,
+                'check_in'    => $this->check_in,
+                'check_out'   => $this->check_out,
+                'error'       => $e->getMessage(),
+            ]);
+            $this->blockedHoursForSelection = [];
+        }
+    }
+
+    protected function toMinutes(?string $time): int
+    {
+        if (! is_string($time) || $time === '') return 0;
+        [$h, $m] = array_pad(explode(':', $time, 2), 2, '0');
+        return ((int) $h) * 60 + ((int) $m);
+    }
+
+    protected function formatHourForDisplay(int $h): string
+    {
+        if ($h === 0)  return '12 AM';
+        if ($h < 12)   return $h . ' AM';
+        if ($h === 12) return '12 PM';
+        return ($h - 12) . ' PM';
+    }
+
+    public function selectTime(string $time): void
+    {
+        if (! preg_match('/^\d{2}:\d{2}$/', $time)) return;
+        if ($this->check_in === '' || $this->check_out === '') return;
+        if (! $this->property) return;
+
+        try {
+            $available = app(BookingAvailabilityService::class)
+                ->isSlotAvailable($this->property, $this->check_in, $this->check_out, $time);
+        } catch (\Throwable $e) {
+            Log::warning('selectTime availability check threw', [
+                'property_id' => $this->property->id,
+                'time'        => $time,
+                'error'       => $e->getMessage(),
+            ]);
+            $available = false;
+        }
+
+        if (! $available) {
+            session()->flash('error', 'That time slot is no longer available. Please pick another.');
+            return;
+        }
+
+        $this->checkInTime = $time;
+        $this->validateDateRange();
+        $this->calculateTotal();
+    }
+
+    #[Computed]
+    public function durationLimits(): array
+    {
+        if (! $this->property) {
+            return ['min' => 1, 'max' => null];
+        }
+
+        return app(BookingAvailabilityService::class)->durationLimits($this->property);
+    }
+
+    #[Computed]
+    public function operatingHoursForProperty(): array
+    {
+        if (! $this->property) {
+            return ['opening' => '06:00', 'closing' => '20:00', 'is_24hr' => false];
+        }
+
+        return app(BookingAvailabilityService::class)->operatingHours($this->property);
+    }
+
+    #[Computed]
+    public function calendarStatus(): array
+    {
+        if (! $this->property) return [];
+
+        return app(BookingAvailabilityService::class)->calendarAvailability(
+            $this->property,
+            now()->format('Y-m-d'),
+            now()->addDays(90)->format('Y-m-d'),
+        );
+    }
+
+    #[Computed]
+    public function timeSlots(): array
+    {
+        $blocked = $this->blockedHoursForSelection;
+        $slots   = [];
+
+        for ($h = 0; $h < 24; $h++) {
+            $slots[] = [
+                'h24'     => sprintf('%02d:00', $h),
+                'hour'    => $h,
+                'display' => $this->formatHourForDisplay($h),
+                'period'  => $h < 12 ? 'AM' : 'PM',
+                'blocked' => in_array($h, $blocked, true),
+            ];
+        }
+
+        return $slots;
+    }
+
+    public function setDates($checkIn, $checkOut): void
+    {
+        if (! is_string($checkIn) || ! is_string($checkOut)) return;
 
         try {
             $in  = Carbon::createFromFormat('Y-m-d', $checkIn);
@@ -128,9 +338,24 @@ class extends Component
             return;
         }
 
+        if ($out->lt($in)) {
+            $out = $in->copy();
+        }
+
+        $limits = $this->durationLimits;
+        $days   = (int) $in->copy()->startOfDay()->diffInDays($out->copy()->startOfDay()) + 1;
+
+        if ($days < $limits['min']) {
+            $out = $in->copy()->addDays($limits['min'] - 1);
+        } elseif ($limits['max'] !== null && $days > $limits['max']) {
+            $out = $in->copy()->addDays($limits['max'] - 1);
+        }
+
         $this->check_in  = $in->format('Y-m-d');
         $this->check_out = $out->format('Y-m-d');
 
+        $this->enforceMinCheckInTime();
+        $this->refreshAvailability();
         $this->validateDateRange();
         $this->calculateTotal();
     }
@@ -148,18 +373,35 @@ class extends Component
             return;
         }
 
+        $limits = $this->durationLimits;
+
         if ($this->check_out === '') {
-            $this->check_out = $this->check_in;
+            $this->check_out = $in->format('Y-m-d');
         } else {
             try {
-                if ($in->gt(Carbon::parse($this->check_out))) {
-                    $this->check_out = $this->check_in;
-                }
+                $out = Carbon::parse($this->check_out);
             } catch (\Throwable) {
-                // ignore
+                $out = $in->copy();
             }
+
+            if ($out->lt($in)) {
+                $out = $in->copy();
+            }
+
+            $minOut = $in->copy()->addDays($limits['min'] - 1);
+            $maxOut = $limits['max'] !== null ? $in->copy()->addDays($limits['max'] - 1) : null;
+
+            if ($out->lt($minOut)) {
+                $out = $minOut;
+            } elseif ($maxOut !== null && $out->gt($maxOut)) {
+                $out = $maxOut;
+            }
+
+            $this->check_out = $out->format('Y-m-d');
         }
 
+        $this->enforceMinCheckInTime();
+        $this->refreshAvailability();
         $this->validateDateRange();
         $this->calculateTotal();
     }
@@ -178,23 +420,36 @@ class extends Component
         }
 
         if ($this->check_in === '') {
-            $this->check_in = $this->check_out;
-        } else {
-            try {
-                if ($out->lt(Carbon::parse($this->check_in))) {
-                    $this->check_out = $this->check_in;
-                }
-            } catch (\Throwable) {
-                // ignore
-            }
+            $this->check_in = $out->format('Y-m-d');
         }
 
+        try {
+            $in = Carbon::parse($this->check_in);
+        } catch (\Throwable) {
+            return;
+        }
+
+        if ($out->lt($in)) {
+            $this->check_out = $in->format('Y-m-d');
+        }
+
+        $limits = $this->durationLimits;
+        $days   = (int) $in->copy()->startOfDay()->diffInDays(Carbon::parse($this->check_out)->startOfDay()) + 1;
+
+        if ($days < $limits['min']) {
+            $this->check_out = $in->copy()->addDays($limits['min'] - 1)->format('Y-m-d');
+        } elseif ($limits['max'] !== null && $days > $limits['max']) {
+            $this->check_out = $in->copy()->addDays($limits['max'] - 1)->format('Y-m-d');
+        }
+
+        $this->refreshAvailability();
         $this->validateDateRange();
         $this->calculateTotal();
     }
 
     public function updatedCheckInTime(): void
     {
+        $this->enforceMinCheckInTime();
         $this->calculateTotal();
     }
 
@@ -211,21 +466,15 @@ class extends Component
             ->where('is_active', true)
             ->exists();
 
-        if (!$exists) {
-            return;
-        }
+        if (! $exists) return;
 
-        $current = (int) ($this->selectedServices[$serviceId] ?? 0);
-        $this->selectedServices[$serviceId] = min(100, $current + 1);
-
+        $this->selectedServices[$serviceId] = min(100, (int) ($this->selectedServices[$serviceId] ?? 0) + 1);
         $this->calculateTotal();
     }
 
     public function decrementService(int $serviceId): void
     {
-        if (!isset($this->selectedServices[$serviceId])) {
-            return;
-        }
+        if (! isset($this->selectedServices[$serviceId])) return;
 
         $current = (int) $this->selectedServices[$serviceId];
 
@@ -246,9 +495,12 @@ class extends Component
 
     public function clearDates(): void
     {
-        $target          = $this->firstAvailableDate;
+        $target = $this->firstAvailableDate;
+
         $this->check_in  = $target;
         $this->check_out = $target;
+        $this->enforceMinCheckInTime();
+        $this->refreshAvailability();
         $this->calculateTotal();
     }
 
@@ -256,18 +508,17 @@ class extends Component
     {
         $price = (float) $this->property->price;
 
-        if (empty($this->check_in) || empty($this->check_out)) {
-            $this->totalDays   = 1;
-            $this->totalAmount = $price;
-        } else {
+        $this->totalDays   = 1;
+        $this->totalAmount = $price;
+
+        if ($this->check_in !== '' && $this->check_out !== '') {
             try {
-                $in  = Carbon::parse($this->check_in);
-                $out = Carbon::parse($this->check_out);
-                $this->totalDays   = max(1, (int) $in->diffInDays($out));
+                $in  = Carbon::parse($this->check_in)->startOfDay();
+                $out = Carbon::parse($this->check_out)->startOfDay();
+
+                $this->totalDays   = max(1, (int) $in->diffInDays($out) + 1);
                 $this->totalAmount = $price * $this->totalDays;
             } catch (\Throwable) {
-                $this->totalDays   = 1;
-                $this->totalAmount = $price;
             }
         }
 
@@ -282,16 +533,19 @@ class extends Component
     }
 
     #[Computed]
+    public function minCheckInTime(): string
+    {
+        return $this->check_in === now()->format('Y-m-d') ? now()->format('H:i') : '';
+    }
+
+    #[Computed]
     public function selectedServiceModels()
     {
-        $serviceIds = array_keys($this->selectedServices);
-
-        if (empty($serviceIds)) {
-            return collect();
-        }
+        $ids = array_keys($this->selectedServices);
+        if (empty($ids)) return collect();
 
         return Service::withoutGlobalScope(TenantScope::class)
-            ->whereIn('id', $serviceIds)
+            ->whereIn('id', $ids)
             ->where('tenant_id', $this->property->tenant_id)
             ->where('is_active', true)
             ->get(['id', 'name', 'price'])
@@ -311,12 +565,14 @@ class extends Component
     #[Computed]
     public function firstAvailableDate(): string
     {
-        $booked = $this->bookedDatesArray;
-        $cursor = now()->startOfDay();
+        $calendar = $this->calendarStatus;
+        $cursor   = now()->startOfDay();
 
         for ($i = 0; $i < 90; $i++) {
-            $iso = $cursor->format('Y-m-d');
-            if (! in_array($iso, $booked, true)) {
+            $iso    = $cursor->format('Y-m-d');
+            $status = $calendar[$iso] ?? null;
+
+            if (! $status || ! $status['fully_blocked']) {
                 return $iso;
             }
             $cursor->addDay();
@@ -329,16 +585,22 @@ class extends Component
     public function dateSelectorDataJson(): string
     {
         return (string) json_encode([
-            'checkIn'        => $this->check_in,
-            'checkOut'       => $this->check_out,
-            'bookedDates'    => $this->bookedDatesArray,
-            'today'          => now()->format('Y-m-d'),
-            'maxDate'        => now()->addDays(90)->format('Y-m-d'),
-            'firstAvailable' => $this->firstAvailableDate,
+            'checkIn'          => $this->check_in,
+            'checkOut'         => $this->check_out,
+            'checkInTime'      => $this->checkInTime,
+            'bookedDates'      => $this->bookedDatesArray,
+            'today'            => now()->format('Y-m-d'),
+            'maxDate'          => now()->addDays(90)->format('Y-m-d'),
+            'firstAvailable'   => $this->firstAvailableDate,
+            'serverNowEpochMs' => now()->getTimestamp() * 1000,
+            'timezone'         => (string) config('app.timezone', 'Asia/Manila'),
+            'operatingHours'   => $this->operatingHoursForProperty,
+            'blockedHours'     => $this->blockedHoursForSelection,
+            'calendarStatus'   => $this->calendarStatus,
+            'durationLimits'   => $this->durationLimits,
         ], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG);
     }
 
-    /** @return array<int, array{start: string, end: string}> */
     #[Computed]
     public function bookedDateRanges(): array
     {
@@ -353,21 +615,12 @@ class extends Component
                   ->where('check_in', '<=', $maxDate)
                   ->where('check_out', '>=', $minDate);
             })
-            ->with(['booking' => fn ($q) => $q
-                ->withoutGlobalScope(TenantScope::class)
-                ->select('id', 'check_in', 'check_out')
-            ])
+            ->with(['booking' => fn ($q) => $q->withoutGlobalScope(TenantScope::class)->select('id', 'check_in', 'check_out')])
             ->get(['id', 'booking_id', 'property_id'])
-            ->map(function ($item) {
-                if (!$item->booking) {
-                    return null;
-                }
-
-                return [
-                    'start' => $item->booking->check_in->format('Y-m-d'),
-                    'end'   => $item->booking->check_out->format('Y-m-d'),
-                ];
-            })
+            ->map(fn ($item) => $item->booking ? [
+                'start' => $item->booking->check_in->format('Y-m-d'),
+                'end'   => $item->booking->check_out->format('Y-m-d'),
+            ] : null)
             ->filter()
             ->values()
             ->all();
@@ -398,81 +651,129 @@ class extends Component
             return;
         }
 
-        $start       = Carbon::parse($this->check_in);
-        $end         = Carbon::parse($this->check_out);
-        $bookedDates = $this->bookedDatesArray;
-
-        for ($d = $start->copy(); $d->lte($end); $d->addDay()) {
-            if (in_array($d->format('Y-m-d'), $bookedDates, true)) {
-                $this->dateRangeValid = false;
-                session()->flash('error', 'Selected date range includes unavailable dates. Please choose different dates.');
-                return;
-            }
+        if ($this->check_out < $this->check_in) {
+            $this->dateRangeValid = false;
+            session()->flash('error', 'End date must be on or after the start date.');
+            return;
         }
 
-        $this->dateRangeValid = true;
-        session()->forget('error');
+        try {
+            $in  = Carbon::parse($this->check_in)->startOfDay();
+            $out = Carbon::parse($this->check_out)->startOfDay();
+            $days = (int) $in->diffInDays($out) + 1;
+            $limits = $this->durationLimits;
+
+            if ($days < $limits['min']) {
+                $this->dateRangeValid = false;
+                $label = $limits['min'] === 1 ? 'day' : 'days';
+                session()->flash('error', "Minimum stay for this property is {$limits['min']} {$label}.");
+                return;
+            }
+
+            if ($limits['max'] !== null && $days > $limits['max']) {
+                $this->dateRangeValid = false;
+                $label = $limits['max'] === 1 ? 'day' : 'days';
+                session()->flash('error', "Maximum stay for this property is {$limits['max']} {$label}.");
+                return;
+            }
+        } catch (\Throwable) {
+            // fall through
+        }
+
+        try {
+            $available = app(BookingAvailabilityService::class)
+                ->isSlotAvailable($this->property, $this->check_in, $this->check_out, $this->checkInTime);
+        } catch (\Throwable) {
+            $available = true;
+        }
+
+        $this->dateRangeValid = $available;
+
+        if (! $available) {
+            session()->flash('error', 'That time slot is not available. Please pick another start time or shift the dates.');
+        } else {
+            session()->forget('error');
+        }
     }
 
     public function submit()
     {
-        abort_unless(Auth::check(), 403, 'Your session has expired. Please sign in again.');
+        $account = Auth::user();
+        abort_unless($account, 403, 'Your session has expired. Please sign in again.');
 
+        $throttleKey = 'booking-submit:' . $account->id;
+        if (! RateLimiter::attempt($throttleKey, 5, fn () => true, 60)) {
+            session()->flash('error', 'Too many booking attempts in a short time. Please wait a minute and try again.');
+            return null;
+        }
+
+        $this->customerName  = (string) $account->name;
+        $this->customerEmail = (string) $account->email;
+        $this->customerPhone = (string) ($account->phone ?? '');
+
+        if ($this->customerPhone === '') {
+            session()->flash('error', 'Add a phone number to your account before placing a booking. Update your profile to continue.');
+            return null;
+        }
+
+        $this->enforceMinCheckInTime();
+        $this->enforceOperatingHours();
         $this->validate();
         $this->validateDateRange();
-
         $this->calculateTotal();
 
         $tenantId = $this->property->tenant_id;
 
-        if (!$tenantId) {
+        if (! $tenantId) {
             session()->flash('error', 'Property not linked to a valid business.');
             return null;
         }
 
-        if (!$this->property->is_active) {
+        if (! $this->property->is_active) {
             session()->flash('error', 'This activity is currently unavailable. Please choose another.');
             return null;
         }
 
         if ($this->check_out < $this->check_in) {
-            session()->flash('error', 'End date must be on or after start date.');
+            session()->flash('error', 'End date must be on or after the start date.');
+            return null;
+        }
+
+        $limits = $this->durationLimits;
+        if (! $this->property->isDurationWithinLimits($this->totalDays)) {
+            $min = $limits['min'];
+            $max = $limits['max'];
+
+            if ($max === null) {
+                $msg = "Minimum stay for this property is {$min} " . ($min === 1 ? 'day' : 'days') . '.';
+            } else {
+                $msg = "This property accepts stays between {$min} and {$max} days.";
+            }
+
+            session()->flash('error', $msg);
             return null;
         }
 
         DB::beginTransaction();
 
         try {
-            Property::withoutGlobalScope(TenantScope::class)
-                ->whereKey($this->property->id)
-                ->lockForUpdate()
-                ->first();
+            Property::withoutGlobalScope(TenantScope::class)->whereKey($this->property->id)->lockForUpdate()->first();
 
-            $conflict = BookingItem::withoutGlobalScope(TenantScope::class)
-                ->where('property_id', $this->property->id)
-                ->whereHas('booking', function ($q) {
-                    $q->withoutGlobalScope(TenantScope::class)
-                      ->whereNotIn('status', [Booking::STATUS_CANCELLED, Booking::STATUS_COMPLETED])
-                      ->where('check_in', '<', $this->check_out . ' 23:59:59')
-                      ->where('check_out', '>', $this->check_in . ' 00:00:00');
-                })
-                ->exists();
+            $available = app(BookingAvailabilityService::class)
+                ->isSlotAvailable($this->property, $this->check_in, $this->check_out, $this->checkInTime);
 
-            if ($conflict) {
+            if (! $available) {
                 DB::rollBack();
-                session()->flash('error', 'Selected dates are not available. Please choose different dates.');
+                session()->flash('error', 'That time slot is not available. Please pick a different date or start time.');
                 return null;
             }
-
-            $checkInDateTime  = $this->check_in . ' ' . $this->checkInTime . ':00';
-            $checkOutDateTime = $this->check_out . ' ' . $this->checkInTime . ':00';
 
             $booking = Booking::create([
                 'tenant_id'         => $tenantId,
                 'user_id'           => Auth::id(),
                 'booking_reference' => 'BK-' . strtoupper(Str::random(8)),
-                'check_in'          => $checkInDateTime,
-                'check_out'         => $checkOutDateTime,
+                'check_in'          => $this->check_in,
+                'check_out'         => $this->check_out,
                 'booking_time'      => $this->checkInTime,
                 'total_amount'      => $this->totalAmount,
                 'status'            => Booking::STATUS_PENDING,
@@ -490,9 +791,7 @@ class extends Component
 
             foreach ($this->selectedServiceModels as $serviceId => $svc) {
                 $qty = (int) ($this->selectedServices[$serviceId] ?? 0);
-                if ($qty < 1) {
-                    continue;
-                }
+                if ($qty < 1) continue;
 
                 BookingService::create([
                     'tenant_id'  => $tenantId,
@@ -503,40 +802,25 @@ class extends Component
                 ]);
             }
 
-            $chargeAmount = $this->bookingMode === Booking::TYPE_RESERVATION
-                ? $this->reservationFee
-                : $this->totalAmount;
+            $isReservation = $this->bookingMode === Booking::TYPE_RESERVATION;
+            $chargeAmount  = $isReservation ? $this->reservationFee : $this->totalAmount;
 
-            $payMongo = app(PayMongoService::class);
-
-            $session = $payMongo->createCheckoutSession([
+            $session = app(PayMongoService::class)->createCheckoutSession([
                 'customer_name'        => $this->customerName,
                 'customer_email'       => $this->customerEmail,
                 'customer_phone'       => $this->customerPhone,
                 'amount'               => $chargeAmount,
-                'description'          => $this->bookingMode === Booking::TYPE_RESERVATION
-                                            ? "Reservation fee for Booking #{$booking->booking_reference}"
-                                            : "Full payment for Booking #{$booking->booking_reference}",
-                'item_name'            => $this->bookingMode === Booking::TYPE_RESERVATION
-                                            ? 'Reservation Fee'
-                                            : 'Activity Booking',
+                'description'          => ($isReservation ? 'Reservation fee' : 'Full payment') . " for Booking #{$booking->booking_reference}",
+                'item_name'            => $isReservation ? 'Reservation Fee' : 'Activity Booking',
                 'success_url'          => route('booking.payment.processing', ['bookingId' => $booking->id]),
                 'cancel_url'           => route('booking.payment.cancel', ['booking' => $booking->id]),
-                'metadata'             => [
-                    'booking_id' => (string) $booking->id,
-                    'tenant_id'  => (string) $tenantId,
-                ],
+                'metadata'             => ['booking_id' => (string) $booking->id, 'tenant_id' => (string) $tenantId],
                 'payment_method_types' => [$this->paymentMethod],
             ]);
 
-            if (!$session || empty($session['id']) || empty($session['checkout_url'])) {
+            if (! $session || empty($session['id']) || empty($session['checkout_url'])) {
                 DB::rollBack();
-
-                Log::error('PayMongo checkout session creation failed', [
-                    'booking_id' => $booking->id ?? null,
-                    'session'    => $session,
-                ]);
-
+                Log::error('PayMongo checkout session creation failed', ['booking_id' => $booking->id ?? null, 'session' => $session]);
                 session()->flash('error', 'Unable to initiate payment. Please try again.');
                 return null;
             }
@@ -552,12 +836,6 @@ class extends Component
             ]);
 
             DB::commit();
-
-            Log::info('Booking created, redirecting to PayMongo', [
-                'booking_id'    => $booking->id,
-                'session_id'    => $session['id'],
-                'charge_amount' => $chargeAmount,
-            ]);
 
             return redirect()->away($session['checkout_url']);
         } catch (\Throwable $e) {
@@ -576,89 +854,80 @@ class extends Component
 };
 ?>
 
-@push('styles')
-    @once
-        <style>
-            /* ── Ambient background wash ── */
-            .booking-ambient {
-                background:
-                    radial-gradient(ellipse 70% 50% at 8% 5%, rgba(245,158,11,.08) 0%, transparent 55%),
-                    radial-gradient(ellipse 60% 55% at 95% 15%, rgba(59,130,246,.06) 0%, transparent 55%),
-                    radial-gradient(ellipse 80% 60% at 50% 100%, rgba(139,92,246,.04) 0%, transparent 60%);
-            }
-            .dark .booking-ambient {
-                background:
-                    radial-gradient(ellipse 70% 50% at 8% 5%, rgba(245,158,11,.10) 0%, transparent 55%),
-                    radial-gradient(ellipse 60% 55% at 95% 15%, rgba(59,130,246,.08) 0%, transparent 55%),
-                    radial-gradient(ellipse 80% 60% at 50% 100%, rgba(139,92,246,.06) 0%, transparent 60%);
-            }
+@php
+    $services    = $this->availableServices;
+    $hasServices = $services->isNotEmpty();
+    $paymentStep = $hasServices ? 4 : 3;
+    $account     = Auth::user();
+    $hasPhone    = filled($account?->phone);
+    $image       = $property->images->first();
+    $imageUrl    = $image ? '/storage/' . ltrim($image->image_path, '/') : null;
+    $isReserve   = $bookingMode === 'reservation';
 
-            /* ── Step indicator ── */
-            .step-dot {
-                width: 40px; height: 40px; border-radius: 50%;
-                display: flex; align-items: center; justify-content: center;
-                font-size: 14px; font-weight: 800;
-                transition: all .35s cubic-bezier(.34,1.56,.64,1);
-                flex-shrink: 0;
-            }
-            .step-dot.done    { background: #059669; color: #fff; box-shadow: 0 0 0 4px rgba(5,150,105,.18); }
-            .step-dot.active  { background: #10b981; color: #fff; box-shadow: 0 0 0 6px rgba(16,185,129,.22); }
-            .step-dot.pending { background: #e5e7eb; color: #9ca3af; border: 1px solid #d1d5db; }
-            .dark .step-dot.pending { background: #1f2937; color: #9ca3af; border-color: #374151; }
+    $slots    = $this->timeSlots;
+    $amSlots  = array_values(array_filter($slots, fn ($s) => $s['period'] === 'AM'));
+    $pmSlots  = array_values(array_filter($slots, fn ($s) => $s['period'] === 'PM'));
 
-            .step-connector {
-                height: 2px;
-                border-radius: 2px;
-                transition: background-color .4s ease;
-            }
+    $limits = $this->durationLimits;
 
-            /* ── Panel transition on step change ── */
-            .step-panel {
-                animation: stepSlideIn .28s cubic-bezier(.16,1,.3,1);
-            }
-            @keyframes stepSlideIn {
-                from { opacity: 0; transform: translateX(16px); }
-                to   { opacity: 1; transform: translateX(0); }
-            }
-            @media (prefers-reduced-motion: reduce) {
-                .step-panel { animation: none; }
-            }
+    $hours = $this->operatingHoursForProperty;
+    $hoursLabel = $hours['is_24hr']
+        ? 'Open 24 hours'
+        : 'Open ' . \Carbon\Carbon::createFromFormat('H:i', $hours['opening'])->format('g:i A')
+          . ' – ' . \Carbon\Carbon::createFromFormat('H:i', $hours['closing'])->format('g:i A');
 
-            /* ── Calendar day ── */
-            .cal-day {
-                min-height: 44px;
-                min-width: 0;
-                border-radius: 12px;
-                font-weight: 500;
-                transition: background-color .15s, color .15s, transform .1s;
-            }
-            .cal-day:active:not(:disabled) { transform: scale(.92); }
-        </style>
-    @endonce
-@endpush
+    $isToday   = $check_in === now()->format('Y-m-d');
+    $nowHM     = now()->format('H:i');
+    $nowLabel  = now()->format('g:i A');
+
+    // Only surface the "past hours" hint when the current time has
+    // actually cut off some of today's opening window.
+    $pastHoursExistToday = $isToday
+        && ! $hours['is_24hr']
+        && $nowHM > $hours['opening'];
+
+    $steps = [1 => ['Your details', 'Confirm contact'], 2 => ['Visit dates', 'Start & end']];
+    if ($hasServices) {
+        $steps[3] = ['Extras', 'Optional services'];
+        $steps[4] = ['Payment', 'Secure checkout'];
+    } else {
+        $steps[3] = ['Payment', 'Secure checkout'];
+    }
+
+    $ring      = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50';
+    $label     = 'mb-2 block text-sm font-semibold text-gray-500 dark:text-gray-400';
+    $h2        = 'mb-4 font-display text-lg font-semibold tracking-tight text-gray-900 dark:text-white focus:outline-none';
+    $chevR     = 'M9 5l7 7-7 7';
+    $chevL     = 'M15 19l-7-7 7-7';
+    $warn      = 'M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z';
+    $pill      = "inline-flex min-h-[44px] items-center rounded-full border border-gray-200 bg-white px-4 text-sm font-semibold text-gray-700 transition hover:border-primary-400 hover:text-primary-600 active:scale-95 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 {$ring}";
+    $radioCard = 'flex flex-col items-center justify-center gap-2 rounded-2xl border-2 border-gray-200 bg-white p-4 text-center transition active:scale-[0.98] peer-checked:border-primary-600 peer-checked:bg-primary-50 peer-checked:shadow-md peer-focus-visible:ring-2 peer-focus-visible:ring-primary-500 peer-focus-visible:ring-offset-2 dark:border-gray-700 dark:bg-gray-900 dark:peer-checked:bg-primary-900/30';
+    $fmtMoney  = fn ($n) => '₱' . number_format((float) $n, 2);
+
+    $days = fn (int $n): string => $n . ' ' . ($n === 1 ? 'day' : 'days');
+    $isSameDay = $check_in !== '' && $check_in === $check_out;
+@endphp
 
 <div class="relative z-10 min-h-screen text-gray-900 dark:text-gray-100"
      x-data="{
          step: 1,
-         maxStep: {{ $this->availableServices->isNotEmpty() ? 4 : 3 }},
+         maxStep: {{ $hasServices ? 4 : 3 }},
          errors: {},
-
          get nextLabel() {
              if (this.step >= this.maxStep) return 'Continue';
              const target = this.step + 1;
-             if (target === 2) return 'Continue to Dates';
-             if (target === 3) return this.maxStep === 4 ? 'Continue to Extras' : 'Continue to Payment';
-             if (target === 4) return 'Continue to Payment';
-             return 'Continue';
+             if (target === 2) return 'Continue to dates';
+             if (target === 3) return this.maxStep === 4 ? 'Continue to extras' : 'Continue to payment';
+             return 'Continue to payment';
          },
-
+         focusHeading() { this.$nextTick(() => this.$refs['stepHeading' + this.step]?.focus()); },
          next() {
              if (this.step === 1) {
-                 if (!this.$wire.customerName.trim()) this.errors.name = 'Full name is required.';
-                 else delete this.errors.name;
-                 if (!this.$wire.customerEmail.trim()) this.errors.email = 'Email is required.';
-                 else delete this.errors.email;
-                 if (Object.keys(this.errors).length > 0) return;
+                 if (!this.$wire.customerPhone || !this.$wire.customerPhone.trim()) {
+                     this.errors.phone = 'Add a phone number to your account before continuing.';
+                     return;
+                 }
+                 delete this.errors.phone;
              }
              if (this.step === 2) {
                  if (!this.$wire.check_in || !this.$wire.check_out) {
@@ -666,501 +935,323 @@ class extends Component
                      return;
                  }
                  if (this.$wire.dateRangeValid === false) {
-                     this.errors.dates = 'Selected range includes unavailable days. Please pick another range.';
+                     this.errors.dates = 'That time slot is not available. Try another start time or shift the dates.';
                      return;
                  }
                  delete this.errors.dates;
              }
-             if (this.step < this.maxStep) {
-                 this.step++;
-                 this.$nextTick(() => this.$refs['stepHeading' + this.step]?.focus());
-             }
+             if (this.step < this.maxStep) { this.step++; this.focusHeading(); }
          },
-         prev() {
-             if (this.step > 1) {
-                 this.step--;
-                 this.$nextTick(() => this.$refs['stepHeading' + this.step]?.focus());
-             }
-         },
-
-         goTo(s) {
-             if (s >= this.step) return;
-             if (s < 1 || s > this.maxStep) return;
-             this.step = s;
-             this.$nextTick(() => this.$refs['stepHeading' + this.step]?.focus());
-         }
+         prev() { if (this.step > 1) { this.step--; this.focusHeading(); } },
+         goTo(s) { if (s < this.step && s >= 1) { this.step = s; this.focusHeading(); } }
      }">
 
-    {{-- Ambient background wash --}}
-    <div class="booking-ambient fixed inset-0 -z-10 pointer-events-none" aria-hidden="true"></div>
+    <div class="mx-auto max-w-7xl px-4 pb-32 pt-6 sm:px-6 sm:pt-8 lg:px-8 lg:pb-12">
 
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 pb-32 lg:pb-12">
+        <a href="{{ route('business.offerings', $property->tenant->slug) }}" wire:navigate
+           class="group mb-6 inline-flex min-h-[44px] items-center gap-1.5 rounded-full text-sm font-medium text-gray-600 transition hover:text-primary-600 active:scale-95 dark:text-gray-400 dark:hover:text-primary-400 {{ $ring }}">
+            <svg class="size-4 transition-transform group-hover:-translate-x-0.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M19 12H5m7-7l-7 7 7 7"/></svg>
+            Back to {{ $property->tenant->name }}
+        </a>
 
-        {{-- ─── Back link ─── --}}
-        <div class="mb-6">
-            <a href="{{ route('tenant.show', $property->tenant->slug) }}" wire:navigate
-               class="relative inline-flex items-center gap-1.5 text-xs uppercase tracking-wider
-                      text-gray-600 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400
-                      transition-colors group active:scale-95
-                      before:absolute before:content-[''] before:-inset-2 before:rounded
-                      [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
-                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 12H5m7-7l-7 7 7 7"/>
-                </svg>
-                Back to {{ $property->tenant->name }}
-            </a>
-        </div>
+        <h1 class="mb-6 font-display text-3xl font-bold tracking-tight text-gray-900 dark:text-white sm:mb-8 md:text-4xl">Complete your booking</h1>
 
-        {{-- ─── Property context card ───
-             Grounds the user in what they're booking. Sits above the
-             page title so the first thing they see after the back link
-             is the actual property image + name + price. --}}
-        <div class="mb-6 sm:mb-8 rounded-2xl bg-white dark:bg-gray-800
-                    border border-gray-200 dark:border-gray-700
-                    shadow-sm p-4 sm:p-5">
-            <div class="flex items-center gap-4">
-                {{-- Thumbnail --}}
-                <div class="shrink-0 w-16 h-16 sm:w-20 sm:h-20 rounded-xl overflow-hidden
-                            bg-gray-100 dark:bg-gray-700
-                            ring-1 ring-gray-200/70 dark:ring-gray-700/70">
-                    @if($property->images->isNotEmpty())
-                        <img src="{{ asset('storage/'.$property->images->first()->image_path) }}"
-                             alt="{{ $property->name }}"
-                             class="w-full h-full object-cover"
-                             loading="eager" decoding="async">
-                    @else
-                        <div class="w-full h-full flex items-center justify-center text-gray-400">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
-                            </svg>
-                        </div>
-                    @endif
-                </div>
-
-                {{-- Info --}}
-                <div class="min-w-0 flex-1">
-                    <p class="text-[10px] font-bold uppercase tracking-[0.22em] text-amber-600 dark:text-amber-400 mb-1 inline-flex items-center gap-2">
-                        <span class="h-px w-3 bg-amber-500" aria-hidden="true"></span>
-                        Booking
-                    </p>
-                    <h2 class="font-display text-base sm:text-lg font-semibold text-gray-900 dark:text-white truncate leading-tight">
-                        {{ $property->name }}
-                    </h2>
-                    <p class="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
-                        {{ $property->propertyType->name ?? 'Activity' }}
-                        <span class="mx-1" aria-hidden="true">·</span>
-                        {{ $property->tenant->name }}
-                    </p>
-                </div>
-
-                {{-- Price --}}
-                <div class="shrink-0 text-right pl-3 border-l border-gray-200 dark:border-gray-700">
-                    <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-0.5">
-                        From
-                    </p>
-                    <p class="font-display text-lg sm:text-xl font-semibold text-primary-600 dark:text-primary-400 tabular-nums leading-none">
-                        ₱{{ number_format($property->price, 0) }}
-                    </p>
-                    <p class="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">/ unit</p>
-                </div>
+        <div class="card mb-6 flex items-center gap-4 p-4 sm:mb-8 sm:p-5">
+            <div class="size-16 shrink-0 overflow-hidden rounded-xl bg-gray-100 ring-1 ring-gray-200/70 dark:bg-gray-700 dark:ring-gray-700/70 sm:size-20">
+                @if($imageUrl)
+                    <img src="{{ $imageUrl }}" alt="{{ $property->name }}" width="80" height="80" loading="eager" decoding="async" class="size-full object-cover">
+                @endif
+            </div>
+            <div class="min-w-0 flex-1">
+                <h2 class="truncate font-display text-base font-semibold leading-tight text-gray-900 dark:text-white sm:text-lg">{{ $property->name }}</h2>
+                <p class="mt-0.5 truncate text-xs text-gray-500 dark:text-gray-400">{{ $property->propertyType->name ?? 'Activity' }} · {{ $property->tenant->name }}</p>
+            </div>
+            <div class="shrink-0 border-l border-gray-200 pl-3 text-right dark:border-gray-700">
+                <p class="text-xs text-gray-500 dark:text-gray-400">From</p>
+                <p class="font-display text-lg font-semibold leading-none tabular-nums text-primary-600 dark:text-primary-400 sm:text-xl">₱{{ number_format($property->price, 0) }}</p>
+                <p class="mt-0.5 text-xs text-gray-400 dark:text-gray-500">/ unit</p>
             </div>
         </div>
 
-        {{-- ─── Header ─── --}}
-        <div class="mb-6 sm:mb-8">
-            <p class="mb-2 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400">
-                <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
-                Reservation
-            </p>
-            <h1 class="font-display text-2xl sm:text-3xl md:text-4xl font-semibold tracking-tight text-gray-900 dark:text-white [text-wrap:balance]">
-                Complete Your <em class="italic text-primary-600 dark:text-primary-400">Booking</em>
-            </h1>
-        </div>
-
-        {{-- ─── Step Progress ───
-             Larger dots (40px), progress-filling connectors, tighter
-             labels. The connectors now change colour as the user
-             advances, giving a stronger sense of forward motion. --}}
-        <div class="flex items-start mb-8 sm:mb-10">
-            @php
-                $steps = [];
-                $steps[1] = ['Your Details', 'Guest information'];
-                $steps[2] = ['Visit Dates', 'Start & end'];
-
-                if ($this->availableServices->isNotEmpty()) {
-                    $steps[3] = ['Extras', 'Optional services'];
-                    $steps[4] = ['Payment', 'Secure checkout'];
-                } else {
-                    $steps[3] = ['Payment', 'Secure checkout'];
-                }
-            @endphp
-
+        <ol class="mb-8 flex items-start sm:mb-10">
             @foreach($steps as $num => [$title, $sub])
-                <button type="button"
-                        @click="goTo({{ $num }})"
-                        :disabled="{{ $num }} > step"
-                        :aria-current="{{ $num }} === step ? 'step' : 'false'"
-                        class="flex flex-col items-center min-w-0 flex-1 focus:outline-none group
-                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                               focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-lg transition-all duration-200
-                               active:scale-95"
-                        :class="{
-                            'cursor-pointer': {{ $num }} < step,
-                            'cursor-default': {{ $num }} === step,
-                            'cursor-not-allowed opacity-60': {{ $num }} > step
-                        }">
-                    <span class="step-dot"
-                          :class="{
-                              'done': {{ $num }} < step,
-                              'active': {{ $num }} === step,
-                              'pending': {{ $num }} > step
-                          }"
-                          aria-hidden="true">
-                        <span x-text="{{ $num }} < step ? '✓' : '{{ $num }}'"></span>
-                    </span>
-                    <span class="text-xs font-semibold mt-2.5 text-center"
-                          :class="{
-                              'text-gray-900 dark:text-white': {{ $num }} <= step,
-                              'text-gray-500 dark:text-gray-400': {{ $num }} > step
-                          }">
-                        {{ $title }}
-                    </span>
-                    <span class="hidden sm:block text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">{{ $sub }}</span>
-                </button>
-
+                <li class="flex min-w-0 flex-1 flex-col items-center">
+                    <button type="button" @click.stop="goTo({{ $num }})" :disabled="{{ $num }} > step"
+                            :aria-current="{{ $num }} === step ? 'step' : 'false'"
+                            class="group flex min-h-[44px] flex-col items-center rounded-xl transition active:scale-95 {{ $ring }}"
+                            :class="{{ $num }} > step ? 'cursor-not-allowed opacity-60' : ({{ $num }} < step ? 'cursor-pointer' : 'cursor-default')">
+                        <span class="grid size-10 place-items-center rounded-full text-sm font-bold transition-all duration-300"
+                              :class="{{ $num }} < step ? 'bg-primary-600 text-white ring-4 ring-primary-600/15'
+                                     : ({{ $num }} === step ? 'bg-primary-600 text-white ring-4 ring-primary-600/25'
+                                     : 'border border-gray-300 bg-gray-100 text-gray-400 dark:border-gray-700 dark:bg-gray-800')"
+                              aria-hidden="true">
+                            <span x-text="{{ $num }} < step ? '✓' : '{{ $num }}'"></span>
+                        </span>
+                        <span class="mt-2 text-center text-xs font-semibold" :class="{{ $num }} <= step ? 'text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400'">{{ $title }}</span>
+                        <span class="mt-0.5 hidden text-xs text-gray-400 dark:text-gray-500 sm:block">{{ $sub }}</span>
+                    </button>
+                </li>
                 @if($num < count($steps))
-                    <div class="step-connector flex-1 mx-2 mt-[19px]"
-                         :class="{{ $num }} < step ? 'bg-emerald-500' : 'bg-gray-200 dark:bg-gray-700'"
-                         aria-hidden="true"></div>
+                    <li class="mx-2 mt-5 h-0.5 flex-1 rounded-full transition-colors duration-500" :class="{{ $num }} < step ? 'bg-primary-600' : 'bg-gray-200 dark:bg-gray-700'" aria-hidden="true"></li>
                 @endif
             @endforeach
-        </div>
+        </ol>
 
-        {{-- ─── Error flash ─── --}}
         @if(session()->has('error'))
-            <div x-data="{ show: true }"
-                 x-init="setTimeout(() => show = false, 6000)"
-                 :class="show ? '' : 'hidden'"
-                 role="alert"
-                 aria-live="polite"
-                 class="bg-rose-50 dark:bg-rose-900/30 border border-rose-200 dark:border-rose-400/40
-                        text-rose-700 dark:text-rose-200 p-4 rounded-2xl text-sm mb-6
-                        flex items-start gap-3 shadow-sm">
-                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
-                </svg>
+            <div x-data="{ show: true }" x-init="setTimeout(() => show = false, 6000)" x-show="show" x-transition.opacity
+                 role="alert" aria-live="polite"
+                 class="mb-6 flex items-start gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 shadow-sm dark:border-rose-400/40 dark:bg-rose-900/30 dark:text-rose-200">
+                <svg class="mt-0.5 size-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="{{ $warn }}"/></svg>
                 <span class="flex-1">{{ session('error') }}</span>
-                <button type="button"
-                        @click="show = false"
-                        class="relative inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
-                               transition-all duration-200 active:scale-95
-                               before:absolute before:content-[''] before:-inset-2 before:rounded-md
-                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 shrink-0"
-                        aria-label="Dismiss error">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
-                    </svg>
+                <button type="button" @click.stop="show = false" aria-label="Dismiss error"
+                        class="-my-2 -mr-2 grid size-11 shrink-0 place-items-center rounded-full text-rose-500 transition hover:bg-rose-100 active:scale-95 dark:hover:bg-rose-500/10 {{ $ring }}">
+                    <svg class="size-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
                 </button>
             </div>
         @endif
 
-        <div class="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-6 lg:gap-8 items-start">
+        <div class="grid grid-cols-1 items-start gap-6 lg:grid-cols-[1fr_380px] lg:gap-8">
 
             <div class="space-y-4">
 
-                {{-- ═══ STEP 1: Guest Details ═══ --}}
-                <div :class="step === 1 ? 'step-panel space-y-4' : 'hidden'">
+                <section x-cloak x-show="step === 1" x-transition.opacity.duration.200ms class="space-y-4">
+                    <div class="card p-5 sm:p-6">
+                        <h2 class="{{ $h2 }}" x-ref="stepHeading1" tabindex="-1">Your details</h2>
 
-                    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm">
-                        <h2 class="font-display text-lg font-semibold tracking-tight text-gray-900 dark:text-white mb-4" x-ref="stepHeading1" tabindex="-1">Your Details</h2>
-
-                        <div x-data="{ showFields: {{ Auth::check() ? 'false' : 'true' }} }">
-                            @auth
-                                <div class="flex items-center justify-between bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3 mb-4">
-                                    <div class="flex items-center gap-3 min-w-0">
-                                        <div class="w-9 h-9 rounded-full bg-primary-600 flex items-center justify-center text-white text-sm font-bold shrink-0">
-                                            {{ strtoupper(substr(Auth::user()->name, 0, 1)) }}
-                                        </div>
-                                        <div class="min-w-0">
-                                            <p class="text-gray-900 dark:text-white text-sm font-semibold truncate">{{ Auth::user()->name }}</p>
-                                            <p class="text-gray-500 dark:text-gray-400 text-xs truncate">{{ Auth::user()->email }}</p>
-                                        </div>
-                                    </div>
-                                    <button type="button"
-                                            @click="showFields = !showFields"
-                                            class="relative text-[10px] font-bold uppercase tracking-wider text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 transition active:scale-95
-                                                   before:absolute before:content-[''] before:-inset-2 before:rounded-md
-                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-md px-2 py-1 shrink-0">
-                                        <span x-text="showFields ? 'Done' : 'Edit'"></span>
-                                    </button>
+                        @if($account)
+                            <div class="mb-4 flex items-start gap-3 rounded-2xl border px-4 py-3.5 {{ $hasPhone ? 'border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-900' : 'border-rose-200 bg-rose-50 dark:border-rose-500/30 dark:bg-rose-900/20' }}">
+                                <span class="grid size-10 shrink-0 place-items-center rounded-full bg-primary-600 text-sm font-bold text-white">{{ strtoupper(substr($account->name, 0, 1)) }}</span>
+                                <div class="min-w-0 flex-1 space-y-0.5">
+                                    <p class="truncate text-sm font-semibold text-gray-900 dark:text-white">{{ $account->name }}</p>
+                                    <p class="truncate text-xs text-gray-500 dark:text-gray-400">{{ $account->email }}</p>
+                                    <p class="truncate text-xs tabular-nums {{ $hasPhone ? 'text-gray-500 dark:text-gray-400' : 'font-semibold text-rose-700 dark:text-rose-300' }}">
+                                        {{ $hasPhone ? $account->phone : 'No phone number on your account.' }}
+                                    </p>
                                 </div>
-                            @endauth
-
-                            <div :class="showFields ? 'grid grid-cols-1 sm:grid-cols-2 gap-3' : 'hidden'">
-
-                                <div>
-                                    <label for="customerName" class="block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">Full Name *</label>
-                                    <input id="customerName" type="text" wire:model="customerName" placeholder="Your full name"
-                                           autocomplete="name"
-                                           class="input w-full @error('customerName') border-rose-400/50 @enderror">
-                                    @error('customerName') <p class="text-xs text-rose-600 dark:text-rose-300 mt-1">{{ $message }}</p> @enderror
-                                    <p x-cloak :class="errors.name ? 'block' : 'hidden'" x-text="errors.name" class="text-xs text-rose-600 dark:text-rose-300 mt-1"></p>
-                                </div>
-
-                                <div>
-                                    <label for="customerEmail" class="block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">Email *</label>
-                                    <input id="customerEmail" type="email" wire:model="customerEmail" placeholder="you@example.com" required
-                                           autocomplete="email" inputmode="email"
-                                           class="input w-full @error('customerEmail') border-rose-400/50 @enderror">
-                                    @error('customerEmail') <p class="text-xs text-rose-600 dark:text-rose-300 mt-1">{{ $message }}</p> @enderror
-                                    <p x-cloak :class="errors.email ? 'block' : 'hidden'" x-text="errors.email" class="text-xs text-rose-600 dark:text-rose-300 mt-1"></p>
-                                </div>
-
-                                <div class="sm:col-span-2">
-                                    <label for="customerPhone" class="block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">Phone</label>
-                                    <input id="customerPhone"
-                                           type="tel"
-                                           inputmode="numeric"
-                                           pattern="[0-9+]*"
-                                           maxlength="13"
-                                           autocomplete="tel"
-                                           wire:model.live.debounce.500ms="customerPhone"
-                                           x-on:input="
-                                               const cleaned = $event.target.value.replace(/[^0-9+]/g, '');
-                                               if (cleaned !== $event.target.value) {
-                                                   $event.target.value = cleaned;
-                                                   $event.target.dispatchEvent(new Event('input', { bubbles: true }));
-                                               }
-                                           "
-                                           placeholder="09xxxxxxxxx"
-                                           class="input w-full @error('customerPhone') border-rose-400/50 @enderror">
-                                    @error('customerPhone') <p class="text-xs text-rose-600 dark:text-rose-300 mt-1">{{ $message }}</p> @enderror
-                                </div>
+                                <span class="shrink-0 text-xs text-gray-400 dark:text-gray-500">From account</span>
                             </div>
-                        </div>
+
+                            <p class="text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                                @if($hasPhone)
+                                    Your contact details come from your account and are sent to PayMongo with the booking. To change them, update your
+                                @else
+                                    PayMongo requires a contact number for every booking. Add one in your
+                                @endif
+                                <a href="{{ route('profile') }}" wire:navigate class="font-semibold text-primary-600 hover:underline dark:text-primary-400">profile</a>{{ $hasPhone ? '.' : ' and return here to continue.' }}
+                            </p>
+
+                            <p x-cloak x-show="errors.phone" class="mt-3 flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-600 dark:border-rose-500/30 dark:bg-rose-900/20 dark:text-rose-300">
+                                <svg class="mt-0.5 size-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="{{ $warn }}"/></svg>
+                                <span x-text="errors.phone"></span>
+                            </p>
+                            @error('customerPhone')<p class="mt-3 text-xs text-rose-600 dark:text-rose-300">{{ $message }}</p>@enderror
+                        @endif
                     </div>
 
                     <div class="flex justify-end">
-                        <button type="button" @click="next()"
-                                class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
-                                       transition-all duration-200 active:scale-95
-                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                        <button type="button" @click.stop="next()" :disabled="!$wire.customerPhone || !$wire.customerPhone.trim()"
+                                class="btn-primary min-h-[44px] disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100">
                             <span x-text="nextLabel"></span>
-                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
+                            <svg class="size-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="{{ $chevR }}"/></svg>
                         </button>
                     </div>
-                </div>
+                </section>
 
-                {{-- ═══ STEP 2: Visit Dates ═══ --}}
-                <div :class="step === 2 ? 'step-panel space-y-4' : 'hidden'">
+                <section x-cloak x-show="step === 2" x-transition.opacity.duration.200ms class="space-y-4">
+                    <div class="card p-4 sm:p-6">
+                        <h2 class="{{ $h2 }}" x-ref="stepHeading2" tabindex="-1">Visit dates</h2>
 
-                    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-4 sm:p-6 shadow-sm">
-                        <h2 class="font-display text-lg font-semibold tracking-tight text-gray-900 dark:text-white mb-4" x-ref="stepHeading2" tabindex="-1">Visit Dates</h2>
-
-                        <div x-data="dateSelector()"
-                             data-date-data="{{ $this->dateSelectorDataJson }}"
-                             class="space-y-5">
+                        <div x-data="dateSelector()" data-date-data="{{ $this->dateSelectorDataJson }}" class="space-y-5">
 
                             <div>
-                                <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">Quick pick</p>
+                                <p class="{{ $label }}">Quick pick</p>
                                 <div class="flex flex-wrap gap-2">
-                                    <button type="button" @click="quickSelect('today')"
-                                            class="inline-flex items-center gap-1 h-11 sm:h-10 px-3.5 rounded-full border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-xs font-semibold text-gray-700 dark:text-gray-300
-                                                   hover:border-primary-400 dark:hover:border-primary-500 hover:text-primary-600 dark:hover:text-primary-400
-                                                   transition-all duration-200 active:scale-95
-                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                        Today
-                                    </button>
-                                    <button type="button" @click="quickSelect('tomorrow')"
-                                            class="inline-flex items-center gap-1 h-11 sm:h-10 px-3.5 rounded-full border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-xs font-semibold text-gray-700 dark:text-gray-300
-                                                   hover:border-primary-400 dark:hover:border-primary-500 hover:text-primary-600 dark:hover:text-primary-400
-                                                   transition-all duration-200 active:scale-95
-                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                        Tomorrow
-                                    </button>
-                                    <button type="button" @click="quickSelect('three-days')"
-                                            class="inline-flex items-center gap-1 h-11 sm:h-10 px-3.5 rounded-full border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-xs font-semibold text-gray-700 dark:text-gray-300
-                                                   hover:border-primary-400 dark:hover:border-primary-500 hover:text-primary-600 dark:hover:text-primary-400
-                                                   transition-all duration-200 active:scale-95
-                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                        3 days
-                                    </button>
-                                    <button type="button" @click="quickSelect('weekend')"
-                                            class="inline-flex items-center gap-1 h-11 sm:h-10 px-3.5 rounded-full border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-xs font-semibold text-gray-700 dark:text-gray-300
-                                                   hover:border-primary-400 dark:hover:border-primary-500 hover:text-primary-600 dark:hover:text-primary-400
-                                                   transition-all duration-200 active:scale-95
-                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                                        This weekend
-                                    </button>
-                                    <button type="button" @click="clearSelection()"
-                                            class="relative ml-auto inline-flex items-center gap-1 h-11 sm:h-10 px-3.5 rounded-full text-xs font-semibold text-gray-500 dark:text-gray-400
-                                                   hover:text-rose-600 dark:hover:text-rose-400 transition-all duration-200 active:scale-95
-                                                   before:absolute before:content-[''] before:-inset-1 before:rounded-full
-                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
-                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
-                                        </svg>
+                                    @foreach(['today' => 'Today', 'tomorrow' => 'Tomorrow', 'three-days' => '3 days', 'weekend' => 'This weekend'] as $kind => $text)
+                                        <button type="button" @click.stop="quickSelect('{{ $kind }}')" class="{{ $pill }}">{{ $text }}</button>
+                                    @endforeach
+                                    <button type="button" @click.stop="clearSelection()"
+                                            class="ml-auto inline-flex min-h-[44px] items-center gap-1 rounded-full px-4 text-sm font-semibold text-gray-500 transition hover:text-rose-600 active:scale-95 dark:text-gray-400 dark:hover:text-rose-400 {{ $ring }}">
+                                        <svg class="size-3" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
                                         Reset
                                     </button>
                                 </div>
+
+                                @if($limits['min'] > 1 || $limits['max'] !== null)
+                                    <p class="mt-3 flex items-start gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-800 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300">
+                                        <svg class="mt-0.5 size-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                        <span>
+                                            @if($limits['max'] === null)
+                                                Minimum stay is {{ $days($limits['min']) }}.
+                                            @elseif($limits['min'] === $limits['max'])
+                                                This property only accepts {{ $days($limits['min']) }} bookings.
+                                            @else
+                                                Stays between {{ $days($limits['min']) }} and {{ $days($limits['max']) }} only.
+                                            @endif
+                                        </span>
+                                    </p>
+                                @endif
                             </div>
 
-                            <div class="grid grid-cols-2 sm:grid-cols-[1fr_1fr_auto] gap-2 sm:gap-3">
-                                <div class="flex items-center gap-3 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-3 py-2.5 sm:px-4 sm:py-3">
-                                    <div class="w-8 h-8 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center text-primary-600 dark:text-primary-400 shrink-0">
-                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
-                                        </svg>
+                            <div class="grid grid-cols-2 gap-2 sm:grid-cols-[1fr_1fr_auto] sm:gap-3">
+                                @foreach([['Start', "checkIn ? formatDate(checkIn) : 'Pick a date'", true], ['End', "checkOut ? formatDate(checkOut) : 'Pick a date'", false]] as [$cap, $expr, $accent])
+                                    <div class="flex items-center gap-3 rounded-2xl border border-gray-200 bg-gray-50 px-3 py-2.5 dark:border-gray-700 dark:bg-gray-900 sm:px-4 sm:py-3">
+                                        <span class="grid size-8 shrink-0 place-items-center rounded-full {{ $accent ? 'bg-primary-100 text-primary-600 dark:bg-primary-900/30 dark:text-primary-400' : 'bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400' }}">
+                                            <svg class="size-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                        </span>
+                                        <div class="min-w-0">
+                                            <p class="text-xs text-gray-500 dark:text-gray-400">{{ $cap }}</p>
+                                            <p class="truncate text-sm font-semibold text-gray-900 dark:text-white" x-text="{{ $expr }}"></p>
+                                        </div>
                                     </div>
-                                    <div class="min-w-0">
-                                        <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-0.5">Start</p>
-                                        <p class="text-xs sm:text-sm font-semibold text-gray-900 dark:text-white truncate"
-                                           x-text="checkIn ? formatDate(checkIn) : 'Pick a date'"></p>
-                                    </div>
-                                </div>
+                                @endforeach
 
-                                <div class="flex items-center gap-3 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-3 py-2.5 sm:px-4 sm:py-3">
-                                    <div class="w-8 h-8 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-gray-500 dark:text-gray-400 shrink-0">
-                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
-                                        </svg>
-                                    </div>
-                                    <div class="min-w-0">
-                                        <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-0.5">End</p>
-                                        <p class="text-xs sm:text-sm font-semibold text-gray-900 dark:text-white truncate"
-                                           x-text="checkOut ? formatDate(checkOut) : 'Same day'"></p>
-                                    </div>
-                                </div>
-
-                                <div x-cloak
-                                     :class="hasRange ? 'flex' : 'hidden'"
-                                     class="col-span-2 sm:col-span-1 items-center gap-2 bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-500/30 rounded-xl px-3 py-2.5 sm:px-4 sm:py-3">
-                                    <div class="w-8 h-8 rounded-full bg-primary-600 flex items-center justify-center text-white shrink-0">
-                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                                        </svg>
-                                    </div>
+                                <div x-cloak x-show="hasRange" class="col-span-2 flex items-center gap-2 rounded-2xl border border-primary-200 bg-primary-50 px-3 py-2.5 dark:border-primary-500/30 dark:bg-primary-900/20 sm:col-span-1 sm:px-4 sm:py-3">
+                                    <span class="grid size-8 shrink-0 place-items-center rounded-full bg-primary-600 text-white">
+                                        <svg class="size-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                    </span>
                                     <div>
-                                        <p class="text-[10px] font-bold uppercase tracking-wider text-primary-600 dark:text-primary-400 mb-0.5">Duration</p>
-                                        <p class="text-xs sm:text-sm font-bold text-primary-700 dark:text-primary-300" x-text="durationLabel"></p>
+                                        <p class="text-xs text-primary-600 dark:text-primary-400">Duration</p>
+                                        <p class="text-sm font-bold text-primary-700 dark:text-primary-300" x-text="durationLabel"></p>
                                     </div>
                                 </div>
                             </div>
 
-                            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3">
-                                <div class="flex items-center gap-3">
-                                    <div class="w-9 h-9 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center text-primary-600 dark:text-primary-400 shrink-0">
-                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                                        </svg>
-                                    </div>
-                                    <div>
-                                        <p class="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Start Time</p>
-                                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Used for both start and end</p>
-                                    </div>
+                            <div class="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-4 dark:border-gray-700 dark:bg-gray-900">
+                                <div class="min-w-0">
+                                    <p class="text-sm font-semibold text-gray-900 dark:text-white">Start time</p>
+                                    <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                                        <span class="font-semibold">{{ $hoursLabel }}</span>
+                                        @if($check_in)
+                                            · arrival on <span class="font-semibold">{{ \Carbon\Carbon::parse($check_in)->format('M j') }}</span>
+                                        @endif
+                                    </p>
                                 </div>
-                                <input type="time" wire:model.live="checkInTime" class="input max-w-[140px]" />
-                            </div>
-                            @error('checkInTime')
-                                <p class="text-xs text-rose-600 dark:text-rose-300 -mt-3">{{ $message }}</p>
-                            @enderror
 
-                            <div class="flex items-center justify-between mb-1">
-                                <button type="button" @click="prevMonth()" :disabled="!canGoPrevMonth"
-                                        class="inline-flex items-center justify-center h-11 w-11 sm:h-10 sm:w-10 rounded-lg text-gray-500 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700
-                                               transition-all duration-200 active:scale-95
-                                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                               disabled:opacity-30 disabled:cursor-not-allowed
-                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
-                                        aria-label="Previous month">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                                @if($pastHoursExistToday)
+                                    <p class="mt-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+                                        <svg class="mt-0.5 size-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="{{ $warn }}"/></svg>
+                                        <span>
+                                            It's currently {{ $nowLabel }} — today's start times before
+                                            {{ \Carbon\Carbon::createFromFormat('H:i', $nowHM)->format('g:i A') }}
+                                            have already passed. Pick a future date to see the full
+                                            {{ \Carbon\Carbon::createFromFormat('H:i', $hours['opening'])->format('g:i A') }}–{{ \Carbon\Carbon::createFromFormat('H:i', $hours['closing'])->format('g:i A') }} window.
+                                        </span>
+                                    </p>
+                                @endif
+
+                                @if(empty($this->blockedHoursForSelection))
+                                    <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">Select a date to see available times.</p>
+                                @else
+                                    @foreach(['AM' => $amSlots, 'PM' => $pmSlots] as $period => $group)
+                                        @php $hasAnyFree = collect($group)->contains(fn ($s) => ! $s['blocked']); @endphp
+                                        @if(! empty($group))
+                                            <div class="mt-4">
+                                                <div class="mb-2 flex items-center justify-between">
+                                                    <p class="text-xs font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">{{ $period }}</p>
+                                                    @if(! $hasAnyFree)
+                                                        <p class="text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">No availability</p>
+                                                    @endif
+                                                </div>
+                                                <div class="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
+                                                    @foreach($group as $slot)
+                                                        @php
+                                                            $isSelected = $checkInTime === $slot['h24'];
+                                                            $isBlocked  = $slot['blocked'];
+                                                        @endphp
+                                                        <button type="button"
+                                                                wire:click="selectTime('{{ $slot['h24'] }}')"
+                                                                wire:loading.attr="disabled"
+                                                                wire:target="selectTime"
+                                                                @disabled($isBlocked)
+                                                                aria-label="Start time {{ $slot['display'] }}{{ $isBlocked ? ' (unavailable)' : '' }}"
+                                                                aria-pressed="{{ $isSelected ? 'true' : 'false' }}"
+                                                                class="flex min-h-[44px] items-center justify-center rounded-xl border text-sm font-semibold tabular-nums transition active:scale-95 disabled:active:scale-100 {{ $ring }}
+                                                                    {{ $isSelected
+                                                                        ? 'border-primary-600 bg-primary-600 text-white shadow-md'
+                                                                        : ($isBlocked
+                                                                            ? 'cursor-not-allowed border-gray-200 bg-gray-100 text-gray-300 line-through dark:border-gray-700 dark:bg-gray-800 dark:text-gray-600'
+                                                                            : 'border-gray-200 bg-white text-gray-700 hover:border-primary-400 hover:text-primary-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:border-primary-500 dark:hover:text-primary-400') }}">
+                                                            {{ $slot['display'] }}
+                                                        </button>
+                                                    @endforeach
+                                                </div>
+                                            </div>
+                                        @endif
+                                    @endforeach
+                                @endif
+
+                                @error('checkInTime')<p class="mt-2 text-xs text-rose-600 dark:text-rose-300">{{ $message }}</p>@enderror
+                            </div>
+
+                            @foreach(['check_in', 'check_out'] as $field)
+                                @error($field)<p class="text-xs text-rose-600 dark:text-rose-300">{{ $message }}</p>@enderror
+                            @endforeach
+
+                            <div class="flex items-center justify-between">
+                                <button type="button" @click.stop="prevMonth()" :disabled="!canGoPrevMonth" aria-label="Previous month"
+                                        class="btn-ghost size-11 !p-0 disabled:cursor-not-allowed disabled:opacity-30">
+                                    <svg class="size-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="{{ $chevL }}"/></svg>
                                 </button>
                                 <span class="text-sm font-semibold text-gray-900 dark:text-white" x-text="currentMonthName + ' ' + currentYear"></span>
-                                <button type="button" @click="nextMonth()" :disabled="!canGoNextMonth"
-                                        class="inline-flex items-center justify-center h-11 w-11 sm:h-10 sm:w-10 rounded-lg text-gray-500 hover:text-primary-600 dark:hover:text-primary-400 hover:bg-gray-100 dark:hover:bg-gray-700
-                                               transition-all duration-200 active:scale-95
-                                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                               disabled:opacity-30 disabled:cursor-not-allowed
-                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
-                                        aria-label="Next month">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                                <button type="button" @click.stop="nextMonth()" :disabled="!canGoNextMonth" aria-label="Next month"
+                                        class="btn-ghost size-11 !p-0 disabled:cursor-not-allowed disabled:opacity-30">
+                                    <svg class="size-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="{{ $chevR }}"/></svg>
                                 </button>
                             </div>
 
-                            <div class="grid grid-cols-7 gap-0.5 sm:gap-1">
+                            <div class="grid grid-cols-7 gap-0 sm:gap-1">
                                 <template x-for="day in ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']" :key="day">
-                                    <span class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500 text-center py-1.5" x-text="day"></span>
+                                    <span class="py-1.5 text-center text-xs font-semibold text-gray-400 dark:text-gray-500" x-text="day"></span>
                                 </template>
-
-                                <template x-for="blank in firstDayOffset" :key="'blank-'+blank">
-                                    <span></span>
-                                </template>
-
+                                <template x-for="blank in firstDayOffset" :key="'blank-'+blank"><span></span></template>
                                 <template x-for="day in daysInMonth" :key="day.iso">
-                                    <button type="button"
-                                            class="cal-day text-sm flex items-center justify-center
-                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
-                                            :disabled="day.isDisabled || day.isBooked"
-                                            :aria-label="day.isBooked ? 'Unavailable' : ''"
-                                            :title="day.isBooked ? 'Unavailable' : ''"
+                                    <button type="button" @click="selectDate(day.iso)"
+                                            :disabled="day.isDisabled || day.isBooked || day.isBeyondStayLimit"
+                                            :aria-label="day.isBooked ? 'Unavailable' : (day.isBeyondStayLimit ? 'Beyond maximum stay' : day.iso)"
+                                            :title="day.isBooked ? 'Unavailable' : (day.isBeyondStayLimit ? 'Beyond the property maximum stay' : '')"
+                                            class="flex min-h-[44px] min-w-0 items-center justify-center rounded-xl text-sm font-medium transition active:scale-90 {{ $ring }}"
                                             :class="{
-                                                'bg-rose-50 dark:bg-rose-900/30 text-rose-300 dark:text-rose-500/60 line-through cursor-not-allowed': day.isBooked,
-                                                'bg-primary-600 text-white shadow-md font-bold': !day.isBooked && (day.iso === checkIn || day.iso === checkOut),
-                                                'bg-primary-100 dark:bg-primary-900/30 text-primary-800 dark:text-primary-200': !day.isBooked && isInRange(day.iso),
-                                                'text-gray-300 dark:text-gray-600 cursor-not-allowed': !day.isBooked && day.isDisabled,
-                                                'text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer': !day.isBooked && !day.isDisabled && day.iso !== checkIn && day.iso !== checkOut && !isInRange(day.iso)
-                                            }"
-                                            @click="selectDate(day.iso)">
+                                                'cursor-not-allowed bg-rose-50 text-rose-300 line-through dark:bg-rose-900/30 dark:text-rose-500/60': day.isBooked,
+                                                'cursor-not-allowed border border-dashed border-gray-300 bg-gray-100 text-gray-400 opacity-60 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-500': !day.isBooked && day.isBeyondStayLimit,
+                                                'bg-primary-600 font-bold text-white shadow-md': !day.isBooked && !day.isBeyondStayLimit && (day.iso === checkIn || day.iso === checkOut),
+                                                'bg-primary-100 text-primary-800 dark:bg-primary-900/30 dark:text-primary-200': !day.isBooked && !day.isBeyondStayLimit && isInRange(day.iso),
+                                                'cursor-not-allowed text-gray-300 dark:text-gray-600': !day.isBooked && !day.isBeyondStayLimit && day.isDisabled,
+                                                'cursor-pointer text-gray-900 hover:bg-gray-100 dark:text-white dark:hover:bg-gray-700': !day.isBooked && !day.isBeyondStayLimit && !day.isDisabled && day.iso !== checkIn && day.iso !== checkOut && !isInRange(day.iso)
+                                            }">
                                         <span x-text="day.dayNumber"></span>
                                     </button>
                                 </template>
                             </div>
 
-                            <p x-cloak
-                               :class="error ? 'flex' : 'hidden'"
-                               class="items-start gap-2 text-xs text-rose-600 dark:text-rose-300 bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-500/30 rounded-lg px-3 py-2">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
-                                </svg>
+                            <p x-cloak x-show="error" class="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-600 dark:border-rose-500/30 dark:bg-rose-900/20 dark:text-rose-300">
+                                <svg class="mt-0.5 size-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="{{ $warn }}"/></svg>
                                 <span x-text="error"></span>
                             </p>
 
-                            <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-[10px] text-gray-500 dark:text-gray-400 pt-1">
-                                <span class="inline-flex items-center gap-1.5">
-                                    <span class="w-3 h-3 rounded-sm bg-primary-600"></span>
-                                    Selected
-                                </span>
-                                <span class="inline-flex items-center gap-1.5">
-                                    <span class="w-3 h-3 rounded-sm bg-primary-100 dark:bg-primary-900/40 border border-primary-300/50"></span>
-                                    In range
-                                </span>
-                                <span class="inline-flex items-center gap-1.5">
-                                    <span class="w-3 h-3 rounded-sm bg-rose-50 dark:bg-rose-900/30 border border-rose-200 dark:border-rose-500/30"></span>
-                                    Unavailable
-                                </span>
+                            <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-gray-500 dark:text-gray-400">
+                                <span class="inline-flex items-center gap-1.5"><span class="size-3 rounded-sm bg-primary-600"></span>Selected</span>
+                                <span class="inline-flex items-center gap-1.5"><span class="size-3 rounded-sm border border-primary-300/50 bg-primary-100 dark:bg-primary-900/40"></span>In range</span>
+                                @if($limits['max'] !== null)
+                                    <span class="inline-flex items-center gap-1.5"><span class="size-3 rounded-sm border border-dashed border-gray-300 bg-gray-100 dark:border-gray-700 dark:bg-gray-800"></span>Beyond max stay</span>
+                                @endif
+                                <span class="inline-flex items-center gap-1.5"><span class="size-3 rounded-sm border border-rose-200 bg-rose-50 dark:border-rose-500/30 dark:bg-rose-900/30"></span>Unavailable</span>
                             </div>
 
-                            @if(!empty($this->bookedDateRanges))
-                                <div class="bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 rounded-xl p-3 sm:p-4">
-                                    <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
+                            @if(! empty($this->bookedDateRanges))
+                                <div class="rounded-2xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/50 sm:p-4">
+                                    <p class="mb-2 text-sm font-semibold text-gray-500 dark:text-gray-400">
                                         Already booked · {{ count($this->bookedDateRanges) }} {{ count($this->bookedDateRanges) === 1 ? 'range' : 'ranges' }}
                                     </p>
                                     <div class="flex flex-wrap gap-1.5">
                                         @foreach($this->bookedDateRanges as $range)
                                             <span wire:key="range-{{ md5($range['start'] . '|' . $range['end']) }}"
-                                                  class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 text-[11px] font-medium">
-                                                <span class="w-1.5 h-1.5 rounded-full bg-rose-400" aria-hidden="true"></span>
-                                                {{ \Carbon\Carbon::parse($range['start'])->format('M d') }} – {{ \Carbon\Carbon::parse($range['end'])->format('M d') }}
+                                                  class="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-white px-3 py-1 text-xs font-medium tabular-nums text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400">
+                                                <span class="size-1.5 rounded-full bg-rose-400" aria-hidden="true"></span>
+                                                @if($range['start'] === $range['end'])
+                                                    {{ \Carbon\Carbon::parse($range['start'])->format('M d') }}
+                                                @else
+                                                    {{ \Carbon\Carbon::parse($range['start'])->format('M d') }} – {{ \Carbon\Carbon::parse($range['end'])->format('M d') }}
+                                                @endif
                                             </span>
                                         @endforeach
                                     </div>
@@ -1169,421 +1260,264 @@ class extends Component
                         </div>
                     </div>
 
-                    <p x-cloak
-                       :class="errors.dates ? 'block' : 'hidden'"
-                       x-text="errors.dates"
-                       class="text-xs text-rose-600 dark:text-rose-300"></p>
+                    <p x-cloak x-show="errors.dates" x-text="errors.dates" class="text-xs text-rose-600 dark:text-rose-300"></p>
 
                     <div class="flex justify-between gap-3">
-                        <button type="button" @click="prev()"
-                                class="inline-flex items-center justify-center gap-2 h-11 px-4 sm:px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
-                                       transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
-                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/></svg>
+                        <button type="button" @click.stop="prev()" class="btn-secondary min-h-[44px]">
+                            <svg class="size-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="{{ $chevL }}"/></svg>
                             Back
                         </button>
-                        <button type="button" @click="next()"
-                                class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
-                                       transition-all duration-200 active:scale-95
-                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                        <button type="button" @click.stop="next()" class="btn-primary min-h-[44px]">
                             <span x-text="nextLabel"></span>
-                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
+                            <svg class="size-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="{{ $chevR }}"/></svg>
                         </button>
                     </div>
-                </div>
+                </section>
 
-                {{-- ═══ STEP 3: Extra Services ═══ --}}
-                @if($this->availableServices->isNotEmpty())
-                    <div :class="step === 3 ? 'step-panel space-y-4' : 'hidden'">
+                @if($hasServices)
+                    <section x-cloak x-show="step === 3" x-transition.opacity.duration.200ms class="space-y-4">
+                        <div class="card p-5 sm:p-6">
+                            <h2 class="{{ $h2 }} !mb-1" x-ref="stepHeading3" tabindex="-1">Extra services</h2>
+                            <p class="mb-5 text-xs text-gray-500 dark:text-gray-400">Optional add-ons. Tap to add, then adjust the quantity.</p>
 
-                        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 shadow-sm">
-                            <h2 class="font-display text-lg font-semibold tracking-tight text-gray-900 dark:text-white mb-1" x-ref="stepHeading3" tabindex="-1">Extra Services</h2>
-                            <p class="text-xs text-gray-500 dark:text-gray-400 mb-5">Optional add-ons. Tap to add — adjust quantity with + / −.</p>
-
-                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                @foreach($this->availableServices as $service)
-                                    @php
-                                        $qty = (int) ($selectedServices[$service->id] ?? 0);
-                                        $isAdded = $qty > 0;
-                                    @endphp
+                            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                @foreach($services as $service)
+                                    @php $qty = (int) ($selectedServices[$service->id] ?? 0); @endphp
                                     <div wire:key="service-{{ $service->id }}"
-                                         class="rounded-xl border {{ $isAdded
-                                             ? 'border-primary-500 bg-primary-50/50 dark:bg-primary-900/20 dark:border-primary-500/40'
-                                             : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900' }} transition-colors duration-200">
+                                         class="rounded-2xl border transition-colors duration-200 {{ $qty > 0 ? 'border-primary-500 bg-primary-50/50 dark:border-primary-500/40 dark:bg-primary-900/20' : 'border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900' }}">
 
-                                        <button type="button"
-                                                wire:click="addService({{ $service->id }})"
-                                                wire:loading.attr="disabled"
-                                                wire:target="addService"
-                                                class="w-full items-center justify-between gap-3 px-4 py-3 text-left
-                                                       transition-all duration-200 active:scale-[0.98]
-                                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded-xl
-                                                       disabled:opacity-60 disabled:cursor-not-allowed
-                                                       {{ $isAdded ? 'hidden' : 'flex' }}">
-                                            <span class="min-w-0 flex-1">
-                                                <span class="block text-sm font-semibold text-gray-900 dark:text-white truncate">{{ $service->name }}</span>
-                                                <span class="block text-xs text-gray-500 dark:text-gray-400 mt-0.5 tabular-nums">₱{{ number_format($service->price, 2) }}</span>
-                                            </span>
-                                            <span class="shrink-0 inline-flex items-center gap-1 h-9 px-3.5 rounded-full bg-primary-600 hover:bg-primary-700 text-white text-[10px] font-bold uppercase tracking-wider transition">
-                                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v16m8-8H4"/></svg>
-                                                Add
-                                            </span>
-                                        </button>
-
-                                        <div class="items-center justify-between gap-3 px-4 py-3 {{ $isAdded ? 'flex' : 'hidden' }}">
-                                            <div class="min-w-0 flex-1">
-                                                <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">{{ $service->name }}</p>
-                                                <p class="text-xs text-gray-600 dark:text-gray-400 mt-0.5 tabular-nums">
-                                                    ₱{{ number_format($service->price, 2) }} × {{ $qty }} =
-                                                    <span class="font-bold text-primary-600 dark:text-primary-400">₱{{ number_format($service->price * $qty, 2) }}</span>
-                                                </p>
-                                            </div>
-                                            <div class="shrink-0 flex items-center gap-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-full p-1">
-                                                <button type="button"
-                                                        wire:click="decrementService({{ $service->id }})"
-                                                        wire:loading.attr="disabled"
-                                                        wire:target="decrementService,addService"
-                                                        class="relative inline-flex items-center justify-center w-9 h-9 rounded-full text-gray-600 dark:text-gray-300
-                                                               hover:bg-gray-100 dark:hover:bg-gray-700
-                                                               transition-all duration-200 active:scale-90
-                                                               before:absolute before:content-[''] before:-inset-0.5 before:rounded-full
-                                                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                                               disabled:opacity-60 disabled:cursor-not-allowed
-                                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
-                                                        aria-label="Remove one {{ $service->name }}">
-                                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M20 12H4"/></svg>
-                                                </button>
-                                                <span class="inline-flex items-center justify-center min-w-[28px] text-sm font-bold tabular-nums text-gray-900 dark:text-white">
-                                                    {{ $qty }}
+                                        @if($qty === 0)
+                                            <button type="button" wire:click.stop="addService({{ $service->id }})" @click.stop
+                                                    wire:loading.attr="disabled" wire:target="addService"
+                                                    class="flex min-h-[64px] w-full items-center justify-between gap-3 rounded-2xl px-4 py-3 text-left transition active:scale-[0.98] disabled:opacity-60 {{ $ring }}">
+                                                <span class="min-w-0 flex-1">
+                                                    <span class="block truncate text-sm font-semibold text-gray-900 dark:text-white">{{ $service->name }}</span>
+                                                    <span class="mt-0.5 block text-xs tabular-nums text-gray-500 dark:text-gray-400">{{ $fmtMoney($service->price) }}</span>
                                                 </span>
-                                                <button type="button"
-                                                        wire:click="addService({{ $service->id }})"
-                                                        wire:loading.attr="disabled"
-                                                        wire:target="addService,decrementService"
-                                                        class="relative inline-flex items-center justify-center w-9 h-9 rounded-full text-white bg-primary-600
-                                                               hover:bg-primary-700
-                                                               transition-all duration-200 active:scale-90
-                                                               before:absolute before:content-[''] before:-inset-0.5 before:rounded-full
-                                                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                                               disabled:opacity-60 disabled:cursor-not-allowed
-                                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
-                                                        aria-label="Add one more {{ $service->name }}">
-                                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v16m8-8H4"/></svg>
-                                                </button>
+                                                <span class="inline-flex h-11 shrink-0 items-center gap-1 rounded-full bg-primary-600 px-4 text-sm font-semibold text-white">
+                                                    <svg class="size-3" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+                                                    Add
+                                                </span>
+                                            </button>
+                                        @else
+                                            <div class="flex min-h-[64px] items-center justify-between gap-3 px-4 py-3">
+                                                <div class="min-w-0 flex-1">
+                                                    <p class="truncate text-sm font-semibold text-gray-900 dark:text-white">{{ $service->name }}</p>
+                                                    <p class="mt-0.5 text-xs tabular-nums text-gray-600 dark:text-gray-400">
+                                                        {{ $fmtMoney($service->price) }} × {{ $qty }} = <span class="font-bold text-primary-600 dark:text-primary-400">{{ $fmtMoney($service->price * $qty) }}</span>
+                                                    </p>
+                                                </div>
+                                                <div class="flex shrink-0 items-center rounded-full border border-gray-200 bg-white p-0.5 dark:border-gray-700 dark:bg-gray-800">
+                                                    <button type="button" wire:click.stop="decrementService({{ $service->id }})" @click.stop
+                                                            wire:loading.attr="disabled" wire:target="decrementService,addService"
+                                                            aria-label="Remove one {{ $service->name }}"
+                                                            class="grid size-11 place-items-center rounded-full text-gray-600 transition hover:bg-gray-100 active:scale-90 disabled:opacity-60 dark:text-gray-300 dark:hover:bg-gray-700 {{ $ring }}">
+                                                        <svg class="size-3.5" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M20 12H4"/></svg>
+                                                    </button>
+                                                    <span class="min-w-[28px] text-center text-sm font-bold tabular-nums text-gray-900 dark:text-white">{{ $qty }}</span>
+                                                    <button type="button" wire:click.stop="addService({{ $service->id }})" @click.stop
+                                                            wire:loading.attr="disabled" wire:target="addService,decrementService"
+                                                            aria-label="Add one more {{ $service->name }}"
+                                                            class="grid size-11 place-items-center rounded-full bg-primary-600 text-white transition hover:bg-primary-700 active:scale-90 disabled:opacity-60 {{ $ring }}">
+                                                        <svg class="size-3.5" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+                                                    </button>
+                                                </div>
                                             </div>
-                                        </div>
+                                        @endif
                                     </div>
                                 @endforeach
                             </div>
                         </div>
 
                         <div class="flex justify-between gap-3">
-                            <button type="button" @click="prev()"
-                                    class="inline-flex items-center justify-center gap-2 h-11 px-4 sm:px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
-                                           transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
-                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/></svg>
+                            <button type="button" @click.stop="prev()" class="btn-secondary min-h-[44px]">
+                                <svg class="size-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="{{ $chevL }}"/></svg>
                                 Back
                             </button>
-                            <button type="button" @click="next()"
-                                    class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
-                                           transition-all duration-200 active:scale-95
-                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                            <button type="button" @click.stop="next()" class="btn-primary min-h-[44px]">
                                 <span x-text="nextLabel"></span>
-                                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
+                                <svg class="size-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="{{ $chevR }}"/></svg>
                             </button>
                         </div>
-                    </div>
+                    </section>
                 @endif
 
-                {{-- ═══ PAYMENT STEP ═══ --}}
-                @php $paymentStep = $this->availableServices->isNotEmpty() ? 4 : 3; @endphp
-                <div :class="step === {{ $paymentStep }} ? 'step-panel space-y-4' : 'hidden'">
+                <section x-cloak x-show="step === {{ $paymentStep }}" x-transition.opacity.duration.200ms class="space-y-4">
+                    <div class="card p-5 sm:p-6">
+                        <h2 class="{{ $h2 }}" x-ref="stepHeading{{ $paymentStep }}" tabindex="-1">Payment method</h2>
 
-                    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 sm:p-6 shadow-sm">
-                        <h2 class="font-display text-lg font-semibold tracking-tight text-gray-900 dark:text-white mb-4"
-                            x-ref="stepHeading{{ $paymentStep }}" tabindex="-1">Payment Method</h2>
-
-                        <div class="mb-5">
-                            <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">Booking Type</label>
+                        <fieldset class="mb-5">
+                            <legend class="{{ $label }}">Booking type</legend>
                             <div class="grid grid-cols-2 gap-3">
-                                <label class="cursor-pointer group relative
-                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
-                                    <input type="radio" wire:model.live="bookingMode" value="full" class="sr-only peer">
-                                    <div class="flex flex-col items-center justify-center gap-2 p-4 rounded-2xl border-2 border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-center transition-all duration-200 cursor-pointer peer-checked:border-primary-600 peer-checked:bg-primary-50 dark:peer-checked:bg-primary-900/30 peer-checked:shadow-lg active:scale-[0.98]">
-                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-gray-700 dark:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
-                                        </svg>
-                                        <p class="text-gray-900 dark:text-white font-semibold text-sm">Pay in Full</p>
-                                        <p class="text-gray-500 dark:text-gray-400 text-[11px]">100% online now</p>
-                                    </div>
-                                </label>
-                                <label class="cursor-pointer group relative
-                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
-                                    <input type="radio" wire:model.live="bookingMode" value="reservation" class="sr-only peer">
-                                    <div class="flex flex-col items-center justify-center gap-2 p-4 rounded-2xl border-2 border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-center transition-all duration-200 cursor-pointer peer-checked:border-primary-600 peer-checked:bg-primary-50 dark:peer-checked:bg-primary-900/30 peer-checked:shadow-lg active:scale-[0.98]">
-                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-gray-700 dark:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v10a2 2 0 002 2h14a2 2 0 002-2V7a2 2 0 00-2-2H5z"/>
-                                        </svg>
-                                        <p class="text-gray-900 dark:text-white font-semibold text-sm">Reserve</p>
-                                        <p class="text-gray-500 dark:text-gray-400 text-[11px]">20% now · rest on arrival</p>
-                                    </div>
-                                </label>
-                            </div>
-                        </div>
-
-                        <div class="mb-5">
-                            <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">Pay with</label>
-                            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
                                 @foreach([
-                                    ['gcash',   'GCash'],
-                                    ['paymaya', 'Maya'],
-                                    ['card',    'Credit / Debit'],
-                                ] as [$val, $label])
-                                    <label class="relative cursor-pointer group
-                                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]"
-                                           wire:key="payment-method-{{ $val }}">
-                                        <input type="radio" wire:model.live="paymentMethod" value="{{ $val }}" class="sr-only peer">
-                                        <div class="flex flex-col items-center justify-center gap-2 p-4 rounded-2xl border-2 border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-center transition-all duration-200 peer-hover:border-gray-300 dark:peer-hover:border-gray-600 peer-focus-visible:ring-2 peer-focus-visible:ring-primary-500 peer-focus-visible:ring-offset-2 peer-checked:border-primary-600 peer-checked:bg-primary-50 dark:peer-checked:bg-primary-900/20 peer-checked:shadow-md active:scale-[0.98]">
-                                            <div class="absolute top-3 right-3 opacity-0 peer-checked:opacity-100 text-primary-600 dark:text-primary-400 transition-opacity duration-200" aria-hidden="true">
-                                                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                                                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
-                                                </svg>
-                                            </div>
-
-                                            @if($val === 'gcash')
-                                                <svg xmlns="http://www.w3.org/2000/svg" class="w-11 h-11" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-                                                    <circle cx="16" cy="16" r="16" fill="#007DFE"/>
-                                                    <text x="16" y="22" text-anchor="middle" fill="white" font-size="14" font-weight="900" font-family="system-ui,sans-serif">G</text>
-                                                </svg>
-                                            @elseif($val === 'paymaya')
-                                                <svg xmlns="http://www.w3.org/2000/svg" class="w-11 h-11" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-                                                    <circle cx="16" cy="16" r="16" fill="#111827"/>
-                                                    <text x="16" y="22" text-anchor="middle" fill="#00C6D7" font-size="14" font-weight="900" font-family="system-ui,sans-serif">M</text>
-                                                </svg>
-                                            @else
-                                                <div class="w-11 h-11 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-gray-600 dark:text-gray-300">
-                                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                        <rect x="2" y="5" width="20" height="14" rx="2" stroke="currentColor" stroke-width="2"/>
-                                                        <line x1="2" y1="10" x2="22" y2="10" stroke="currentColor" stroke-width="2"/>
-                                                    </svg>
-                                                </div>
-                                            @endif
-
-                                            <p class="text-gray-900 dark:text-white font-semibold text-sm">{{ $label }}</p>
+                                    ['full', 'Pay in full', '100% online now', 'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z'],
+                                    ['reservation', 'Reserve', '20% now · rest on arrival', 'M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v10a2 2 0 002 2h14a2 2 0 002-2V7a2 2 0 00-2-2H5z'],
+                                ] as [$val, $title, $sub, $icon])
+                                    <label class="relative block min-h-[44px] cursor-pointer" wire:key="mode-{{ $val }}">
+                                        <input type="radio" wire:model.live="bookingMode" value="{{ $val }}" class="peer sr-only">
+                                        <div class="{{ $radioCard }}">
+                                            <svg class="size-8 text-gray-700 dark:text-gray-300" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="{{ $icon }}"/></svg>
+                                            <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ $title }}</p>
+                                            <p class="text-xs text-gray-500 dark:text-gray-400">{{ $sub }}</p>
                                         </div>
                                     </label>
                                 @endforeach
                             </div>
-                        </div>
+                        </fieldset>
 
-                        <div class="flex items-start gap-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-4">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
-                            </svg>
+                        <fieldset class="mb-5">
+                            <legend class="{{ $label }}">Pay with</legend>
+                            <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                                @foreach([['gcash', 'GCash'], ['paymaya', 'Maya'], ['card', 'Credit / Debit']] as [$val, $text])
+                                    <label class="relative block min-h-[44px] cursor-pointer" wire:key="payment-method-{{ $val }}">
+                                        <input type="radio" wire:model.live="paymentMethod" value="{{ $val }}" class="peer sr-only">
+                                        <div class="{{ $radioCard }}">
+                                            @if($val === 'gcash')
+                                                <svg class="size-11" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="16" fill="#007DFE"/><text x="16" y="22" text-anchor="middle" fill="white" font-size="14" font-weight="900" font-family="system-ui,sans-serif">G</text></svg>
+                                            @elseif($val === 'paymaya')
+                                                <svg class="size-11" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="16" fill="#111827"/><text x="16" y="22" text-anchor="middle" fill="#00C6D7" font-size="14" font-weight="900" font-family="system-ui,sans-serif">M</text></svg>
+                                            @else
+                                                <span class="grid size-11 place-items-center rounded-full bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+                                                    <svg class="size-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>
+                                                </span>
+                                            @endif
+                                            <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ $text }}</p>
+                                        </div>
+                                    </label>
+                                @endforeach
+                            </div>
+                        </fieldset>
+
+                        <div class="flex items-start gap-3 rounded-2xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900">
+                            <svg class="mt-0.5 size-5 shrink-0 text-primary-600 dark:text-primary-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
                             <div>
-                                <p class="text-blue-800 dark:text-blue-200 text-sm font-medium">Secure Checkout via PayMongo</p>
-                                <p class="text-blue-600 dark:text-blue-300/80 text-xs mt-0.5 leading-relaxed">
-                                    You will be redirected to complete your payment securely.
-                                </p>
+                                <p class="text-sm font-medium text-gray-900 dark:text-white">Secure checkout via PayMongo</p>
+                                <p class="mt-0.5 text-xs leading-relaxed text-gray-500 dark:text-gray-400">You'll go straight to the method you picked, with no second selection.</p>
                             </div>
                         </div>
 
-                        <div class="flex flex-col-reverse sm:flex-row justify-between gap-4 mt-8">
-                            <button type="button" @click="prev()"
-                                    class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold w-full sm:w-auto
-                                           transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
-                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/></svg>
+                        <div class="mt-8 flex flex-col-reverse justify-between gap-3 sm:flex-row">
+                            <button type="button" @click.stop="prev()" class="btn-secondary min-h-[44px] w-full sm:w-auto">
+                                <svg class="size-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="{{ $chevL }}"/></svg>
                                 Back
                             </button>
-                            <button type="button" wire:click="submit" wire:loading.attr="disabled" wire:target="submit"
-                                    class="inline-flex items-center justify-center gap-2 h-11 px-6 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm w-full sm:w-auto
-                                           transition-all duration-200 active:scale-95
-                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
-                                           disabled:opacity-60 disabled:cursor-not-allowed">
-                                <span wire:loading.remove wire:target="submit">Proceed to Pay</span>
-                                <span wire:loading wire:target="submit" class="inline-flex items-center gap-2">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="animate-spin w-4 h-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
-                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                    </svg>
-                                    Processing…
-                                </span>
+                            <button type="button" wire:click="submit" @click.stop wire:loading.attr="disabled" wire:target="submit"
+                                    class="btn-primary min-h-[44px] w-full px-8 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto">
+                                <span wire:loading.remove wire:target="submit">Proceed to pay</span>
+                                <span wire:loading wire:target="submit">Processing…</span>
                             </button>
                         </div>
                     </div>
-                </div>
-
+                </section>
             </div>
 
-            {{-- ═══════════════════════════════════════════════════
-                 Summary Sidebar
-                 ═══════════════════════════════════════════════════ --}}
-            <div class="hidden lg:block lg:sticky lg:top-24">
-                <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-3xl overflow-hidden shadow-lg">
-
-                    {{-- Property image --}}
-                    @if($property->images->isNotEmpty())
-                        <div class="w-full aspect-[4/3] overflow-hidden">
-                            <img src="{{ asset('storage/'.$property->images->first()->image_path) }}"
-                                 class="w-full h-full object-cover" alt="{{ $property->name }}" loading="lazy" decoding="async">
-                        </div>
-                    @else
-                        <div class="w-full aspect-[4/3] bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-700 dark:to-gray-800 flex items-center justify-center">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
-                            </svg>
-                        </div>
-                    @endif
-
-                    <div class="p-6 border-b border-gray-200 dark:border-gray-700">
-                        <h3 class="font-display text-xl font-semibold tracking-tight text-gray-900 dark:text-white leading-tight">{{ $property->name }}</h3>
-                        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                            {{ $property->propertyType->name ?? 'Activity' }}
-                            <span class="mx-1" aria-hidden="true">·</span>
-                            {{ $property->tenant->name }}
-                        </p>
-                        <div class="flex items-baseline gap-1.5 mt-3">
-                            <span class="font-display text-3xl text-primary-600 dark:text-primary-400 tabular-nums">₱{{ number_format($property->price, 2) }}</span>
-                            <span class="text-xs text-gray-500 dark:text-gray-400">per unit</span>
-                        </div>
+            <aside class="hidden lg:sticky lg:top-24 lg:block" aria-label="Booking summary">
+                <div class="card max-h-[calc(100dvh-7rem)] overflow-y-auto !rounded-3xl shadow-lg">
+                    <div class="aspect-[4/3] w-full overflow-hidden bg-gray-100 dark:bg-gray-700">
+                        @if($imageUrl)
+                            <img src="{{ $imageUrl }}" alt="{{ $property->name }}" width="380" height="285" loading="lazy" decoding="async" class="size-full object-cover">
+                        @endif
                     </div>
 
-                    <div class="p-6 border-b border-gray-200 dark:border-gray-700 space-y-3">
+                    <div class="border-b border-gray-200 p-6 dark:border-gray-700">
+                        <h3 class="font-display text-xl font-semibold leading-tight tracking-tight text-gray-900 dark:text-white">{{ $property->name }}</h3>
+                        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ $property->propertyType->name ?? 'Activity' }} · {{ $property->tenant->name }}</p>
+                        <p class="mt-3 flex items-baseline gap-1.5">
+                            <span class="font-display text-3xl tabular-nums text-primary-600 dark:text-primary-400">{{ $fmtMoney($property->price) }}</span>
+                            <span class="text-xs text-gray-500 dark:text-gray-400">per unit</span>
+                        </p>
+                    </div>
+
+                    <div class="space-y-3 border-b border-gray-200 p-6 dark:border-gray-700">
                         @if($check_in && $check_out)
-                            <div class="flex justify-between items-center text-xs text-gray-500 dark:text-gray-400">
-                                <span>Dates</span>
-                                <span class="font-medium text-gray-900 dark:text-white text-right tabular-nums">
-                                    {{ \Carbon\Carbon::parse($check_in)->format('M d') }} – {{ \Carbon\Carbon::parse($check_out)->format('M d') }}
+                            <div class="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+                                <span>Date{{ $isSameDay ? '' : 's' }}</span>
+                                <span class="font-medium tabular-nums text-gray-900 dark:text-white">
+                                    @if($isSameDay)
+                                        {{ \Carbon\Carbon::parse($check_in)->format('M d, Y') }}
+                                    @else
+                                        {{ \Carbon\Carbon::parse($check_in)->format('M d') }} – {{ \Carbon\Carbon::parse($check_out)->format('M d') }}
+                                    @endif
                                 </span>
                             </div>
-                            <div class="flex justify-between items-center text-xs text-gray-500 dark:text-gray-400">
+                            <div class="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
                                 <span>Start time</span>
-                                <span class="font-medium text-gray-900 dark:text-white text-right tabular-nums">
-                                    {{ \Carbon\Carbon::createFromFormat('H:i', $checkInTime)->format('g:i A') }}
-                                </span>
+                                <span class="font-medium tabular-nums text-gray-900 dark:text-white">{{ \Carbon\Carbon::createFromFormat('H:i', $checkInTime)->format('g:i A') }}</span>
                             </div>
                         @endif
 
-                        <dl>
-                            <div class="flex justify-between items-center text-sm">
-                                <dt class="text-gray-600 dark:text-gray-300">
-                                    {{ $totalDays }} day{{ $totalDays > 1 ? 's' : '' }} × ₱{{ number_format($property->price, 2) }}
-                                </dt>
-                                <dd class="font-semibold text-gray-900 dark:text-white tabular-nums">
-                                    ₱{{ number_format($property->price * $totalDays, 2) }}
-                                </dd>
+                        <dl class="space-y-2 text-sm">
+                            <div class="flex items-center justify-between">
+                                <dt class="text-gray-600 dark:text-gray-300">{{ $totalDays }} day{{ $totalDays > 1 ? 's' : '' }} × {{ $fmtMoney($property->price) }}</dt>
+                                <dd class="font-semibold tabular-nums text-gray-900 dark:text-white">{{ $fmtMoney($property->price * $totalDays) }}</dd>
                             </div>
-
                             @foreach($selectedServices as $serviceId => $qty)
                                 @php $svc = $this->selectedServiceModels->get($serviceId); @endphp
                                 @if($svc)
-                                    <div class="flex justify-between items-center text-sm mt-2" wire:key="summary-service-{{ $serviceId }}">
-                                        <dt class="text-gray-600 dark:text-gray-300 truncate max-w-[160px]">{{ $svc->name }} ×{{ $qty }}</dt>
-                                        <dd class="font-semibold text-gray-900 dark:text-white shrink-0 tabular-nums">₱{{ number_format($svc->price * $qty, 2) }}</dd>
+                                    <div class="flex items-center justify-between" wire:key="summary-service-{{ $serviceId }}">
+                                        <dt class="max-w-[160px] truncate text-gray-600 dark:text-gray-300">{{ $svc->name }} ×{{ $qty }}</dt>
+                                        <dd class="shrink-0 font-semibold tabular-nums text-gray-900 dark:text-white">{{ $fmtMoney($svc->price * $qty) }}</dd>
                                     </div>
                                 @endif
                             @endforeach
                         </dl>
                     </div>
 
-                    <div class="p-6">
-                        @if($bookingMode === 'reservation')
-                            <div class="flex justify-between items-center">
-                                <span class="text-xs font-bold uppercase tracking-widest text-gray-500 dark:text-gray-400">Pay Now (20%)</span>
-                                <span class="font-display text-2xl font-semibold text-primary-600 dark:text-primary-400 tabular-nums">
-                                    ₱{{ number_format($reservationFee, 2) }}
-                                </span>
+                    <div class="space-y-2 p-6">
+                        @if($isReserve)
+                            <div class="flex items-center justify-between">
+                                <span class="text-sm font-semibold text-gray-500 dark:text-gray-400">Pay now (20%)</span>
+                                <span class="font-display text-2xl font-semibold tabular-nums text-primary-600 dark:text-primary-400">{{ $fmtMoney($reservationFee) }}</span>
                             </div>
-                            <div class="flex justify-between items-center mt-2">
-                                <span class="text-xs font-bold uppercase tracking-widest text-gray-500 dark:text-gray-400">Balance on Arrival</span>
-                                <span class="font-display text-lg font-semibold text-gray-900 dark:text-white tabular-nums">
-                                    ₱{{ number_format($balanceOnArrival, 2) }}
-                                </span>
+                            <div class="flex items-center justify-between">
+                                <span class="text-sm font-semibold text-gray-500 dark:text-gray-400">Balance on arrival</span>
+                                <span class="font-display text-lg font-semibold tabular-nums text-gray-900 dark:text-white">{{ $fmtMoney($balanceOnArrival) }}</span>
                             </div>
                         @else
-                            <div class="flex justify-between items-center">
-                                <span class="text-xs font-bold uppercase tracking-widest text-gray-500 dark:text-gray-400">Total Due</span>
-                                <span class="font-display text-3xl font-semibold text-primary-600 dark:text-primary-400 tabular-nums">
-                                    ₱{{ number_format($totalAmount, 2) }}
-                                </span>
+                            <div class="flex items-center justify-between">
+                                <span class="text-sm font-semibold text-gray-500 dark:text-gray-400">Total due</span>
+                                <span class="font-display text-3xl font-semibold tabular-nums text-primary-600 dark:text-primary-400">{{ $fmtMoney($totalAmount) }}</span>
                             </div>
                         @endif
                     </div>
 
-                    {{-- Trust badge --}}
-                    <div class="px-6 pb-5 flex items-center justify-center gap-2 text-[10px] text-gray-400 dark:text-gray-500">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
-                        </svg>
-                        <span class="uppercase tracking-wider">Secured by PayMongo</span>
-                    </div>
+                    <p class="flex items-center justify-center gap-2 px-6 pb-5 text-xs text-gray-400 dark:text-gray-500">
+                        <svg class="size-3 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+                        Secured by PayMongo
+                    </p>
                 </div>
-            </div>
-
+            </aside>
         </div>
     </div>
 
-    {{-- ═══════════════════════════════════════════════════════
-         Mobile Sticky Summary
-         ═══════════════════════════════════════════════════════ --}}
-    <div class="lg:hidden fixed bottom-0 left-0 right-0 z-50
-                bg-white/95 dark:bg-gray-900/95 backdrop-blur-md
-                border-t border-gray-200 dark:border-gray-700
-                shadow-[0_-4px_20px_rgba(0,0,0,0.08)] p-3 pb-safe">
-        <div class="flex items-center justify-between gap-3 max-w-7xl mx-auto">
-            <div class="flex-1 min-w-0">
-                <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    {{ $bookingMode === 'reservation' ? 'Pay now (20%)' : 'Total due' }}
-                </p>
-                <p class="font-display text-xl font-bold text-gray-900 dark:text-white leading-tight tabular-nums">
-                    ₱{{ number_format($bookingMode === 'reservation' ? $reservationFee : $totalAmount, 2) }}
-                </p>
+    <div class="glass fixed inset-x-0 bottom-0 z-50 border-x-0 border-b-0 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-[0_-4px_20px_rgba(0,0,0,0.08)] lg:hidden">
+        <div class="mx-auto flex max-w-7xl items-center justify-between gap-3">
+            <div class="min-w-0 flex-1">
+                <p class="text-xs text-gray-500 dark:text-gray-400">{{ $isReserve ? 'Pay now (20%)' : 'Total due' }}</p>
+                <p class="font-display text-xl font-bold leading-tight tabular-nums text-gray-900 dark:text-white">{{ $fmtMoney($isReserve ? $reservationFee : $totalAmount) }}</p>
                 @if($check_in && $check_out)
-                    <p class="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5 truncate tabular-nums">
-                        {{ \Carbon\Carbon::parse($check_in)->format('M d') }} → {{ \Carbon\Carbon::parse($check_out)->format('M d') }}
+                    <p class="mt-0.5 truncate text-xs tabular-nums text-gray-500 dark:text-gray-400">
+                        @if($isSameDay)
+                            {{ \Carbon\Carbon::parse($check_in)->format('M d') }}
+                        @else
+                            {{ \Carbon\Carbon::parse($check_in)->format('M d') }} → {{ \Carbon\Carbon::parse($check_out)->format('M d') }}
+                        @endif
                         · {{ $totalDays }} day{{ $totalDays > 1 ? 's' : '' }}
                     </p>
                 @endif
             </div>
 
-            <button x-show="step < maxStep"
-                    type="button"
-                    @click="next()"
-                    class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm shrink-0
-                           transition-all duration-200 active:scale-95
-                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+            <button x-cloak x-show="step < maxStep" type="button" @click.stop="next()"
+                    :disabled="step === 1 && (!$wire.customerPhone || !$wire.customerPhone.trim())"
+                    class="btn-primary min-h-[44px] shrink-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100">
                 Continue
-                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
+                <svg class="size-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="{{ $chevR }}"/></svg>
             </button>
 
-            <button x-show="step === maxStep"
-                    type="button"
-                    wire:click="submit"
-                    wire:loading.attr="disabled"
-                    wire:target="submit"
-                    class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm shrink-0
-                           transition-all duration-200 active:scale-95
-                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
-                           disabled:opacity-60 disabled:cursor-not-allowed">
-                <span wire:loading.remove wire:target="submit">Pay Now</span>
-                <span wire:loading wire:target="submit" class="inline-flex items-center gap-2">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="animate-spin w-4 h-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
-                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    Processing…
-                </span>
+            <button x-cloak x-show="step === maxStep" type="button" wire:click="submit" @click.stop wire:loading.attr="disabled" wire:target="submit"
+                    class="btn-primary min-h-[44px] shrink-0 disabled:cursor-not-allowed disabled:opacity-60">
+                <span wire:loading.remove wire:target="submit">Pay now</span>
+                <span wire:loading wire:target="submit">Processing…</span>
             </button>
         </div>
     </div>

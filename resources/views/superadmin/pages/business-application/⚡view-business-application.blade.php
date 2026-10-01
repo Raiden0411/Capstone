@@ -2,6 +2,7 @@
 <?php
 
 use App\Models\BusinessApplication;
+use App\Models\BusinessMembership;
 use Illuminate\Support\Facades\DB;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Layout;
@@ -117,6 +118,19 @@ class extends Component
         return BusinessApplication::query()
             ->with([
                 'user:id,name,email,avatar',
+                // Owner/admin memberships only — a user who is merely an
+                // employee of some other business should NOT light up the
+                // "Additional business" chip. Employees have no business
+                // of their own to add another to.
+                //
+                // This is a plain HasMany; it does NOT go through Spatie,
+                // so eager-loading it is safe under team-scoped roles.
+                'user.businessMemberships' => fn ($q) => $q
+                    ->whereIn('role', [
+                        BusinessMembership::ROLE_OWNER,
+                        BusinessMembership::ROLE_ADMIN,
+                    ])
+                    ->select('id', 'user_id', 'tenant_id', 'role'),
                 'typeOfTenant:id,type',
             ])
             ->withCount([
@@ -383,6 +397,17 @@ class extends Component
                     $docsLabel     = $app->documents_count . '/' . $this->requiredDocumentsCount;
                     $mismatchCount = (int) $app->mismatches_count;
                     $isComplete    = $app->documents_count >= $this->requiredDocumentsCount;
+
+                    // Additional-business detection: the applicant already
+                    // has at least one owner/admin membership on file.
+                    // Non-blocking — reviewers still see all the same data,
+                    // and approval logic is unchanged. The chip is purely
+                    // a signal that this is a follow-up application from a
+                    // user who is already onboarded, so the reviewer can
+                    // skip baseline identity re-verification.
+                    $isAdditional = $app->user !== null
+                        && $app->user->relationLoaded('businessMemberships')
+                        && $app->user->businessMemberships->isNotEmpty();
                 @endphp
 
                 <article wire:key="app-{{ $app->id }}"
@@ -440,6 +465,22 @@ class extends Component
                             <p class="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
                                 {{ $app->typeOfTenant?->type ?? 'Uncategorized' }}
                             </p>
+
+                            {{-- Additional-business chip: only for applicants
+                                 who already own/administer ≥1 other business. --}}
+                            @if ($isAdditional)
+                                <div class="mt-2">
+                                    <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider
+                                                 bg-indigo-100 dark:bg-indigo-500/15 text-indigo-700 dark:text-indigo-300
+                                                 border border-indigo-200 dark:border-indigo-500/30"
+                                          title="This applicant already owns another business on the platform. Consider whether baseline identity re-verification is needed.">
+                                        <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
+                                        </svg>
+                                        Additional business
+                                    </span>
+                                </div>
+                            @endif
                         </div>
 
                         {{-- Applicant row --}}

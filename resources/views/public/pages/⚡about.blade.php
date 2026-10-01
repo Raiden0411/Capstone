@@ -15,8 +15,8 @@ new
 class extends Component
 {
     /**
-     * Keys this page reads. Central list so the batch cache, the editor,
-     * and any future additions stay in sync.
+     * Keys this page reads. Central list so the batch cache and the
+     * admin editor stay in sync.
      */
     private const ABOUT_KEYS = [
         'about_hero_image',
@@ -47,11 +47,9 @@ class extends Component
     ];
 
     /**
-     * Every setting on this page, sourced from a single versioned
-     * cache entry. Any `SiteSetting::setValue()` call by the admin
-     * editor bumps the version token → this batch key invalidates
-     * instantly → the About page shows the fresh content on next
-     * request without waiting for any TTL.
+     * Single versioned cache entry. Any `SiteSetting::setValue()` bumps
+     * the version token → this batch key invalidates → About page shows
+     * fresh content on next request, no TTL wait.
      *
      * @return array<string, mixed>
      */
@@ -70,7 +68,7 @@ class extends Component
 
     protected function imageUrl(?string $path, string $defaultUrl): string
     {
-        return $path ? asset('storage/' . $path) : $defaultUrl;
+        return $path ? '/storage/' . ltrim($path, '/') : $defaultUrl;
     }
 
     #[Computed]
@@ -78,7 +76,7 @@ class extends Component
     {
         return $this->imageUrl(
             $this->setting('about_hero_image'),
-            'https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1920&q=80'
+            'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1920&q=80'
         );
     }
 
@@ -151,16 +149,13 @@ class extends Component
             ];
         }
 
-        return array_values(array_map(fn ($img) => asset('storage/' . $img), $images));
+        return array_values(array_map(fn ($img) => '/storage/' . ltrim($img, '/'), $images));
     }
 
     /**
-     * JSON-encoded gallery URLs for the Alpine carousel.
-     *
-     * Encoded with JSON_HEX_* flags so the payload is safe to embed in
-     * an HTML data-* attribute. This is the pattern established across
-     * every carousel in the codebase — see the header comment on the
-     * tourist-spots SFC for why `@js()` inside `x-data` is a trap.
+     * JSON-encoded gallery URLs for the Alpine carousel. Encoded with
+     * JSON_HEX_* flags so the payload is safe to embed in an HTML
+     * data-* attribute (never inside x-data as a JS literal).
      */
     #[Computed]
     public function galleryImagesJson(): string
@@ -181,9 +176,8 @@ class extends Component
             ->unique()
             ->values();
 
-        // `Tenant` itself is unscoped, but `settings` is a
-        // BelongsToTenant relationship — the eager load MUST bypass
-        // TenantScope. Narrowed to the two keys actually read below.
+        // `settings` is a BelongsToTenant relationship — the eager load
+        // MUST bypass TenantScope. Narrowed to the two keys read below.
         $tenants = $tenantIds->isNotEmpty()
             ? Tenant::query()
                 ->with([
@@ -228,7 +222,7 @@ class extends Component
             }
 
             $imageUrl = $image
-                ? asset('storage/' . $image)
+                ? '/storage/' . ltrim($image, '/')
                 : $defaultImage;
 
             return [
@@ -245,7 +239,7 @@ class extends Component
     {
         return $this->imageUrl(
             $this->setting('about_cta_background_image'),
-            'https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1920&q=80'
+            'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1920&q=80'
         );
     }
 
@@ -264,7 +258,7 @@ class extends Component
 ?>
 
 <div class="relative z-10">
-    {{-- 1. Hero Section --}}
+
     <section class="relative flex items-center justify-center w-full min-h-[420px] md:min-h-[520px] overflow-hidden">
         <img src="{{ $this->heroImageUrl }}"
              alt=""
@@ -279,14 +273,6 @@ class extends Component
         <div class="absolute inset-0 bg-gradient-to-b from-black/60 via-black/40 to-black/70"></div>
 
         <div class="relative z-10 flex flex-col items-center text-center px-4 py-16">
-            {{--
-                Eyebrow — rendered as <p> not <h1>.
-
-                WHY: The page's real <h1> is the main title below
-                ("KADALAG-AN"). Screen readers walking the heading tree
-                should land on the page's actual subject, not the
-                decorative kicker above it.
-            --}}
             <p class="text-xl md:text-3xl font-bold tracking-widest text-white uppercase">
                 {{ $this->heroSubheading }}
             </p>
@@ -308,7 +294,6 @@ class extends Component
         </div>
     </section>
 
-    {{-- 2. The Story of the City --}}
     <section class="max-w-7xl mx-auto px-4 sm:px-6 md:px-12 py-12 md:py-20">
         <div class="grid grid-cols-1 md:grid-cols-2 gap-10 lg:gap-16 items-center">
             <div>
@@ -340,21 +325,6 @@ class extends Component
         </div>
     </section>
 
-    {{-- 3. Gallery / Carousel Section --}}
-    {{--
-        `wire:ignore` isolates the Alpine carousel state from Livewire
-        morphs. No Livewire actions exist on this page today, but the
-        pattern matches the homepage carousel and keeps the section
-        safe if an action is added later.
-
-        `overflow-hidden` clips the outer carousel slides whose
-        `translate(±20%)` would otherwise extend past the section
-        edge and create horizontal document overflow.
-
-        The `items` payload is read from `$el.dataset.galleryImages`
-        rather than embedded as a JS literal inside `x-data`. See
-        `galleryImagesJson()` above for the why.
-    --}}
     <section wire:ignore
              class="w-full py-12 md:py-16 overflow-hidden bg-white dark:bg-gray-900"
              data-gallery-images="{{ $this->galleryImagesJson }}"
@@ -422,17 +392,6 @@ class extends Component
                      }
                      this.startAutoPlay();
                  },
-
-                 // ─────────────────────────────────────────────────────────
-                 //  Adaptive slot layout — matches the homepage carousel.
-                 //
-                 //  Instead of a fixed 0..4 index table (which broke when the
-                 //  item count wasn't exactly 5), we compute each card's
-                 //  *signed shortest offset* from the active card and place
-                 //  it into a left/right slot. This guarantees the same
-                 //  number of cards appear on each side regardless of how
-                 //  many items exist — 3, 4, 5, or 20 all look balanced.
-                 // ─────────────────────────────────────────────────────────
                  getPositionStyle(index) {
                      const length = this.items.length;
                      if (length === 0) return { display: 'none' };
@@ -451,7 +410,6 @@ class extends Component
                          willChange: 'width, height, transform, opacity',
                      };
 
-                     // ── CENTER ───────────────────────────────────────
                      if (offset === 0) {
                          return {
                              ...base,
@@ -464,7 +422,6 @@ class extends Component
                          };
                      }
 
-                     // ── HIDDEN ───────────────────────────────────────
                      if (absOffset > maxSlots) {
                          return {
                              ...base,
@@ -477,7 +434,6 @@ class extends Component
                          };
                      }
 
-                     // ── SIDE CARD ────────────────────────────────────
                      const isRight = offset > 0;
                      const isInner = absOffset === 1;
 
@@ -548,7 +504,6 @@ class extends Component
         </div>
     </section>
 
-    {{-- 4. Alternating Features / Highlights --}}
     <section class="max-w-7xl mx-auto px-4 sm:px-6 md:px-12 py-12 md:py-20 space-y-16 md:space-y-24 [content-visibility:auto] [contain-intrinsic-size:auto_1200px]">
         @foreach($this->highlights as $n => $data)
             @php $reverse = ($n + 1) % 2 === 0; @endphp
@@ -574,7 +529,7 @@ class extends Component
                     @endif
 
                     @if($data['slug'])
-                        <a href="{{ route('tenant.show', $data['slug']) }}" wire:navigate
+                        <a href="{{ route('business.offerings', $data['slug']) }}" wire:navigate
                            class="inline-flex items-center gap-2 mt-6 text-primary-600 dark:text-primary-400 font-semibold hover:underline active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 rounded">
                             Visit this place
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
@@ -585,7 +540,6 @@ class extends Component
         @endforeach
     </section>
 
-    {{-- 5. Plan Your Visit CTA --}}
     <section class="relative flex items-center justify-center w-full py-16 md:py-24 overflow-hidden [content-visibility:auto] [contain-intrinsic-size:auto_420px]">
         <img src="{{ $this->ctaBackgroundUrl }}"
              alt=""

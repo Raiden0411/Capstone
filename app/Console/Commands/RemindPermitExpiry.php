@@ -23,13 +23,17 @@ class RemindPermitExpiry extends Command
         $dryRun  = (bool) $this->option('dry-run');
         $list    = (bool) $this->option('list');
 
+        // NOTE: no `whereHas('roles', ...)` here. Eloquent resolves the
+        // roles() relation on a fresh User instance during eager loading,
+        // so User::roles()'s override pins setPermissionsTeamId(0) and
+        // the pivot filter returns zero rows for every tenant admin.
+        // We load the users plain and filter in PHP with $user->hasRole(),
+        // which reads model_has_roles directly at the user's own tenant_id.
         $tenants = Tenant::query()
             ->where('is_active', true)
             ->whereNotNull('permit_expires_at')
             ->with([
-                'users' => fn ($q) => $q
-                    ->whereHas('roles', fn ($r) => $r->where('name', 'admin'))
-                    ->select('id', 'tenant_id', 'name', 'email'),
+                'users' => fn ($q) => $q->select('id', 'tenant_id', 'name', 'email'),
             ])
             ->get();
 
@@ -70,13 +74,7 @@ class RemindPermitExpiry extends Command
 
             $year = $expiry->year;
 
-            // ── Tenant-admin notification type ──
-            $tenantType = "permit_expiry_{$bucket}_{$year}";
-
-            // ── Superadmin notification type ──
-            // Prefix `superadmin_` prevents the superadmin's dedup from
-            // colliding with a tenant admin's on the same expiry year
-            // (a dual-role owner has both scopes on the same user row).
+            $tenantType     = "permit_expiry_{$bucket}_{$year}";
             $superadminType = "permit_expiry_superadmin_{$bucket}_{$year}";
 
             $tenantPayload     = $this->buildPayload($bucket, $expiry, forSuperadmin: false, tenant: $tenant);
@@ -96,8 +94,11 @@ class RemindPermitExpiry extends Command
             $bucketNotifs   = 0;
             $bucketSaNotifs = 0;
 
-            // ── Tenant admins ──
             foreach ($tenant->users as $admin) {
+                if (! $admin->hasRole('admin')) {
+                    continue;
+                }
+
                 $alreadySent = UserNotification::query()
                     ->forUser($admin->id)
                     ->where('type', $tenantType)
@@ -119,7 +120,6 @@ class RemindPermitExpiry extends Command
                 $summary['sent']++;
             }
 
-            // ── Superadmins ──
             foreach ($superadmins as $sa) {
                 $alreadySent = UserNotification::query()
                     ->forUser($sa->id)

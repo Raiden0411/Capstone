@@ -35,6 +35,25 @@ Schedule::command('events:deactivate-ended --grace=1')
     ->withoutOverlapping()
     ->runInBackground();
 
+// Auto-cancel pending bookings whose payment window has closed.
+//
+// Runs every minute. The window is Booking::PAYMENT_DEADLINE_MINUTES
+// (30) counted from booking creation. This is the SINGLE source of
+// truth for overdue cancellation — the client-side timer on
+// /my-bookings is display-only and never cancels a booking itself.
+//
+// `withoutOverlapping()` guards against a stuck run blocking the next
+// minute's invocation. The command completes in milliseconds on a
+// healthy DB, but the lock is cheap insurance.
+//
+// `runInBackground()` frees the scheduler tick so a slow chunk of
+// cancellations doesn't delay the other scheduled tasks that share
+// the same minute.
+Schedule::command('bookings:cancel-overdue')
+    ->everyMinute()
+    ->withoutOverlapping()
+    ->runInBackground();
+
 // Nightly stale-row pruning.
 // Deletes expired cache entries, stale cache locks, dead sessions, and
 // failed jobs older than 14 days. Runs at 03:15 local — off-peak,

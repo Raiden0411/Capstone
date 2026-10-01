@@ -82,12 +82,7 @@ class extends Component
         return (string) SiteSetting::getValue('site_name', config('app.name'));
     }
 
-    /**
-     * Relative storage URLs (Rule J).
-     * asset() prefixes APP_URL — which may not match the current host
-     * (envkit.net vs 127.0.0.1). A relative /storage/... path always
-     * resolves correctly on any origin.
-     */
+    // Rule J: relative /storage path — never asset('storage/').
     #[Computed]
     public function logoUrl(): ?string
     {
@@ -103,7 +98,7 @@ class extends Component
 
         return $path
             ? '/storage/' . ltrim($path, '/')
-            : 'https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1600&q=80';
+            : 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1600&q=80';
     }
 };
 ?>
@@ -112,7 +107,6 @@ class extends Component
              bg-[#F8F7F3] dark:bg-[#0F172A]"
       x-data="revealOnScroll">
 
-    {{-- ═══════════════ LEFT — HERO ═══════════════ --}}
     <aside class="relative w-full shrink-0 min-h-[280px] sm:min-h-[360px] lg:min-h-0 lg:h-[100dvh] lg:w-[55%] lg:sticky lg:top-0 overflow-hidden">
 
         <img src="{{ $this->heroUrl }}"
@@ -126,6 +120,7 @@ class extends Component
 
         <div class="absolute inset-0 bg-gradient-to-t from-black/85 via-black/35 to-black/15" aria-hidden="true"></div>
         <div class="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_40%,rgba(0,0,0,0.35)_100%)]" aria-hidden="true"></div>
+        <div class="absolute inset-0 bg-gradient-to-b from-amber-500/12 via-amber-500/4 to-transparent pointer-events-none" aria-hidden="true"></div>
 
         <div class="relative z-10 flex flex-col justify-end h-full min-h-[280px] sm:min-h-[360px] lg:min-h-0 px-6 sm:px-10 lg:px-16 xl:px-24 pb-8 sm:pb-12 lg:pb-16 text-white">
 
@@ -149,11 +144,8 @@ class extends Component
         </div>
     </aside>
 
-    {{-- ═══════════════ RIGHT — STATE-AWARE PANEL ═══════════════ --}}
     <section class="relative flex-1 flex items-center justify-center px-5 sm:px-8 lg:px-16 py-10 lg:py-16">
 
-        {{-- Ambient radials — platform palette: blue top-right, amber bottom-left.
-             Matches §2.3 of the design system. --}}
         <div class="absolute inset-0 -z-10 opacity-[0.35] dark:opacity-[0.06] pointer-events-none" aria-hidden="true">
             <div class="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(59,130,246,0.10),transparent_55%)]"></div>
             <div class="absolute inset-0 bg-[radial-gradient(circle_at_bottom_left,rgba(245,158,11,0.08),transparent_55%)]"></div>
@@ -161,12 +153,12 @@ class extends Component
 
         <div class="w-full max-w-md">
 
-            {{-- Back to home --}}
             <a href="{{ route('home') }}" wire:navigate
                data-reveal
-               class="inline-flex items-center gap-1.5 -mx-1 px-1 py-2.5 -my-2.5 text-xs font-medium
+               class="relative inline-flex items-center gap-1.5 -mx-1 px-1 py-2.5 -my-2.5 text-xs font-medium
                       text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400
                       transition-colors mb-8 rounded
+                      before:absolute before:content-[''] before:-inset-1.5 before:rounded
                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                 <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -175,7 +167,6 @@ class extends Component
                 Back to home
             </a>
 
-            {{-- Brand mark --}}
             <div data-reveal style="--reveal-delay: 60ms" class="flex items-center gap-3 mb-8">
                 @if($this->logoUrl)
                     <img src="{{ $this->logoUrl }}"
@@ -184,23 +175,21 @@ class extends Component
                          decoding="async"
                          width="40"
                          height="40"
-                         class="w-10 h-10 object-contain rounded-xl shrink-0">
+                         class="w-10 h-10 rounded-full object-contain ring-1 ring-black/5 shadow-sm dark:ring-white/10 shrink-0">
                 @else
-                    <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center text-white shrink-0 font-bold text-base shadow-sm">
+                    <div class="w-10 h-10 rounded-full bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center text-white shrink-0 font-bold text-base ring-1 ring-black/5 shadow-sm dark:ring-white/10">
                         {{ strtoupper(substr($this->siteName, 0, 1)) }}
                     </div>
                 @endif
                 <span class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">{{ $this->siteName }}</span>
             </div>
 
-            {{-- Eyebrow --}}
             <p data-reveal style="--reveal-delay: 100ms"
-               class="mb-2 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400">
+               class="mb-2 inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-primary-600 dark:text-primary-400">
                 <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
                 Business Setup
             </p>
 
-            {{-- Page heading --}}
             <h2 data-reveal style="--reveal-delay: 140ms"
                 class="text-3xl sm:text-4xl font-bold tracking-tight text-gray-900 dark:text-white leading-tight">
                 Register Your Business
@@ -210,7 +199,6 @@ class extends Component
                 Complete our verification process to list your business on {{ $this->siteName }}.
             </p>
 
-            {{-- Flash: success --}}
             @if (session()->has('message'))
                 <div x-data="{ show: true }"
                      x-init="setTimeout(() => show = false, 4000)"
@@ -236,7 +224,6 @@ class extends Component
                 </div>
             @endif
 
-            {{-- Flash: error --}}
             @if (session()->has('error'))
                 <div x-data="{ show: true }"
                      x-init="setTimeout(() => show = false, 5000)"
@@ -261,8 +248,6 @@ class extends Component
                     </button>
                 </div>
             @endif
-
-            {{-- ═══ STATE-AWARE PANEL ═══ --}}
 
             @if ($this->isApproved)
                 <div data-reveal class="mt-8 rounded-2xl border border-emerald-200/70 dark:border-emerald-500/25 bg-emerald-50/40 dark:bg-emerald-500/[0.06] p-6">
@@ -376,9 +361,9 @@ class extends Component
                 </div>
 
             @elseif ($this->isEditable)
-                <div data-reveal class="mt-8 rounded-2xl border border-indigo-200/70 dark:border-indigo-500/25 bg-indigo-50/40 dark:bg-indigo-500/[0.06] p-6">
+                <div data-reveal class="mt-8 rounded-2xl border border-primary-200/70 dark:border-primary-500/25 bg-primary-50/40 dark:bg-primary-500/[0.06] p-6">
                     <div class="flex items-start gap-4">
-                        <div class="shrink-0 w-11 h-11 rounded-xl flex items-center justify-center bg-indigo-100 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30">
+                        <div class="shrink-0 w-11 h-11 rounded-xl flex items-center justify-center bg-primary-100 dark:bg-primary-500/20 text-primary-600 dark:text-primary-400 border border-primary-200 dark:border-primary-500/30">
                             @if ($this->state === BusinessApplication::STATUS_NEEDS_REVISION)
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/>
@@ -424,10 +409,10 @@ class extends Component
                         <button type="submit"
                                 :disabled="loading"
                                 :aria-busy="loading"
-                                class="w-full inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold shadow-sm
+                                class="w-full inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
                                        transition-all duration-200 active:scale-95
                                        [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                        disabled:opacity-60 disabled:cursor-not-allowed">
                             <span :class="loading ? 'hidden' : 'inline-flex items-center gap-2'">
                                 @if ($this->state === BusinessApplication::STATUS_NEEDS_REVISION)
@@ -453,7 +438,8 @@ class extends Component
             @else
                 <div data-reveal class="mt-8 rounded-2xl border border-gray-200/70 dark:border-gray-700/70 bg-white/60 dark:bg-gray-900/40 backdrop-blur-sm p-6 shadow-sm">
 
-                    <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-5">
+                    <p class="mb-5 inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-primary-600 dark:text-primary-400">
+                        <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
                         What to expect
                     </p>
 

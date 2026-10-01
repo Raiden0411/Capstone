@@ -131,9 +131,6 @@ new class extends Component
         open: false,
         toggle() {
             this.open = ! this.open;
-            if (this.open) {
-                $wire.markAllRead();
-            }
         }
     }"
     @click.outside="open = false"
@@ -157,7 +154,7 @@ new class extends Component
         </svg>
 
         @if($this->unreadCount > 0)
-            <span class="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center min-w-4.5 h-4.5 px-1 rounded-full
+            <span class="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full
                          bg-rose-500 text-white text-[10px] font-bold ring-2 ring-white dark:ring-gray-900 tabular-nums"
                   aria-hidden="true">
                 {{ $this->unreadCount > 99 ? '99+' : $this->unreadCount }}
@@ -166,27 +163,12 @@ new class extends Component
         @endif
     </button>
 
-    {{-- Dropdown.
-         ── RESPONSIVE POSITIONING ──
-         On mobile (< sm): the dropdown is positioned relative to the
-         VIEWPORT via `fixed`, spanning `left-3 right-3`. This prevents
-         the off-screen clipping that occurred when the dropdown was
-         anchored `right-0` to a bell that isn't at the far right of
-         the header — the previous 320px-wide absolute dropdown would
-         extend past the left edge of the viewport and clip the header
-         text. `top-[calc(...)]` puts it just below the public header,
-         accounting for the notch safe-area inset.
-
-         On desktop (sm+): reverts to bell-relative `absolute right-0`
-         positioning with a fixed 384px width. There's plenty of
-         horizontal room at ≥640px, so the anchor-based approach is
-         correct and gives the tighter, more "attached" feel. --}}
     <div x-cloak
          :class="open ? 'public-notif-dropdown' : 'hidden'"
          class="z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-2xl overflow-hidden
                 fixed left-3 right-3 top-[calc(4rem+env(safe-area-inset-top)+0.5rem)]
                 sm:absolute sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:w-96"
-         role="menu"
+         role="region"
          aria-label="Notifications">
 
         <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between gap-3">
@@ -199,17 +181,35 @@ new class extends Component
                     </span>
                 @endif
             </div>
-            <button type="button"
-                    @click="open = false"
-                    aria-label="Close notifications"
-                    class="inline-flex items-center justify-center size-11 sm:size-9 shrink-0 rounded-md text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700
-                           transition-all duration-200 touch-manipulation
-                           [-webkit-tap-highlight-color:transparent]
-                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
-                </svg>
-            </button>
+            <div class="flex items-center gap-1 shrink-0">
+                @if($this->unreadCount > 0)
+                    <button type="button"
+                            wire:click="markAllRead"
+                            wire:loading.attr="disabled"
+                            wire:target="markAllRead"
+                            class="inline-flex items-center gap-1.5 h-11 sm:h-9 px-2.5 rounded-md text-xs font-semibold text-primary-600 dark:text-primary-400
+                                   hover:bg-primary-50 dark:hover:bg-primary-500/10
+                                   transition-all duration-200 touch-manipulation [-webkit-tap-highlight-color:transparent]
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                                   disabled:opacity-60 disabled:cursor-not-allowed">
+                        <svg class="size-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                        </svg>
+                        <span>Mark all read</span>
+                    </button>
+                @endif
+                <button type="button"
+                        @click="open = false"
+                        aria-label="Close notifications"
+                        class="inline-flex items-center justify-center size-11 sm:size-9 shrink-0 rounded-md text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700
+                               transition-all duration-200 touch-manipulation
+                               [-webkit-tap-highlight-color:transparent]
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+                    </svg>
+                </button>
+            </div>
         </div>
 
         <div class="max-h-[min(420px,60vh)] overflow-y-auto">
@@ -254,7 +254,7 @@ new class extends Component
                     </svg>
                 </a>
             @empty
-                <div class="px-5 py-10 text-center">
+                <div role="status" aria-live="polite" class="px-5 py-10 text-center">
                     <div class="inline-flex items-center justify-center size-12 rounded-2xl bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 mb-3">
                         <svg class="size-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>

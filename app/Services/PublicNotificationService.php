@@ -84,6 +84,13 @@ class PublicNotificationService
 
     /**
      * Invalidate the notification cache for every admin user of a tenant.
+     *
+     * NOTE: no `whereHas('roles', ...)` on the query. Eloquent resolves
+     * the roles() relation on a fresh User during hydration, so
+     * User::roles()'s override pins the ambient team context to 0 and
+     * the pivot filter matches nothing. We load the tenant's users with
+     * the columns hasRole() needs and filter in PHP — the override
+     * reads model_has_roles directly at each user's own tenant_id.
      */
     public function flushTenantAdmins(int $tenantId): void
     {
@@ -93,9 +100,9 @@ class PublicNotificationService
 
         User::query()
             ->where('tenant_id', $tenantId)
-            ->whereHas('roles', fn ($q) => $q->where('name', 'admin'))
-            ->pluck('id')
-            ->each(fn ($id) => $this->flushForUserId((int) $id));
+            ->get(['id', 'tenant_id'])
+            ->filter(fn ($u) => $u->hasRole('admin'))
+            ->each(fn ($u) => $this->flushForUserId((int) $u->id));
     }
 
     private static function cacheKeyFor(int $userId): string
@@ -309,8 +316,6 @@ class PublicNotificationService
                     ? "Latest from {$latest->user->name}. Review and confirm."
                     : 'Review and confirm incoming bookings.',
                 'url'     => route('tenant.bookings.index'),
-                // Larastan: `created_at` is always populated on a fetched
-                // Eloquent model — no nullsafe on the second segment.
                 'time'    => $latest?->created_at->timestamp ?? time(),
             ];
         }

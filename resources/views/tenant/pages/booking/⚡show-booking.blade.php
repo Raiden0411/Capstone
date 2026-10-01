@@ -6,7 +6,11 @@ use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Computed;
 use App\Models\Booking;
+use App\Models\Payment;
+use App\Services\PayMongoService;
+use App\Traits\ChecksTenantPermissions;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 new
@@ -14,8 +18,22 @@ new
 #[Title('Booking Details')]
 class extends Component
 {
+    use ChecksTenantPermissions;
+
     /** Bound from route. Auto-locked (Eloquent model). */
     public Booking $booking;
+
+    // ── Payment modal state ──
+    public bool $showPaymentModal = false;
+    public string $paymentMethod = 'cash';   // 'cash' | 'qr'
+
+    // ── QR modal state ──
+    public bool $showQrModal = false;
+    public ?string $qrImage = null;
+    public ?string $qrPaymentIntentId = null;
+    public ?string $qrExpiresAt = null;
+    public ?string $qrError = null;
+    public float $qrAmount = 0.0;
 
     public function mount(Booking $booking): void
     {
@@ -40,6 +58,272 @@ class extends Component
             403
         );
     }
+
+    // ─────────────────────────────────────────────────────────
+    //  Payment helpers
+    // ─────────────────────────────────────────────────────────
+
+    /**
+     * Amount the customer still owes NOW.
+     *
+     *   • pending reservation → 20% reservation fee minus any paid rows
+     *   • anything else       → total minus paid
+     */
+    public function amountDueFor(): float
+    {
+        $total = (float) $this->booking->total_amount;
+        $paid  = $this->paidAmount;
+
+        if (
+            $this->booking->booking_type === Booking::TYPE_RESERVATION
+            && $this->booking->status === Booking::STATUS_PENDING
+        ) {
+            $fee = round($total * 0.20, 2);
+            return max(0.0, $fee - $paid);
+        }
+
+        return max(0.0, $total - $paid);
+    }
+
+    public function canCollectPayment(): bool
+    {
+        if (in_array($this->booking->status, [
+            Booking::STATUS_CANCELLED,
+            Booking::STATUS_COMPLETED,
+            Booking::STATUS_CHECKED_IN,
+        ], true)) {
+            return false;
+        }
+
+        return $this->amountDueFor() > 0;
+    }
+
+    protected function paymentTypeFor(): string
+    {
+        if (
+            $this->booking->booking_type === Booking::TYPE_RESERVATION
+            && $this->booking->status === Booking::STATUS_PENDING
+        ) {
+            return Payment::TYPE_RESERVATION;
+        }
+
+        return Payment::TYPE_FULL;
+    }
+
+    /**
+     * Recompute the booking's status after a paid row exists. Mirrors
+     * PayMongoService::finalizePayment()'s branching, plus a corrective
+     * pass: any booking whose paid sum ≥ total lands on CONFIRMED,
+     * regardless of what the service may have set based on payment_type.
+     */
+    protected function applyPaymentTransition(): void
+    {
+        $total = (float) $this->booking->total_amount;
+
+        $paid = (float) Payment::withoutGlobalScope(\App\Scopes\TenantScope::class)
+            ->where('booking_id', $this->booking->id)
+            ->where('payment_status', 'paid')
+            ->sum('amount');
+
+        if ($paid >= $total) {
+            $this->booking->update(['status' => Booking::STATUS_CONFIRMED]);
+            return;
+        }
+
+        if (
+            $this->booking->booking_type === Booking::TYPE_RESERVATION
+            && $this->booking->status === Booking::STATUS_PENDING
+        ) {
+            $fee = round($total * 0.20, 2);
+            if ($paid >= $fee) {
+                $this->booking->update(['status' => Booking::STATUS_RESERVED]);
+            }
+        }
+    }
+
+    protected function refreshBookingState(): void
+    {
+        $this->booking->refresh();
+        $this->booking->unsetRelation('payments');
+
+        unset($this->paidAmount);
+        unset($this->balance);
+        unset($this->isSettled);
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Payment modal actions
+    // ─────────────────────────────────────────────────────────
+
+    public function openPaymentModal(): void
+    {
+        if (! $this->canCollectPayment()) {
+            return;
+        }
+
+        $this->paymentMethod    = 'cash';
+        $this->showPaymentModal = true;
+        $this->qrError          = null;
+    }
+
+    public function closePaymentModal(): void
+    {
+        $this->showPaymentModal = false;
+        $this->qrError          = null;
+    }
+
+    public function submitCashPayment(): void
+    {
+        $this->requirePermission('manage payments');
+
+        if (! $this->canCollectPayment()) {
+            $this->closePaymentModal();
+            return;
+        }
+
+        $amount = $this->amountDueFor();
+        if ($amount <= 0) {
+            session()->flash('error', 'Nothing left to collect on this booking.');
+            $this->closePaymentModal();
+            return;
+        }
+
+        Payment::create([
+            'tenant_id'      => $this->booking->tenant_id,
+            'booking_id'     => $this->booking->id,
+            'amount'         => $amount,
+            'payment_method' => 'cash',
+            'payment_type'   => $this->paymentTypeFor(),
+            'payment_status' => 'paid',
+            'paid_at'        => now(),
+        ]);
+
+        $this->refreshBookingState();
+        $this->applyPaymentTransition();
+
+        $this->closePaymentModal();
+        session()->flash('message', 'Cash payment of ₱' . number_format($amount, 2) . ' recorded.');
+    }
+
+    public function submitQrPayment(): void
+    {
+        $this->requirePermission('manage payments');
+
+        if (! $this->canCollectPayment()) {
+            $this->closePaymentModal();
+            return;
+        }
+
+        $amount = $this->amountDueFor();
+        if ($amount <= 0) {
+            session()->flash('error', 'Nothing left to collect on this booking.');
+            $this->closePaymentModal();
+            return;
+        }
+
+        $payMongo = app(PayMongoService::class);
+
+        $intent = $payMongo->createQrPhPaymentIntent(
+            $amount,
+            'Booking ' . $this->booking->booking_reference,
+            [
+                'booking_id' => (string) $this->booking->id,
+                'tenant_id'  => (string) $this->booking->tenant_id,
+            ],
+        );
+
+        if (! $intent) {
+            Log::error('[show-booking] QR intent creation returned null', [
+                'booking_id' => $this->booking->id,
+            ]);
+            $this->qrError = 'PayMongo rejected the payment intent. Check storage/logs/laravel.log.';
+            return;
+        }
+
+        $qr = $payMongo->attachQrPhPaymentMethod(
+            $intent['id'],
+            $intent['client_key'],
+            route('tenant.bookings.show', ['booking' => $this->booking->id]),
+        );
+
+        if (! $qr) {
+            Log::error('[show-booking] QR attach returned null', [
+                'booking_id' => $this->booking->id,
+                'intent_id'  => $intent['id'],
+            ]);
+            $this->qrError = 'PayMongo rejected the QR attach call. Check storage/logs/laravel.log.';
+            return;
+        }
+
+        try {
+            Payment::create([
+                'tenant_id'        => $this->booking->tenant_id,
+                'booking_id'       => $this->booking->id,
+                'amount'           => $amount,
+                'payment_method'   => 'qr',
+                'payment_type'     => $this->paymentTypeFor(),
+                'payment_status'   => 'pending',
+                'reference_number' => $qr['payment_intent_id'],
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('[show-booking] QR payment row creation failed', [
+                'booking_id' => $this->booking->id,
+                'error'      => $e->getMessage(),
+            ]);
+            $this->qrError = 'Could not record the payment locally. Try again.';
+            return;
+        }
+
+        $this->qrPaymentIntentId = $qr['payment_intent_id'];
+        $this->qrImage           = $qr['qr_image'];
+        $this->qrExpiresAt       = $qr['expires_at'];
+        $this->qrAmount          = $amount;
+        $this->showQrModal       = true;
+
+        $this->showPaymentModal = false;
+        $this->qrError          = null;
+    }
+
+    public function checkQrPayment(): void
+    {
+        if (! $this->qrPaymentIntentId) {
+            return;
+        }
+
+        $payMongo = app(PayMongoService::class);
+
+        if (! $payMongo->finalizeQrPayment($this->qrPaymentIntentId)) {
+            return;
+        }
+
+        // Service may have set RESERVED based on payment_type — re-derive
+        // from scratch so a fully-paid booking lands on CONFIRMED.
+        $this->refreshBookingState();
+        $this->applyPaymentTransition();
+
+        $this->closeQrModal();
+
+        session()->flash('message', 'QR payment received and recorded.');
+    }
+
+    public function cancelQrPayment(): void
+    {
+        $this->closeQrModal();
+    }
+
+    protected function closeQrModal(): void
+    {
+        $this->showQrModal       = false;
+        $this->qrImage           = null;
+        $this->qrPaymentIntentId = null;
+        $this->qrExpiresAt       = null;
+        $this->qrAmount          = 0.0;
+        $this->qrError           = null;
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  Computed
+    // ─────────────────────────────────────────────────────────
 
     #[Computed]
     public function paidAmount(): float
@@ -96,18 +380,21 @@ class extends Component
     }
 
     #[Computed]
-    public function canDelete(): bool
+    public function dueLabel(): string
     {
-        return ! in_array($this->booking->status, [
-            Booking::STATUS_COMPLETED,
-            Booking::STATUS_CANCELLED,
-        ], true);
+        if (
+            $this->booking->booking_type === Booking::TYPE_RESERVATION
+            && $this->booking->status === Booking::STATUS_PENDING
+        ) {
+            return 'Reservation Fee Due';
+        }
+
+        return 'Balance Due';
     }
 
     /**
-     * Rule J — never use asset() for storage. It prefixes APP_URL, which
-     * may not match the current host (envkit.net vs 127.0.0.1). A relative
-     * /storage/... path always resolves on any origin.
+     * Rule J — never use asset() for storage. A relative /storage/...
+     * path resolves on any origin.
      */
     #[Computed]
     public function tenantLogoUrl(): ?string
@@ -128,9 +415,30 @@ class extends Component
         $booking->tenant?->contact_number,
         $booking->tenant?->email,
     ])));
+
+    $canManagePayments = $this->tenantCan('manage payments');
+    $canCollect        = $canManagePayments && $this->canCollectPayment();
+    $dueNow            = $this->amountDueFor();
 @endphp
 
-<div x-data="{ confirmDelete: false }">
+<div x-data="{
+        qrPolling: false,
+        qrPollTimer: null,
+        init() {
+            this.$watch('$wire.showQrModal', (v) => {
+                this.qrPolling = v;
+                if (v) {
+                    this.qrPollTimer = setInterval(() => this.$wire.checkQrPayment(), 5000);
+                } else if (this.qrPollTimer) {
+                    clearInterval(this.qrPollTimer);
+                    this.qrPollTimer = null;
+                }
+            });
+        },
+        destroy() {
+            if (this.qrPollTimer) clearInterval(this.qrPollTimer);
+        }
+     }">
 
     {{-- ═══ SCREEN LAYOUT ═══ --}}
     <div class="no-print p-4 sm:p-6 lg:p-8 max-w-6xl mx-auto space-y-6">
@@ -160,6 +468,20 @@ class extends Component
                     <span>Back</span>
                 </a>
 
+                @if($canCollect)
+                    <button type="button"
+                            wire:click="openPaymentModal"
+                            class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold shadow-sm
+                                   transition-all duration-200 active:scale-95
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <rect x="2" y="6" width="20" height="12" rx="2" stroke="currentColor" stroke-width="2"/>
+                            <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="2"/>
+                        </svg>
+                        <span>Collect Payment</span>
+                    </button>
+                @endif
+
                 <a href="{{ route('tenant.bookings.edit', $booking->id) }}" wire:navigate
                    class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
                           transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
@@ -179,20 +501,59 @@ class extends Component
                     </svg>
                     <span>Print Receipt</span>
                 </button>
-
-                @if($this->canDelete)
-                    <button type="button" @click="confirmDelete = true"
-                            class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-rose-300 dark:border-rose-500/40 bg-white dark:bg-gray-800 text-rose-700 dark:text-rose-300 text-sm font-semibold
-                                   transition-all duration-200 active:scale-95 hover:bg-rose-50 dark:hover:bg-rose-500/10
-                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
-                        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                        </svg>
-                        <span>Delete</span>
-                    </button>
-                @endif
             </div>
         </div>
+
+        {{-- ═══ Flash messages ═══ --}}
+        @if(session()->has('message'))
+            <div x-data="{ show: true }"
+                 x-init="setTimeout(() => show = false, 4000)"
+                 :class="show ? '' : 'hidden'"
+                 role="status"
+                 aria-live="polite"
+                 class="flex items-center justify-between bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 border-l-4 border-l-emerald-500 p-4 rounded-xl text-xs sm:text-sm text-emerald-800 dark:text-emerald-300 font-medium shadow-sm">
+                <div class="flex items-center gap-2.5">
+                    <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    <span>{{ session('message') }}</span>
+                </div>
+                <button type="button" @click="show = false"
+                        class="inline-flex items-center justify-center h-11 w-11 sm:h-7 sm:w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                               transition-all duration-200 active:scale-95
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
+                        aria-label="Dismiss">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+        @endif
+
+        @if(session()->has('error'))
+            <div x-data="{ show: true }"
+                 x-init="setTimeout(() => show = false, 5000)"
+                 :class="show ? '' : 'hidden'"
+                 role="alert"
+                 aria-live="polite"
+                 class="flex items-center justify-between bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 border-l-4 border-l-rose-500 p-4 rounded-xl text-xs sm:text-sm text-rose-800 dark:text-rose-300 font-medium shadow-sm">
+                <div class="flex items-center gap-2.5">
+                    <svg class="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                    </svg>
+                    <span>{{ session('error') }}</span>
+                </div>
+                <button type="button" @click="show = false"
+                        class="inline-flex items-center justify-center h-11 w-11 sm:h-7 sm:w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                               transition-all duration-200 active:scale-95
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
+                        aria-label="Dismiss">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+        @endif
 
         <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm overflow-hidden">
             <div class="h-1.5 {{ $this->statusMeta['stripe'] }}"></div>
@@ -532,8 +893,8 @@ class extends Component
                     @endif
                 </div>
 
-                @if(!$this->isSettled && !in_array($booking->status, [Booking::STATUS_CANCELLED, Booking::STATUS_COMPLETED], true))
-                    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 space-y-3">
+                @if($canCollect)
+                    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 space-y-4">
                         <div class="flex items-center gap-3">
                             <span class="w-5 h-px bg-primary-600"></span>
                             <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
@@ -541,23 +902,298 @@ class extends Component
                             </h2>
                         </div>
 
-                        <livewire:tenant::pages.payment.quick-pay :booking="$booking" />
+                        <div class="rounded-xl bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 p-4">
+                            <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                                {{ $this->dueLabel }}
+                            </p>
+                            <p class="text-3xl font-bold text-gray-900 dark:text-white tabular-nums mt-1">
+                                ₱{{ number_format($dueNow, 2) }}
+                            </p>
+                            @if($booking->booking_type === 'reservation' && $booking->status === 'pending')
+                                <p class="text-xs text-amber-700 dark:text-amber-400 mt-1">
+                                    20% reservation fee — booking becomes Reserved once paid.
+                                </p>
+                            @elseif($booking->booking_type === 'reservation' && $booking->status === 'reserved')
+                                <p class="text-xs text-amber-700 dark:text-amber-400 mt-1">
+                                    Balance owed on arrival — booking becomes Confirmed once paid.
+                                </p>
+                            @endif
+                        </div>
 
-                        <a href="{{ route('tenant.payments.create', ['booking' => $booking->id]) }}" wire:navigate
-                           class="w-full inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
-                                  transition-all duration-200 active:scale-95
-                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                        <button type="button"
+                                wire:click="openPaymentModal"
+                                class="w-full inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold shadow-sm
+                                       transition-all duration-200 active:scale-95
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                             <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8V7m0 9v2m0-3.5c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                <rect x="2" y="6" width="20" height="12" rx="2" stroke="currentColor" stroke-width="2"/>
+                                <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="2"/>
                             </svg>
-                            <span>Record Payment</span>
-                        </a>
+                            <span>Collect Payment</span>
+                        </button>
                     </div>
                 @endif
             </div>
         </div>
     </div>
     {{-- ═══ /SCREEN LAYOUT ═══ --}}
+
+
+    {{-- ═══════════════════════════════════════════════════════════════
+         PAYMENT METHOD MODAL
+         ═══════════════════════════════════════════════════════════════ --}}
+    @if($showPaymentModal)
+        <div wire:key="payment-modal"
+             wire:keydown.escape.window="closePaymentModal"
+             role="dialog"
+             aria-modal="true"
+             aria-labelledby="payment-modal-title"
+             class="no-print fixed inset-0 z-[90] overflow-y-auto">
+
+            <div class="fixed inset-0 bg-black/60 backdrop-blur-sm"
+                 wire:click="closePaymentModal"
+                 aria-hidden="true"></div>
+
+            <div class="relative flex min-h-full items-center justify-center p-2 sm:p-4">
+                <div @click.stop
+                     class="relative w-full max-w-md bg-white dark:bg-gray-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+
+                    <header class="flex items-center justify-between gap-3 px-5 py-4 border-b border-gray-200 dark:border-gray-700">
+                        <div class="min-w-0">
+                            <h2 id="payment-modal-title"
+                                class="text-base font-semibold text-gray-900 dark:text-white">
+                                Collect Payment
+                            </h2>
+                            <p class="text-xs font-mono text-gray-500 dark:text-gray-400 truncate mt-0.5">
+                                {{ $booking->booking_reference }}
+                            </p>
+                        </div>
+                        <button type="button"
+                                wire:click="closePaymentModal"
+                                class="inline-flex items-center justify-center h-11 w-11 rounded-lg text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700
+                                       transition-all duration-200 active:scale-95
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                                aria-label="Close">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </header>
+
+                    <div class="px-5 py-5 space-y-5">
+
+                        <div class="rounded-xl bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 p-4">
+                            <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                                {{ $this->dueLabel }}
+                            </p>
+                            <p class="text-3xl font-bold text-gray-900 dark:text-white tabular-nums mt-1">
+                                ₱{{ number_format($dueNow, 2) }}
+                            </p>
+                            @if($booking->booking_type === 'reservation' && $booking->status === 'pending')
+                                <p class="text-xs text-amber-700 dark:text-amber-400 mt-1">
+                                    20% reservation fee — booking becomes Reserved once paid.
+                                </p>
+                            @elseif($booking->booking_type === 'reservation' && $booking->status === 'reserved')
+                                <p class="text-xs text-amber-700 dark:text-amber-400 mt-1">
+                                    Balance owed on arrival — booking becomes Confirmed once paid.
+                                </p>
+                            @endif
+                        </div>
+
+                        @if($qrError)
+                            <div class="rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/30 p-3 text-xs text-rose-700 dark:text-rose-300">
+                                {{ $qrError }}
+                            </div>
+                        @endif
+
+                        <div>
+                            <p class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
+                                Payment Method
+                            </p>
+                            <div class="grid grid-cols-2 gap-3">
+                                <label class="cursor-pointer relative
+                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
+                                    <input type="radio" wire:model.live="paymentMethod" value="cash" class="sr-only peer">
+                                    <div class="flex flex-col items-center justify-center gap-2 p-4 rounded-2xl border-2 border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-center transition-all duration-200 cursor-pointer
+                                                peer-checked:border-primary-600 peer-checked:bg-primary-50 dark:peer-checked:bg-primary-900/30 peer-checked:shadow-lg active:scale-[0.98]">
+                                        <svg class="w-7 h-7 text-gray-700 dark:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                        </svg>
+                                        <p class="text-gray-900 dark:text-white font-semibold text-sm">Cash</p>
+                                        <p class="text-gray-500 dark:text-gray-400 text-[10px]">Recorded now</p>
+                                    </div>
+                                </label>
+
+                                <label class="cursor-pointer relative
+                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
+                                    <input type="radio" wire:model.live="paymentMethod" value="qr" class="sr-only peer">
+                                    <div class="flex flex-col items-center justify-center gap-2 p-4 rounded-2xl border-2 border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-center transition-all duration-200 cursor-pointer
+                                                peer-checked:border-primary-600 peer-checked:bg-primary-50 dark:peer-checked:bg-primary-900/30 peer-checked:shadow-lg active:scale-[0.98]">
+                                        <svg class="w-7 h-7 text-gray-700 dark:text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                            <rect x="4" y="4" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.6"/>
+                                            <rect x="14" y="4" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.6"/>
+                                            <rect x="4" y="14" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.6"/>
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" d="M14 14h2v2h-2zM20 14v2M14 20h2M18 20h2v-2"/>
+                                        </svg>
+                                        <p class="text-gray-900 dark:text-white font-semibold text-sm">QR Code</p>
+                                        <p class="text-gray-500 dark:text-gray-400 text-[10px]">Scan via PayMongo</p>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <footer class="flex items-center justify-end gap-2 px-5 py-3 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30">
+                        <button type="button"
+                                wire:click="closePaymentModal"
+                                class="inline-flex items-center gap-2 h-11 px-4 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                                       transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                            Cancel
+                        </button>
+
+                        @if($paymentMethod === 'cash')
+                            <button type="button"
+                                    wire:click="submitCashPayment"
+                                    wire:loading.attr="disabled"
+                                    wire:target="submitCashPayment"
+                                    class="inline-flex items-center gap-2 h-11 px-5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold shadow-sm
+                                           transition-all duration-200 active:scale-95
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                                           disabled:opacity-60 disabled:cursor-not-allowed">
+                                <span wire:loading.remove wire:target="submitCashPayment">Record Cash</span>
+                                <span wire:loading wire:target="submitCashPayment" class="inline-flex items-center gap-2">
+                                    <svg class="animate-spin w-4 h-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                    </svg>
+                                    Processing…
+                                </span>
+                            </button>
+                        @else
+                            <button type="button"
+                                    wire:click="submitQrPayment"
+                                    wire:loading.attr="disabled"
+                                    wire:target="submitQrPayment"
+                                    class="inline-flex items-center gap-2 h-11 px-5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold shadow-sm
+                                           transition-all duration-200 active:scale-95
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                                           disabled:opacity-60 disabled:cursor-not-allowed">
+                                <span wire:loading.remove wire:target="submitQrPayment">Generate QR</span>
+                                <span wire:loading wire:target="submitQrPayment" class="inline-flex items-center gap-2">
+                                    <svg class="animate-spin w-4 h-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                    </svg>
+                                    Processing…
+                                </span>
+                            </button>
+                        @endif
+                    </footer>
+                </div>
+            </div>
+        </div>
+    @endif
+
+
+    {{-- ═══════════════════════════════════════════════════════════════
+         QR MODAL
+         ═══════════════════════════════════════════════════════════════ --}}
+    @if($showQrModal && $qrImage)
+        <div wire:key="qr-modal-active"
+             wire:keydown.escape.window="cancelQrPayment"
+             role="dialog"
+             aria-modal="true"
+             aria-labelledby="qr-modal-title"
+             class="no-print fixed inset-0 z-[95] overflow-y-auto">
+
+            <div class="fixed inset-0 bg-black/70 backdrop-blur-sm"
+                 wire:click="cancelQrPayment"
+                 aria-hidden="true"></div>
+
+            <div class="relative flex min-h-full items-center justify-center p-2 sm:p-4">
+                <div @click.stop
+                     class="relative w-full max-w-md bg-white dark:bg-gray-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+
+                    <header class="flex items-start justify-between gap-3 px-5 py-4 border-b border-gray-200 dark:border-gray-700">
+                        <div class="min-w-0">
+                            <h2 id="qr-modal-title"
+                                class="text-base font-semibold text-gray-900 dark:text-white">
+                                Scan to Pay
+                            </h2>
+                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                                Open any e-wallet or bank app to scan
+                            </p>
+                        </div>
+                        <button type="button"
+                                wire:click="cancelQrPayment"
+                                class="inline-flex items-center justify-center h-11 w-11 rounded-lg text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700
+                                       transition-all duration-200 active:scale-95
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                                aria-label="Close">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </header>
+
+                    <div class="px-5 py-5 space-y-4">
+                        <div class="bg-white rounded-2xl p-4 flex items-center justify-center border-2 border-gray-200 dark:border-gray-700">
+                            <img src="{{ $qrImage }}" alt="PayMongo QR Code" class="w-64 h-64 object-contain">
+                        </div>
+
+                        <div class="text-center">
+                            <p class="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wider">Amount due</p>
+                            <p class="text-2xl font-bold text-primary-600 dark:text-primary-400 mt-1 tabular-nums">
+                                ₱{{ number_format($qrAmount, 2) }}
+                            </p>
+                            @if($qrExpiresAt)
+                                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                    Expires {{ \Carbon\Carbon::parse($qrExpiresAt)->diffForHumans() }}
+                                </p>
+                            @endif
+                        </div>
+
+                        <div class="flex items-center gap-2 p-3 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20">
+                            <svg class="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 animate-pulse motion-reduce:animate-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            <p class="text-xs text-blue-800 dark:text-blue-300 font-medium">
+                                Waiting for payment confirmation…
+                            </p>
+                        </div>
+                    </div>
+
+                    <footer class="flex items-center gap-2 px-5 py-3 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30">
+                        <button type="button"
+                                wire:click="checkQrPayment"
+                                wire:loading.attr="disabled"
+                                wire:target="checkQrPayment"
+                                class="flex-1 inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                       transition-all duration-200 active:scale-95
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
+                                       disabled:opacity-60 disabled:cursor-not-allowed">
+                            <span wire:loading.remove wire:target="checkQrPayment">Check Now</span>
+                            <span wire:loading wire:target="checkQrPayment" class="inline-flex items-center gap-2">
+                                <svg class="animate-spin w-4 h-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                </svg>
+                                Checking…
+                            </span>
+                        </button>
+                        <button type="button"
+                                wire:click="cancelQrPayment"
+                                class="flex-1 inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                                       transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                            Close
+                        </button>
+                    </footer>
+                </div>
+            </div>
+        </div>
+    @endif
 
 
     {{-- ═══════════════════════════════════════════════════════════════
@@ -761,52 +1397,6 @@ class extends Component
         </div>
     </div>
     {{-- ═══ /PRINT-ONLY RECEIPT ═══ --}}
-
-
-    {{-- ═══ DELETE MODAL (screen-only) ═══ --}}
-    <div :class="confirmDelete ? '' : 'hidden'"
-         @keydown.escape.window="confirmDelete = false"
-         class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm no-print"
-         role="dialog" aria-modal="true" aria-labelledby="delete-modal-title">
-        <div @click.outside="confirmDelete = false"
-             class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-6 max-w-md w-full shadow-2xl">
-            <div class="flex items-start gap-3 mb-4">
-                <div class="shrink-0 w-10 h-10 rounded-full bg-rose-50 dark:bg-rose-500/10 flex items-center justify-center">
-                    <svg class="w-5 h-5 text-rose-600 dark:text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                    </svg>
-                </div>
-                <div>
-                    <h3 id="delete-modal-title" class="text-lg font-bold text-gray-900 dark:text-white">
-                        Delete Booking?
-                    </h3>
-                    <p class="mt-1 text-sm text-gray-600 dark:text-gray-300">
-                        Are you sure you want to delete booking
-                        <strong class="text-gray-900 dark:text-white font-mono">#{{ $booking->booking_reference }}</strong>?
-                        This action cannot be undone.
-                    </p>
-                </div>
-            </div>
-            <div class="flex justify-end gap-2">
-                <button type="button" @click="confirmDelete = false"
-                        class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
-                               transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
-                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
-                    Cancel
-                </button>
-                <form action="{{ route('tenant.bookings.destroy', $booking->id) }}" method="POST">
-                    @csrf
-                    @method('DELETE')
-                    <button type="submit"
-                            class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-sm font-semibold shadow-sm
-                                   transition-all duration-200 active:scale-95
-                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
-                        Confirm Delete
-                    </button>
-                </form>
-            </div>
-        </div>
-    </div>
 
 
     {{-- ═══════════════════════════════════════════════════════════════

@@ -4,6 +4,7 @@ namespace App\Traits;
 
 use App\Models\User;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Guards mutating Livewire actions with the same permission strings the
@@ -37,6 +38,10 @@ trait ChecksTenantPermissions
      * Boolean form — safe to use in Blade to conditionally render action
      * buttons the user cannot invoke. Public so Blade templates can call
      * `$this->tenantCan('...')`.
+     *
+     * Does NOT consult Spatie's ambient team context. Reads pivot tables
+     * directly, filtered by $user->tenant_id — deterministic regardless
+     * of which request lifecycle the caller runs in.
      */
     public function tenantCan(string $permission): bool
     {
@@ -52,8 +57,56 @@ trait ChecksTenantPermissions
             return true;
         }
 
-        // Tenant-scoped users must hold the specific permission.
-        return (bool) $user->tenant_id
-            && $user->getAllPermissions()->contains('name', $permission);
+        if (! $user->tenant_id) {
+            return false;
+        }
+
+        return $this->userHasPermissionAtTenant($user, $permission);
+    }
+
+    /**
+     * Team-agnostic equivalent of
+     *   $user->getAllPermissions()->contains('name', $permission)
+     *
+     * Two paths count, mirroring what the Spatie check was intended to
+     * cover:
+     *
+     *   1. A direct permission assigned to the user at their tenant.
+     *   2. A permission reachable through any role the user holds at
+     *      their tenant.
+     *
+     * Filtered by team_id = $user->tenant_id, NOT by the ambient
+     * getPermissionsTeamId() value — which can still be 0 (the guest
+     * sentinel) when this method is called from a Livewire render,
+     * returning an empty permission set for legitimate employees.
+     */
+    protected function userHasPermissionAtTenant(User $user, string $permission): bool
+    {
+        $modelType = $user::class;
+        $userId    = $user->getKey();
+        $teamId    = $user->tenant_id;
+
+        $hasDirect = DB::table('model_has_permissions')
+            ->join('permissions', 'permissions.id', '=', 'model_has_permissions.permission_id')
+            ->where('model_has_permissions.model_id', $userId)
+            ->where('model_has_permissions.model_type', $modelType)
+            ->where('model_has_permissions.team_id', $teamId)
+            ->where('permissions.name', $permission)
+            ->where('permissions.guard_name', 'web')
+            ->exists();
+
+        if ($hasDirect) {
+            return true;
+        }
+
+        return DB::table('model_has_roles')
+            ->join('role_has_permissions', 'role_has_permissions.role_id', '=', 'model_has_roles.role_id')
+            ->join('permissions', 'permissions.id', '=', 'role_has_permissions.permission_id')
+            ->where('model_has_roles.model_id', $userId)
+            ->where('model_has_roles.model_type', $modelType)
+            ->where('model_has_roles.team_id', $teamId)
+            ->where('permissions.name', $permission)
+            ->where('permissions.guard_name', 'web')
+            ->exists();
     }
 }

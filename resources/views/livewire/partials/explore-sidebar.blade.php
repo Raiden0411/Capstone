@@ -32,6 +32,7 @@
 
 @php
     $destinationCount = $this->tenants->count();
+    $colors = ['#f97316', '#a855f7', '#3b82f6', '#14b8a6', '#eab308', '#10b981', '#8b5cf6', '#f43f5e'];
 @endphp
 
 <div class="relative flex h-full flex-col bg-white dark:bg-gray-900">
@@ -67,8 +68,6 @@
             </div>
         </div>
 
-        {{-- Toggle row — Rule M: min-h-11 on each label so the whole row
-             is a 44px tap target on mobile. --}}
         <div class="px-3.5 pb-3 flex items-center gap-x-3 gap-y-1 flex-wrap">
             <label class="inline-flex items-center gap-2 cursor-pointer select-none py-2 -my-1 min-h-11
                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
@@ -175,7 +174,6 @@
         <div class="px-3 pb-2.5 flex items-stretch gap-1.5">
             <div class="flex-1 flex gap-0.5 rounded-lg border border-gray-200/80 bg-gray-50 p-0.5 dark:border-gray-700/60 dark:bg-gray-800/60 min-w-0">
                 @foreach(['name'=>'A–Z','distance'=>'Near','newest'=>'New'] as $v=>$l)
-                    {{-- Rule M: min-h-11 raises each sort button to 44px tap floor. --}}
                     <button
                         type="button"
                         wire:key="sort-{{ $v }}"
@@ -199,7 +197,6 @@
                 ]));
             @endphp
 
-            {{-- Rule M: min-h-11 on the Filters button. --}}
             <button
                 type="button"
                 @click="filtersOpen = !filtersOpen"
@@ -430,7 +427,6 @@
 
         @forelse($this->tenants as $tenant)
             @php
-                $colors = ['#f97316','#a855f7','#3b82f6','#14b8a6','#eab308','#10b981','#8b5cf6','#f43f5e'];
                 $tc = $colors[$loop->index % count($colors)];
                 $isFav = in_array($tenant->id, $favorites, true);
                 $isHL  = $highlightedId === $tenant->id;

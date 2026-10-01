@@ -15,7 +15,14 @@ return new class extends Migration
             $table->string('name');
             $table->text('description')->nullable();
             $table->integer('capacity')->default(1);
-            $table->unsignedInteger('quantity')->default(1); // ← added
+            $table->unsignedInteger('quantity')->default(1);
+
+            // Per-property stay limits. Enforced in BookingAvailabilityService
+            // and mirrored on the create-booking SFC + dateSelector JS.
+            // max_stay_days NULL means unlimited.
+            $table->unsignedSmallInteger('min_stay_days')->default(1);
+            $table->unsignedSmallInteger('max_stay_days')->nullable();
+
             $table->decimal('price', 10, 2)->default(0.00);
             $table->string('status')->default('available');
             $table->boolean('is_active')->default(true);

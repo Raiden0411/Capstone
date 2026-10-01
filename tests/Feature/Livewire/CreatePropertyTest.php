@@ -47,12 +47,16 @@ it('creates a property with availability blackout dates', function () {
         ->assertHasNoErrors()
         ->assertRedirect(route('tenant.properties.index'));
 
+    // Quantity is a creation-time multiplier: N requested units become N
+    // separate rows, each with quantity = 1 and its own availability.
+    $this->assertDatabaseCount('properties', 2);
+
     $this->assertDatabaseHas('properties', [
         'tenant_id'        => $tenant->id,
         'property_type_id' => $propertyType->id,
         'name'             => 'Test Activity',
         'capacity'         => 4,
-        'quantity'         => 2,
+        'quantity'         => 1,
         'price'            => 1500,
         'status'           => 'available',
         'is_active'        => true,

@@ -74,6 +74,30 @@ class extends Component
         };
     }
 
+    /**
+     * Pad a date-keyed series so every day in the selected range is
+     * present with a 0 default. Without this, a chart with sparse data
+     * (e.g. Oct 1 on the first day of the month) renders 1 bar and
+     * looks broken. Future days beyond today are excluded.
+     *
+     * @param  array<string, int|float>  $data
+     * @return array<string, int|float>
+     */
+    private function padTrendWithZeroes(array $data, Carbon $start, Carbon $end): array
+    {
+        $padded = [];
+        $cursor = $start->copy()->startOfDay();
+        $cap    = $end->isFuture() ? now()->startOfDay() : $end->copy()->startOfDay();
+
+        while ($cursor->lte($cap)) {
+            $key          = $cursor->toDateString();
+            $padded[$key] = $data[$key] ?? 0;
+            $cursor->addDay();
+        }
+
+        return $padded;
+    }
+
     /** @return array<string, float|int> */
     #[Computed]
     public function stats(): array
@@ -89,16 +113,23 @@ class extends Component
 
         $bookingAgg = Booking::withoutGlobalScope(TenantScope::class)
             ->where('tenant_id', $tenantId)
-            ->selectRaw('
+            ->selectRaw("
                 COALESCE(SUM(CASE WHEN created_at BETWEEN ? AND ? THEN 1 ELSE 0 END), 0) as period_bookings,
+                COALESCE(SUM(CASE WHEN created_at BETWEEN ? AND ? AND status != ? THEN 1 ELSE 0 END), 0) as period_non_cancelled,
                 COALESCE(COUNT(DISTINCT CASE WHEN created_at BETWEEN ? AND ? THEN user_id END), 0) as period_guests,
-                COALESCE(SUM(CASE WHEN status NOT IN ("cancelled","completed") AND check_in <= ? AND check_out > ? THEN 1 ELSE 0 END), 0) as active_count
-            ', [$start, $end, $start, $end, $end, $start])
+                COALESCE(SUM(CASE WHEN status NOT IN (?, ?) AND check_in <= ? AND check_out >= ? THEN 1 ELSE 0 END), 0) as active_count
+            ", [
+                $start, $end,
+                $start, $end, Booking::STATUS_CANCELLED,
+                $start, $end,
+                Booking::STATUS_CANCELLED, Booking::STATUS_COMPLETED, $end, $start,
+            ])
             ->first();
 
-        $totalBookings  = (int) ($bookingAgg?->period_bookings ?? 0);
-        $totalGuests    = (int) ($bookingAgg?->period_guests   ?? 0);
-        $activeBookings = (int) ($bookingAgg?->active_count    ?? 0);
+        $totalBookings        = (int) ($bookingAgg?->period_bookings      ?? 0);
+        $nonCancelledBookings = (int) ($bookingAgg?->period_non_cancelled ?? 0);
+        $totalGuests          = (int) ($bookingAgg?->period_guests        ?? 0);
+        $activeBookings       = (int) ($bookingAgg?->active_count         ?? 0);
 
         $totalProperties = (int) Property::withoutGlobalScope(TenantScope::class)
             ->where('tenant_id', $tenantId)
@@ -114,19 +145,53 @@ class extends Component
             ->get(['id', 'total_amount'])
             ->sum(fn ($b) => max(0, (float) $b->total_amount - (float) ($b->paid_amount ?? 0)));
 
+        $refundsProcessed = (float) Booking::withoutGlobalScope(TenantScope::class)
+            ->where('tenant_id', $tenantId)
+            ->where('refund_status', Booking::REFUND_STATUS_PROCESSED)
+            ->whereNotNull('refund_processed_at')
+            ->whereBetween('refund_processed_at', [$start, $end])
+            ->sum('refund_amount');
+
+        $refundsPending = (float) Booking::withoutGlobalScope(TenantScope::class)
+            ->where('tenant_id', $tenantId)
+            ->where('refund_status', Booking::REFUND_STATUS_PENDING)
+            ->sum('refund_amount');
+
+        $cancellationAgg = Booking::withoutGlobalScope(TenantScope::class)
+            ->where('tenant_id', $tenantId)
+            ->where('status', Booking::STATUS_CANCELLED)
+            ->whereRaw('COALESCE(cancelled_at, updated_at) BETWEEN ? AND ?', [$start, $end])
+            ->selectRaw("
+                COUNT(*) as total,
+                COALESCE(SUM(CASE WHEN cancelled_by = 'tourist' THEN 1 ELSE 0 END), 0) as by_tourist,
+                COALESCE(SUM(CASE WHEN cancelled_by = 'admin'   THEN 1 ELSE 0 END), 0) as by_admin
+            ")
+            ->first();
+
+        $cancellationsCount   = (int) ($cancellationAgg->total      ?? 0);
+        $cancellationsTourist = (int) ($cancellationAgg->by_tourist ?? 0);
+        $cancellationsAdmin   = (int) ($cancellationAgg->by_admin   ?? 0);
+
         $occupancy       = $totalProperties > 0 ? round(($activeBookings / $totalProperties) * 100, 1) : 0.0;
-        $avgBookingValue = $totalBookings   > 0 ? round($revenue / $totalBookings, 2) : 0.0;
+        $netRevenue      = $revenue - $refundsProcessed;
+        $avgBookingValue = $nonCancelledBookings > 0 ? round($netRevenue / $nonCancelledBookings, 2) : 0.0;
 
         return [
-            'revenue'             => $revenue,
-            'total_bookings'      => $totalBookings,
-            'total_guests'        => $totalGuests,
-            'occupancy_rate'      => $occupancy,
-            'avg_booking_value'   => $avgBookingValue,
-            'outstanding_balance' => (float) $outstandingBalance,
-            'repeat_guest_rate'   => $this->repeatGuestRate,
-            'total_properties'    => $totalProperties,
-            'active_bookings'     => $activeBookings,
+            'revenue'                => $revenue,
+            'net_revenue'            => $netRevenue,
+            'refunds_processed'      => $refundsProcessed,
+            'refunds_pending'        => $refundsPending,
+            'total_bookings'         => $totalBookings,
+            'total_guests'           => $totalGuests,
+            'occupancy_rate'         => $occupancy,
+            'avg_booking_value'      => $avgBookingValue,
+            'outstanding_balance'    => (float) $outstandingBalance,
+            'repeat_guest_rate'      => $this->repeatGuestRate,
+            'total_properties'       => $totalProperties,
+            'active_bookings'        => $activeBookings,
+            'cancellations'          => $cancellationsCount,
+            'cancellations_tourist'  => $cancellationsTourist,
+            'cancellations_admin'    => $cancellationsAdmin,
         ];
     }
 
@@ -153,7 +218,7 @@ class extends Component
     {
         [$start, $end] = $this->dateBounds;
 
-        return Payment::query()
+        $raw = Payment::query()
             ->where('tenant_id', Auth::user()->tenant_id)
             ->where('payment_status', 'paid')
             ->whereBetween('paid_at', [$start, $end])
@@ -163,6 +228,94 @@ class extends Component
             ->pluck('total', 'date')
             ->map(fn ($v) => (float) $v)
             ->all();
+
+        return $this->padTrendWithZeroes($raw, $start, $end);
+    }
+
+    /** @return array<string, float> */
+    #[Computed]
+    public function refundsTrend(): array
+    {
+        [$start, $end] = $this->dateBounds;
+
+        $raw = Booking::withoutGlobalScope(TenantScope::class)
+            ->where('tenant_id', Auth::user()->tenant_id)
+            ->where('refund_status', Booking::REFUND_STATUS_PROCESSED)
+            ->whereNotNull('refund_processed_at')
+            ->whereBetween('refund_processed_at', [$start, $end])
+            ->select(DB::raw('DATE(refund_processed_at) as date'), DB::raw('SUM(refund_amount) as total'))
+            ->groupBy('date')
+            ->orderBy('date')
+            ->pluck('total', 'date')
+            ->map(fn ($v) => (float) $v)
+            ->all();
+
+        return $this->padTrendWithZeroes($raw, $start, $end);
+    }
+
+    /** @return array<string, int> */
+    #[Computed]
+    public function cancellationsTrend(): array
+    {
+        [$start, $end] = $this->dateBounds;
+
+        $raw = Booking::withoutGlobalScope(TenantScope::class)
+            ->where('tenant_id', Auth::user()->tenant_id)
+            ->where('status', Booking::STATUS_CANCELLED)
+            ->whereRaw('COALESCE(cancelled_at, updated_at) BETWEEN ? AND ?', [$start, $end])
+            ->select(DB::raw('DATE(COALESCE(cancelled_at, updated_at)) as date'), DB::raw('COUNT(*) as total'))
+            ->groupBy('date')
+            ->orderBy('date')
+            ->pluck('total', 'date')
+            ->map(fn ($v) => (int) $v)
+            ->all();
+
+        return $this->padTrendWithZeroes($raw, $start, $end);
+    }
+
+    /** @return array<string, int> */
+    #[Computed]
+    public function refundStatusDistribution(): array
+    {
+        [$start, $end] = $this->dateBounds;
+
+        $rows = Booking::withoutGlobalScope(TenantScope::class)
+            ->where('tenant_id', Auth::user()->tenant_id)
+            ->where('status', Booking::STATUS_CANCELLED)
+            ->whereRaw('COALESCE(cancelled_at, updated_at) BETWEEN ? AND ?', [$start, $end])
+            ->select('refund_status', DB::raw('COUNT(*) as total'))
+            ->groupBy('refund_status')
+            ->pluck('total', 'refund_status')
+            ->all();
+
+        return [
+            'none'      => (int) ($rows['none']      ?? 0),
+            'pending'   => (int) ($rows['pending']   ?? 0),
+            'processed' => (int) ($rows['processed'] ?? 0),
+            'rejected'  => (int) ($rows['rejected']  ?? 0),
+        ];
+    }
+
+    /** @return array<string, int> */
+    #[Computed]
+    public function cancellationsByParty(): array
+    {
+        [$start, $end] = $this->dateBounds;
+
+        $rows = Booking::withoutGlobalScope(TenantScope::class)
+            ->where('tenant_id', Auth::user()->tenant_id)
+            ->where('status', Booking::STATUS_CANCELLED)
+            ->whereRaw('COALESCE(cancelled_at, updated_at) BETWEEN ? AND ?', [$start, $end])
+            ->select('cancelled_by', DB::raw('COUNT(*) as total'))
+            ->groupBy('cancelled_by')
+            ->pluck('total', 'cancelled_by')
+            ->all();
+
+        return [
+            'tourist' => (int) ($rows['tourist'] ?? 0),
+            'admin'   => (int) ($rows['admin']   ?? 0),
+            'legacy'  => (int) ($rows['']        ?? 0) + (int) ($rows[null] ?? 0),
+        ];
     }
 
     /** @return array<string, int> */
@@ -171,7 +324,7 @@ class extends Component
     {
         [$start, $end] = $this->dateBounds;
 
-        return Booking::withoutGlobalScope(TenantScope::class)
+        $raw = Booking::withoutGlobalScope(TenantScope::class)
             ->where('tenant_id', Auth::user()->tenant_id)
             ->whereBetween('created_at', [$start, $end])
             ->select(DB::raw('DATE(created_at) as date'), DB::raw('COUNT(*) as total'))
@@ -180,6 +333,8 @@ class extends Component
             ->pluck('total', 'date')
             ->map(fn ($v) => (int) $v)
             ->all();
+
+        return $this->padTrendWithZeroes($raw, $start, $end);
     }
 
     /** @return array<int, array{method: string, total: float}> */
@@ -188,12 +343,13 @@ class extends Component
     {
         [$start, $end] = $this->dateBounds;
 
+        // LOWER() normalises case drift so 'gcash' and 'GCash' don't render as two slices.
         return Payment::query()
             ->where('tenant_id', Auth::user()->tenant_id)
             ->where('payment_status', 'paid')
             ->whereBetween('paid_at', [$start, $end])
-            ->select('payment_method', DB::raw('SUM(amount) as total'))
-            ->groupBy('payment_method')
+            ->select(DB::raw('LOWER(payment_method) as payment_method'), DB::raw('SUM(amount) as total'))
+            ->groupBy(DB::raw('LOWER(payment_method)'))
             ->orderByDesc('total')
             ->get()
             ->map(fn ($p) => [
@@ -218,23 +374,38 @@ class extends Component
             return [];
         }
 
-        $bookings = Booking::withoutGlobalScope(TenantScope::class)
-            ->where('tenant_id', $tenantId)
-            ->whereNotIn('status', [Booking::STATUS_CANCELLED, Booking::STATUS_COMPLETED])
-            ->where('check_in', '<=', $end)
-            ->where('check_out', '>', $start)
-            ->get(['check_in', 'check_out']);
+        // Distinct properties occupied per day. Counted from booking_items so a
+        // booking that spans multiple properties contributes each property, and
+        // a property booked by two overlapping guests is counted once.
+        $rows = DB::table('booking_items')
+            ->join('bookings', 'booking_items.booking_id', '=', 'bookings.id')
+            ->where('booking_items.tenant_id', $tenantId)
+            ->where('bookings.tenant_id', $tenantId)
+            ->whereNotIn('bookings.status', [Booking::STATUS_CANCELLED, Booking::STATUS_COMPLETED])
+            ->where('bookings.check_in', '<=', $end)
+            ->where('bookings.check_out', '>=', $start)
+            ->select('booking_items.property_id', 'bookings.check_in', 'bookings.check_out')
+            ->get();
 
-        $trend   = [];
-        $current = $start->copy()->startOfDay();
+        $bookings = $rows->map(fn ($r) => [
+            'property_id' => $r->property_id,
+            'check_in'    => Carbon::parse($r->check_in)->startOfDay(),
+            'check_out'   => Carbon::parse($r->check_out)->startOfDay(),
+        ]);
 
-        while ($current->lte($end)) {
-            $active = $bookings->filter(
-                fn ($b) => $b->check_in->lte($current) && $b->check_out->gt($current),
-            )->count();
+        $trend  = [];
+        $cursor = $start->copy()->startOfDay();
+        $cap    = $end->isFuture() ? now()->startOfDay() : $end->copy()->startOfDay();
 
-            $trend[$current->toDateString()] = round(($active / $totalProperties) * 100, 1);
-            $current->addDay();
+        while ($cursor->lte($cap)) {
+            $occupied = $bookings
+                ->filter(fn ($b) => $b['check_in']->lte($cursor) && $b['check_out']->gte($cursor))
+                ->pluck('property_id')
+                ->unique()
+                ->count();
+
+            $trend[$cursor->toDateString()] = round(($occupied / $totalProperties) * 100, 1);
+            $cursor->addDay();
         }
 
         return $trend;
@@ -323,11 +494,14 @@ class extends Component
     {
         [$start, $end] = $this->dateBounds;
 
+        // Cancelled bookings' services were previously still summed here,
+        // inflating service revenue and every downstream share.
         return DB::table('booking_services')
             ->join('services', 'booking_services.service_id', '=', 'services.id')
             ->join('bookings', 'booking_services.booking_id', '=', 'bookings.id')
             ->where('booking_services.tenant_id', Auth::user()->tenant_id)
             ->whereBetween('bookings.created_at', [$start, $end])
+            ->whereNotIn('bookings.status', [Booking::STATUS_CANCELLED])
             ->select(
                 'services.name',
                 DB::raw('COUNT(*) as count'),
@@ -367,7 +541,7 @@ class extends Component
         return [
             'arrivals' => Booking::withoutGlobalScope(TenantScope::class)
                 ->where('tenant_id', $tenantId)
-                ->whereDate('check_in', $today)
+                ->where('check_in', $today)
                 ->where('status', '!=', Booking::STATUS_CANCELLED)
                 ->with('user:id,name')
                 ->select('id', 'user_id', 'booking_reference', 'check_in')
@@ -375,7 +549,7 @@ class extends Component
 
             'departures' => Booking::withoutGlobalScope(TenantScope::class)
                 ->where('tenant_id', $tenantId)
-                ->whereDate('check_out', $today)
+                ->where('check_out', $today)
                 ->where('status', '!=', Booking::STATUS_CANCELLED)
                 ->with('user:id,name')
                 ->select('id', 'user_id', 'booking_reference', 'check_out')
@@ -396,7 +570,6 @@ class extends Component
 @push('styles')
     @once
         <style>
-            /* ─── Canvas sizing (unchanged) ─── */
             .analytics-page canvas {
                 display:    block !important;
                 width:      100%  !important;
@@ -404,7 +577,6 @@ class extends Component
                 max-height: 100% !important;
             }
 
-            /* ─── Ambient background ─── */
             .tenant-analytics-ambient {
                 background:
                     radial-gradient(ellipse 70% 50% at 8% 5%,  rgba(245,158,11,.06) 0%, transparent 55%),
@@ -446,27 +618,51 @@ class extends Component
 @endpush
 
 @php
-    $s             = $this->stats;
-    $propPerf      = $this->propertyPerformance;
-    $statusDist    = $this->bookingStatusDistribution;
-    $guestComp     = $this->guestComposition;
-    $breakdowns    = $this->revenueBreakdown;
-    $paymentBreak  = $this->paymentMethodBreakdown;
+    $s            = $this->stats;
+    $propPerf     = $this->propertyPerformance;
+    $statusDist   = $this->bookingStatusDistribution;
+    $guestComp    = $this->guestComposition;
+    $breakdowns   = $this->revenueBreakdown;
+    $paymentBreak = $this->paymentMethodBreakdown;
+    $refundDist   = $this->refundStatusDistribution;
+    $cancelParty  = $this->cancellationsByParty;
 
     $statusHasData  = array_sum($statusDist) > 0;
     $guestHasData   = ($guestComp['total'] ?? 0) > 0;
     $propHasData    = !empty($propPerf);
     $paymentHasData = !empty($paymentBreak);
+    $refundHasData  = array_sum($refundDist) > 0;
+    $cancelHasData  = array_sum($cancelParty) > 0;
+
+    $revenueCents    = (int) round((float) $s['revenue'] * 100);
+    $revenueWhole    = intdiv($revenueCents, 100);
+    $revenueFraction = str_pad((string) ($revenueCents % 100), 2, '0', STR_PAD_LEFT);
+
+    $netCents    = (int) round((float) $s['net_revenue'] * 100);
+    $netWhole    = intdiv($netCents, 100);
+    $netFraction = str_pad((string) ($netCents % 100), 2, '0', STR_PAD_LEFT);
+
+    $rangeLabel = match ($dateRange) {
+        'today'      => 'today',
+        'yesterday'  => 'yesterday',
+        'last-7'     => 'last 7 days',
+        'last-30'    => 'last 30 days',
+        'this-month' => 'this month',
+        'last-month' => 'last month',
+        'custom'     => 'custom range',
+        default      => 'this month',
+    };
 @endphp
 
 <div class="analytics-page relative min-h-[100dvh] bg-[#F8F7F3] dark:bg-[#0F172A]" wire:poll.60s>
 
-    {{-- Ambient background --}}
     <div class="tenant-analytics-ambient fixed inset-0 -z-10 pointer-events-none" aria-hidden="true"></div>
 
-    {{-- Hidden data bridge — JS reads from here, hooks watch for morph. --}}
     <div id="analytics-chart-data"
          data-revenue="{{ json_encode($this->revenueTrend, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
+         data-refunds="{{ json_encode($this->refundsTrend, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
+         data-cancellations="{{ json_encode($this->cancellationsTrend, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
+         data-refund-status="{{ json_encode($refundDist, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
          data-bookings="{{ json_encode($this->bookingTrend, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
          data-payment="{{ json_encode($paymentBreak, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
          data-occupancy="{{ json_encode($this->occupancyTrend, JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_HEX_TAG) }}"
@@ -478,9 +674,6 @@ class extends Component
 
     <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-10 space-y-8 sm:space-y-12">
 
-        {{-- ═══════════════════════════════════════════════════════
-             HERO — revenue is the page's focal point
-             ═══════════════════════════════════════════════════════ --}}
         <section class="relative overflow-hidden rounded-3xl
                         bg-white/70 dark:bg-gray-800/40
                         backdrop-blur-xl
@@ -488,7 +681,6 @@ class extends Component
                         shadow-sm">
             <div class="relative px-6 sm:px-10 py-8 sm:py-12">
 
-                {{-- Title + period selector --}}
                 <div class="flex flex-wrap items-start justify-between gap-4 mb-10 sm:mb-14">
                     <div class="min-w-0">
                         <div class="flex items-center gap-2.5 mb-2">
@@ -503,6 +695,9 @@ class extends Component
                         <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white tracking-tight leading-tight">
                             Performance
                         </h1>
+                        <p class="mt-1 text-xs sm:text-sm text-gray-500 dark:text-gray-400">
+                            All figures below are for <span class="font-semibold text-gray-700 dark:text-gray-300">{{ $rangeLabel }}</span>.
+                        </p>
                     </div>
 
                     <div class="flex items-center gap-2 shrink-0 flex-wrap">
@@ -554,7 +749,6 @@ class extends Component
                     </div>
                 </div>
 
-                {{-- Custom range --}}
                 @if($dateRange === 'custom')
                     <div class="flex flex-wrap items-center gap-2 mb-10 pb-10 border-b border-gray-200/60 dark:border-white/[0.06] no-print">
                         <input type="date" wire:model.live="customStart" aria-label="Start date"
@@ -567,54 +761,88 @@ class extends Component
                     </div>
                 @endif
 
-                {{-- The number --}}
                 <div class="mb-8">
                     <p class="text-[10px] font-bold uppercase tracking-[0.22em] text-gray-500 dark:text-gray-400 mb-2">
-                        Total revenue
+                        Net revenue · gross minus refunds
                     </p>
                     <div class="flex items-baseline gap-2 flex-wrap">
                         <span class="text-3xl sm:text-4xl font-bold text-gray-400 dark:text-gray-500 tabular-nums">₱</span>
                         <span class="text-5xl sm:text-6xl lg:text-7xl font-bold text-gray-900 dark:text-white tabular-nums tracking-tight leading-none">
-                            {{ number_format((int) $s['revenue']) }}
+                            {{ number_format($netWhole) }}
                         </span>
                         <span class="text-2xl sm:text-3xl font-bold text-gray-400 dark:text-gray-500 tabular-nums">
-                            .{{ str_pad((string) (int) round(((float) $s['revenue'] - (int) $s['revenue']) * 100), 2, '0', STR_PAD_LEFT) }}
+                            .{{ $netFraction }}
                         </span>
+                    </div>
+
+                    <div class="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs">
+                        <span class="inline-flex items-baseline gap-1.5">
+                            <span class="text-gray-500 dark:text-gray-400">Gross collected</span>
+                            <span class="font-semibold text-gray-900 dark:text-white tabular-nums">₱{{ number_format((int) $s['revenue']) }}</span>
+                        </span>
+                        <span class="inline-flex items-baseline gap-1.5">
+                            <span class="text-gray-500 dark:text-gray-400">Refunded</span>
+                            <span class="font-semibold text-rose-600 dark:text-rose-400 tabular-nums">−₱{{ number_format((int) $s['refunds_processed']) }}</span>
+                        </span>
+                        @if($s['refunds_pending'] > 0)
+                            <span class="inline-flex items-baseline gap-1.5">
+                                <span class="text-gray-500 dark:text-gray-400">Pending refunds</span>
+                                <span class="font-semibold text-amber-600 dark:text-amber-400 tabular-nums">₱{{ number_format((int) $s['refunds_pending']) }}</span>
+                            </span>
+                        @endif
                     </div>
                 </div>
 
-                {{-- Revenue chart — tall, the hero's body --}}
-                <div class="w-full h-64 sm:h-80 relative overflow-hidden mb-10" wire:ignore>
-                    <canvas id="revenueChart" role="img" aria-label="Bar chart: daily paid revenue"></canvas>
+                <div class="rounded-2xl border border-gray-200/60 dark:border-white/[0.06] overflow-hidden mb-10">
+                    <div class="px-5 sm:px-6 py-4 flex items-baseline justify-between gap-3
+                                border-b border-gray-100/80 dark:border-white/[0.04]">
+                        <div class="min-w-0">
+                            <h3 class="text-sm font-semibold text-gray-900 dark:text-white tracking-tight">
+                                Revenue vs refunds
+                            </h3>
+                            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                                Green bars = gross payments · Red bars = refunds · Net = green − red, per day.
+                            </p>
+                        </div>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 shrink-0 tabular-nums">₱ / day</span>
+                    </div>
+
+                    <div class="w-full h-64 sm:h-80 relative overflow-hidden px-5 sm:px-6 py-5" wire:ignore>
+                        <canvas id="revenueChart" role="img" aria-label="Bar chart: daily gross revenue (green) and refunds (red)"></canvas>
+                    </div>
                 </div>
 
-                {{-- Quiet KPI strip --}}
                 <div class="pt-6 border-t border-gray-200/60 dark:border-white/[0.06]">
                     <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-y-6 gap-x-4 sm:divide-x sm:divide-gray-200/60 dark:sm:divide-white/[0.06]">
 
                         <div class="sm:pr-4">
                             <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Bookings</p>
                             <p class="mt-1.5 text-xl font-bold text-gray-900 dark:text-white tabular-nums leading-none">{{ number_format($s['total_bookings']) }}</p>
+                            <p class="text-[10px] text-gray-400 dark:text-gray-500 mt-1">count</p>
                         </div>
 
                         <div class="sm:px-4">
                             <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Guests</p>
                             <p class="mt-1.5 text-xl font-bold text-gray-900 dark:text-white tabular-nums leading-none">{{ number_format($s['total_guests']) }}</p>
+                            <p class="text-[10px] text-gray-400 dark:text-gray-500 mt-1">unique</p>
                         </div>
 
                         <div class="sm:px-4">
                             <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Avg value</p>
                             <p class="mt-1.5 text-xl font-bold text-gray-900 dark:text-white tabular-nums leading-none">₱{{ number_format((int) $s['avg_booking_value']) }}</p>
+                            <p class="text-[10px] text-gray-400 dark:text-gray-500 mt-1">per booking</p>
                         </div>
 
                         <div class="sm:px-4">
                             <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Occupancy</p>
                             <p class="mt-1.5 text-xl font-bold text-gray-900 dark:text-white tabular-nums leading-none">{{ $s['occupancy_rate'] }}<span class="text-sm font-medium text-gray-400 dark:text-gray-500">%</span></p>
+                            <p class="text-[10px] text-gray-400 dark:text-gray-500 mt-1">{{ $s['active_bookings'] }} / {{ $s['total_properties'] }}</p>
                         </div>
 
                         <div class="sm:px-4">
                             <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">Repeat</p>
                             <p class="mt-1.5 text-xl font-bold text-gray-900 dark:text-white tabular-nums leading-none">{{ $s['repeat_guest_rate'] }}<span class="text-sm font-medium text-gray-400 dark:text-gray-500">%</span></p>
+                            <p class="text-[10px] text-gray-400 dark:text-gray-500 mt-1">of all guests</p>
                         </div>
 
                         <div class="sm:pl-4">
@@ -624,15 +852,128 @@ class extends Component
                             <p class="mt-1.5 text-xl font-bold tabular-nums leading-none {{ $s['outstanding_balance'] > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-gray-900 dark:text-white' }}">
                                 ₱{{ number_format((int) $s['outstanding_balance']) }}
                             </p>
+                            <p class="text-[10px] mt-1 {{ $s['outstanding_balance'] > 0 ? 'text-amber-700/80 dark:text-amber-400/80' : 'text-gray-400 dark:text-gray-500' }}">
+                                {{ $s['outstanding_balance'] > 0 ? 'to collect' : 'all settled' }}
+                            </p>
                         </div>
                     </div>
                 </div>
             </div>
         </section>
 
-        {{-- ═══════════════════════════════════════════════════════
-             TRENDS — bookings + occupancy side by side
-             ═══════════════════════════════════════════════════════ --}}
+        <section>
+            <h2 class="text-[10px] font-bold uppercase tracking-[0.22em] text-gray-500 dark:text-gray-400 mb-4">
+                Cancellations &amp; refunds
+            </h2>
+
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+
+                <div class="rounded-3xl p-5 sm:p-6
+                            bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
+                            border border-gray-200/60 dark:border-white/[0.06]">
+                    <div class="flex items-baseline justify-between gap-3 mb-1">
+                        <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">
+                            Total refunded
+                        </p>
+                        <span class="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0" aria-hidden="true"></span>
+                    </div>
+                    <p class="text-2xl font-bold text-rose-600 dark:text-rose-400 tabular-nums leading-none">
+                        ₱{{ number_format((int) $s['refunds_processed']) }}
+                    </p>
+                    <p class="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+                        money returned to guests · {{ $rangeLabel }}
+                    </p>
+                </div>
+
+                <div class="rounded-3xl p-5 sm:p-6
+                            bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
+                            border border-gray-200/60 dark:border-white/[0.06]">
+                    <div class="flex items-baseline justify-between gap-3 mb-1">
+                        <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">
+                            Pending refunds
+                        </p>
+                        <span class="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0 {{ $s['refunds_pending'] > 0 ? 'animate-pulse motion-reduce:animate-none' : '' }}" aria-hidden="true"></span>
+                    </div>
+                    <p class="text-2xl font-bold tabular-nums leading-none {{ $s['refunds_pending'] > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-gray-900 dark:text-white' }}">
+                        ₱{{ number_format((int) $s['refunds_pending']) }}
+                    </p>
+                    <p class="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+                        {{ $refundDist['pending'] }} {{ \Illuminate\Support\Str::plural('booking', $refundDist['pending']) }} awaiting gateway · all-time
+                    </p>
+                </div>
+
+                <div class="rounded-3xl p-5 sm:p-6
+                            bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
+                            border border-gray-200/60 dark:border-white/[0.06]">
+                    <div class="flex items-baseline justify-between gap-3 mb-1">
+                        <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-500 dark:text-gray-400">
+                            Cancellations
+                        </p>
+                        <span class="w-1.5 h-1.5 rounded-full bg-slate-500 shrink-0" aria-hidden="true"></span>
+                    </div>
+                    <p class="text-2xl font-bold text-gray-900 dark:text-white tabular-nums leading-none">
+                        {{ number_format($s['cancellations']) }}
+                    </p>
+                    <p class="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+                        {{ $s['cancellations_tourist'] }} tourist · {{ $s['cancellations_admin'] }} business · {{ $rangeLabel }}
+                    </p>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+                <div class="rounded-3xl p-5 sm:p-6
+                            bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
+                            border border-gray-200/60 dark:border-white/[0.06]">
+                    <div class="flex items-baseline justify-between gap-3 mb-4">
+                        <div class="min-w-0">
+                            <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">Cancellation trend</h3>
+                            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                                Bookings cancelled per day, by either party.
+                            </p>
+                        </div>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 shrink-0">count / day</span>
+                    </div>
+
+                    @if($cancelHasData)
+                        <div class="w-full h-56 relative overflow-hidden" wire:ignore>
+                            <canvas id="cancellationChart" role="img" aria-label="Line chart: cancellations per day"></canvas>
+                        </div>
+                    @else
+                        <div class="h-56 flex flex-col items-center justify-center text-center rounded-2xl border border-dashed border-gray-200/80 dark:border-gray-700/60">
+                            <p class="text-sm font-semibold text-gray-900 dark:text-white">No cancellations in period</p>
+                            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Trend appears once a booking is cancelled within the selected range.</p>
+                        </div>
+                    @endif
+                </div>
+
+                <div class="rounded-3xl p-5 sm:p-6
+                            bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
+                            border border-gray-200/60 dark:border-white/[0.06]">
+                    <div class="flex items-baseline justify-between gap-3 mb-4">
+                        <div class="min-w-0">
+                            <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">Refund status</h3>
+                            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                                Where cancellations in this period stand on refund processing.
+                            </p>
+                        </div>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 shrink-0">count</span>
+                    </div>
+
+                    @if($refundHasData)
+                        <div class="w-full h-56 relative overflow-hidden" wire:ignore>
+                            <canvas id="refundStatusChart" role="img" aria-label="Doughnut chart: refund status distribution"></canvas>
+                        </div>
+                    @else
+                        <div class="h-56 flex flex-col items-center justify-center text-center rounded-2xl border border-dashed border-gray-200/80 dark:border-gray-700/60">
+                            <p class="text-sm font-semibold text-gray-900 dark:text-white">No refund activity</p>
+                            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400 max-w-xs">Breakdown appears once a booking in range has been cancelled.</p>
+                        </div>
+                    @endif
+                </div>
+            </div>
+        </section>
+
         <section>
             <h2 class="text-[10px] font-bold uppercase tracking-[0.22em] text-gray-500 dark:text-gray-400 mb-4">
                 Trends
@@ -644,8 +985,13 @@ class extends Component
                             bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
                             border border-gray-200/60 dark:border-white/[0.06]">
                     <div class="flex items-baseline justify-between gap-3 mb-4">
-                        <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">Booking activity</h3>
-                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 shrink-0">per day</span>
+                        <div class="min-w-0">
+                            <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">Booking activity</h3>
+                            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                                New bookings created per day, regardless of status.
+                            </p>
+                        </div>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 shrink-0">count / day</span>
                     </div>
                     <div class="w-full h-56 relative overflow-hidden" wire:ignore>
                         <canvas id="bookingChart" role="img" aria-label="Line chart: bookings per day"></canvas>
@@ -656,8 +1002,13 @@ class extends Component
                             bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
                             border border-gray-200/60 dark:border-white/[0.06]">
                     <div class="flex items-baseline justify-between gap-3 mb-4">
-                        <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">Occupancy history</h3>
-                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 shrink-0">per day</span>
+                        <div class="min-w-0">
+                            <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">Occupancy history</h3>
+                            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                                Share of your properties actively booked on each day.
+                            </p>
+                        </div>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 shrink-0">% / day</span>
                     </div>
                     <div class="w-full h-56 relative overflow-hidden" wire:ignore>
                         <canvas id="occupancyChart" role="img" aria-label="Line chart: occupancy percentage"></canvas>
@@ -666,9 +1017,6 @@ class extends Component
             </div>
         </section>
 
-        {{-- ═══════════════════════════════════════════════════════
-             PERFORMANCE — property ranking + status snapshot
-             ═══════════════════════════════════════════════════════ --}}
         <section>
             <h2 class="text-[10px] font-bold uppercase tracking-[0.22em] text-gray-500 dark:text-gray-400 mb-4">
                 Performance
@@ -680,8 +1028,13 @@ class extends Component
                             bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
                             border border-gray-200/60 dark:border-white/[0.06]">
                     <div class="flex items-baseline justify-between gap-3 mb-4">
-                        <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">Top properties</h3>
-                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 shrink-0">by revenue</span>
+                        <div class="min-w-0">
+                            <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">Top properties</h3>
+                            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                                Top 5 properties by gross revenue from bookings created in this period.
+                            </p>
+                        </div>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 shrink-0">₱</span>
                     </div>
 
                     @if($propHasData)
@@ -700,8 +1053,13 @@ class extends Component
                             bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
                             border border-gray-200/60 dark:border-white/[0.06]">
                     <div class="flex items-baseline justify-between gap-3 mb-4">
-                        <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">Status</h3>
-                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 shrink-0">snapshot</span>
+                        <div class="min-w-0">
+                            <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">Status</h3>
+                            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                                Current state of bookings created in this period.
+                            </p>
+                        </div>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 shrink-0">count</span>
                     </div>
 
                     @if($statusHasData)
@@ -718,9 +1076,6 @@ class extends Component
             </div>
         </section>
 
-        {{-- ═══════════════════════════════════════════════════════
-             INSIGHTS — guests + payment methods + top services
-             ═══════════════════════════════════════════════════════ --}}
         <section>
             <h2 class="text-[10px] font-bold uppercase tracking-[0.22em] text-gray-500 dark:text-gray-400 mb-4">
                 Insights
@@ -728,11 +1083,18 @@ class extends Component
 
             <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
-                {{-- Guest composition --}}
                 <div class="rounded-3xl p-5 sm:p-6
                             bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
                             border border-gray-200/60 dark:border-white/[0.06]">
-                    <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight mb-4">Guest mix</h3>
+                    <div class="flex items-baseline justify-between gap-3 mb-4">
+                        <div class="min-w-0">
+                            <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">Guest mix</h3>
+                            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                                Guests with 1 booking vs 2+, all-time.
+                            </p>
+                        </div>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 shrink-0">count</span>
+                    </div>
 
                     @if($guestHasData)
                         <div class="w-full h-56 relative overflow-hidden" wire:ignore>
@@ -746,11 +1108,18 @@ class extends Component
                     @endif
                 </div>
 
-                {{-- Payment methods --}}
                 <div class="rounded-3xl p-5 sm:p-6
                             bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
                             border border-gray-200/60 dark:border-white/[0.06]">
-                    <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight mb-4">Payments</h3>
+                    <div class="flex items-baseline justify-between gap-3 mb-4">
+                        <div class="min-w-0">
+                            <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">Payments</h3>
+                            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                                Revenue split by payment method used.
+                            </p>
+                        </div>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 shrink-0">₱</span>
+                    </div>
 
                     @if($paymentHasData)
                         <div class="w-full h-56 relative overflow-hidden" wire:ignore>
@@ -764,11 +1133,18 @@ class extends Component
                     @endif
                 </div>
 
-                {{-- Top services list --}}
                 <div class="rounded-3xl p-5 sm:p-6
                             bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
                             border border-gray-200/60 dark:border-white/[0.06]">
-                    <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight mb-4">Top services</h3>
+                    <div class="flex items-baseline justify-between gap-3 mb-4">
+                        <div class="min-w-0">
+                            <h3 class="text-base font-semibold text-gray-900 dark:text-white tracking-tight">Top services</h3>
+                            <p class="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                                Add-on services by revenue contribution.
+                            </p>
+                        </div>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 shrink-0">₱</span>
+                    </div>
 
                     @if(!empty($breakdowns))
                         <div class="space-y-4">
@@ -795,9 +1171,6 @@ class extends Component
             </div>
         </section>
 
-        {{-- ═══════════════════════════════════════════════════════
-             OPERATIONS — quiet footer
-             ═══════════════════════════════════════════════════════ --}}
         <section>
             <h2 class="text-[10px] font-bold uppercase tracking-[0.22em] text-gray-500 dark:text-gray-400 mb-4">
                 Today
@@ -805,7 +1178,6 @@ class extends Component
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
 
-                {{-- Arrivals --}}
                 <div class="rounded-3xl overflow-hidden
                             bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
                             border border-gray-200/60 dark:border-white/[0.06]">
@@ -843,7 +1215,6 @@ class extends Component
                     </div>
                 </div>
 
-                {{-- Departures --}}
                 <div class="rounded-3xl overflow-hidden
                             bg-white/60 dark:bg-gray-800/30 backdrop-blur-xl
                             border border-gray-200/60 dark:border-white/[0.06]">
@@ -887,7 +1258,6 @@ class extends Component
 
 @push('scripts')
     @once
-        {{-- Chart.js is bundled via resources/js/app.js — no CDN, no @script wrapper. --}}
         <script>
             if (! window.__tenantAnalyticsRegistered) {
                 window.__tenantAnalyticsRegistered = true;
@@ -903,6 +1273,8 @@ class extends Component
                         propPerf: null,
                         status: null,
                         guest: null,
+                        cancellation: null,
+                        refundStatus: null,
                         hooked: false,
                         lastDark: document.documentElement.classList.contains('dark'),
                         retries: 0,
@@ -921,6 +1293,22 @@ class extends Component
                         cancelled:  '#ef4444',
                     };
 
+                    const REFUND_STATUS_ORDER = ['none', 'pending', 'processed', 'rejected'];
+
+                    const REFUND_STATUS_COLORS = {
+                        none:      '#94a3b8',
+                        pending:   '#f59e0b',
+                        processed: '#10b981',
+                        rejected:  '#ef4444',
+                    };
+
+                    const REFUND_STATUS_LABELS = {
+                        none:      'No refund due',
+                        pending:   'Pending',
+                        processed: 'Processed',
+                        rejected:  'Rejected',
+                    };
+
                     function isChartAlive(chart) {
                         return !!(chart && chart.canvas && chart.canvas.isConnected);
                     }
@@ -931,13 +1319,16 @@ class extends Component
 
                         try {
                             return {
-                                revenue:    JSON.parse(el.dataset.revenue    || '{}'),
-                                bookings:   JSON.parse(el.dataset.bookings   || '{}'),
-                                payment:    JSON.parse(el.dataset.payment    || '[]'),
-                                occupancy:  JSON.parse(el.dataset.occupancy  || '{}'),
-                                propPerf:   JSON.parse(el.dataset.propertyPerformance || '[]'),
-                                status:     JSON.parse(el.dataset.status     || '{}'),
-                                guests:     JSON.parse(el.dataset.guests     || '{}'),
+                                revenue:       JSON.parse(el.dataset.revenue       || '{}'),
+                                refunds:       JSON.parse(el.dataset.refunds       || '{}'),
+                                cancellations: JSON.parse(el.dataset.cancellations || '{}'),
+                                refundStatus:  JSON.parse(el.dataset.refundStatus  || '{}'),
+                                bookings:      JSON.parse(el.dataset.bookings      || '{}'),
+                                payment:       JSON.parse(el.dataset.payment       || '[]'),
+                                occupancy:     JSON.parse(el.dataset.occupancy     || '{}'),
+                                propPerf:      JSON.parse(el.dataset.propertyPerformance || '[]'),
+                                status:        JSON.parse(el.dataset.status        || '{}'),
+                                guests:        JSON.parse(el.dataset.guests        || '{}'),
                             };
                         } catch (e) {
                             console.error('Failed to parse analytics chart data', e);
@@ -954,23 +1345,27 @@ class extends Component
                             textColor:     '#9ca3af',
                             gridColor:     'rgba(255,255,255,0.05)',
                             barColor:      '#10b981',
+                            barRefund:     '#ef4444',
                             lineBooking:   '#3b82f6',
                             lineOccupancy: '#f59e0b',
+                            lineCancelled: '#ef4444',
                             fillOpacity:   '0.15',
                             doughnutBorder: '#1f2937',
                         } : {
                             textColor:     '#6b7280',
                             gridColor:     'rgba(0,0,0,0.05)',
                             barColor:      '#059669',
+                            barRefund:     '#dc2626',
                             lineBooking:   '#2563eb',
                             lineOccupancy: '#d97706',
+                            lineCancelled: '#dc2626',
                             fillOpacity:   '0.1',
                             doughnutBorder: '#ffffff',
                         };
                     }
 
                     function destroyAll() {
-                        ['revenue', 'booking', 'payment', 'occupancy', 'propPerf', 'status', 'guest'].forEach(key => {
+                        ['revenue', 'booking', 'payment', 'occupancy', 'propPerf', 'status', 'guest', 'cancellation', 'refundStatus'].forEach(key => {
                             if (state[key]) { try { state[key].destroy(); } catch (e) {} state[key] = null; }
                         });
                     }
@@ -997,12 +1392,19 @@ class extends Component
                             borderColor:     isDark() ? '#4b5563' : '#e5e7eb',
                             borderWidth:     1,
                             padding:         12,
-                            displayColors:   false,
+                            displayColors:   true,
                             cornerRadius:    10,
                         };
                     }
 
-                    function barChart(canvasId, labels, values, label, color) {
+                    function formatShortDate(iso) {
+                        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+                        if (!m) return iso;
+                        const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+                        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+                    }
+
+                    function signedBarChart(canvasId, labels, datasets) {
                         const canvas = document.getElementById(canvasId);
                         if (!canvas) return null;
                         const theme = getTheme();
@@ -1010,39 +1412,57 @@ class extends Component
                         return new Chart(canvas.getContext('2d'), {
                             type: 'bar',
                             data: {
-                                labels,
-                                datasets: [{
-                                    label,
-                                    data: values,
-                                    backgroundColor: color,
-                                    borderRadius: 6,
-                                    borderSkipped: false,
-                                    barPercentage: 0.4,
-                                    categoryPercentage: 0.75,
-                                    maxBarThickness: 24,
-                                }],
+                                labels: labels.map(formatShortDate),
+                                datasets,
                             },
                             options: {
                                 responsive: true,
                                 maintainAspectRatio: false,
+                                interaction: { mode: 'index', intersect: false },
                                 plugins: {
-                                    legend: { display: false },
+                                    legend: {
+                                        display: datasets.length > 1,
+                                        position: 'bottom',
+                                        labels: {
+                                            color: theme.textColor,
+                                            padding: 12,
+                                            usePointStyle: true,
+                                            pointStyle: 'circle',
+                                            boxWidth: 8,
+                                            boxHeight: 8,
+                                            font: { size: 10, weight: '600' },
+                                        },
+                                    },
                                     tooltip: {
                                         ...tooltipBase(),
                                         callbacks: {
-                                            label: (ctx) => '₱' + (ctx.parsed.y || 0).toLocaleString(),
+                                            title: (items) => items[0]?.label ?? '',
+                                            label: (ctx) => {
+                                                const v = ctx.parsed.y || 0;
+                                                const sign = v < 0 ? '−' : '';
+                                                return ' ' + ctx.dataset.label + ': ' + sign + '₱' + Math.abs(v).toLocaleString();
+                                            },
                                         },
                                     },
                                 },
                                 scales: {
                                     y: {
                                         beginAtZero: true,
-                                        ticks: { color: theme.textColor },
+                                        ticks: {
+                                            color: theme.textColor,
+                                            maxTicksLimit: 6,
+                                            callback: (v) => '₱' + Math.abs(v).toLocaleString(),
+                                        },
                                         grid:  { color: theme.gridColor, drawBorder: false },
                                         border: { display: false },
                                     },
                                     x: {
-                                        ticks: { color: theme.textColor },
+                                        ticks: {
+                                            color: theme.textColor,
+                                            autoSkip: true,
+                                            maxRotation: 0,
+                                            autoSkipPadding: 8,
+                                        },
                                         grid:  { display: false },
                                         border: { display: false },
                                     },
@@ -1074,13 +1494,13 @@ class extends Component
                                 indexAxis: 'y',
                                 responsive: true,
                                 maintainAspectRatio: false,
-                                layout: { padding: { right: 32 } },
+                                layout: { padding: { right: 40 } },
                                 plugins: {
                                     legend: { display: false },
                                     tooltip: {
                                         ...tooltipBase(),
                                         callbacks: {
-                                            label: (ctx) => '₱' + Number(ctx.parsed.x || 0).toLocaleString(),
+                                            label: (ctx) => ' ₱' + Number(ctx.parsed.x || 0).toLocaleString(),
                                         },
                                     },
                                 },
@@ -1103,29 +1523,35 @@ class extends Component
                                         beginAtZero: true,
                                         grid:  { color: theme.gridColor, drawBorder: false },
                                         border: { display: false },
-                                        ticks: { color: theme.textColor, precision: 0 },
+                                        ticks: {
+                                            color: theme.textColor,
+                                            precision: 0,
+                                            callback: (v) => '₱' + Number(v).toLocaleString(),
+                                        },
                                     },
                                 },
                             },
                         });
                     }
 
-                    function lineChart(canvasId, labels, values, label, color, rgb) {
+                    function lineChart(canvasId, labels, values, label, color, rgb, unit, precision) {
                         const canvas = document.getElementById(canvasId);
                         if (!canvas) return null;
                         const theme = getTheme();
                         const ctx = canvas.getContext('2d');
+                        const suffix = unit || '';
+                        const prec = precision === undefined ? 0 : precision;
 
                         return new Chart(ctx, {
                             type: 'line',
                             data: {
-                                labels,
+                                labels: labels.map(formatShortDate),
                                 datasets: [{
                                     label,
                                     data: values,
                                     borderColor: color,
                                     backgroundColor: gradient(ctx, rgb, theme.fillOpacity),
-                                    tension: 0.4,
+                                    tension: 0.35,
                                     fill: true,
                                     borderWidth: 2,
                                     pointRadius: 0,
@@ -1141,17 +1567,32 @@ class extends Component
                                 interaction: { intersect: false, mode: 'index' },
                                 plugins: {
                                     legend: { display: false },
-                                    tooltip: tooltipBase(),
+                                    tooltip: {
+                                        ...tooltipBase(),
+                                        callbacks: {
+                                            label: (ctx) => ' ' + ctx.dataset.label + ': ' + (ctx.parsed.y ?? 0) + suffix,
+                                        },
+                                    },
                                 },
                                 scales: {
                                     y: {
                                         beginAtZero: true,
-                                        ticks: { color: theme.textColor, maxTicksLimit: 6 },
+                                        ticks: {
+                                            color: theme.textColor,
+                                            maxTicksLimit: 6,
+                                            precision: prec,
+                                            callback: (v) => v + suffix,
+                                        },
                                         grid:  { color: theme.gridColor, drawBorder: false, borderDash: [5, 5] },
                                         border: { display: false },
                                     },
                                     x: {
-                                        ticks: { color: theme.textColor, maxTicksLimit: 8 },
+                                        ticks: {
+                                            color: theme.textColor,
+                                            autoSkip: true,
+                                            maxRotation: 0,
+                                            autoSkipPadding: 8,
+                                        },
                                         grid:  { display: false },
                                         border: { display: false },
                                     },
@@ -1227,13 +1668,84 @@ class extends Component
                         const theme = getTheme();
 
                         if (document.getElementById('revenueChart')) {
+                            const revLabels = Object.keys(data.revenue);
+                            const revValues = Object.values(data.revenue);
+                            const refundValues = revLabels.map(l => -(data.refunds[l] || 0));
+                            const hasRefunds   = refundValues.some(v => v < 0);
+
+                            const datasets = [
+                                {
+                                    label: 'Revenue',
+                                    data: revValues,
+                                    backgroundColor: theme.barColor,
+                                    borderRadius: 4,
+                                    borderSkipped: false,
+                                    barPercentage: 0.7,
+                                    categoryPercentage: 0.9,
+                                    maxBarThickness: 32,
+                                },
+                            ];
+
+                            if (hasRefunds) {
+                                datasets.push({
+                                    label: 'Refunds',
+                                    data: refundValues,
+                                    backgroundColor: theme.barRefund,
+                                    borderRadius: 4,
+                                    borderSkipped: false,
+                                    barPercentage: 0.7,
+                                    categoryPercentage: 0.9,
+                                    maxBarThickness: 32,
+                                });
+                            }
+
                             if (!isChartAlive(state.revenue)) {
                                 destroyOne('revenue');
-                                state.revenue = barChart('revenueChart', Object.keys(data.revenue), Object.values(data.revenue), 'Revenue', theme.barColor);
+                                state.revenue = signedBarChart('revenueChart', revLabels, datasets);
                             } else {
-                                state.revenue.data.labels = Object.keys(data.revenue);
-                                state.revenue.data.datasets[0].data = Object.values(data.revenue);
+                                state.revenue.data.labels = revLabels.map(formatShortDate);
+                                state.revenue.data.datasets = datasets;
                                 state.revenue.update('none');
+                            }
+                        }
+
+                        if (document.getElementById('cancellationChart')) {
+                            const labels = Object.keys(data.cancellations);
+                            const values = Object.values(data.cancellations);
+
+                            if (!isChartAlive(state.cancellation)) {
+                                destroyOne('cancellation');
+                                state.cancellation = lineChart(
+                                    'cancellationChart',
+                                    labels,
+                                    values,
+                                    'Cancellations',
+                                    theme.lineCancelled,
+                                    isDark() ? '239, 68, 68' : '220, 38, 38',
+                                    '',
+                                    0,
+                                );
+                            } else {
+                                state.cancellation.data.labels = labels.map(formatShortDate);
+                                state.cancellation.data.datasets[0].data = values;
+                                state.cancellation.update('none');
+                            }
+                        }
+
+                        if (document.getElementById('refundStatusChart')) {
+                            const present = REFUND_STATUS_ORDER.filter(k => (data.refundStatus[k] || 0) > 0);
+                            const labels  = present.map(k => REFUND_STATUS_LABELS[k]);
+                            const values  = present.map(k => data.refundStatus[k]);
+                            const colors  = present.map(k => REFUND_STATUS_COLORS[k]);
+
+                            if (!isChartAlive(state.refundStatus)) {
+                                destroyOne('refundStatus');
+                                state.refundStatus = doughnutChart('refundStatusChart', labels, values, colors, 'bottom');
+                            } else {
+                                state.refundStatus.data.labels = labels;
+                                state.refundStatus.data.datasets[0].data = values;
+                                state.refundStatus.data.datasets[0].backgroundColor = colors;
+                                state.refundStatus.update('none');
                             }
                         }
 
@@ -1251,23 +1763,27 @@ class extends Component
                         }
 
                         if (document.getElementById('bookingChart')) {
+                            const labels = Object.keys(data.bookings);
+                            const values = Object.values(data.bookings);
                             if (!isChartAlive(state.booking)) {
                                 destroyOne('booking');
-                                state.booking = lineChart('bookingChart', Object.keys(data.bookings), Object.values(data.bookings), 'Bookings', theme.lineBooking, isDark() ? '59, 130, 246' : '37, 99, 235');
+                                state.booking = lineChart('bookingChart', labels, values, 'Bookings', theme.lineBooking, isDark() ? '59, 130, 246' : '37, 99, 235', '', 0);
                             } else {
-                                state.booking.data.labels = Object.keys(data.bookings);
-                                state.booking.data.datasets[0].data = Object.values(data.bookings);
+                                state.booking.data.labels = labels.map(formatShortDate);
+                                state.booking.data.datasets[0].data = values;
                                 state.booking.update('none');
                             }
                         }
 
                         if (document.getElementById('occupancyChart')) {
+                            const labels = Object.keys(data.occupancy);
+                            const values = Object.values(data.occupancy);
                             if (!isChartAlive(state.occupancy)) {
                                 destroyOne('occupancy');
-                                state.occupancy = lineChart('occupancyChart', Object.keys(data.occupancy), Object.values(data.occupancy), 'Occupancy %', theme.lineOccupancy, isDark() ? '245, 158, 11' : '217, 119, 6');
+                                state.occupancy = lineChart('occupancyChart', labels, values, 'Occupancy', theme.lineOccupancy, isDark() ? '245, 158, 11' : '217, 119, 6', '%', 0);
                             } else {
-                                state.occupancy.data.labels = Object.keys(data.occupancy);
-                                state.occupancy.data.datasets[0].data = Object.values(data.occupancy);
+                                state.occupancy.data.labels = labels.map(formatShortDate);
+                                state.occupancy.data.datasets[0].data = values;
                                 state.occupancy.update('none');
                             }
                         }
@@ -1343,12 +1859,12 @@ class extends Component
                         });
 
                         if ('ResizeObserver' in window) {
-                            ['revenueChart', 'paymentChart', 'bookingChart', 'occupancyChart', 'propertyPerformanceChart', 'statusChart', 'guestChart'].forEach(id => {
+                            ['revenueChart', 'cancellationChart', 'refundStatusChart', 'paymentChart', 'bookingChart', 'occupancyChart', 'propertyPerformanceChart', 'statusChart', 'guestChart'].forEach(id => {
                                 const canvas = document.getElementById(id);
                                 const wrapper = canvas && canvas.parentElement;
                                 if (!wrapper) return;
                                 new ResizeObserver(() => {
-                                    const keys = ['revenue', 'payment', 'booking', 'occupancy', 'propPerf', 'status', 'guest'];
+                                    const keys = ['revenue', 'cancellation', 'refundStatus', 'payment', 'booking', 'occupancy', 'propPerf', 'status', 'guest'];
                                     keys.forEach(k => {
                                         if (state[k]) { try { state[k].resize(); } catch (e) {} }
                                     });

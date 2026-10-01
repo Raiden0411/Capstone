@@ -22,8 +22,6 @@ class extends Component
 
         $user = Auth::user();
 
-        // Tenant users only. Super-admins and pure tourists shouldn't
-        // land here.
         abort_unless(
             $user->tenant_id && ! $user->hasRole('super-admin'),
             403
@@ -36,8 +34,6 @@ class extends Component
             ->latest()
             ->first();
 
-        // If there's no pending request (already cancelled or already
-        // processed by a superadmin), send them back to the dashboard.
         if (! $this->pendingRequest) {
             $this->redirect(route('tenant.dashboard'), navigate: true);
         }
@@ -71,10 +67,6 @@ class extends Component
             ]);
         });
 
-        // Refresh BOTH superadmin badges (KYB + deletion-requests) on
-        // their next page load. Routing through the service guarantees
-        // the cache keys stay in sync with the writers in
-        // DeletionRequestController and BusinessApplicationService.
         app(SuperadminNotificationService::class)->flush();
 
         return redirect()
@@ -87,10 +79,8 @@ class extends Component
 <div class="py-10 sm:py-14 px-4 sm:px-6">
     <div class="mx-auto w-full max-w-xl space-y-5">
 
-        {{-- ═══════════════ Status card ═══════════════ --}}
         <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-amber-200/80 dark:border-amber-500/30 shadow-sm overflow-hidden">
 
-            {{-- ── Header: state + copy ── --}}
             <div class="px-6 sm:px-7 pt-7 pb-6 border-b border-amber-100 dark:border-amber-500/20">
                 <div class="flex items-start gap-3 mb-4">
                     <div class="flex items-center justify-center w-11 h-11 rounded-xl bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-400 shrink-0">
@@ -113,7 +103,6 @@ class extends Component
                 </p>
             </div>
 
-            {{-- ── Request details ── --}}
             <div class="px-6 sm:px-7 py-6">
                 <dl class="space-y-3 text-sm">
                     <div class="flex items-start justify-between gap-4">
@@ -162,7 +151,6 @@ class extends Component
                 @endif
             </div>
 
-            {{-- ── Info note ── --}}
             <div class="px-6 sm:px-7 pb-6">
                 <div class="rounded-xl border border-blue-200/70 dark:border-blue-500/30 bg-blue-50/60 dark:bg-blue-500/[0.06] px-3.5 py-3 text-xs text-blue-800 dark:text-blue-300 flex items-start gap-2.5">
                     <svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" aria-hidden="true">
@@ -174,19 +162,32 @@ class extends Component
                 </div>
             </div>
 
-            {{-- ── Actions ── --}}
             <div class="px-6 sm:px-7 pb-7 flex flex-col sm:flex-row gap-2.5">
+                {{-- Two-click arm replaces wire:confirm --}}
                 <button type="button"
-                        wire:click="cancelRequest"
-                        wire:confirm="Cancel your deletion request? Your account will unlock immediately."
+                        x-data="{
+                            armed: false,
+                            _t: null,
+                            arm() { this.armed = true; clearTimeout(this._t); this._t = setTimeout(() => { this.armed = false; this._t = null; }, 4000); },
+                            unarm() { clearTimeout(this._t); this._t = null; this.armed = false; },
+                            destroy() { clearTimeout(this._t); }
+                        }"
+                        @click="armed ? (unarm(), $wire.cancelRequest()) : arm()"
                         wire:loading.attr="disabled"
                         wire:target="cancelRequest"
+                        :class="armed
+                            ? 'bg-amber-500 hover:bg-amber-600 ring-2 ring-amber-300/60'
+                            : 'bg-primary-600 hover:bg-primary-700'"
+                        :aria-label="armed ? 'Click again to confirm cancellation' : 'Cancel your deletion request'"
                         class="flex-1 inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl
-                               bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                               text-white text-sm font-semibold shadow-sm
                                transition-all duration-200 active:scale-95
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                disabled:opacity-60 disabled:cursor-not-allowed">
-                    <span wire:loading.remove wire:target="cancelRequest">Cancel request &amp; unlock account</span>
+                    <span wire:loading.remove wire:target="cancelRequest">
+                        <span x-show="!armed">Cancel request &amp; unlock account</span>
+                        <span x-show="armed" x-cloak>Click again to confirm</span>
+                    </span>
                     <span wire:loading wire:target="cancelRequest" class="inline-flex items-center gap-2">
                         <svg class="animate-spin w-4 h-4 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
@@ -213,7 +214,6 @@ class extends Component
             </div>
         </div>
 
-        {{-- ═══════════════ What happens next ═══════════════ --}}
         <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 space-y-4">
             <div class="flex items-center gap-3">
                 <span class="w-5 h-px bg-primary-600"></span>
@@ -256,7 +256,6 @@ class extends Component
             </p>
         </div>
 
-        {{-- ═══════════════ Contact ═══════════════ --}}
         <p class="text-center text-xs text-gray-400 dark:text-gray-500 leading-relaxed">
             Need help?
             @php

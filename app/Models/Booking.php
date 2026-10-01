@@ -21,9 +21,18 @@ use Illuminate\Support\Facades\DB;
  * @property string $booking_reference
  * @property \Illuminate\Support\Carbon $check_in
  * @property \Illuminate\Support\Carbon $check_out
+ * @property string|null $booking_time
  * @property numeric $total_amount
  * @property string $status
  * @property string $booking_type
+ * @property string|null $cancelled_by
+ * @property string|null $cancellation_reason
+ * @property numeric|null $refund_amount
+ * @property int|null $refund_percentage
+ * @property string $refund_status
+ * @property \Illuminate\Support\Carbon|null $cancelled_at
+ * @property \Illuminate\Support\Carbon|null $refund_processed_at
+ * @property string|null $paymongo_refund_id
  * @property \Illuminate\Support\Carbon|null $created_at
  * @property \Illuminate\Support\Carbon|null $updated_at
  * @property-read \Carbon\Carbon|null $payment_deadline
@@ -71,14 +80,26 @@ class Booking extends Model
         'total_amount',
         'status',
         'booking_type',
+        'cancelled_by',
+        'cancellation_reason',
+        'refund_amount',
+        'refund_percentage',
+        'refund_status',
+        'cancelled_at',
+        'refund_processed_at',
+        'paymongo_refund_id',
     ];
 
     protected function casts(): array
     {
         return [
-            'check_in'     => 'date',
-            'check_out'    => 'date',
-            'total_amount' => 'decimal:2',
+            'check_in'            => 'date',
+            'check_out'           => 'date',
+            'total_amount'        => 'decimal:2',
+            'refund_amount'       => 'decimal:2',
+            'refund_percentage'   => 'integer',
+            'cancelled_at'        => 'datetime',
+            'refund_processed_at' => 'datetime',
         ];
     }
 
@@ -93,6 +114,21 @@ class Booking extends Model
     public const STATUS_CANCELLED  = 'cancelled';
     public const STATUS_COMPLETED  = 'completed';
     public const STATUS_CHECKED_IN = 'checked_in';
+
+    public const CANCELLED_BY_TOURIST = 'tourist';
+    public const CANCELLED_BY_ADMIN   = 'admin';
+
+    public const REFUND_STATUS_NONE      = 'none';
+    public const REFUND_STATUS_PENDING   = 'pending';
+    public const REFUND_STATUS_PROCESSED = 'processed';
+    public const REFUND_STATUS_REJECTED  = 'rejected';
+
+    public const REFUND_TIER_FULL    = 100;
+    public const REFUND_TIER_PARTIAL = 50;
+    public const REFUND_TIER_NONE    = 0;
+
+    public const FULL_REFUND_THRESHOLD_DAYS    = 7;
+    public const PARTIAL_REFUND_THRESHOLD_DAYS = 3;
 
     /** Statuses that release the booked properties back to "available". */
     public const RELEASING_STATUSES = [self::STATUS_COMPLETED, self::STATUS_CANCELLED];
@@ -168,6 +204,31 @@ class Booking extends Model
             ->isPast() ?? false;
     }
 
+    public function canBeCancelled(): bool
+    {
+        return in_array($this->status, [
+            self::STATUS_PENDING,
+            self::STATUS_RESERVED,
+            self::STATUS_CONFIRMED,
+            self::STATUS_CHECKED_IN,
+        ], true);
+    }
+
+    public function isRefundPending(): bool
+    {
+        return $this->refund_status === self::REFUND_STATUS_PENDING;
+    }
+
+    public function isRefundProcessed(): bool
+    {
+        return $this->refund_status === self::REFUND_STATUS_PROCESSED;
+    }
+
+    public function hasRefund(): bool
+    {
+        return (float) ($this->refund_amount ?? 0) > 0;
+    }
+
     // ── Scopes ───────────────────────────────────────────
     public function scopeActive(Builder $query): Builder
     {
@@ -179,11 +240,11 @@ class Booking extends Model
     {
         static::updated(function (Booking $booking): void {
             // Only act when the status actually changed into a releasing state.
-            if (!$booking->wasChanged('status')) {
+            if (! $booking->wasChanged('status')) {
                 return;
             }
 
-            if (!in_array($booking->status, self::RELEASING_STATUSES, true)) {
+            if (! in_array($booking->status, self::RELEASING_STATUSES, true)) {
                 return;
             }
 

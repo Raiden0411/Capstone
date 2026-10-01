@@ -30,6 +30,11 @@ class extends Component
         abort_unless(Auth::check(), 403);
     }
 
+    public function hydrate(): void
+    {
+        abort_unless(Auth::check(), 403);
+    }
+
     public function updatedFilter(): void
     {
         $this->resetPage();
@@ -107,6 +112,39 @@ class extends Component
         unset($this->unreadCount, $this->notifications);
     }
 
+    /**
+     * Mark as read and navigate in a single server round-trip.
+     * Splitting mark-read and navigation across two parallel requests
+     * (wire:click + wire:navigate) races — the update lands on a DOM
+     * the SPA fetch is already replacing, and the badge stays stale.
+     */
+    public function openNotification(int $notificationId): void
+    {
+        /** @var User|null $user */
+        $user = Auth::user();
+        if (! $user) {
+            return;
+        }
+
+        $notification = UserNotification::query()
+            ->forUser($user->id)
+            ->forScope(self::SCOPE)
+            ->whereKey($notificationId)
+            ->first();
+
+        if (! $notification) {
+            return;
+        }
+
+        $notification->markRead();
+        unset($this->unreadCount, $this->notifications);
+
+        $url = $notification->resolvedUrl($user);
+        if ($url) {
+            $this->redirect($url, navigate: true);
+        }
+    }
+
     public function markAllRead(): void
     {
         /** @var User|null $user */
@@ -140,7 +178,6 @@ class extends Component
 @push('styles')
     @once
         <style>
-            /* Ambient page wash — matches create-booking / processing. */
             .notifications-ambient {
                 background:
                     radial-gradient(ellipse 60% 40% at 15% 0%, rgba(245,158,11,.05) 0%, transparent 55%),
@@ -237,7 +274,7 @@ class extends Component
                                       : 'border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:border-primary-400 hover:text-primary-600 dark:hover:text-primary-400' }}">
                         <span>{{ $label }}</span>
                         @if($val === 'unread' && $this->unreadCount > 0)
-                            <span class="inline-flex items-center justify-center min-w-4.5 h-4.5 px-1 rounded-full
+                            <span class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full
                                          {{ $isActive ? 'bg-white/25 text-white' : 'bg-rose-500 text-white' }} text-[10px] font-bold tabular-nums">
                                 {{ $this->unreadCount > 99 ? '99+' : $this->unreadCount }}
                             </span>
@@ -249,7 +286,7 @@ class extends Component
 
         <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm overflow-hidden">
             @if($this->notifications->isEmpty())
-                <div class="px-6 py-16 text-center">
+                <div role="status" aria-live="polite" class="px-6 py-16 text-center">
                     <div class="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-gray-400 dark:text-gray-500">
                         <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
@@ -303,8 +340,7 @@ class extends Component
                             <div class="flex items-center gap-2 shrink-0">
                                 @if($itemUrl)
                                     <a href="{{ $itemUrl }}"
-                                       wire:navigate
-                                       wire:click="markRead({{ $item->id }})"
+                                       wire:click.prevent="openNotification({{ $item->id }})"
                                        class="inline-flex items-center justify-center h-11 sm:h-9 px-3 rounded-lg
                                               border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200
                                               text-xs font-semibold

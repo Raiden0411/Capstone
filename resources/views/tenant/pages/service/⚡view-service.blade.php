@@ -22,19 +22,11 @@ class extends Component
 
     #[Url] public string $search = '';
 
-    // ─────────────────────────────────────────────────────────
-    //  Lifecycle
-    // ─────────────────────────────────────────────────────────
-
     public function mount(): void
     {
         $this->authorizeViewServices();
     }
 
-    /**
-     * Re-verify permission + tenant on every Livewire request. Route
-     * middleware only runs on the original GET.
-     */
     public function hydrate(): void
     {
         $this->authorizeViewServices();
@@ -56,10 +48,6 @@ class extends Component
         $this->resetPage();
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Data
-    // ─────────────────────────────────────────────────────────
-
     #[Computed]
     public function services()
     {
@@ -76,10 +64,6 @@ class extends Component
         return $this->search !== '';
     }
 
-    // ─────────────────────────────────────────────────────────
-    //  Actions
-    // ─────────────────────────────────────────────────────────
-
     public function toggleActive(int $id): void
     {
         $this->requirePermission('manage services');
@@ -91,7 +75,6 @@ class extends Component
 
         $service->update(['is_active' => !$service->is_active]);
 
-        // Invalidate the memoized #[Computed] collection for this request.
         unset($this->services);
 
         session()->flash(
@@ -167,7 +150,7 @@ class extends Component
                 <span>{{ session('message') }}</span>
             </div>
             <button type="button" @click="show = false"
-                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                    class="inline-flex items-center justify-center h-11 w-11 sm:h-7 sm:w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
                            transition-all duration-200 active:scale-95
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
                     aria-label="Dismiss">
@@ -191,7 +174,7 @@ class extends Component
                 <span>{{ session('error') }}</span>
             </div>
             <button type="button" @click="show = false"
-                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
+                    class="inline-flex items-center justify-center h-11 w-11 sm:h-7 sm:w-7 rounded-md text-rose-500 hover:text-rose-700 dark:hover:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-500/10
                            transition-all duration-200 active:scale-95
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
                     aria-label="Dismiss">
@@ -219,7 +202,7 @@ class extends Component
 
             @if($this->hasActiveFilters)
                 <button type="button" wire:click="clearFilters"
-                        class="inline-flex items-center gap-1 h-9 px-3.5 rounded-full text-xs font-semibold uppercase tracking-wide
+                        class="inline-flex items-center gap-1 h-11 sm:h-9 px-3.5 rounded-full text-xs font-semibold uppercase tracking-wide
                                border border-rose-300 dark:border-rose-500/40
                                bg-white dark:bg-gray-800 text-rose-700 dark:text-rose-300
                                transition-all duration-200 active:scale-95
@@ -282,13 +265,15 @@ class extends Component
              wire:target="search,clearFilters,toggleActive,delete,gotoPage,nextPage,previousPage"
              class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 transition-opacity duration-200">
             @foreach($this->services as $service)
-                @php $isActive = (bool) $service->is_active; @endphp
+                @php
+                    $isActive  = (bool) $service->is_active;
+                    $canManage = $this->tenantCan('manage services');
+                @endphp
 
                 <article wire:key="service-{{ $service->id }}"
                          class="group relative bg-white dark:bg-gray-800/90 rounded-2xl border shadow-sm hover:shadow-md transition-all duration-200 flex flex-col overflow-hidden
                                 {{ $isActive ? 'border-gray-200/80 dark:border-gray-700/80' : 'border-gray-300 dark:border-gray-700/50' }}">
 
-                    {{-- Top: icon + name + status badge --}}
                     <div class="p-4 pb-3 flex items-start gap-3">
                         <div class="w-11 h-11 rounded-xl shrink-0 flex items-center justify-center
                                     {{ $isActive
@@ -315,43 +300,52 @@ class extends Component
                         </span>
                     </div>
 
-                    {{-- Middle: hint --}}
                     <div class="px-4 py-3 border-t border-gray-100 dark:border-gray-700/60 text-[11px] text-gray-500 dark:text-gray-400">
                         {{ $isActive ? 'Available for bookings.' : 'Hidden from the booking flow.' }}
                     </div>
 
-                    {{-- Actions --}}
                     <div class="mt-auto px-3 py-2.5 border-t border-gray-100 dark:border-gray-700/60 flex items-center justify-end gap-1">
-                        @if($this->tenantCan('manage services'))
-                            {{-- Toggle active — Alpine confirm() (Rule 19), bare wire:target (Rule 15 v4) --}}
+                        @if($canManage)
+                            {{-- Toggle active — two-click arm --}}
                             <button type="button"
-                                    x-on:click="if (confirm('{{ $isActive ? 'Deactivate' : 'Activate' }} this service?')) $wire.toggleActive({{ $service->id }})"
+                                    x-data="{
+                                        armed: false,
+                                        _t: null,
+                                        arm() { this.armed = true; clearTimeout(this._t); this._t = setTimeout(() => { this.armed = false; this._t = null; }, 4000); },
+                                        unarm() { clearTimeout(this._t); this._t = null; this.armed = false; },
+                                        destroy() { clearTimeout(this._t); }
+                                    }"
+                                    @click="armed ? (unarm(), $wire.toggleActive({{ $service->id }})) : arm()"
                                     wire:loading.attr="disabled"
                                     wire:target="toggleActive"
-                                    aria-label="{{ $isActive ? 'Deactivate' : 'Activate' }} {{ $service->name }}"
-                                    title="{{ $isActive ? 'Deactivate' : 'Activate' }}"
-                                    class="inline-flex items-center justify-center h-9 w-9 rounded-lg
-                                           {{ $isActive
+                                    :aria-label="armed ? 'Click again to confirm' : '{{ $isActive ? 'Deactivate' : 'Activate' }} {{ $service->name }}'"
+                                    :title="armed ? 'Click again to confirm' : '{{ $isActive ? 'Deactivate' : 'Activate' }}'"
+                                    :class="armed
+                                        ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-200 ring-2 ring-amber-400/60'
+                                        : '{{ $isActive
                                               ? 'text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-500/10'
-                                              : 'text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10' }}
+                                              : 'text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-500/10' }}'"
+                                    class="inline-flex items-center justify-center h-11 w-11 sm:h-9 sm:w-9 rounded-lg
                                            transition-all duration-200 active:scale-95
+                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
                                            disabled:opacity-60 disabled:cursor-not-allowed">
-                                @if($isActive)
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <svg x-show="!armed" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    @if($isActive)
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
-                                    </svg>
-                                @else
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    @else
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-                                    </svg>
-                                @endif
+                                    @endif
+                                </svg>
+                                <svg x-show="armed" x-cloak class="w-4 h-4 animate-pulse motion-reduce:animate-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                </svg>
                             </button>
 
                             <a href="{{ route('tenant.services.edit', $service->id) }}" wire:navigate
                                aria-label="Edit {{ $service->name }}"
                                title="Edit"
-                               class="inline-flex items-center justify-center h-9 w-9 rounded-lg text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10
+                               class="inline-flex items-center justify-center h-11 w-11 sm:h-9 sm:w-9 rounded-lg text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10
                                       transition-all duration-200 active:scale-95
                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -359,18 +353,32 @@ class extends Component
                                 </svg>
                             </a>
 
+                            {{-- Delete — two-click arm --}}
                             <button type="button"
-                                    x-on:click="if (confirm('Delete this service? This cannot be undone.')) $wire.delete({{ $service->id }})"
+                                    x-data="{
+                                        armed: false,
+                                        _t: null,
+                                        arm() { this.armed = true; clearTimeout(this._t); this._t = setTimeout(() => { this.armed = false; this._t = null; }, 4000); },
+                                        unarm() { clearTimeout(this._t); this._t = null; this.armed = false; },
+                                        destroy() { clearTimeout(this._t); }
+                                    }"
+                                    @click="armed ? (unarm(), $wire.delete({{ $service->id }})) : arm()"
                                     wire:loading.attr="disabled"
                                     wire:target="delete"
-                                    aria-label="Delete {{ $service->name }}"
-                                    title="Delete"
-                                    class="inline-flex items-center justify-center h-9 w-9 rounded-lg text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10
+                                    :aria-label="armed ? 'Click again to confirm delete' : 'Delete {{ $service->name }}'"
+                                    :title="armed ? 'Click again to confirm' : 'Delete'"
+                                    :class="armed
+                                        ? 'text-rose-700 dark:text-rose-300 bg-rose-100 dark:bg-rose-500/20 ring-2 ring-rose-400/60'
+                                        : 'text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10'"
+                                    class="inline-flex items-center justify-center h-11 w-11 sm:h-9 sm:w-9 rounded-lg
                                            transition-all duration-200 active:scale-95
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
                                            disabled:opacity-60 disabled:cursor-not-allowed">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <svg x-show="!armed" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                </svg>
+                                <svg x-show="armed" x-cloak class="w-4 h-4 animate-pulse motion-reduce:animate-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                 </svg>
                             </button>
                         @else

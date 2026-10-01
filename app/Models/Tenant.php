@@ -11,6 +11,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 
 /**
  * @property int $id
@@ -201,6 +202,47 @@ class Tenant extends Model
     {
         return $this->memberships()
             ->where('role', BusinessMembership::ROLE_EMPLOYEE);
+    }
+
+    // ── 1b: Team-context-free role lookups ───────────────
+
+    /**
+     * The tenant's admin user, or null when none exists.
+     *
+     * WHY A DIRECT PIVOT QUERY:
+     *
+     *   The obvious form —
+     *
+     *       $this->users()->whereHas('roles', fn ($q) => $q->where('name', 'admin'))
+     *
+     *   — goes through Spatie's `roles()` relation, which adds a
+     *   mandatory `wherePivot('team_id', getPermissionsTeamId())`. In a
+     *   Livewire test or any context without `SetPermissionsTeamId`
+     *   middleware (background job, CLI command), the ambient context is
+     *   null and the pivot filter yields zero rows — even though the
+     *   pivot rows exist and carry the right team_id.
+     *
+     *   This method bypasses Spatie entirely and reads the pivot table
+     *   directly, filtered to THIS tenant's id. Its result is the same
+     *   regardless of who calls it or from where.
+     */
+    public function adminUser(): ?User
+    {
+        /** @var User|null $user */
+        $user = User::query()
+            ->where('users.tenant_id', $this->id)
+            ->whereExists(function ($q): void {
+                $q->select(DB::raw(1))
+                    ->from('model_has_roles as mhr')
+                    ->join('roles as r', 'r.id', '=', 'mhr.role_id')
+                    ->whereColumn('mhr.model_id', 'users.id')
+                    ->where('mhr.model_type', User::class)
+                    ->where('r.name', 'admin')
+                    ->where('mhr.team_id', $this->id);
+            })
+            ->first();
+
+        return $user;
     }
 
     // ── Permit / document helpers (unchanged) ────────────

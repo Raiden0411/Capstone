@@ -25,27 +25,19 @@ class extends Component {
     use WithFileUploads;
     use HandlesImageUploads;
 
-    /**
-     * Active tab — 'account' | 'branding' | 'location'.
-     *
-     * Carried across the post-save redirect as a query string so the
-     * user lands back on the tab they were editing, not the first tab.
-     */
     public string $activeTab = 'account';
 
-    // ═══ Profile ═══
     public string $name  = '';
     public string $email = '';
+    public $avatar = null;
 
     public string $current_password          = '';
     public string $new_password              = '';
     public string $new_password_confirmation = '';
 
-    // ═══ Site branding ═══
     public $siteLogo;
     public string $siteName = '';
 
-    // ═══ Site location ═══
     public ?float $siteLatitude  = null;
     public ?float $siteLongitude = null;
     public string $siteAddress   = '';
@@ -60,9 +52,6 @@ class extends Component {
     {
         abort_unless(Auth::user()?->hasRole('super-admin'), 403, 'Super-admin access only.');
 
-        // Read the tab from the query string — set by refreshPage()
-        // after every successful save. Whitelisted so an attacker can't
-        // inject arbitrary content via ?tab=.
         $tab = (string) request()->query('tab', 'account');
         if (! in_array($tab, ['account', 'branding', 'location'], true)) {
             $tab = 'account';
@@ -85,40 +74,21 @@ class extends Component {
         }
     }
 
-    /**
-     * Four-layer pattern, Layer 3 — re-verify on every Livewire update
-     * request. Route middleware only runs on the initial GET.
-     */
     public function hydrate(): void
     {
         abort_unless(Auth::user()?->hasRole('super-admin'), 403, 'Super-admin access only.');
     }
 
-    // ─────────────────────────────────────────────────────────────
-    //  Post-save navigation
-    // ─────────────────────────────────────────────────────────────
-
     /**
-     * SPA-safe full-page refresh, tab-preserving.
-     *
-     * Component actions only re-render the component's own template,
-     * not the surrounding layout. After a save that touches data the
-     * layout reads (site_name, site_logo, user name in the header), a
-     * full navigation is the only way to refresh the header — and a
-     * `navigate: true` redirect also preserves the flash message
-     * across the boundary.
-     *
-     * The `tab` query param is what makes the redirect land on the
-     * correct tab. mount() reads it back into $activeTab.
+     * SPA-safe full-page refresh, tab-preserving. Component actions only
+     * re-render the component's template, not the surrounding layout —
+     * a save that touches data the layout reads (site_name, site_logo,
+     * user name, avatar) needs a real navigation to refresh the header.
      */
     private function refreshPage(string $tab): void
     {
         $this->redirectRoute('superadmin.profile', ['tab' => $tab], navigate: true);
     }
-
-    // ─────────────────────────────────────────────────────────────
-    //  Computed
-    // ─────────────────────────────────────────────────────────────
 
     #[Computed]
     public function viewer(): ?User
@@ -139,12 +109,31 @@ class extends Component {
             : null;
     }
 
+    // Rule J: relative /storage path, versioned by mtime.
+    #[Computed]
+    public function avatarUrl(): ?string
+    {
+        $path = $this->viewer?->avatar;
+
+        if (! $path) {
+            return null;
+        }
+
+        $full = public_path('storage/' . ltrim($path, '/'));
+        if (! file_exists($full)) {
+            return null;
+        }
+
+        return '/storage/' . ltrim($path, '/') . '?v=' . filemtime($full);
+    }
+
+    // Rule J: relative /storage path.
     #[Computed]
     public function currentSiteLogoUrl(): ?string
     {
         $path = SiteSetting::getValue('site_logo');
 
-        return $path ? asset('storage/' . $path) : null;
+        return $path ? '/storage/' . ltrim($path, '/') : null;
     }
 
     #[Computed]
@@ -169,10 +158,6 @@ class extends Component {
     {
         return $this->hasSiteLocation ? 16 : 12;
     }
-
-    // ─────────────────────────────────────────────────────────────
-    //  Validation
-    // ─────────────────────────────────────────────────────────────
 
     protected function rules(): array
     {
@@ -204,10 +189,6 @@ class extends Component {
             $this->$property = trim((string) $this->$property);
         }
     }
-
-    // ─────────────────────────────────────────────────────────────
-    //  Profile + password
-    // ─────────────────────────────────────────────────────────────
 
     public function update()
     {
@@ -243,16 +224,100 @@ class extends Component {
         $this->refreshPage('account');
     }
 
-    // ─────────────────────────────────────────────────────────────
-    //  Site branding
-    //
-    //  Image pipeline:
-    //   1. User crops → blob → $wire.upload('siteLogo', blob)
-    //   2. User clicks Save Branding
-    //   3. storeImage() routes through ImageCompressionService
-    //      against the 'tenant-logo' context (512 KB / 1024×1024)
-    //   4. DB write → old logo deleted AFTER commit
-    // ─────────────────────────────────────────────────────────────
+    public function updatedAvatar(): void
+    {
+        abort_unless(Auth::user()?->hasRole('super-admin'), 403);
+
+        if (! $this->avatar) {
+            return;
+        }
+
+        try {
+            $this->validate([
+                'avatar' => ['image', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
+            ], [
+                'avatar.max'   => 'Photo must be 5 MB or smaller.',
+                'avatar.image' => 'Photo must be a JPG, PNG, or WEBP image.',
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $this->avatar = null;
+            $first = collect($e->errors())->flatten()->first();
+            session()->flash('error', $first ?: 'Invalid photo.');
+            return;
+        }
+
+        $newPath = null;
+
+        try {
+            $newPath = $this->storeImage($this->avatar, 'avatars', 'public', 'avatars');
+
+            if (! $newPath) {
+                throw new \RuntimeException('Storage returned no path.');
+            }
+
+            $oldPath = Auth::user()->avatar;
+
+            Auth::user()->update(['avatar' => $newPath]);
+
+            if ($oldPath && Storage::disk('public')->exists($oldPath)) {
+                Storage::disk('public')->delete($oldPath);
+            }
+
+            unset($this->viewer, $this->avatarUrl);
+
+            $this->avatar = null;
+
+            session()->flash('message', 'Profile photo updated.');
+
+            $this->refreshPage('account');
+        } catch (\Throwable $e) {
+            if ($newPath && Storage::disk('public')->exists($newPath)) {
+                Storage::disk('public')->delete($newPath);
+            }
+
+            $this->avatar = null;
+
+            Log::error('Superadmin avatar upload failed', [
+                'actor_id' => Auth::id(),
+                'error'    => $e->getMessage(),
+            ]);
+
+            session()->flash('error', 'Could not upload your photo. Please try again.');
+        }
+    }
+
+    public function removeAvatar(): void
+    {
+        abort_unless(Auth::user()?->hasRole('super-admin'), 403);
+
+        $oldPath = Auth::user()->avatar;
+
+        if (! $oldPath) {
+            session()->flash('error', 'There is no photo to remove.');
+            return;
+        }
+
+        try {
+            Auth::user()->update(['avatar' => null]);
+
+            if (Storage::disk('public')->exists($oldPath)) {
+                Storage::disk('public')->delete($oldPath);
+            }
+
+            unset($this->viewer, $this->avatarUrl);
+
+            session()->flash('message', 'Profile photo removed.');
+
+            $this->refreshPage('account');
+        } catch (\Throwable $e) {
+            Log::error('Superadmin avatar removal failed', [
+                'actor_id' => Auth::id(),
+                'error'    => $e->getMessage(),
+            ]);
+
+            session()->flash('error', 'Could not remove your photo. Please try again.');
+        }
+    }
 
     public function saveBranding()
     {
@@ -350,10 +415,6 @@ class extends Component {
         $this->refreshPage('branding');
     }
 
-    // ─────────────────────────────────────────────────────────────
-    //  Site location — called by the Alpine locationPicker module
-    // ─────────────────────────────────────────────────────────────
-
     public function setSiteLocation(float|string $lat, float|string $lng): void
     {
         abort_unless(Auth::user()?->hasRole('super-admin'), 403);
@@ -441,7 +502,6 @@ class extends Component {
             'siteProvince'  => ['nullable', 'string', 'max:255'],
         ]);
 
-        // Both must be present together, or neither.
         if (($this->siteLatitude === null) !== ($this->siteLongitude === null)) {
             $this->addError('siteLatitude', 'Both latitude and longitude must be set together, or neither.');
             return;
@@ -478,12 +538,15 @@ class extends Component {
 };
 ?>
 
+@php
+    $__initial = strtoupper(substr($this->name ?: 'SA', 0, 1));
+@endphp
+
 <div
     x-data="{ tab: '{{ $activeTab }}' }"
     class="p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto space-y-6"
 >
 
-    {{-- ═══ Flash messages ═══ --}}
     @if (session()->has('message'))
         <div x-data="{ show: true }"
              x-init="setTimeout(() => show = false, 4000)"
@@ -522,7 +585,6 @@ class extends Component {
         </div>
     @endif
 
-    {{-- ═══ Page header ═══ --}}
     <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-700">
         <div>
             <h1 class="text-2xl sm:text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
@@ -543,10 +605,8 @@ class extends Component {
         </a>
     </div>
 
-    {{-- ═══ Tabbed card ═══ --}}
     <div class="card overflow-hidden">
 
-        {{-- Tab nav — underline style --}}
         <div class="border-b border-gray-200 dark:border-gray-700 overflow-x-auto">
             <nav class="flex min-w-max px-2 sm:px-4" role="tablist" aria-label="Profile sections">
 
@@ -608,9 +668,6 @@ class extends Component {
             </nav>
         </div>
 
-        {{-- ═══════════════════════════════════════════════════════
-             Panel — Account
-             ═══════════════════════════════════════════════════════ --}}
         <div
             id="panel-account"
             role="tabpanel"
@@ -620,7 +677,110 @@ class extends Component {
         >
             <form wire:submit="update" class="space-y-8">
 
-                {{-- Personal Information --}}
+                <div class="flex flex-col sm:flex-row items-start sm:items-center gap-5 pb-6 border-b border-gray-200 dark:border-gray-700">
+                    <div class="relative shrink-0">
+                        @if($this->avatarUrl)
+                            <img src="{{ $this->avatarUrl }}"
+                                 alt="{{ $this->name }}"
+                                 width="80" height="80"
+                                 loading="lazy" decoding="async"
+                                 class="size-20 rounded-full object-cover ring-1 ring-black/5 shadow-sm dark:ring-white/10">
+                        @else
+                            <div class="grid size-20 place-items-center rounded-full bg-primary-600 text-white text-2xl font-bold ring-1 ring-black/5 shadow-sm dark:ring-white/10">
+                                {{ $__initial }}
+                            </div>
+                        @endif
+
+                        <div wire:loading.flex
+                             wire:target="avatar"
+                             class="absolute inset-0 grid place-items-center rounded-full bg-black/55 backdrop-blur-[2px] pointer-events-none"
+                             aria-hidden="true">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="size-6 text-white animate-spin motion-reduce:animate-none" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                            </svg>
+                        </div>
+                    </div>
+
+                    <div class="min-w-0 flex-1">
+                        <h2 class="text-xl font-bold tracking-tight text-gray-900 dark:text-white truncate">
+                            {{ $name ?: 'Super Admin' }}
+                        </h2>
+                        <p class="text-sm text-gray-500 dark:text-gray-400 truncate">
+                            {{ $email ?: '—' }}
+                        </p>
+                        @if($this->currentRoleLabel)
+                            <span class="mt-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider
+                                         bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-300
+                                         border border-purple-200 dark:border-purple-500/30">
+                                {{ $this->currentRoleLabel }}
+                            </span>
+                        @endif
+                    </div>
+                </div>
+
+                <div class="space-y-3"
+                     x-data="imageCropper({
+                         wireProperty: 'avatar',
+                         aspect: 1,
+                         title: 'Crop profile photo',
+                         description: 'Square crop works best',
+                     })"
+                     x-init="init()">
+                    <span class="block text-sm font-medium text-gray-700 dark:text-gray-300">Profile Photo</span>
+
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <label for="avatar-upload"
+                               class="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white px-3 py-2 text-xs font-semibold transition cursor-pointer active:scale-95
+                                      focus-within:ring-2 focus-within:ring-primary-500/50 focus-within:ring-offset-2 dark:focus-within:ring-offset-gray-900
+                                      [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                            </svg>
+                            {{ $this->avatarUrl ? 'Replace photo' : 'Upload photo' }}
+                            <input type="file" id="avatar-upload" x-ref="input" x-on:change="pick($event)" accept="image/jpeg,image/png,image/webp" class="sr-only">
+                        </label>
+
+                        @if($this->avatarUrl)
+                            <button type="button"
+                                    x-data="{
+                                        armed: false,
+                                        _t: null,
+                                        arm() { this.armed = true; clearTimeout(this._t); this._t = setTimeout(() => { this.armed = false; this._t = null; }, 4000); },
+                                        unarm() { clearTimeout(this._t); this._t = null; this.armed = false; },
+                                        destroy() { clearTimeout(this._t); }
+                                    }"
+                                    @click="armed ? (unarm(), $wire.removeAvatar()) : arm()"
+                                    wire:loading.attr="disabled"
+                                    wire:target="removeAvatar"
+                                    :class="armed
+                                        ? 'border-amber-400 bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/40'
+                                        : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200'"
+                                    class="inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-xs font-semibold
+                                           transition-all duration-200 active:scale-95
+                                           hover:border-rose-400 hover:text-rose-600 dark:hover:text-rose-400
+                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
+                                           disabled:opacity-60 disabled:cursor-not-allowed">
+                                <span x-show="!armed">Remove photo</span>
+                                <span x-show="armed" x-cloak>Confirm</span>
+                            </button>
+                        @endif
+
+                        <div wire:loading wire:target="avatar" class="flex items-center gap-2 text-xs text-primary-600 dark:text-primary-400">
+                            <svg class="animate-spin w-3 h-3 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                            </svg>
+                            Uploading…
+                        </div>
+                    </div>
+
+                    @error('avatar') <span class="text-rose-500 dark:text-rose-400 text-xs block">{{ $message }}</span> @enderror
+                </div>
+
+                <hr class="border-gray-200 dark:border-gray-700">
+
                 <div class="space-y-5">
                     <div class="flex items-center justify-between flex-wrap gap-2">
                         <h2 class="text-sm font-semibold text-gray-900 dark:text-white">Personal Information</h2>
@@ -648,7 +808,6 @@ class extends Component {
 
                 <hr class="border-gray-200 dark:border-gray-700">
 
-                {{-- Change Password --}}
                 <div class="space-y-5">
                     <div>
                         <h2 class="text-sm font-semibold text-gray-900 dark:text-white">Change Password</h2>
@@ -675,7 +834,6 @@ class extends Component {
                     </div>
                 </div>
 
-                {{-- Footer --}}
                 <div class="pt-5 border-t border-gray-200 dark:border-gray-700 flex justify-end">
                     <button type="submit"
                             wire:loading.attr="disabled"
@@ -696,9 +854,6 @@ class extends Component {
             </form>
         </div>
 
-        {{-- ═══════════════════════════════════════════════════════
-             Panel — Branding
-             ═══════════════════════════════════════════════════════ --}}
         <div
             id="panel-branding"
             role="tabpanel"
@@ -713,16 +868,8 @@ class extends Component {
                     <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">The logo and title appear on the public website header.</p>
                 </div>
 
-                {{--
-                    avatarPreview() wraps the preview thumbnail ONLY — the
-                    imageCropper() scope below wraps just the file input.
-                    Keeping them in separate scopes avoids cross-talk between
-                    the object-URL lifecycle (which the preview owns) and
-                    the crop-modal dispatch (which the picker owns).
-                --}}
                 <div class="grid grid-cols-1 lg:grid-cols-[10rem_1fr] gap-6 items-start">
 
-                    {{-- Preview column --}}
                     <div
                         x-data="avatarPreview()"
                         x-on:site-logo-preview.window="setUrl($event.detail.url)"
@@ -746,7 +893,6 @@ class extends Component {
                             {{ strtoupper(substr($this->siteName ?: 'T', 0, 1)) }}
                         </div>
 
-                        {{-- Upload spinner overlay --}}
                         <div
                             wire:loading.flex
                             wire:target="siteLogo"
@@ -760,7 +906,6 @@ class extends Component {
                         </div>
                     </div>
 
-                    {{-- Controls column --}}
                     <div class="space-y-5 min-w-0">
                         <div>
                             <label for="site-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Header Title</label>
@@ -793,13 +938,27 @@ class extends Component {
 
                                 @if($this->currentSiteLogoUrl)
                                     <button type="button"
-                                            wire:click="removeLogo"
-                                            wire:confirm="Are you sure you want to remove the current logo?"
+                                            x-data="{
+                                                armed: false,
+                                                _t: null,
+                                                arm() { this.armed = true; clearTimeout(this._t); this._t = setTimeout(() => { this.armed = false; this._t = null; }, 4000); },
+                                                unarm() { clearTimeout(this._t); this._t = null; this.armed = false; },
+                                                destroy() { clearTimeout(this._t); }
+                                            }"
+                                            @click="armed ? (unarm(), $wire.removeLogo()) : arm()"
                                             wire:loading.attr="disabled"
                                             wire:target="removeLogo"
-                                            class="inline-flex items-center gap-1 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 px-3 py-2 text-xs font-semibold hover:border-rose-400 hover:text-rose-600 dark:hover:text-rose-400 transition
-                                                   active:scale-95 disabled:opacity-60">
-                                        Remove logo
+                                            :class="armed
+                                                ? 'border-amber-400 bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/40'
+                                                : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300'"
+                                            class="inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-xs font-semibold
+                                                   transition-all duration-200 active:scale-95
+                                                   hover:border-rose-400 hover:text-rose-600 dark:hover:text-rose-400
+                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
+                                                   disabled:opacity-60 disabled:cursor-not-allowed">
+                                        <span x-show="!armed">Remove logo</span>
+                                        <span x-show="armed" x-cloak>Confirm</span>
                                     </button>
                                 @endif
                             </div>
@@ -817,7 +976,6 @@ class extends Component {
                     </div>
                 </div>
 
-                {{-- Footer --}}
                 <div class="pt-5 border-t border-gray-200 dark:border-gray-700 flex justify-end">
                     <button type="submit"
                             wire:loading.attr="disabled"
@@ -838,9 +996,6 @@ class extends Component {
             </form>
         </div>
 
-        {{-- ═══════════════════════════════════════════════════════
-             Panel — Location
-             ═══════════════════════════════════════════════════════ --}}
         <div
             id="panel-location"
             role="tabpanel"
@@ -857,7 +1012,6 @@ class extends Component {
                     </p>
                 </div>
 
-                {{-- Controls row --}}
                 <div class="flex flex-wrap items-center gap-2">
                     <button type="button"
                             wire:click="$dispatch('request-geolocation')"
@@ -885,7 +1039,6 @@ class extends Component {
                     @endif
                 </div>
 
-                {{-- Map --}}
                 <div class="relative">
                     <div
                         wire:ignore
@@ -897,7 +1050,27 @@ class extends Component {
                             initialLat: {{ $siteLatitude ?? 'null' }},
                             initialLng: {{ $siteLongitude ?? 'null' }},
                         })"
-                        x-init="init()"
+                        x-init="
+                            const __el = document.getElementById('site-location-map');
+                            if (__el) {
+                                const __data = $data;
+                                const __boot = () => __data.init();
+                                if (Math.min(__el.clientWidth, __el.clientHeight) > 0) {
+                                    __boot();
+                                } else {
+                                    const __ro = new ResizeObserver((entries) => {
+                                        for (const __e of entries) {
+                                            if (Math.min(__e.contentRect.width, __e.contentRect.height) > 0) {
+                                                __ro.disconnect();
+                                                __boot();
+                                                return;
+                                            }
+                                        }
+                                    });
+                                    __ro.observe(__el);
+                                }
+                            }
+                        "
                         x-on:map:pin-cleared.window="clearMarker()"
                         class="relative rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-900 h-[320px] sm:h-[380px]"
                     >
@@ -930,7 +1103,6 @@ class extends Component {
                         </div>
                     </div>
 
-                    {{-- Looking-up-address chip --}}
                     <div wire:loading wire:target="resolveSiteAddress"
                          class="absolute bottom-3 left-3 z-10 pointer-events-none">
                         <span class="inline-flex items-center gap-1.5 rounded-full bg-gray-900/85 backdrop-blur-sm text-white text-[11px] font-semibold px-3 py-1.5 shadow-lg">
@@ -952,7 +1124,6 @@ class extends Component {
                 @error('siteLatitude') <p class="text-xs text-rose-500">{{ $message }}</p> @enderror
                 @error('siteLongitude') <p class="text-xs text-rose-500">{{ $message }}</p> @enderror
 
-                {{-- Address fields — auto-filled by reverse geocoder --}}
                 <div class="pt-4 border-t border-gray-100 dark:border-gray-700/60 space-y-4">
                     <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Address</span>
 
@@ -976,7 +1147,6 @@ class extends Component {
                     </div>
                 </div>
 
-                {{-- Footer --}}
                 <div class="pt-5 border-t border-gray-200 dark:border-gray-700 flex justify-end">
                     <button type="submit"
                             wire:loading.attr="disabled"
@@ -999,6 +1169,5 @@ class extends Component {
 
     </div>
 
-    {{-- Image crop modal — singleton for this page --}}
     <x-image-crop-modal />
 </div>

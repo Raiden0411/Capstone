@@ -11,6 +11,7 @@ use App\Models\Employee;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
 use Spatie\Permission\PermissionRegistrar;
+use App\Traits\ChecksTenantPermissions;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -20,6 +21,7 @@ new
 #[Layout('tenant.layouts.app')]
 #[Title('Custom Roles')]
 class extends Component {
+    use ChecksTenantPermissions;
 
     public array $customRoles = [];
 
@@ -46,14 +48,9 @@ class extends Component {
 
     protected function authorizeManageRoles(): void
     {
-        $user = Auth::user();
+        abort_unless(Auth::user(), 403);
 
-        abort_unless($user, 403);
-
-        $canManage = $user->hasAnyRole(['admin', 'super-admin'])
-            || $user->getAllPermissions()->contains('name', 'manage roles');
-
-        abort_unless($canManage, 403, 'You are not authorized to view roles.');
+        $this->requirePermission('manage roles');
     }
 
     public function loadRoles(): void
@@ -68,7 +65,7 @@ class extends Component {
 
     public function deleteRole(int $index): void
     {
-        $this->authorizeManageRoles();
+        $this->requirePermission('manage roles');
 
         $user     = Auth::user();
         $tenantId = (int) $user->tenant_id;
@@ -278,10 +275,10 @@ class extends Component {
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
             @php
                 $kpis = [
-                    ['label' => 'Custom Roles',    'value' => number_format($s['total_roles']),       'dot' => 'bg-primary-500'],
-                    ['label' => 'Granted Rights',  'value' => number_format($s['total_permissions']), 'dot' => 'bg-emerald-500'],
-                    ['label' => 'Employees',       'value' => number_format($s['employees']),         'dot' => 'bg-purple-500'],
-                    ['label' => 'System Rights',   'value' => number_format($s['system_rights']),     'dot' => 'bg-amber-500'],
+                    ['label' => 'Custom Roles',   'value' => number_format($s['total_roles']),       'dot' => 'bg-primary-500'],
+                    ['label' => 'Granted Rights', 'value' => number_format($s['total_permissions']), 'dot' => 'bg-emerald-500'],
+                    ['label' => 'Employees',      'value' => number_format($s['employees']),         'dot' => 'bg-purple-500'],
+                    ['label' => 'System Rights',  'value' => number_format($s['system_rights']),     'dot' => 'bg-amber-500'],
                 ];
             @endphp
             @foreach($kpis as $kpi)
@@ -465,7 +462,6 @@ class extends Component {
                                 </svg>
                             </a>
 
-                            {{-- Delete — two-click arm replaces confirm() --}}
                             <button type="button"
                                     x-data="{
                                         armed: false,

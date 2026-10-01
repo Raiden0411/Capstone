@@ -10,6 +10,7 @@ use Livewire\WithPagination;
 use App\Models\Booking;
 use App\Models\Payment;
 use App\Services\PayMongoService;
+use App\Services\BookingRefundService;
 use App\Scopes\TenantScope;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -27,24 +28,13 @@ class extends Component
     #[Url] public string $statusFilter = 'all';
     #[Url] public string $sortBy       = 'newest';
 
-    /** Currently expanded booking — server-owned so it survives re-renders. */
     public ?int $expandedId = null;
 
-    /**
-     * On mount we reconcile any in-flight PayMongo sessions before the
-     * first render.
-     *
-     * WHY: The user typically arrives here right after completing
-     * payment at PayMongo. The webhook that flips Booking.status from
-     * `pending` → `confirmed`/`reserved` routinely lags the browser
-     * redirect by 2–10 seconds. Without this, the timer UI would show
-     * for a booking that has already been paid, the user would panic,
-     * and — worse — the Alpine countdown would fire cancelOverdue()
-     * on a paid booking. The server refuses that (Booking::isOverdue()
-     * checks isFullyPaid()) but the UI would be visibly wrong.
-     *
-     * Reconcile is a no-op for bookings with no live session.
-     */
+    public ?int $cancellingBookingId = null;
+    public bool $showCancelModal = false;
+    public string $cancelReason = '';
+    public ?array $cancelPreview = null;
+
     public function mount(): void
     {
         $this->requireAuth();
@@ -61,17 +51,6 @@ class extends Component
         abort_unless(Auth::check(), 403, 'Your session has expired. Please sign in again.');
     }
 
-    /**
-     * For this user's bookings that are still `pending` with a pending
-     * PayMongo session, ping the gateway. `checkPaymentStatus()` internally
-     * queries PayMongo's REST API and only finalizes when the session is
-     * actually paid — so we can safely call this without risk of
-     * false-positives.
-     *
-     * Bounded to the last 2 days so we don't hammer the gateway for
-     * ancient bookings. Anything older than that has either been
-     * resolved or is beyond its payment window.
-     */
     protected function reconcilePendingPayments(): void
     {
         $stale = Booking::withoutGlobalScope(TenantScope::class)
@@ -102,7 +81,6 @@ class extends Component
             }
 
             try {
-                // Queries PayMongo; finalizes only if genuinely paid.
                 $payMongo->checkPaymentStatus($reference);
             } catch (\Throwable $e) {
                 Log::warning('my-bookings: gateway reconcile failed', [
@@ -146,9 +124,6 @@ class extends Component
                 return false;
             }
 
-            // isOverdue() itself refuses when the booking is fully paid —
-            // belt-and-braces against a race between this and the
-            // reconcile above.
             if (!$locked->isOverdue()) {
                 return false;
             }
@@ -162,7 +137,7 @@ class extends Component
             unset($this->bookings);
             unset($this->counts);
 
-            session()->flash('message', 'Booking cancelled due to payment timeout.');
+            session()->flash('info', 'Booking cancelled due to payment timeout.');
         }
     }
 
@@ -216,9 +191,19 @@ class extends Component
             unset($this->bookings);
             unset($this->counts);
 
-            session()->flash('error', 'Payment deadline has passed. This booking has been cancelled.');
+            session()->flash('warning', 'Payment deadline has passed. This booking has been cancelled.');
             return null;
         }
+
+        $lastMethod = Payment::withoutGlobalScope(TenantScope::class)
+            ->where('booking_id', $booking->id)
+            ->whereIn('payment_method', ['gcash', 'paymaya', 'card'])
+            ->latest('id')
+            ->value('payment_method');
+
+        $resolvedMethod = is_string($lastMethod) && $lastMethod !== ''
+            ? $lastMethod
+            : 'gcash';
 
         $amount = $expectedType === Booking::TYPE_RESERVATION
             ? round((float) $booking->total_amount * 0.20, 2)
@@ -244,7 +229,7 @@ class extends Component
             'success_url'          => route('booking.payment.processing', ['bookingId' => $booking->id]),
             'cancel_url'           => route('booking.payment.cancel', ['booking' => $booking->id]),
             'metadata'             => ['booking_id' => $booking->id],
-            'payment_method_types' => ['gcash', 'paymaya', 'card', 'qrph'],
+            'payment_method_types' => [$resolvedMethod],
         ]);
 
         if (!$session) {
@@ -253,7 +238,7 @@ class extends Component
         }
 
         try {
-            $this->upsertPendingPayment($booking, $amount, $expectedType, $session['id']);
+            $this->upsertPendingPayment($booking, $amount, $expectedType, $session['id'], $resolvedMethod);
         } catch (\Throwable $e) {
             Log::error('Failed to record pending payment after checkout creation', [
                 'booking_id' => $booking->id,
@@ -272,6 +257,7 @@ class extends Component
         float $amount,
         string $type,
         string $sessionId,
+        string $method = 'gcash',
     ): void {
         $existing = Payment::withoutGlobalScope(TenantScope::class)
             ->where('booking_id', $booking->id)
@@ -283,6 +269,7 @@ class extends Component
             $existing->update([
                 'amount'              => $amount,
                 'payment_type'        => $type,
+                'payment_method'      => $method,
                 'paymongo_session_id' => $sessionId,
             ]);
             return;
@@ -292,14 +279,18 @@ class extends Component
             'tenant_id'           => $booking->tenant_id,
             'booking_id'          => $booking->id,
             'amount'              => $amount,
-            'payment_method'      => 'paymongo',
+            'payment_method'      => $method,
             'payment_status'      => 'pending',
             'payment_type'        => $type,
             'paymongo_session_id' => $sessionId,
         ]);
     }
 
-    public function requestCancellation(int $bookingId): void
+    // ─────────────────────────────────────────────────────────
+    //  Cancellation — tiered refund flow
+    // ─────────────────────────────────────────────────────────
+
+    public function openCancelModal(int $bookingId): void
     {
         $this->requireAuth();
 
@@ -308,42 +299,97 @@ class extends Component
             ->whereKey($bookingId)
             ->first();
 
-        if (!$booking) {
-            session()->flash('error', 'Booking not found.');
+        if (! $booking || ! $booking->canBeCancelled()) {
+            session()->flash('error', 'This booking cannot be cancelled.');
             return;
         }
 
-        $result = DB::transaction(function () use ($booking): string {
-            $locked = Booking::withoutGlobalScope(TenantScope::class)
-                ->whereKey($booking->id)
-                ->lockForUpdate()
-                ->first();
+        $this->cancellingBookingId = $bookingId;
+        $this->cancelReason        = '';
+        $this->cancelPreview       = app(BookingRefundService::class)
+            ->previewRefund($booking, Booking::CANCELLED_BY_TOURIST);
+        $this->showCancelModal     = true;
+    }
 
-            if (!$locked) {
-                return 'missing';
+    public function closeCancelModal(): void
+    {
+        $this->showCancelModal     = false;
+        $this->cancellingBookingId = null;
+        $this->cancelReason        = '';
+        $this->cancelPreview       = null;
+    }
+
+    public function confirmCancellation(): void
+    {
+        $this->requireAuth();
+
+        if (! $this->cancellingBookingId) {
+            $this->closeCancelModal();
+            return;
+        }
+
+        $booking = Booking::withoutGlobalScope(TenantScope::class)
+            ->where('user_id', Auth::id())
+            ->whereKey($this->cancellingBookingId)
+            ->first();
+
+        if (! $booking) {
+            session()->flash('error', 'Booking not found.');
+            $this->closeCancelModal();
+            return;
+        }
+
+        try {
+            $cancelled = app(BookingRefundService::class)->cancel(
+                $booking,
+                Booking::CANCELLED_BY_TOURIST,
+                $this->cancelReason !== '' ? $this->cancelReason : null,
+            );
+
+            unset($this->bookings);
+            unset($this->counts);
+
+            $refund = (float) $cancelled->refund_amount;
+
+            if ($refund > 0) {
+                session()->flash(
+                    'message',
+                    'Booking cancelled. A refund of ₱' . number_format($refund, 2)
+                    . ' (' . $cancelled->refund_percentage . '%) will be processed shortly.'
+                );
+            } else {
+                session()->flash(
+                    'info',
+                    'Booking cancelled. No refund is due under the cancellation policy.'
+                );
             }
+        } catch (\Throwable $e) {
+            Log::warning('Cancellation failed', [
+                'booking_id' => $this->cancellingBookingId,
+                'user_id'    => Auth::id(),
+                'error'      => $e->getMessage(),
+            ]);
+            session()->flash('error', 'Could not cancel this booking. Please try again.');
+        }
 
-            if (!in_array($locked->status, [
-                Booking::STATUS_PENDING,
-                Booking::STATUS_CONFIRMED,
-                Booking::STATUS_RESERVED,
-            ], true)) {
-                return 'invalid';
-            }
+        $this->closeCancelModal();
+        $this->expandedId = null;
+    }
 
-            $locked->update(['status' => Booking::STATUS_CANCELLED]);
+    #[Computed]
+    public function cancellingBooking(): ?Booking
+    {
+        if (! $this->cancellingBookingId) {
+            return null;
+        }
 
-            return 'cancelled';
-        });
-
-        unset($this->bookings);
-        unset($this->counts);
-
-        match ($result) {
-            'cancelled' => session()->flash('message', 'Booking cancelled successfully.'),
-            'invalid'   => session()->flash('error', 'This booking cannot be cancelled.'),
-            'missing'   => session()->flash('error', 'Booking not found.'),
-        };
+        return Booking::withoutGlobalScope(TenantScope::class)
+            ->with([
+                'items.property' => fn ($q) => $q->withoutGlobalScope(TenantScope::class),
+            ])
+            ->where('user_id', Auth::id())
+            ->whereKey($this->cancellingBookingId)
+            ->first();
     }
 
     #[Computed]
@@ -466,7 +512,6 @@ class extends Component
             .hide-scrollbar::-webkit-scrollbar { display: none; }
             .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
-            /* Ambient page wash — matches create-booking / processing. */
             .bookings-ambient {
                 background:
                     radial-gradient(ellipse 70% 50% at 8% 0%, rgba(245,158,11,.06) 0%, transparent 55%),
@@ -493,13 +538,13 @@ class extends Component
 @endpush
 
 <div class="relative z-10 min-h-screen text-gray-900 dark:text-gray-100"
-     x-data="revealOnScroll">
+     x-data="revealOnScroll"
+     wire:poll.30s>
 
     <div class="bookings-ambient fixed inset-0 -z-10 pointer-events-none" aria-hidden="true"></div>
 
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10">
 
-        {{-- ═══════════════ HEADER ═══════════════ --}}
         @php $counts = $this->counts; @endphp
 
         <header data-reveal class="mb-8">
@@ -547,7 +592,6 @@ class extends Component
             </div>
         </header>
 
-        {{-- ═══════════════ FLASH MESSAGES ═══════════════ --}}
         @if(session()->has('message'))
             <div x-data="{ show: true }"
                  x-init="setTimeout(() => show = false, 4000)"
@@ -556,7 +600,7 @@ class extends Component
                  aria-live="polite"
                  class="flex items-start gap-3 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 border-l-4 border-l-emerald-500 p-4 rounded-xl mb-6">
                 <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
                 </svg>
                 <p class="text-sm text-emerald-700 dark:text-emerald-300 font-medium flex-1">{{ session('message') }}</p>
                 <button type="button" @click="show = false"
@@ -570,9 +614,56 @@ class extends Component
                 </button>
             </div>
         @endif
+
+        @if(session()->has('info'))
+            <div x-data="{ show: true }"
+                 x-init="setTimeout(() => show = false, 5500)"
+                 :class="show ? '' : 'hidden'"
+                 role="status"
+                 aria-live="polite"
+                 class="flex items-start gap-3 bg-sky-50 dark:bg-sky-500/10 border border-sky-200 dark:border-sky-500/30 border-l-4 border-l-sky-500 p-4 rounded-xl mb-6">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-sky-600 dark:text-sky-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <p class="text-sm text-sky-700 dark:text-sky-300 font-medium flex-1">{{ session('info') }}</p>
+                <button type="button" @click="show = false"
+                        class="relative inline-flex items-center justify-center h-7 w-7 rounded-md text-sky-500 hover:text-sky-700 dark:hover:text-sky-200 hover:bg-sky-100 dark:hover:bg-sky-500/10
+                               transition-all duration-200 active:scale-95
+                               before:absolute before:content-[''] before:-inset-2 before:rounded-md
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/50 shrink-0"
+                        aria-label="Dismiss info">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+        @endif
+
+        @if(session()->has('warning'))
+            <div x-data="{ show: true }"
+                 x-init="setTimeout(() => show = false, 5500)"
+                 :class="show ? '' : 'hidden'"
+                 role="alert"
+                 aria-live="polite"
+                 class="flex items-start gap-3 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 border-l-4 border-l-amber-500 p-4 rounded-xl mb-6">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                </svg>
+                <p class="text-sm text-amber-700 dark:text-amber-300 font-medium flex-1">{{ session('warning') }}</p>
+                <button type="button" @click="show = false"
+                        class="relative inline-flex items-center justify-center h-7 w-7 rounded-md text-amber-500 hover:text-amber-700 dark:hover:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-500/10
+                               transition-all duration-200 active:scale-95
+                               before:absolute before:content-[''] before:-inset-2 before:rounded-md
+                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50 shrink-0"
+                        aria-label="Dismiss warning">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+        @endif
+
         @if(session()->has('error'))
             <div x-data="{ show: true }"
-                 x-init="setTimeout(() => show = false, 5000)"
+                 x-init="setTimeout(() => show = false, 5500)"
                  :class="show ? '' : 'hidden'"
                  role="alert"
                  aria-live="polite"
@@ -593,7 +684,6 @@ class extends Component
             </div>
         @endif
 
-        {{-- ═══════════════ FILTERS ═══════════════ --}}
         @php
             $primaryPills = [
                 ['all',      'All',      $counts['all']],
@@ -696,7 +786,6 @@ class extends Component
             </div>
         </section>
 
-        {{-- ═══════════════ BOOKINGS LIST ═══════════════ --}}
         <div class="grid grid-cols-1 gap-4 transition-opacity duration-200"
              wire:loading.class="opacity-50"
              wire:target="search,statusFilter,sortBy,gotoPage,nextPage,previousPage">
@@ -712,21 +801,24 @@ class extends Component
                     $services       = $booking->services;
                     $classification = $this->getBookingClassification($booking);
                     $isExpanded     = $expandedId === $booking->id;
-                    $days           = max(1, (int) $booking->check_in->diffInDays($booking->check_out));
+                    $days           = max(1, (int) $booking->check_in->diffInDays($booking->check_out) + 1);
 
-                    // Timer is shown ONLY when the booking is genuinely
-                    // awaiting payment — the gateway reconcile in mount()
-                    // has already finalized any paid-but-not-yet-flipped
-                    // bookings, so a `pending` status here means the user
-                    // really does still owe money.
-                    //
-                    // Also requires the deadline to be in the FUTURE. A
-                    // booking past its deadline should have been flipped
-                    // by cancelOverdue() on the server; if we render a
-                    // timer for one, it would fire cancelOverdue() on the
-                    // client on its very first tick — pointless churn.
-                    $needsAction = $booking->status === 'pending'
-                        && $balance > 0
+                    $isPending   = $booking->status === Booking::STATUS_PENDING;
+                    $isConfirmed = $booking->status === Booking::STATUS_CONFIRMED;
+                    $isReserved  = $booking->status === Booking::STATUS_RESERVED;
+                    $isCompleted = $booking->status === Booking::STATUS_COMPLETED;
+                    $isCancelled = $booking->status === Booking::STATUS_CANCELLED;
+
+                    $isPaymentComplete = $isConfirmed || $isReserved || $isCompleted;
+
+                    $canPay        = $isPending && $balance > 0;
+                    $canCancel     = $isPending || $isConfirmed || $isReserved;
+                    $canViewBiz    = (bool) $tenant;
+                    $canDirections = ($isConfirmed || $isReserved) && (bool) $tenant;
+                    $canReceipt    = $isPaymentComplete;
+                    $canCalendar   = ($isConfirmed || $isReserved) && $property !== null;
+
+                    $needsAction = $canPay
                         && $deadline !== null
                         && $deadline->isFuture();
                 @endphp
@@ -738,7 +830,6 @@ class extends Component
                                 hover:shadow-md transition-shadow duration-200
                                 {{ $needsAction ? 'border-l-4 border-l-amber-500' : '' }}">
 
-                    {{-- ══ Card header (clickable to expand) ══ --}}
                     <div class="flex flex-col sm:flex-row sm:items-stretch gap-0 cursor-pointer select-none
                                 [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]"
                          wire:click="toggleExpand({{ $booking->id }})"
@@ -748,15 +839,14 @@ class extends Component
                          x-on:keydown.space.prevent="$wire.toggleExpand({{ $booking->id }})"
                          aria-expanded="{{ $isExpanded ? 'true' : 'false' }}">
 
-                        {{-- ─── Image column ─── --}}
                         <div class="shrink-0 p-4 sm:pr-0 sm:py-5 sm:pl-5">
                             @if($logoPath)
-                                <img src="{{ asset('storage/' . $logoPath) }}"
+                                <img src="/storage/{{ ltrim($logoPath, '/') }}"
                                      alt="{{ $tenant->name ?? 'Business' }}"
                                      class="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl object-cover border border-gray-200 dark:border-gray-700"
                                      loading="lazy" decoding="async">
                             @elseif($imagePath)
-                                <img src="{{ asset('storage/' . $imagePath) }}"
+                                <img src="/storage/{{ ltrim($imagePath, '/') }}"
                                      alt="{{ $property?->name ?? 'Property' }}"
                                      class="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl object-cover border border-gray-200 dark:border-gray-700"
                                      loading="lazy" decoding="async">
@@ -767,10 +857,8 @@ class extends Component
                             @endif
                         </div>
 
-                        {{-- ─── Content column ─── --}}
                         <div class="flex-1 min-w-0 px-4 sm:px-5 py-4 sm:py-5 flex flex-col justify-center">
 
-                            {{-- Row 1: badges + reference + chevron --}}
                             <div class="flex flex-wrap items-center gap-2 mb-2">
                                 @php
                                     $statusClasses = match ($booking->status) {
@@ -784,6 +872,17 @@ class extends Component
                                 <span class="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider {{ $statusClasses }}">
                                     {{ $booking->status }}
                                 </span>
+
+                                @if($isCancelled && $booking->refund_status !== 'none' && $booking->refund_status !== null)
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider
+                                        {{ $booking->refund_status === 'processed'
+                                            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300'
+                                            : ($booking->refund_status === 'rejected'
+                                                ? 'bg-rose-100 text-rose-800 dark:bg-rose-500/20 dark:text-rose-300'
+                                                : 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300') }}">
+                                        Refund {{ $booking->refund_status }}
+                                    </span>
+                                @endif
 
                                 @if(in_array($classification, ['upcoming', 'ongoing', 'past'], true))
                                     <span class="text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
@@ -807,12 +906,10 @@ class extends Component
                                 </span>
                             </div>
 
-                            {{-- Row 2: property name --}}
                             <h3 class="font-display text-lg sm:text-xl font-semibold text-gray-900 dark:text-white leading-tight truncate">
                                 {{ $property?->name ?? 'Booking' }}
                             </h3>
 
-                            {{-- Row 3: tenant + type --}}
                             @if($tenant)
                                 <p class="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
                                     {{ $tenant->name }}
@@ -823,7 +920,6 @@ class extends Component
                                 </p>
                             @endif
 
-                            {{-- Row 4: dates · duration · total --}}
                             <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-600 dark:text-gray-300">
                                 <span class="inline-flex items-center gap-1.5 tabular-nums">
                                     <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -842,7 +938,6 @@ class extends Component
                             </div>
                         </div>
 
-                        {{-- ─── Action column (right) ─── --}}
                         <div class="shrink-0 sm:w-[200px] px-4 sm:px-5 py-4 sm:py-5 border-t sm:border-t-0 sm:border-l border-gray-100 dark:border-gray-700
                                     flex flex-row sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-3">
 
@@ -855,28 +950,26 @@ class extends Component
                                              deadline: {{ $deadline->timestamp * 1000 }},
                                              remaining: null,
                                              timer: null,
-                                             fired: false,
-                                             get urgent() { return this.remaining !== null && this.remaining < 300; },
+                                             refreshed: false,
+                                             get urgent() { return this.remaining !== null && this.remaining > 0 && this.remaining < 300; },
+                                             get expired() { return this.remaining !== null && this.remaining <= 0; },
                                              init() {
                                                  this.updateRemaining();
                                                  this.timer = setInterval(() => this.updateRemaining(), 1000);
                                              },
                                              destroy() {
-                                                 if (this.timer) clearInterval(this.timer);
+                                                 if (this.timer) { clearInterval(this.timer); this.timer = null; }
                                              },
                                              updateRemaining() {
                                                  const diff = this.deadline - Date.now();
                                                  if (diff <= 0) {
-                                                     if (this.timer) clearInterval(this.timer);
-                                                     this.timer = null;
-                                                     if (!this.fired) {
-                                                         this.fired = true;
-                                                         // Server-side isOverdue() refuses
-                                                         // to cancel a fully-paid booking,
-                                                         // so this is safe even if the
-                                                         // gateway just finalized the
-                                                         // payment a moment ago.
-                                                         $wire.cancelOverdue({{ $booking->id }});
+                                                     if (this.timer) { clearInterval(this.timer); this.timer = null; }
+                                                     this.remaining = 0;
+                                                     if (!this.refreshed) {
+                                                         this.refreshed = true;
+                                                         setTimeout(() => {
+                                                             try { $wire.$refresh(); } catch (e) { /* noop */ }
+                                                         }, 2000);
                                                      }
                                                      return;
                                                  }
@@ -884,6 +977,7 @@ class extends Component
                                              },
                                              formatTime(seconds) {
                                                  if (seconds === null) return '—';
+                                                 if (seconds <= 0) return '0:00';
                                                  const m = Math.floor(seconds / 60);
                                                  const s = seconds % 60;
                                                  return `${m}:${s.toString().padStart(2, '0')}`;
@@ -893,7 +987,7 @@ class extends Component
                                         <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                         </svg>
-                                        <span x-text="formatTime(remaining) + ' left'" class="tabular-nums"></span>
+                                        <span x-text="formatTime(remaining) + (expired ? ' — closing soon' : ' left')" class="tabular-nums"></span>
                                     </div>
 
                                     @if($booking->booking_type === 'full')
@@ -936,28 +1030,34 @@ class extends Component
                                         </button>
                                     @endif
                                 </div>
-                            @elseif($booking->status === 'pending' && $balance <= 0)
+                            @elseif($isPending && $deadline !== null && $deadline->isPast())
+                                <span class="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                    </svg>
+                                    Payment window closed
+                                </span>
+                            @elseif($isPending && $balance <= 0)
                                 <span class="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
                                     <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                     </svg>
                                     Awaiting confirmation
                                 </span>
-                            @elseif($tenant && $booking->status !== 'cancelled')
+                            @elseif($canDirections)
                                 <a href="{{ route('explore.map', ['marker' => $tenant->id, 'directions' => '1']) }}"
                                    wire:navigate
                                    wire:click.stop
                                    class="inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl
-                                          bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700
-                                          hover:border-primary-400 dark:hover:border-primary-500 hover:text-primary-600 dark:hover:text-primary-400
-                                          text-gray-700 dark:text-gray-200 text-sm font-semibold
+                                          bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold
+                                          shadow-sm shadow-primary-500/20
                                           transition-all duration-200 active:scale-95
                                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                                     <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
                                     </svg>
-                                    Directions
+                                    <span class="truncate">Get Directions</span>
                                 </a>
                             @endif
 
@@ -967,10 +1067,50 @@ class extends Component
                         </div>
                     </div>
 
-                    {{-- ══ Expanded details ══ --}}
                     @if($isExpanded)
                         <div wire:key="drawer-{{ $booking->id }}"
                              class="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40">
+
+                            @if(! $isPaymentComplete && ! $isCancelled)
+                                <div class="px-5 md:px-6 py-3.5 flex items-start gap-2.5
+                                            bg-sky-50/70 dark:bg-sky-500/[0.06]
+                                            border-b border-sky-100 dark:border-sky-500/20">
+                                    <svg xmlns="http://www.w3.org/2000/svg"
+                                         class="w-4 h-4 text-sky-600 dark:text-sky-400 shrink-0 mt-0.5"
+                                         fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                              d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                    </svg>
+                                    <p class="text-xs text-sky-800 dark:text-sky-300 leading-relaxed">
+                                        Complete your payment to unlock Get Directions, the receipt, and the calendar event.
+                                    </p>
+                                </div>
+                            @endif
+
+                            @if($isCancelled)
+                                <div class="px-5 md:px-6 py-3.5 flex items-start gap-2.5
+                                            bg-rose-50/70 dark:bg-rose-500/[0.06]
+                                            border-b border-rose-100 dark:border-rose-500/20">
+                                    <svg xmlns="http://www.w3.org/2000/svg"
+                                         class="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5"
+                                         fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                              d="M6 18L18 6M6 6l12 12"/>
+                                    </svg>
+                                    <div class="text-xs text-rose-800 dark:text-rose-300 leading-relaxed">
+                                        <p>This booking was cancelled. Payment is no longer required.</p>
+                                        @if($booking->hasRefund())
+                                            <p class="mt-1 font-semibold">
+                                                Refund of ₱{{ number_format((float) $booking->refund_amount, 2) }}
+                                                ({{ $booking->refund_percentage }}%) —
+                                                <span class="capitalize">{{ $booking->refund_status }}</span>
+                                            </p>
+                                        @elseif($booking->cancelled_by === 'admin')
+                                            <p class="mt-1 font-semibold">The business cancelled this booking.</p>
+                                        @endif
+                                    </div>
+                                </div>
+                            @endif
 
                             <div class="p-5 md:p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 lg:gap-8">
 
@@ -979,7 +1119,7 @@ class extends Component
                                     @if($property)
                                         @if($imagePath)
                                             <div class="w-full aspect-[16/10] rounded-xl overflow-hidden mb-3">
-                                                <img src="{{ asset('storage/' . $imagePath) }}"
+                                                <img src="/storage/{{ ltrim($imagePath, '/') }}"
                                                      class="w-full h-full object-cover"
                                                      alt="{{ $property->name }}"
                                                      loading="lazy" decoding="async">
@@ -1091,10 +1231,10 @@ class extends Component
                             <div class="border-t border-gray-200 dark:border-gray-700 px-5 md:px-6 py-4">
                                 <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5">
 
-                                    @if($booking->status === 'pending' && $balance > 0)
+                                    @if($canPay)
                                         @if($booking->booking_type === 'full')
                                             <button type="button"
-                                                    wire:click="payFull({{ $booking->id }})"
+                                                    wire:click.stop="payFull({{ $booking->id }})"
                                                     wire:loading.attr="disabled"
                                                     wire:target="payFull"
                                                     class="col-span-2 sm:col-span-1 inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
@@ -1113,7 +1253,7 @@ class extends Component
                                             </button>
                                         @else
                                             <button type="button"
-                                                    wire:click="payReservation({{ $booking->id }})"
+                                                    wire:click.stop="payReservation({{ $booking->id }})"
                                                     wire:loading.attr="disabled"
                                                     wire:target="payReservation"
                                                     class="col-span-2 sm:col-span-1 inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
@@ -1133,7 +1273,23 @@ class extends Component
                                         @endif
                                     @endif
 
-                                    @if($tenant)
+                                    @if($canDirections)
+                                        <a href="{{ route('explore.map', ['marker' => $tenant->id, 'directions' => '1']) }}"
+                                           wire:navigate
+                                           class="col-span-2 sm:col-span-1 inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl
+                                                  bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold
+                                                  shadow-sm shadow-primary-500/20
+                                                  transition-all duration-200 active:scale-95
+                                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
+                                            </svg>
+                                            <span class="truncate">Get Directions</span>
+                                        </a>
+                                    @endif
+
+                                    @if($canViewBiz)
                                         <a href="{{ route('business.offerings', ['slug' => $tenant->slug]) }}" wire:navigate
                                            class="inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
                                                   transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
@@ -1144,50 +1300,40 @@ class extends Component
                                             </svg>
                                             <span class="truncate">View Business</span>
                                         </a>
-
-                                        @if($booking->status !== 'cancelled')
-                                            <a href="{{ route('explore.map', ['marker' => $tenant->id, 'directions' => '1']) }}"
-                                               wire:navigate
-                                               class="inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
-                                                      transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
-                                                      [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
-                                                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
-                                                </svg>
-                                                <span class="truncate">Directions</span>
-                                            </a>
-                                        @endif
                                     @endif
 
-                                    <a href="{{ route('booking.receipt', $booking) }}" wire:navigate
-                                       class="inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
-                                              transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
-                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
-                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2m-6-4h.01M6 18v4h12v-4"/>
-                                        </svg>
-                                        <span class="truncate">Receipt</span>
-                                    </a>
+                                    @if($canReceipt)
+                                        <a href="{{ route('booking.receipt', $booking) }}" wire:navigate
+                                           class="inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                                                  transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2m-6-4h.01M6 18v4h12v-4"/>
+                                            </svg>
+                                            <span class="truncate">Receipt</span>
+                                        </a>
+                                    @endif
 
-                                    <a href="https://calendar.google.com/calendar/render?action=TEMPLATE&text={{ urlencode($property?->name ?? 'Booking') }}&dates={{ $booking->check_in->format('Ymd\THis') }}/{{ $booking->check_out->format('Ymd\THis') }}&details={{ urlencode('Booking reference: ' . $booking->booking_reference) }}"
-                                       target="_blank" rel="noopener noreferrer"
-                                       class="inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
-                                              transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
-                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
-                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
-                                        </svg>
-                                        <span class="truncate">Add to Calendar</span>
-                                    </a>
+                                    @if($canCalendar)
+                                        <a href="https://calendar.google.com/calendar/render?action=TEMPLATE&text={{ urlencode($property?->name ?? 'Booking') }}&dates={{ $booking->check_in->format('Ymd\THis') }}/{{ $booking->check_out->format('Ymd\THis') }}&details={{ urlencode('Booking reference: ' . $booking->booking_reference) }}"
+                                           target="_blank" rel="noopener noreferrer"
+                                           class="inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                                                  transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                                            </svg>
+                                            <span class="truncate">Add to Calendar</span>
+                                        </a>
+                                    @endif
 
-                                    @if(in_array($booking->status, [Booking::STATUS_PENDING, Booking::STATUS_CONFIRMED, Booking::STATUS_RESERVED], true))
+                                    @if($canCancel)
                                         <button type="button"
-                                                x-on:click="if (confirm('Are you sure you want to cancel this booking?')) $wire.requestCancellation({{ $booking->id }})"
+                                                x-on:click.stop="$wire.openCancelModal({{ $booking->id }})"
                                                 wire:loading.attr="disabled"
-                                                wire:target="requestCancellation"
+                                                wire:target="openCancelModal,confirmCancellation"
                                                 class="col-span-2 sm:col-span-1 inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl border border-rose-300 dark:border-rose-500/40 bg-white dark:bg-gray-800 text-rose-700 dark:text-rose-300 text-sm font-semibold
                                                        transition-all duration-200 active:scale-95 hover:bg-rose-50 dark:hover:bg-rose-500/10
                                                        [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
@@ -1248,11 +1394,183 @@ class extends Component
             @endforelse
         </div>
 
-        {{-- ═══════════════ PAGINATION ═══════════════ --}}
         @if($this->bookings->hasPages())
             <div class="mt-8">
                 {{ $this->bookings->links() }}
             </div>
         @endif
     </div>
+
+    {{-- ═══ Cancellation confirmation modal ═══ --}}
+    @php $cb = $this->cancellingBooking; @endphp
+    @if($showCancelModal && $cb && $cancelPreview)
+        @php
+            $tierPct   = (int) $cancelPreview['percentage'];
+            $refundAmt = (float) $cancelPreview['refund_amount'];
+            $paidAmt   = (float) $cancelPreview['paid_amount'];
+            $tierLabel = $cancelPreview['label'];
+
+            $tierWrapClass = match ($tierPct) {
+                100     => 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/30 text-emerald-900 dark:text-emerald-200',
+                50      => 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30 text-amber-900 dark:text-amber-200',
+                default => 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/30 text-rose-900 dark:text-rose-200',
+            };
+
+            $tierBadgeClass = match ($tierPct) {
+                100     => 'bg-emerald-500 text-white',
+                50      => 'bg-amber-500 text-white',
+                default => 'bg-rose-500 text-white',
+            };
+
+            $tierHeading = match ($tierPct) {
+                100     => 'Full refund',
+                50      => 'Partial refund',
+                default => 'No refund',
+            };
+        @endphp
+
+        <div wire:key="cancel-modal-{{ $cb->id }}"
+             wire:keydown.escape.window="closeCancelModal"
+             role="dialog"
+             aria-modal="true"
+             aria-labelledby="cancel-modal-title"
+             x-data="{
+                 init() { document.body.classList.add('overflow-hidden'); },
+                 destroy() { document.body.classList.remove('overflow-hidden'); }
+             }"
+             class="fixed inset-0 z-[100] overflow-y-auto">
+
+            <div class="fixed inset-0 bg-black/60 backdrop-blur-sm"
+                 wire:click="closeCancelModal"
+                 aria-hidden="true"></div>
+
+            <div class="relative flex min-h-full items-center justify-center p-3 sm:p-4">
+                <div @click.stop
+                     class="relative w-full max-w-lg max-h-[calc(100dvh-1.5rem)] bg-white dark:bg-gray-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+
+                    <header class="flex items-start justify-between gap-3 px-5 py-4 border-b border-gray-200 dark:border-gray-700">
+                        <div class="min-w-0">
+                            <h2 id="cancel-modal-title"
+                                class="text-base sm:text-lg font-semibold text-gray-900 dark:text-white">
+                                Cancel this booking?
+                            </h2>
+                            <p class="text-xs font-mono text-gray-500 dark:text-gray-400 truncate mt-0.5">
+                                #{{ $cb->booking_reference }}
+                            </p>
+                        </div>
+                        <button type="button"
+                                wire:click="closeCancelModal"
+                                class="inline-flex items-center justify-center h-11 w-11 rounded-lg text-gray-500 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700
+                                       transition-all duration-200 active:scale-95
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
+                                aria-label="Close">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    </header>
+
+                    <div class="flex-1 overflow-y-auto px-5 py-5 space-y-4">
+
+                        <div class="rounded-2xl border p-4 {{ $tierWrapClass }}">
+                            <div class="flex items-center gap-2 mb-2">
+                                <span class="inline-flex items-center justify-center px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider {{ $tierBadgeClass }}">
+                                    {{ $tierPct }}%
+                                </span>
+                                <span class="text-xs font-semibold uppercase tracking-wider">
+                                    {{ $tierHeading }}
+                                </span>
+                            </div>
+
+                            @if($tierPct > 0)
+                                <p class="text-sm leading-relaxed">
+                                    Cancelling today qualifies for a
+                                    <strong class="font-bold">{{ $tierPct }}%</strong> refund
+                                    (<strong class="font-bold tabular-nums">₱{{ number_format($refundAmt, 2) }}</strong>).
+                                </p>
+                                <p class="text-xs mt-2 opacity-80">
+                                    {{ $tierLabel }}
+                                </p>
+                            @else
+                                <p class="text-sm leading-relaxed">
+                                    Cancelling today qualifies for a
+                                    <strong class="font-bold">0%</strong> refund
+                                    (<strong class="font-bold tabular-nums">₱0.00</strong>).
+                                </p>
+                                <p class="text-xs mt-2 opacity-80">
+                                    This booking is past the refund window and no refund will be issued.
+                                </p>
+                            @endif
+                        </div>
+
+                        <dl class="grid grid-cols-2 gap-3 text-sm">
+                            <div class="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+                                <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                                    Paid
+                                </dt>
+                                <dd class="mt-1 font-semibold text-gray-900 dark:text-white tabular-nums">
+                                    ₱{{ number_format($paidAmt, 2) }}
+                                </dd>
+                            </div>
+                            <div class="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+                                <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                                    Refund
+                                </dt>
+                                <dd class="mt-1 font-semibold text-gray-900 dark:text-white tabular-nums">
+                                    ₱{{ number_format($refundAmt, 2) }}
+                                </dd>
+                            </div>
+                        </dl>
+
+                        <div>
+                            <label for="cancel-reason"
+                                   class="block text-xs font-semibold uppercase tracking-wider text-gray-600 dark:text-gray-400 mb-1.5">
+                                Reason <span class="text-gray-400 dark:text-gray-500 normal-case font-normal">(optional)</span>
+                            </label>
+                            <textarea id="cancel-reason"
+                                      wire:model="cancelReason"
+                                      rows="3"
+                                      maxlength="500"
+                                      placeholder="Tell the business why you're cancelling — helps them improve."
+                                      class="textarea"></textarea>
+                        </div>
+
+                        <p class="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                            By confirming, this booking will be cancelled immediately.
+                            @if($tierPct > 0)
+                                Your refund will be issued to your original payment method within 3–10 business days.
+                            @else
+                                No refund will be issued. This action cannot be undone.
+                            @endif
+                        </p>
+                    </div>
+
+                    <footer class="flex items-center justify-end gap-2 px-5 py-3 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30">
+                        <button type="button"
+                                wire:click="closeCancelModal"
+                                class="inline-flex items-center justify-center gap-2 h-11 px-4 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold
+                                       transition-all duration-200 active:scale-95 hover:bg-gray-50 dark:hover:bg-gray-700
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                            Never mind
+                        </button>
+
+                        <button type="button"
+                                wire:click="confirmCancellation"
+                                wire:loading.attr="disabled"
+                                wire:target="confirmCancellation"
+                                class="btn-danger min-h-[44px] px-5 disabled:opacity-60 disabled:cursor-not-allowed">
+                            <span wire:loading.remove wire:target="confirmCancellation">Confirm Cancellation</span>
+                            <span wire:loading wire:target="confirmCancellation" class="inline-flex items-center gap-2">
+                                <svg class="animate-spin w-4 h-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                </svg>
+                                Cancelling…
+                            </span>
+                        </button>
+                    </footer>
+                </div>
+            </div>
+        </div>
+    @endif
 </div>

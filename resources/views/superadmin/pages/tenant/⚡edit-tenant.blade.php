@@ -198,10 +198,12 @@ class extends Component {
             $this->province      = $info['province'] ?? '';
         }
 
-        $adminUser = User::where('tenant_id', $tenant->id)
-            ->whereHas('roles', fn ($q) => $q->where('name', 'admin'))
-            ->select('id', 'name', 'email', 'tenant_id', 'avatar')
-            ->first();
+        // Uses Tenant::adminUser() — a direct pivot query that is
+        // immune to Spatie's ambient team context. The previous
+        // User::where(...)->whereHas('roles', ...) form filtered by
+        // getPermissionsTeamId(), which is null in a Livewire test
+        // and never matches a pivot row.
+        $adminUser = $tenant->adminUser();
 
         if ($adminUser) {
             $this->adminUserRecordId = $adminUser->id;
@@ -807,11 +809,11 @@ class extends Component {
                 return $existing;
             }
 
+            // Tenant::adminUser() — direct pivot query, immune to the
+            // ambient Spatie team context.
             $admin = $this->adminUserRecordId
                 ? User::find($this->adminUserRecordId)
-                : User::where('tenant_id', $this->tenantRecord->id)
-                    ->whereHas('roles', fn ($q) => $q->where('name', 'admin'))
-                    ->first();
+                : $this->tenantRecord->adminUser();
 
             return BusinessApplication::create([
                 'user_id'           => $admin?->id ?? Auth::id(),

@@ -17,6 +17,8 @@ use Illuminate\Support\Carbon;
  * @property string|null $description
  * @property int $capacity
  * @property int $quantity
+ * @property int $min_stay_days
+ * @property int|null $max_stay_days
  * @property string $price
  * @property string $status
  * @property bool $is_active
@@ -28,6 +30,8 @@ class Property extends Model
     use HasFactory;
     use BelongsToTenant;
 
+    public const DEFAULT_MIN_STAY_DAYS = 1;
+
     protected $fillable = [
         'tenant_id',
         'property_type_id',
@@ -36,6 +40,8 @@ class Property extends Model
         'price',
         'capacity',
         'quantity',
+        'min_stay_days',
+        'max_stay_days',
         'status',
         'is_active',
     ];
@@ -43,10 +49,12 @@ class Property extends Model
     protected function casts(): array
     {
         return [
-            'price'     => 'decimal:2',
-            'capacity'  => 'integer',
-            'quantity'  => 'integer',
-            'is_active' => 'boolean',
+            'price'         => 'decimal:2',
+            'capacity'      => 'integer',
+            'quantity'      => 'integer',
+            'min_stay_days' => 'integer',
+            'max_stay_days' => 'integer',
+            'is_active'     => 'boolean',
         ];
     }
 
@@ -72,5 +80,46 @@ class Property extends Model
     public function bookingItems(): HasMany
     {
         return $this->hasMany(BookingItem::class);
+    }
+
+    // ── Duration limits ─────────────────────────────────────
+
+    public function hasDurationLimits(): bool
+    {
+        return $this->max_stay_days !== null
+            || $this->effectiveMinStayDays() > self::DEFAULT_MIN_STAY_DAYS;
+    }
+
+    public function effectiveMinStayDays(): int
+    {
+        return max(
+            self::DEFAULT_MIN_STAY_DAYS,
+            (int) ($this->min_stay_days ?? self::DEFAULT_MIN_STAY_DAYS),
+        );
+    }
+
+    public function effectiveMaxStayDays(): ?int
+    {
+        if ($this->max_stay_days === null) {
+            return null;
+        }
+
+        // Guard against a misconfigured row where the admin set max < min.
+        return max($this->effectiveMinStayDays(), (int) $this->max_stay_days);
+    }
+
+    public function isDurationWithinLimits(int $days): bool
+    {
+        if ($days < $this->effectiveMinStayDays()) {
+            return false;
+        }
+
+        $max = $this->effectiveMaxStayDays();
+
+        if ($max !== null && $days > $max) {
+            return false;
+        }
+
+        return true;
     }
 }

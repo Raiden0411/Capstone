@@ -67,7 +67,9 @@ class extends Component
             'name'              => ['required', 'string', 'min:3', 'max:255'],
             'email'             => ['required', 'string', 'email', 'max:255', Rule::unique('users', 'email')],
             'password'          => ['required', 'string', 'min:8', 'confirmed'],
-            'phone'             => ['nullable', 'string', 'max:20', 'regex:/^(09|\+639)\d{9}$/'],
+            // Phone is REQUIRED — every booking sends this value to
+            // PayMongo. See ⚡create-booking.blade.php.
+            'phone'             => ['required', 'string', 'max:20', 'regex:/^(09|\+639)\d{9}$/'],
             'avatar'            => ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
             'privacy_accepted'  => ['accepted'],
         ];
@@ -76,6 +78,7 @@ class extends Component
     protected function messages(): array
     {
         return [
+            'phone.required'             => 'A mobile number is required.',
             'phone.regex'                => 'Use a valid PH number: 09xxxxxxxxx or +639xxxxxxxxx.',
             'account_type.required'      => 'Please choose how you want to use the platform.',
             'account_type.in'            => 'Please choose a valid account type.',
@@ -145,7 +148,7 @@ class extends Component
                     'name'                   => trim($this->name),
                     'email'                  => $email,
                     'password'               => Hash::make($this->password),
-                    'phone'                  => $this->phone !== '' ? $this->phone : null,
+                    'phone'                  => trim($this->phone),
                     'avatar'                 => $storedAvatarPath,
                     'tenant_id'              => null,
                     'is_active'              => true,
@@ -258,7 +261,7 @@ class extends Component
     {
         $path = SiteSetting::getValue('site_logo');
 
-        return $path ? asset('storage/' . $path) : null;
+        return $path ? '/storage/' . ltrim($path, '/') : null;
     }
 
     #[Computed]
@@ -267,8 +270,8 @@ class extends Component
         $path = SiteSetting::getValue('hero_background_image');
 
         return $path
-            ? asset('storage/' . $path)
-            : 'https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1600&q=80';
+            ? '/storage/' . ltrim($path, '/')
+            : 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1600&q=80';
     }
 
     /**
@@ -291,7 +294,7 @@ class extends Component
                 'name' => (string) $tenant->name,
                 'slug' => (string) $tenant->slug,
                 'type' => (string) ($tenant->typeOfTenant?->type ?? 'Destination'),
-                'logo' => asset('storage/' . $tenant->logo),
+                'logo' => '/storage/' . ltrim((string) $tenant->logo, '/'),
                 'url'  => route('business.offerings', $tenant->slug),
             ])
             ->all();
@@ -341,7 +344,6 @@ class extends Component
 
 <div class="min-h-screen flex flex-col md:flex-row bg-white dark:bg-gray-900">
 
-    {{-- ═══════════════ HERO ═══════════════ --}}
     <div class="relative w-full md:w-1/2 min-h-[200px] sm:min-h-[260px] md:min-h-screen md:h-screen md:sticky md:top-0 overflow-hidden">
 
         <img src="{{ $this->heroUrl }}"
@@ -387,9 +389,9 @@ class extends Component
                 @if(!empty($this->featuredTenants))
                     <div class="hidden md:block mt-6 md:mt-7">
                         <p class="mb-2.5 inline-flex items-center gap-2
-                                  text-[10px] font-bold uppercase tracking-[0.22em]
-                                  text-amber-300/90">
-                            <span class="h-px w-4 bg-amber-400/70" aria-hidden="true"></span>
+                                  text-xs font-semibold uppercase tracking-[0.18em]
+                                  text-amber-400">
+                            <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
                             Featured Spots
                         </p>
 
@@ -428,16 +430,16 @@ class extends Component
         </div>
     </div>
 
-    {{-- ═══════════════ FORM ═══════════════ --}}
     <div class="auth-form-panel flex items-start justify-center w-full min-w-0
                 px-5 sm:px-8 md:px-10 lg:px-16 py-10 md:py-12
                 bg-white dark:bg-gray-900 md:w-1/2">
         <div class="w-full max-w-md min-w-0">
 
             <a href="{{ route('home') }}" wire:navigate
-               class="inline-flex items-center gap-1.5 text-sm font-medium
+               class="relative inline-flex items-center gap-1.5 text-sm font-medium
                       text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400
                       transition-colors mb-8 -mx-1 px-1 py-1 rounded
+                      before:absolute before:content-[''] before:-inset-2 before:rounded
                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                 <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -452,9 +454,9 @@ class extends Component
                          alt="{{ $this->siteName }} logo"
                          width="40" height="40"
                          decoding="async"
-                         class="w-10 h-10 object-contain rounded-lg shrink-0">
+                         class="w-10 h-10 rounded-full object-contain ring-1 ring-black/5 shadow-sm dark:ring-white/10 shrink-0">
                 @else
-                    <div class="w-10 h-10 rounded-xl bg-primary-600 flex items-center justify-center text-white shrink-0 font-bold text-lg"
+                    <div class="w-10 h-10 rounded-full bg-primary-600 flex items-center justify-center text-white shrink-0 font-bold text-lg ring-1 ring-black/5 shadow-sm dark:ring-white/10"
                          aria-hidden="true">
                         {{ strtoupper(substr($this->siteName, 0, 1)) }}
                     </div>
@@ -465,8 +467,8 @@ class extends Component
             </div>
 
             <p class="mb-2 inline-flex items-center gap-2
-                      text-[10px] font-bold uppercase tracking-[0.22em]
-                      text-amber-600 dark:text-amber-400">
+                      text-xs font-semibold uppercase tracking-[0.18em]
+                      text-primary-600 dark:text-primary-400">
                 <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
                 Get started
             </p>
@@ -546,7 +548,6 @@ class extends Component
                       },
                   }">
 
-                {{-- ══ Account type ══ --}}
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                         I'm signing up as <span class="text-rose-500" aria-hidden="true">*</span>
@@ -611,7 +612,6 @@ class extends Component
                     @endif
                 </div>
 
-                {{-- ══ Full Name ══ --}}
                 <div>
                     <label for="name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         Full Name <span class="text-rose-500" aria-hidden="true">*</span>
@@ -629,7 +629,6 @@ class extends Component
                     @error('name') <p class="mt-1.5 text-xs text-rose-500 break-words">{{ $message }}</p> @enderror
                 </div>
 
-                {{-- ══ Profile Photo ══ --}}
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
                         Profile Photo
@@ -639,7 +638,7 @@ class extends Component
                     <div class="mt-2 flex items-center gap-4">
                         <div class="shrink-0 relative">
                             @if($avatar_path)
-                                <img src="{{ asset('storage/' . $avatar_path) }}"
+                                <img src="{{ '/storage/' . ltrim($avatar_path, '/') }}"
                                      alt="Profile preview"
                                      width="64" height="64" decoding="async"
                                      class="w-16 h-16 rounded-full object-cover border-2 border-primary-200 dark:border-primary-500/40 shadow-sm">
@@ -701,7 +700,6 @@ class extends Component
                     @error('avatar') <p class="mt-2 text-xs text-rose-500 break-words">{{ $message }}</p> @enderror
                 </div>
 
-                {{-- ══ Email ══ --}}
                 <div>
                     <label for="email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         Email Address <span class="text-rose-500" aria-hidden="true">*</span>
@@ -720,10 +718,9 @@ class extends Component
                     @error('email') <p class="mt-1.5 text-xs text-rose-500 break-words">{{ $message }}</p> @enderror
                 </div>
 
-                {{-- ══ Phone ══ --}}
                 <div>
                     <label for="phone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                        Phone <span class="text-[10px] font-normal text-gray-400">(optional)</span>
+                        Mobile Number <span class="text-rose-500" aria-hidden="true">*</span>
                     </label>
                     <div class="relative">
                         <svg xmlns="http://www.w3.org/2000/svg"
@@ -731,14 +728,28 @@ class extends Component
                              fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.8" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 1.5H8.25A2.25 2.25 0 006 3.75v16.5a2.25 2.25 0 002.25 2.25h7.5A2.25 2.25 0 0018 20.25V3.75a2.25 2.25 0 00-2.25-2.25H13.5m-3 0V3h3V1.5m-3 0h3m-3 18.75h3"/>
                         </svg>
-                        <input id="phone" type="tel" inputmode="numeric" wire:model="phone" autocomplete="tel"
-                               placeholder="09xxxxxxxxx" maxlength="13"
+                        <input id="phone"
+                               type="tel"
+                               inputmode="numeric"
+                               wire:model="phone"
+                               autocomplete="tel"
+                               placeholder="09xxxxxxxxx"
+                               maxlength="13"
+                               x-on:input="
+                                   const cleaned = $event.target.value.replace(/[^0-9+]/g, '');
+                                   if (cleaned !== $event.target.value) {
+                                       $event.target.value = cleaned;
+                                       $event.target.dispatchEvent(new Event('input', { bubbles: true }));
+                                   }
+                               "
                                class="input pl-10 @error('phone') border-rose-400/60 @enderror">
                     </div>
+                    <p class="mt-1.5 text-[10px] text-gray-400 dark:text-gray-500 leading-relaxed">
+                        Required — sent to PayMongo with every booking.
+                    </p>
                     @error('phone') <p class="mt-1.5 text-xs text-rose-500 break-words">{{ $message }}</p> @enderror
                 </div>
 
-                {{-- ══ Password ══ --}}
                 <div>
                     <label for="password" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         Password <span class="text-rose-500" aria-hidden="true">*</span>
@@ -813,7 +824,6 @@ class extends Component
                     @error('password') <p class="mt-1.5 text-xs text-rose-500 break-words">{{ $message }}</p> @enderror
                 </div>
 
-                {{-- ══ Confirm Password ══ --}}
                 <div>
                     <label for="password_confirmation" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         Confirm Password <span class="text-rose-500" aria-hidden="true">*</span>
@@ -890,7 +900,6 @@ class extends Component
                     @error('password_confirmation') <p class="mt-1.5 text-xs text-rose-500 break-words">{{ $message }}</p> @enderror
                 </div>
 
-                {{-- ══ GDPR consent ══ --}}
                 <div class="rounded-xl border-2 {{ $errors->has('privacy_accepted') ? 'border-rose-300 dark:border-rose-500/40 bg-rose-50/50 dark:bg-rose-500/[0.04]' : 'border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-800/40' }} p-4 transition-colors">
                     <label for="privacy_accepted" class="flex items-start gap-3 cursor-pointer
                                                         [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
@@ -918,7 +927,6 @@ class extends Component
                     @enderror
                 </div>
 
-                {{-- ══ Submit ══ --}}
                 <button type="submit"
                         wire:loading.attr="disabled"
                         wire:target="register"

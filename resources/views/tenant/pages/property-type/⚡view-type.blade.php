@@ -22,7 +22,23 @@ class extends Component {
 
     public function mount(): void
     {
-        abort_unless(Auth::check() && Auth::user()->tenant_id, 403);
+        $this->authorizeViewTypes();
+    }
+
+    public function hydrate(): void
+    {
+        $this->authorizeViewTypes();
+    }
+
+    protected function authorizeViewTypes(): void
+    {
+        abort_unless(
+            Auth::user()?->tenant_id,
+            403,
+            'No business is linked to your account.'
+        );
+
+        $this->requirePermission('view properties');
     }
 
     public function updatingSearch(): void
@@ -148,16 +164,18 @@ class extends Component {
                     Global standards plus your custom types.
                 </p>
             </div>
-            <a href="{{ route('tenant.property-types.create') }}" wire:navigate
-               class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
-                      transition-all duration-200 active:scale-95
-                      [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
-                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                </svg>
-                <span>Add Custom Type</span>
-            </a>
+            @if($this->tenantCan('manage properties'))
+                <a href="{{ route('tenant.property-types.create') }}" wire:navigate
+                   class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                          transition-all duration-200 active:scale-95
+                          [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                    <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                    </svg>
+                    <span>Add Custom Type</span>
+                </a>
+            @endif
         </div>
 
         @if(session()->has('success'))
@@ -211,9 +229,9 @@ class extends Component {
         <div class="grid grid-cols-3 gap-3">
             @php
                 $kpis = [
-                    ['label' => 'Available Types',  'value' => $s['total'],  'dot' => 'bg-primary-500'],
-                    ['label' => 'Global Standards', 'value' => $s['global'], 'dot' => 'bg-amber-500'],
-                    ['label' => 'Your Custom Types','value' => $s['custom'], 'dot' => 'bg-primary-600'],
+                    ['label' => 'Available Types',   'value' => $s['total'],  'dot' => 'bg-primary-500'],
+                    ['label' => 'Global Standards',  'value' => $s['global'], 'dot' => 'bg-amber-500'],
+                    ['label' => 'Your Custom Types', 'value' => $s['custom'], 'dot' => 'bg-primary-600'],
                 ];
             @endphp
             @foreach($kpis as $kpi)
@@ -295,16 +313,18 @@ class extends Component {
                                 Clear Search
                             </button>
                         @endif
-                        <a href="{{ route('tenant.property-types.create') }}" wire:navigate
-                           class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
-                                  transition-all duration-200 active:scale-95
-                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
-                            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                            </svg>
-                            <span>Add Custom Type</span>
-                        </a>
+                        @if($this->tenantCan('manage properties'))
+                            <a href="{{ route('tenant.property-types.create') }}" wire:navigate
+                               class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
+                                      transition-all duration-200 active:scale-95
+                                      [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                </svg>
+                                <span>Add Custom Type</span>
+                            </a>
+                        @endif
                     </div>
                 </div>
             </div>
@@ -313,7 +333,10 @@ class extends Component {
                  wire:target="search,delete,gotoPage,nextPage,previousPage"
                  class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 transition-opacity duration-200">
                 @foreach($this->types as $type)
-                    @php $isGlobal = is_null($type->tenant_id); @endphp
+                    @php
+                        $isGlobal = is_null($type->tenant_id);
+                        $canManage = $this->tenantCan('manage properties');
+                    @endphp
 
                     <article wire:key="ptype-{{ $type->id }}"
                              class="group relative bg-white/70 dark:bg-gray-800/40 backdrop-blur-xl
@@ -357,7 +380,7 @@ class extends Component {
                         </div>
 
                         <div class="mt-auto px-3 py-2.5 border-t border-gray-100/80 dark:border-white/[0.04] flex items-center justify-end gap-1">
-                            @if(!$isGlobal)
+                            @if(!$isGlobal && $canManage)
                                 <a href="{{ route('tenant.property-types.edit', $type->id) }}" wire:navigate
                                    aria-label="Edit {{ $type->name }}"
                                    title="Edit"
@@ -370,7 +393,6 @@ class extends Component {
                                     </svg>
                                 </a>
 
-                                {{-- Delete — two-click arm replaces confirm() --}}
                                 <button type="button"
                                         x-data="{
                                             armed: false,
@@ -399,8 +421,10 @@ class extends Component {
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                     </svg>
                                 </button>
-                            @else
+                            @elseif($isGlobal)
                                 <span class="text-[10px] text-gray-400 dark:text-gray-500 italic uppercase tracking-wider font-semibold">Read-only</span>
+                            @else
+                                <span class="text-[10px] text-gray-400 dark:text-gray-500 italic uppercase tracking-wider font-semibold">View only</span>
                             @endif
                         </div>
                     </article>

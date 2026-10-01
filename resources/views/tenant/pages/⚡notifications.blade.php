@@ -102,6 +102,39 @@ class extends Component
         unset($this->unreadCount, $this->notifications);
     }
 
+    /**
+     * Mark as read and navigate in a single server round-trip.
+     * Splitting mark-read and navigation across two parallel requests
+     * (wire:click + wire:navigate) races — the update lands on a DOM
+     * the SPA fetch is already replacing, and the badge stays stale.
+     */
+    public function openNotification(int $notificationId): void
+    {
+        /** @var User|null $user */
+        $user = Auth::user();
+        if (! $user) {
+            return;
+        }
+
+        $notification = UserNotification::query()
+            ->forUser($user->id)
+            ->forScope(self::SCOPE)
+            ->whereKey($notificationId)
+            ->first();
+
+        if (! $notification) {
+            return;
+        }
+
+        $notification->markRead();
+        unset($this->unreadCount, $this->notifications);
+
+        $url = $notification->resolvedUrl($user);
+        if ($url) {
+            $this->redirect($url, navigate: true);
+        }
+    }
+
     public function markAllRead(): void
     {
         /** @var User|null $user */
@@ -277,8 +310,7 @@ class extends Component
                         <div class="flex items-center gap-2 shrink-0">
                             @if($item->url)
                                 <a href="{{ $item->url }}"
-                                   wire:navigate
-                                   wire:click="markRead({{ $item->id }})"
+                                   wire:click.prevent="openNotification({{ $item->id }})"
                                    class="inline-flex items-center justify-center h-11 sm:h-9 px-3 rounded-lg
                                           border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200
                                           text-xs font-semibold

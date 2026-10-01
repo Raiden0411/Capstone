@@ -50,27 +50,48 @@ class SecurityHeaders
         if (! $response->headers->has('Content-Security-Policy-Report-Only')) {
             $response->headers->set(
                 'Content-Security-Policy-Report-Only',
-                $this->reportOnlyCsp()
+                $this->reportOnlyCsp($request)
             );
         }
 
         return $response;
     }
 
-    private function reportOnlyCsp(): string
+    private function reportOnlyCsp(Request $request): string
     {
+        $script  = "'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://unpkg.com https://js.paymongo.com";
+        $style   = "'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com https://fonts.googleapis.com";
+        $connect = "'self' https://api.paymongo.com https://router.project-osrm.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://nominatim.openstreetmap.org https://server.arcgisonline.com wss:";
+
+        // Vite dev server + HMR origins are only meaningful when the browser
+        // is talking to a loopback host. Gating on APP_ENV is wrong — this
+        // app runs with APP_ENV=production on Laragon. Gate on request host.
+        //
+        // IPv6 loopback ([::1]) is deliberately excluded: CSP's host-source
+        // grammar does not accept IPv6 literals, so `http://[::1]:5173` is
+        // dropped by the browser and logs a violation for every directive
+        // it appears in. localhost + 127.0.0.1 cover every practical path.
+        if ($this->isLocalRequest($request)) {
+            $devHttp = 'http://localhost:5173 http://127.0.0.1:5173';
+            $devWs   = 'ws://localhost:5173 ws://127.0.0.1:5173';
+
+            $script  .= ' ' . $devHttp;
+            $style   .= ' ' . $devHttp;
+            $connect .= ' ' . $devHttp . ' ' . $devWs;
+        }
+
         $directives = [
             "default-src 'self'",
             // jsdelivr + unpkg: MapLibre CDN fallback. js.paymongo.com: PayMongo.js.
             // 'unsafe-inline' + 'unsafe-eval': Livewire + Alpine require both.
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://unpkg.com https://js.paymongo.com",
-            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com https://fonts.googleapis.com",
+            "script-src {$script}",
+            "style-src {$style}",
             "font-src 'self' data: https://fonts.gstatic.com",
             "img-src 'self' data: blob: https:",
             // OSRM: routes. CARTO + OSM: tiles. PayMongo: API. wss: Livewire (if broadcasting).
             // CSP wildcards do NOT match the apex — both the apex and the
             // wildcard must be listed for cartocdn.com and openstreetmap.org.
-            "connect-src 'self' https://api.paymongo.com https://router.project-osrm.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://nominatim.openstreetmap.org https://server.arcgisonline.com wss:",
+            "connect-src {$connect}",
             "worker-src 'self' blob:",
             "frame-src 'self' https://js.paymongo.com https://checkout.paymongo.com",
             "frame-ancestors 'self'",
@@ -80,5 +101,10 @@ class SecurityHeaders
         ];
 
         return implode('; ', $directives);
+    }
+
+    private function isLocalRequest(Request $request): bool
+    {
+        return in_array($request->getHost(), ['localhost', '127.0.0.1', '::1', '[::1]'], true);
     }
 }

@@ -3,16 +3,24 @@
 namespace App\Models;
 
 use App\Mail\PasswordResetLink;
-use Illuminate\Foundation\Auth\User as Authenticatable;
-use Illuminate\Notifications\Notifiable;
-use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\Mail;
-use Spatie\Permission\Traits\HasRoles;
-use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
+use Spatie\Permission\Contracts\Role as RoleContract;
+use Spatie\Permission\Models\Role as SpatieRole;
+use Spatie\Permission\Traits\HasRoles;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+
+use function getPermissionsTeamId;
+use function setPermissionsTeamId;
 
 /**
  * @property int $id
@@ -30,15 +38,18 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property string|null $remember_token
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
- * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\BusinessMembership> $businessMemberships
+ * @property-read EloquentCollection<int, BusinessMembership> $businessMemberships
  * @property-read int|null $business_memberships_count
- * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\Tenant> $businesses
+ * @property-read EloquentCollection<int, Tenant> $businesses
  * @property-read int|null $businesses_count
  */
 class User extends Authenticatable
 {
     use HasFactory;
-    use Notifiable, HasRoles;
+    use Notifiable;
+    use HasRoles {
+        roles as protected rolesBase;
+    }
 
     protected $fillable = [
         'tenant_id',
@@ -70,6 +81,328 @@ class User extends Authenticatable
 
     public const MODE_TOURIST  = 'tourist';
     public const MODE_BUSINESS = 'business';
+
+    // ═════════════════════════════════════════════════════════
+    //  Team-scoped role accessors
+    //
+    //  ── WHY DIRECT DB WRITES FOR MUTATIONS ──
+    //
+    //  Spatie's assignRole()/syncRoles() call $this->hasRole(...)
+    //  before inserting, to avoid duplicates. Our hasRole override
+    //  looks at [tenant_id, 0] for backward-compat with super-admin
+    //  pivots. That combination silently breaks writes:
+    //
+    //    1. Seeder writes tourist+admin at team 0 (tenant_id null).
+    //    2. Later, syncRoles(['tourist','admin']) runs at team 1
+    //       (tenant_id now set). Spatie's guard calls hasRole →
+    //       our override finds the team-0 pivot → returns true →
+    //       Spatie skips the team-1 insert.
+    //    3. Same for assignRoleAtTeam(7, 'admin') after a second
+    //       business is approved — the pivot never lands at team 7,
+    //       and the owner is locked out of /admin/* on the new
+    //       business.
+    //
+    //  The mutators below therefore bypass Spatie entirely and
+    //  write directly to model_has_roles. Reads (hasRole/hasAnyRole/
+    //  roles()) still flow through Spatie's relation, wrapped with
+    //  a pinned team context.
+    //
+    //  ── SUPER-ADMIN SPECIFICALLY ──
+    //
+    //  hasRole('super-admin') allows a fallback at team_id = 0, so
+    //  the platform-level pivot is visible from any tenant context.
+    //  No other role gets that fallback — that would be a privilege
+    //  leak.
+    // ═════════════════════════════════════════════════════════
+
+    public function hasRole($roles, ?string $guard = null): bool
+    {
+        $names = $this->normalizeRoleNames($roles);
+
+        return $this->roleNameExists($names, $guard);
+    }
+
+    public function hasAnyRole(...$roles): bool
+    {
+        $names = $this->normalizeRoleNames($roles);
+
+        return $this->roleNameExists($names, null);
+    }
+
+    /**
+     * Assign one or more roles to this user at their active team.
+     */
+    public function assignRole(...$roles): static
+    {
+        return $this->assignRoleAtTeam($this->tenant_id ?? 0, ...$roles);
+    }
+
+    /**
+     * Assign roles at an EXPLICIT team.
+     *
+     * Used by BusinessApplicationService::approve() when approving
+     * a second (or later) business for an existing owner — the role
+     * must be written at the NEW tenant's team, not at the owner's
+     * active tenant's team.
+     */
+    public function assignRoleAtTeam(int $teamId, ...$roles): static
+    {
+        $roleIds = $this->resolveRoleIds($roles);
+
+        if (! empty($roleIds)) {
+            $rows = array_map(fn (int $rid): array => [
+                'role_id'    => $rid,
+                'model_id'   => $this->getKey(),
+                'model_type' => self::class,
+                'team_id'    => $teamId,
+            ], $roleIds);
+
+            // insertOrIgnore → INSERT IGNORE (MySQL) / INSERT OR
+            // IGNORE (SQLite) / ON CONFLICT DO NOTHING (Postgres).
+            // The PK on model_has_roles is (team_id, role_id,
+            // model_id, model_type), so re-inserts are safe no-ops.
+            DB::table('model_has_roles')->insertOrIgnore($rows);
+        }
+
+        $this->unsetRelation('roles');
+
+        return $this;
+    }
+
+    /**
+     * Remove one or more roles at the user's active team.
+     */
+    public function removeRole($role): static
+    {
+        $roleIds = $this->resolveRoleIds([$role]);
+        $teamId  = $this->tenant_id ?? 0;
+
+        if (! empty($roleIds)) {
+            DB::table('model_has_roles')
+                ->where('model_id', $this->getKey())
+                ->where('model_type', self::class)
+                ->where('team_id', $teamId)
+                ->whereIn('role_id', $roleIds)
+                ->delete();
+        }
+
+        $this->unsetRelation('roles');
+
+        return $this;
+    }
+
+    /**
+     * Replace this user's roles at their active team with the given
+     * set. Roles at other teams (including team 0) are untouched —
+     * a user may legitimately be a tourist at team 0 AND an admin
+     * at their active tenant.
+     */
+    public function syncRoles(...$roles): static
+    {
+        $roleIds = $this->resolveRoleIds($roles);
+        $teamId  = $this->tenant_id ?? 0;
+
+        DB::transaction(function () use ($teamId, $roleIds): void {
+            DB::table('model_has_roles')
+                ->where('model_id', $this->getKey())
+                ->where('model_type', self::class)
+                ->where('team_id', $teamId)
+                ->delete();
+
+            if (! empty($roleIds)) {
+                $rows = array_map(fn (int $rid): array => [
+                    'role_id'    => $rid,
+                    'model_id'   => $this->getKey(),
+                    'model_type' => self::class,
+                    'team_id'    => $teamId,
+                ], $roleIds);
+
+                DB::table('model_has_roles')->insert($rows);
+            }
+        });
+
+        $this->unsetRelation('roles');
+
+        return $this;
+    }
+
+    /**
+     * Normalize the many shapes Spatie accepts into a flat list of
+     * role NAMES.
+     *
+     * @return array<int, string>
+     */
+    private function normalizeRoleNames(mixed $roles): array
+    {
+        $flat = collect(is_array($roles) ? $roles : [$roles])
+            ->flatten()
+            ->all();
+
+        return collect($flat)
+            ->map(function (mixed $r): ?string {
+                if (is_string($r)) {
+                    if (str_contains($r, '|')) {
+                        return null; // re-expanded below
+                    }
+                    return $r;
+                }
+                if ($r instanceof RoleContract) {
+                    return $r->name;
+                }
+                if (is_int($r)) {
+                    return SpatieRole::query()->whereKey($r)->value('name');
+                }
+                return null;
+            })
+            ->flatMap(function (?string $name) use ($flat): array {
+                if ($name === null) {
+                    return collect($flat)
+                        ->filter(fn ($x) => is_string($x) && str_contains($x, '|'))
+                        ->flatMap(fn (string $x) => array_map('trim', explode('|', $x)))
+                        ->all();
+                }
+                return [$name];
+            })
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Normalize inputs into a flat list of role IDs.
+     *
+     * @param  array<int, mixed>  $roles
+     * @return array<int, int>
+     */
+    private function resolveRoleIds(array $roles): array
+    {
+        $names = $this->normalizeRoleNames($roles);
+
+        if (empty($names)) {
+            return [];
+        }
+
+        return SpatieRole::query()
+            ->whereIn('name', $names)
+            ->where('guard_name', 'web')
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Does this user hold any of $names?
+     *
+     * Checks the user's ACTIVE team. Falls back to team_id = 0 only
+     * when 'super-admin' is among the requested names, so the
+     * platform-level pivot is visible from any context. No other
+     * role gets that fallback — a stale team-0 'admin' pivot must
+     * never grant admin at an arbitrary tenant.
+     *
+     * @param  array<int, string>  $names
+     */
+    private function roleNameExists(array $names, ?string $guard): bool
+    {
+        if (empty($names) || ! $this->exists) {
+            return false;
+        }
+
+        $teamId = $this->tenant_id ?? 0;
+
+        $base = fn () => DB::table('model_has_roles')
+            ->join('roles', 'roles.id', '=', 'model_has_roles.role_id')
+            ->where('model_has_roles.model_id', $this->getKey())
+            ->where('model_has_roles.model_type', self::class)
+            ->whereIn('roles.name', $names)
+            ->when($guard !== null, fn ($q) => $q->where('roles.guard_name', $guard));
+
+        if ($base()->where('model_has_roles.team_id', $teamId)->exists()) {
+            return true;
+        }
+
+        if ($teamId !== 0 && in_array('super-admin', $names, true)) {
+            return $base()->where('model_has_roles.team_id', 0)->exists();
+        }
+
+        return false;
+    }
+
+    /**
+     * Team-agnostic permission check — the equivalent of
+     * `$this->getAllPermissions()->contains('name', $permission)`.
+     *
+     * Reads model_has_permissions and model_has_roles ⋈ role_has_permissions
+     * directly, filtered to THIS user's tenant_id. Does NOT consult
+     * getPermissionsTeamId().
+     *
+     * WHY THIS EXISTS:
+     *
+     *   Spatie's getAllPermissions() reads $this->permissions and
+     *   $this->roles, both of which bake getPermissionsTeamId() into the
+     *   query at relation-build time. In any context where the ambient
+     *   context is stale — the SetPermissionsTeamId middleware runs AFTER
+     *   StartSession so it can still be 0 in early lifecycle hooks, and
+     *   queue workers/CLI commands never run it at all — the check
+     *   returns an empty set for a legitimate user whose pivot rows exist
+     *   at the correct team_id.
+     *
+     *   A direct pivot read against $this->tenant_id is deterministic:
+     *   its result does not depend on any ambient Spatie state.
+     *
+     * Both a direct permission at the user's team AND a permission
+     * reachable through a role at the user's team count, mirroring what
+     * the Spatie check was intended to cover.
+     */
+    public function hasPermissionAtTenant(string $permission): bool
+    {
+        if (! $this->exists || ! $this->tenant_id) {
+            return false;
+        }
+
+        $teamId = $this->tenant_id;
+
+        $hasDirect = DB::table('model_has_permissions')
+            ->join('permissions', 'permissions.id', '=', 'model_has_permissions.permission_id')
+            ->where('model_has_permissions.model_id', $this->getKey())
+            ->where('model_has_permissions.model_type', self::class)
+            ->where('model_has_permissions.team_id', $teamId)
+            ->where('permissions.name', $permission)
+            ->where('permissions.guard_name', 'web')
+            ->exists();
+
+        if ($hasDirect) {
+            return true;
+        }
+
+        return DB::table('model_has_roles')
+            ->join('role_has_permissions', 'role_has_permissions.role_id', '=', 'model_has_roles.role_id')
+            ->join('permissions', 'permissions.id', '=', 'role_has_permissions.permission_id')
+            ->where('model_has_roles.model_id', $this->getKey())
+            ->where('model_has_roles.model_type', self::class)
+            ->where('model_has_roles.team_id', $teamId)
+            ->where('permissions.name', $permission)
+            ->where('permissions.guard_name', 'web')
+            ->exists();
+    }
+
+    /**
+     * Team-agnostic super-admin lookup.
+     *
+     * @param  Builder<User>  $query
+     * @return Builder<User>
+     */
+    public function scopeWhereSuperAdmin(Builder $query): Builder
+    {
+        return $query->whereIn('id', function ($sub): void {
+            $sub->select('model_has_roles.model_id')
+                ->from('model_has_roles')
+                ->join('roles', 'roles.id', '=', 'model_has_roles.role_id')
+                ->where('model_has_roles.model_type', self::class)
+                ->where('roles.name', 'super-admin');
+        });
+    }
 
     // ─── Relationships ──────────────────────────────────
 
@@ -103,28 +436,57 @@ class User extends Authenticatable
         return $this->hasMany(BusinessDocument::class);
     }
 
-    // ─── 1a: Multi-business relationships ───────────────
-
-    /**
-     * The durable (user → business) pivot rows.
-     *
-     * @return HasMany<BusinessMembership, $this>
-     */
+    /** @return HasMany<BusinessMembership, $this> */
     public function businessMemberships(): HasMany
     {
         return $this->hasMany(BusinessMembership::class);
     }
 
-    /**
-     * Businesses this user is a member of, with pivot role/is_active.
-     *
-     * @return BelongsToMany<Tenant, $this>
-     */
+    /** @return BelongsToMany<Tenant, $this> */
     public function businesses(): BelongsToMany
     {
         return $this->belongsToMany(Tenant::class, 'business_memberships')
             ->withPivot(['role', 'is_active', 'joined_at'])
             ->withTimestamps();
+    }
+
+    /**
+     * Spatie's roles() relation, overridden so the ambient team
+     * context is pinned to THIS user's tenant while the relation is
+     * being built.
+     *
+     * Related model is declared as SpatieRole (the concrete
+     * Eloquent model) rather than the RoleContract interface,
+     * because PHPStan requires the generic type parameter of
+     * BelongsToMany to be a Model subclass. The runtime binding is
+     * identical — Spatie's roles() relation is always backed by the
+     * concrete Role model.
+     *
+     * @return BelongsToMany<SpatieRole, $this>
+     */
+    public function roles(): BelongsToMany
+    {
+        return $this->runWithUserTeam(
+            fn (): BelongsToMany => $this->rolesBase()
+        );
+    }
+
+    /**
+     * Pin the ambient Spatie team context to THIS user's tenant for
+     * the duration of $callback, then restore the previous value.
+     * Used only by the roles() relation override now — mutations
+     * write directly to model_has_roles.
+     */
+    private function runWithUserTeam(callable $callback): mixed
+    {
+        $previous = getPermissionsTeamId();
+        setPermissionsTeamId($this->tenant_id ?? 0);
+
+        try {
+            return $callback();
+        } finally {
+            setPermissionsTeamId($previous);
+        }
     }
 
     // ─── Dual-role helpers ──────────────────────────────
@@ -143,15 +505,6 @@ class User extends Authenticatable
         return $application;
     }
 
-    /**
-     * True if the user is a business OWNER of any business.
-     *
-     * Preserved from pre-1a behavior: checks `tenant_id` + the global
-     * Spatie 'admin' role. Under 1b this becomes team-scoped — the
-     * check moves into a `BusinessMembership` query. For 1a the pivot
-     * is present but supplementary; the legacy check is what every
-     * existing call site expects.
-     */
     public function isBusinessOwner(): bool
     {
         return ! is_null($this->tenant_id) && $this->hasRole('admin');
@@ -172,11 +525,6 @@ class User extends Authenticatable
             ->exists();
     }
 
-    /**
-     * 1a: Existing owners MUST be allowed to apply for an additional
-     * business (Answer A). Only super-admins and users with a live
-     * pending application are blocked.
-     */
     public function canRegisterBusiness(): bool
     {
         if ($this->hasRole('super-admin')) {
@@ -186,15 +534,8 @@ class User extends Authenticatable
         return ! $this->hasPendingBusinessApplication();
     }
 
-    // ─── 1a: Multi-business helpers ─────────────────────
+    // ─── Multi-business helpers ─────────────────────────
 
-    /**
-     * Does this user own or administer the given tenant?
-     *
-     * Phase 2 (BusinessSwitcherService) calls this to validate that a
-     * requested switch target is actually a business the user is
-     * allowed to switch to. A failure here means a tampered request.
-     */
     public function ownsBusiness(int $tenantId): bool
     {
         return $this->businessMemberships()
@@ -206,30 +547,16 @@ class User extends Authenticatable
             ->exists();
     }
 
-    /**
-     * Admin-level membership of a specific tenant — same predicate as
-     * ownsBusiness() but reads more clearly at the call site when
-     * checking whether an actor may administer a target business.
-     */
     public function isAdminOf(int $tenantId): bool
     {
         return $this->ownsBusiness($tenantId);
     }
 
-    /**
-     * How many businesses this user is a member of.
-     */
     public function businessCount(): int
     {
         return $this->businessMemberships()->count();
     }
 
-    /**
-     * The pivot row for the user's currently-active business.
-     *
-     * Returns null when the user has no active business (tourist-only
-     * account, or a membership exists but none is marked active).
-     */
     public function activeMembership(): ?BusinessMembership
     {
         if (! $this->tenant_id) {

@@ -8,6 +8,7 @@ use App\Http\Controllers\Public\MapSatelliteStyleController;
 use App\Http\Controllers\Public\RegisterBusinessController;
 use App\Http\Controllers\Public\RouteController;
 use App\Http\Controllers\Tenant\BookingController as TenantBookingController;
+use App\Http\Controllers\Tenant\BusinessSwitchController;
 use App\Http\Controllers\Tenant\PaymentCallbackController;
 use App\Http\Controllers\UserModeController;
 use App\Http\Middleware\BlockIfDeletionPending;
@@ -103,9 +104,6 @@ Route::middleware(['auth'])->group(function () {
         ->name('booking.payment.cancel');
 
     // Business registration (KYB) — throttled to match /register.
-    // Both the GET (page render) and POST (draft-create) are abuse
-    // surfaces: a looped POST creates draft BusinessApplication rows
-    // that consume storage and enumerate in the superadmin queue.
     Route::livewire('/register-business', 'public::pages.register-business')
         ->middleware('throttle:auth.register.ip')
         ->name('register_business');
@@ -138,7 +136,6 @@ Route::prefix('platform')
     ->middleware([Authenticate::class, IsSuperAdmin::class])
     ->group(function () {
 
-        // Overview
         Route::livewire('/dashboard', 'superadmin::pages.dashboard.dashboard-page')
             ->name('dashboard');
 
@@ -154,15 +151,12 @@ Route::prefix('platform')
         Route::livewire('/profile', 'superadmin::pages.profile.edit-profile')
             ->name('profile');
 
-        // Users
         Route::livewire('/users', 'superadmin::pages.user.view-user')
             ->name('users.index');
 
         Route::livewire('/users/create', 'superadmin::pages.user.create-user')
             ->name('users.create');
 
-        // Export: throttled. Each hit streams the full user table to CSV —
-        // cheap for the operator, expensive if hammered.
         Route::get('/users/export', \App\Http\Controllers\Superadmin\UserExportController::class)
             ->middleware('throttle:10,1')
             ->name('users.export');
@@ -171,14 +165,12 @@ Route::prefix('platform')
             ->whereNumber('user')
             ->name('users.edit');
 
-        // Tenants
         Route::livewire('/tenants', 'superadmin::pages.tenant.view-tenant')
             ->name('tenants.index');
 
         Route::livewire('/tenants/create', 'superadmin::pages.tenant.create-tenant')
             ->name('tenants.create');
 
-        // Export: throttled.
         Route::get('/tenants/export', \App\Http\Controllers\Superadmin\TenantExportController::class)
             ->middleware('throttle:10,1')
             ->name('tenants.export');
@@ -191,14 +183,12 @@ Route::prefix('platform')
             ->whereNumber('tenant')
             ->name('tenants.edit');
 
-        // Roles
         Route::livewire('/roles', 'superadmin::pages.role.view-role')
             ->name('roles.index');
 
         Route::livewire('/roles/create', 'superadmin::pages.role.create-role')
             ->name('roles.create');
 
-        // Export: throttled.
         Route::get('/roles/export', \App\Http\Controllers\Superadmin\RoleExportController::class)
             ->middleware('throttle:10,1')
             ->name('roles.export');
@@ -207,7 +197,6 @@ Route::prefix('platform')
             ->whereNumber('role')
             ->name('roles.edit');
 
-        // Tenant types
         Route::livewire('/tenant-types', 'superadmin::pages.tenant-type.view-type')
             ->name('tenant-types.index');
 
@@ -218,21 +207,18 @@ Route::prefix('platform')
             ->whereNumber('type')
             ->name('tenant-types.edit');
 
-        // Map
         Route::livewire('/map-markers', 'superadmin::pages.map-marker.manage-map-markers')
             ->name('map-markers.index');
 
         Route::livewire('/marker-categories', 'superadmin::pages.map-marker.manage-marker-categories')
             ->name('marker-categories.index');
 
-        // Homepage / About editors
         Route::livewire('/homepage-editor', 'superadmin::pages.homepage.homepage-editor')
             ->name('homepage.editor');
 
         Route::livewire('/about-editor', 'superadmin::pages.homepage.about-editor')
             ->name('about.editor');
 
-        // Events
         Route::livewire('/events', 'superadmin::pages.event.view-event')
             ->name('events.index');
 
@@ -243,7 +229,6 @@ Route::prefix('platform')
             ->whereNumber('event')
             ->name('events.edit');
 
-        // KYB review queue
         Route::livewire('/business-applications', 'superadmin::pages.business-application.view-business-application')
             ->name('business-applications.index');
 
@@ -251,13 +236,9 @@ Route::prefix('platform')
             ->whereNumber('application')
             ->name('business-applications.show');
 
-        // Account deletion review queue
         Route::livewire('/deletion-requests', 'superadmin::pages.deletion-request.view-deletion-requests')
             ->name('deletion-requests.index');
 
-        // NOTE: parameter name is `{request}` and shadows Laravel's $request.
-        // Do NOT rename without also updating the SFC's mount() argument —
-        // Livewire binds route params to mount() arguments by NAME.
         Route::livewire('/deletion-requests/{request}', 'superadmin::pages.deletion-request.show-deletion-request')
             ->whereNumber('request')
             ->name('deletion-requests.show');
@@ -274,7 +255,6 @@ Route::prefix('platform')
             ->whereNumber('deletionRequest')
             ->name('deletion-requests.reject');
 
-        // Renewal review queue
         Route::livewire('/renewals', 'superadmin::pages.renewal.view-renewals')
             ->name('renewals.index');
 
@@ -435,14 +415,11 @@ Route::prefix('admin')
                 ->name('events.edit');
         });
 
-        // Admin-only: settings, gallery, documents, roles
+        // ── Admin-only: settings, gallery, documents, roles, businesses ──
         Route::middleware('role:admin|super-admin')->group(function () {
             Route::livewire('/settings', 'tenant::pages.settings.business-profile')
                 ->name('settings.index');
 
-            // Photo Gallery — manage the images shown on the public
-            // offerings page. Admin-only because a public-facing content
-            // surface, not a per-employee operation.
             Route::livewire('/gallery', 'tenant::pages.settings.gallery-manager')
                 ->name('gallery.index');
 
@@ -462,5 +439,21 @@ Route::prefix('admin')
             Route::livewire('/roles/{index}/edit', 'tenant::pages.role.edit-index')
                 ->whereNumber('index')
                 ->name('roles.edit');
+
+            // ── Business switcher ─────────────────────────
+            //
+            // GET  /admin/businesses           → full-page SFC
+            // POST /admin/switch-business/{n}  → header dropdown's
+            //                                     plain HTML form target
+            //
+            // Both go through the same BusinessSwitcherService, so
+            // ownership validation and the pivot-flag flip are
+            // guaranteed identical across surfaces.
+            Route::livewire('/businesses', 'tenant::pages.business.business-switcher')
+                ->name('businesses.index');
+
+            Route::post('/switch-business/{tenant}', BusinessSwitchController::class)
+                ->whereNumber('tenant')
+                ->name('businesses.switch');
         });
     });

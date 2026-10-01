@@ -39,6 +39,43 @@ it('mounts booking component and initializes customer data', function () {
         ->assertSet('totalDays', 1);
 });
 
+it('counts inclusive calendar days for the booking duration', function () {
+    // Pins the day-count semantics from the create-booking SFC:
+    //   same day → 1 day, +1 day → 2 days, +2 days → 3 days.
+    // Guards against a silent revert to hotel-night counting.
+    $tenant = Tenant::factory()->create();
+    $propertyType = PropertyType::factory()->create(['tenant_id' => null]);
+    $property = Property::factory()->create([
+        'tenant_id' => $tenant->id,
+        'property_type_id' => $propertyType->id,
+        'price' => 1000,
+    ]);
+
+    /** @var User $user */
+    $user = User::factory()->create();
+    $this->actingAs($user);
+
+    $base = now()->addDays(5)->format('Y-m-d');
+
+    // Same day → 1 inclusive day
+    Livewire::test('public::pages.create-booking', ['publicproperty' => $property->id])
+        ->call('setDates', $base, $base)
+        ->assertSet('totalDays', 1)
+        ->assertSet('totalAmount', 1000);
+
+    // +1 day → 2 inclusive days
+    Livewire::test('public::pages.create-booking', ['publicproperty' => $property->id])
+        ->call('setDates', $base, now()->addDays(6)->format('Y-m-d'))
+        ->assertSet('totalDays', 2)
+        ->assertSet('totalAmount', 2000);
+
+    // +2 days → 3 inclusive days
+    Livewire::test('public::pages.create-booking', ['publicproperty' => $property->id])
+        ->call('setDates', $base, now()->addDays(7)->format('Y-m-d'))
+        ->assertSet('totalDays', 3)
+        ->assertSet('totalAmount', 3000);
+});
+
 it('calculates total amount and service charges', function () {
     $tenant = Tenant::factory()->create();
     $propertyType = PropertyType::factory()->create(['tenant_id' => null]);
@@ -59,14 +96,18 @@ it('calculates total amount and service charges', function () {
     $user = User::factory()->create();
     $this->actingAs($user);
 
+    // +5 → +7 = 3 inclusive days
+    // Total: 1000 × 3 + 250 = 3250
+    // Reservation fee (20%):   650
+    // Balance on arrival:     2600
     Livewire::test('public::pages.create-booking', ['publicproperty' => $property->id])
         ->set('check_in', now()->addDays(5)->format('Y-m-d'))
         ->set('check_out', now()->addDays(7)->format('Y-m-d'))
         ->call('addService', $service->id)
-        ->assertSet('totalDays', 2)
-        ->assertSet('totalAmount', 2250)
-        ->assertSet('reservationFee', 450)
-        ->assertSet('balanceOnArrival', 1800);
+        ->assertSet('totalDays', 3)
+        ->assertSet('totalAmount', 3250)
+        ->assertSet('reservationFee', 650)
+        ->assertSet('balanceOnArrival', 2600);
 });
 
 it('submits booking and creates payment record', function () {
@@ -103,6 +144,8 @@ it('submits booking and creates payment record', function () {
             ]);
     });
 
+    // +10 → +12 = 3 inclusive days
+    // Total: 1000 × 3 + 500 = 3500
     Livewire::test('public::pages.create-booking', ['publicproperty' => $property->id])
         ->set('check_in', now()->addDays(10)->format('Y-m-d'))
         ->set('check_out', now()->addDays(12)->format('Y-m-d'))
@@ -115,7 +158,7 @@ it('submits booking and creates payment record', function () {
         'user_id' => $user->id,
         'status' => 'pending',
         'booking_type' => 'full',
-        'total_amount' => 2500,
+        'total_amount' => 3500,
     ]);
 
     /** @var Booking|null $booking */
@@ -133,6 +176,6 @@ it('submits booking and creates payment record', function () {
         'payment_status' => 'pending',
         'payment_type' => 'full',
         'paymongo_session_id' => 'sess_test123',
-        'amount' => 2500,
+        'amount' => 3500,
     ]);
 });

@@ -112,7 +112,7 @@ class UserNotification extends Model
         }
 
         if (str_starts_with($type, 'booking')) {
-            return ($user && $user->can('view bookings'))
+            return ($user && $user->hasPermissionAtTenant('view bookings'))
                 ? route('tenant.bookings.index')
                 : $fallback;
         }
@@ -126,13 +126,13 @@ class UserNotification extends Model
         }
 
         if (str_starts_with($type, 'payment')) {
-            return ($user && $user->can('view payments'))
+            return ($user && $user->hasPermissionAtTenant('view payments'))
                 ? route('tenant.payments.index')
                 : $fallback;
         }
 
         if (str_starts_with($type, 'event')) {
-            return ($user && $user->can('view events'))
+            return ($user && $user->hasPermissionAtTenant('view events'))
                 ? route('tenant.events.index')
                 : $fallback;
         }

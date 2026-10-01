@@ -19,7 +19,8 @@ class TenantObserver
     public function created(Tenant $tenant): void
     {
         DB::afterCommit(function () use ($tenant): void {
-            $superadmins = User::role('super-admin')->get();
+            // Team-agnostic — see User::scopeWhereSuperAdmin.
+            $superadmins = User::whereSuperAdmin()->get();
 
             $this->userNotifications->notifyMany($superadmins, [
                 'scope'   => UserNotification::SCOPE_PLATFORM,

@@ -79,7 +79,9 @@ class extends Component {
     {
         return Employee::withoutGlobalScope(TenantScope::class)
             ->where('tenant_id', Auth::user()->tenant_id)
-            ->with(['user.roles'])
+            ->with([
+                'user' => fn ($q) => $q->select('id', 'name', 'email'),
+            ])
             ->when($this->search, function ($q) {
                 $q->where(function ($sq) {
                     $sq->where('name', 'like', '%'.$this->search.'%')
@@ -96,6 +98,23 @@ class extends Component {
             ->orderByRaw("CASE WHEN LOWER(role) = 'manager' THEN 0 ELSE 1 END")
             ->orderBy('name')
             ->paginate(12);
+    }
+
+    /**
+     * Role names for the current page of employees, keyed by user_id.
+     *
+     * Resolved via Employee::roleNamesBatch() — a direct pivot read — NOT
+     * via the eager-loaded user.roles relation. The relation pins Spatie's
+     * ambient team at build time, and Eloquent's eager loader builds it on
+     * a fresh User instance (tenant_id = null) → team = 0 → zero pivots
+     * match → every employee reads as "no roles".
+     *
+     * @return array<int, array<int, string>>
+     */
+    #[Computed]
+    public function roleNamesByUserId(): array
+    {
+        return Employee::roleNamesBatch($this->employees->getCollection());
     }
 
     #[Computed]
@@ -370,6 +389,9 @@ class extends Component {
                     @php
                         $isManager  = strtolower($employee->role ?? '') === 'manager';
                         $canManage  = $this->tenantCan('manage employees');
+                        $roleNames  = $employee->user_id
+                            ? ($this->roleNamesByUserId[$employee->user_id] ?? [])
+                            : [];
                     @endphp
                     <article wire:key="employee-{{ $employee->id }}"
                              class="group bg-white/70 dark:bg-gray-800/40 backdrop-blur-xl
@@ -438,13 +460,13 @@ class extends Component {
                                         <span class="truncate">{{ $employee->user->email }}</span>
                                     </div>
                                     <div class="flex flex-wrap gap-1 pt-0.5">
-                                        @forelse($employee->user->roles as $r)
-                                            <span wire:key="emp-role-{{ $employee->id }}-{{ $r->id }}"
+                                        @forelse($roleNames as $roleName)
+                                            <span wire:key="emp-role-{{ $employee->id }}-{{ \Illuminate\Support\Str::slug($roleName) }}"
                                                   class="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium
-                                                         {{ in_array($r->name, ['admin', 'super-admin'], true)
+                                                         {{ in_array($roleName, ['admin', 'super-admin'], true)
                                                             ? 'bg-purple-100 dark:bg-purple-500/15 text-purple-700 dark:text-purple-300'
                                                             : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300' }}">
-                                                {{ \Illuminate\Support\Str::headline($r->name) }}
+                                                {{ \Illuminate\Support\Str::headline($roleName) }}
                                             </span>
                                         @empty
                                             <span class="text-[10px] text-gray-400 dark:text-gray-500 italic">No roles assigned</span>

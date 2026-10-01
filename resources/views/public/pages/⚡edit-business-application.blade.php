@@ -14,20 +14,20 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 use Livewire\Attributes\Computed;
-use Livewire\Attributes\Layout;
+use Livewire\Attributes\Locked;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
 use Livewire\WithFileUploads;
 
 new
-#[Layout('layouts.auth')]
 #[Title('Business Application')]
 class extends Component
 {
     use WithFileUploads;
     use HandlesImageUploads;
 
+    #[Locked]
     public BusinessApplication $application;
 
     #[Url(keep: true)]
@@ -111,12 +111,35 @@ class extends Component
             $this->businessLng = (float) $coords[0]['lng'];
         }
 
+        $this->lockOwnerFieldsIfFollowUp();
+
         $this->step = max(1, min(self::TOTAL_STEPS, $this->step));
+    }
+
+    /**
+     * Conditional layout:
+     *   First-time applicant    → layouts.auth        (focused public flow)
+     *   Existing business owner → tenant.layouts.app  (inside the admin shell)
+     *
+     * Follow-up form is an admin action, not a marketing surface.
+     * Rendering it inside the tenant shell keeps the sidebar and tenant
+     * header visible so the owner never loses the sense of being inside
+     * their dashboard.
+     */
+    public function render()
+    {
+        return $this->view()->layout(
+            $this->isFollowUpApplication
+                ? 'tenant.layouts.app'
+                : 'layouts.auth'
+        );
     }
 
     public function hydrate(): void
     {
         $this->assertOwnership($this->application);
+
+        $this->lockOwnerFieldsIfFollowUp();
     }
 
     protected function assertOwnership(BusinessApplication $application): void
@@ -131,17 +154,108 @@ class extends Component
         $this->assertOwnership($this->application);
     }
 
-    /**
-     * Build a host-agnostic storage URL.
-     *
-     * Rule J: never use asset()/route() for storage — APP_URL may not
-     * match the current host (e.g. envkit.net vs 127.0.0.1). A relative
-     * URL always resolves correctly on any origin.
-     */
     protected function storageUrl(?string $path): ?string
     {
         if (! $path) return null;
         return '/storage/' . ltrim($path, '/');
+    }
+
+    #[Computed]
+    public function isFollowUpApplication(): bool
+    {
+        if (! Auth::check()) {
+            return false;
+        }
+
+        /** @var BusinessApplication|null $previous */
+        $previous = BusinessApplication::query()
+            ->where('user_id', Auth::id())
+            ->where('status', BusinessApplication::STATUS_APPROVED)
+            ->whereKeyNot($this->application->id)
+            ->latest('reviewed_at')
+            ->first();
+
+        if (! $previous) {
+            return false;
+        }
+
+        $user = Auth::user();
+
+        $resolved = [
+            $previous->owner_full_name ?: $user?->name,
+            $previous->owner_id_type,
+            $previous->owner_id_number,
+            $previous->contact_email ?: $user?->email,
+            $previous->contact_phone ?: $user?->phone,
+        ];
+
+        foreach ($resolved as $value) {
+            if (empty($value)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @return array{
+     *     owner_full_name: string,
+     *     owner_id_type: string,
+     *     owner_id_number: string,
+     *     owner_birthdate: string,
+     *     owner_avatar_path: ?string,
+     *     contact_email: string,
+     *     contact_phone: string,
+     * }|null
+     */
+    #[Computed]
+    public function lockedOwnerData(): ?array
+    {
+        if (! $this->isFollowUpApplication) {
+            return null;
+        }
+
+        /** @var BusinessApplication|null $previous */
+        $previous = BusinessApplication::query()
+            ->where('user_id', Auth::id())
+            ->where('status', BusinessApplication::STATUS_APPROVED)
+            ->whereKeyNot($this->application->id)
+            ->latest('reviewed_at')
+            ->first();
+
+        if (! $previous) {
+            return null;
+        }
+
+        $user = Auth::user();
+
+        return [
+            'owner_full_name'   => (string) ($previous->owner_full_name ?: $user?->name ?? ''),
+            'owner_id_type'     => (string) ($previous->owner_id_type ?? ''),
+            'owner_id_number'   => (string) ($previous->owner_id_number ?? ''),
+            'owner_birthdate'   => $previous->owner_birthdate?->format('Y-m-d') ?? '',
+            'owner_avatar_path' => $previous->owner_avatar_path,
+            'contact_email'     => (string) ($previous->contact_email ?: $user?->email ?? ''),
+            'contact_phone'     => (string) ($previous->contact_phone ?: $user?->phone ?? ''),
+        ];
+    }
+
+    protected function lockOwnerFieldsIfFollowUp(): void
+    {
+        $locked = $this->lockedOwnerData;
+
+        if ($locked === null) {
+            return;
+        }
+
+        $this->owner_full_name   = $locked['owner_full_name'];
+        $this->owner_id_type     = $locked['owner_id_type'];
+        $this->owner_id_number   = $locked['owner_id_number'];
+        $this->owner_birthdate   = $locked['owner_birthdate'];
+        $this->owner_avatar_path = $locked['owner_avatar_path'];
+        $this->contact_email     = $locked['contact_email'];
+        $this->contact_phone     = $locked['contact_phone'];
     }
 
     #[Computed]
@@ -237,20 +351,69 @@ class extends Component
         return BusinessApplication::DOCUMENT_LABELS;
     }
 
+    /** @return array<int, string> */
+    #[Computed]
+    public function uploadedDocumentTypes(): array
+    {
+        return $this->documents
+            ->pluck('document_type')
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    #[Computed]
+    public function hasAllRequiredDocuments(): bool
+    {
+        return empty(array_diff($this->requiredDocuments, $this->uploadedDocumentTypes));
+    }
+
     #[Computed]
     public function completionPercent(): int
     {
-        $this->application->loadMissing('documents');
+        $checks = [
+            ! empty($this->business_name),
+            ! empty($this->business_type),
+            ! empty($this->type_of_tenant_id),
+            ! empty($this->business_registration_number),
+            ! empty($this->tin_number),
+            ! empty($this->owner_full_name),
+            ! empty($this->owner_id_type),
+            ! empty($this->owner_id_number),
+            ! empty($this->contact_email),
+            ! empty($this->contact_phone),
+            $this->hasAllRequiredDocuments,
+        ];
 
-        return $this->application->completionPercent();
+        $done = count(array_filter($checks));
+
+        return (int) round(($done / count($checks)) * 100);
     }
 
     #[Computed]
     public function isReadyToSubmit(): bool
     {
-        $this->application->loadMissing('documents');
+        foreach ([
+            'business_name',
+            'business_type',
+            'business_registration_number',
+            'tin_number',
+            'owner_full_name',
+            'owner_id_type',
+            'owner_id_number',
+            'contact_email',
+            'contact_phone',
+        ] as $field) {
+            if (empty($this->{$field})) {
+                return false;
+            }
+        }
 
-        return $this->application->isReadyForSubmission();
+        if (! $this->type_of_tenant_id) {
+            return false;
+        }
+
+        return $this->hasAllRequiredDocuments;
     }
 
     #[Computed]
@@ -265,14 +428,67 @@ class extends Component
     #[Computed]
     public function missingRequiredDocuments(): array
     {
-        $uploaded = $this->documents->pluck('document_type')->unique()->all();
-        $missing  = array_diff($this->requiredDocuments, $uploaded);
-        $labels   = BusinessApplication::DOCUMENT_LABELS;
+        $missing = array_diff($this->requiredDocuments, $this->uploadedDocumentTypes);
+        $labels  = BusinessApplication::DOCUMENT_LABELS;
 
         return array_values(array_map(
             fn (string $type) => $labels[$type] ?? $type,
             $missing,
         ));
+    }
+
+    /**
+     * @return array{kind: string, step: int, message: string}
+     */
+    #[Computed]
+    public function submitBlocker(): array
+    {
+        if (empty($this->business_name) || empty($this->business_type) || empty($this->type_of_tenant_id)) {
+            return [
+                'kind'    => 'business',
+                'step'    => 1,
+                'message' => 'Finish your business details on Step 1.',
+            ];
+        }
+
+        if (empty($this->business_registration_number) || empty($this->tin_number)) {
+            return [
+                'kind'    => 'registration',
+                'step'    => 2,
+                'message' => 'Add your registration number and TIN on Step 2.',
+            ];
+        }
+
+        $missingDocs = $this->missingRequiredDocuments;
+        if (count($missingDocs) > 0) {
+            return [
+                'kind'    => 'documents',
+                'step'    => 2,
+                'message' => 'Upload the remaining required document'
+                    . (count($missingDocs) === 1 ? '' : 's')
+                    . ' on Step 2: ' . implode(', ', $missingDocs) . '.',
+            ];
+        }
+
+        if (
+            empty($this->owner_full_name)
+            || empty($this->owner_id_type)
+            || empty($this->owner_id_number)
+            || empty($this->contact_email)
+            || empty($this->contact_phone)
+        ) {
+            return [
+                'kind'    => 'owner',
+                'step'    => 3,
+                'message' => 'Complete your owner and contact details on Step 3.',
+            ];
+        }
+
+        return [
+            'kind'    => 'other',
+            'step'    => 3,
+            'message' => 'Complete every required field to continue.',
+        ];
     }
 
     #[Computed]
@@ -350,10 +566,6 @@ class extends Component
 
         unset($this->hasCoordinates, $this->mapCenter, $this->mapZoom);
 
-        // Tell the map to fly to the new pin. Dispatched from PHP so the
-        // event goes through Livewire's browser event system — the mapcn
-        // package listens for `map:fly-to` there regardless of the
-        // wire:ignore boundary around the map container.
         $this->dispatch('map:fly-to', center: [(float) $this->businessLng, (float) $this->businessLat], zoom: 16);
     }
 
@@ -432,8 +644,6 @@ class extends Component
     {
         $this->requireOwnership();
 
-        // The Alpine handler on <main> does the actual geolocation call,
-        // then invokes setBusinessLocation() + resolveAddress() itself.
         $this->dispatch('request-geolocation');
     }
 
@@ -517,6 +727,12 @@ class extends Component
     {
         $this->requireOwnership();
 
+        if ($this->isFollowUpApplication) {
+            $this->owner_avatar = null;
+            $this->dispatch('toast', message: 'Owner photo is locked to your verified record.', type: 'info');
+            return;
+        }
+
         if (!$this->owner_avatar) return;
 
         try {
@@ -548,6 +764,12 @@ class extends Component
     public function removeOwnerAvatar(): void
     {
         $this->requireOwnership();
+
+        if ($this->isFollowUpApplication) {
+            $this->dispatch('toast', message: 'Owner photo is locked to your verified record.', type: 'info');
+            return;
+        }
+
         $this->removeAsset('owner_avatar_path', 'Photo removed.');
     }
 
@@ -659,13 +881,21 @@ class extends Component
                     'required', 'string', 'regex:/^\d{3}[-\s]?\d{3}[-\s]?\d{3}(?:[-\s]?\d{3})?$/',
                 ],
             ],
-            3 => [
+            3 => $this->isFollowUpApplication ? [] : [
                 'owner_full_name' => ['required', 'string', 'min:3', 'max:255'],
                 'owner_id_type'   => ['required', Rule::in(array_keys(BusinessApplication::OWNER_ID_TYPES))],
                 'owner_id_number' => ['required', 'string', 'min:4', 'max:100'],
                 'owner_birthdate' => ['nullable', 'date', 'before:today'],
                 'contact_email'   => ['required', 'email', 'max:255'],
-                'contact_phone'   => ['required', 'string', 'max:20', 'regex:/^(09|\+639)\d{9}$/'],
+                'contact_phone'   => [
+                    'required', 'string', 'max:20',
+                    function (string $attribute, mixed $value, \Closure $fail): void {
+                        $digits = preg_replace('/\D/', '', (string) $value);
+                        if ($digits === '' || strlen($digits) < 7 || strlen($digits) > 15) {
+                            $fail('Use a valid contact number (7–15 digits, landline or mobile).');
+                        }
+                    },
+                ],
             ],
             default => [],
         };
@@ -688,7 +918,6 @@ class extends Component
             'business_registration_number.min'      => 'That registration number looks too short.',
             'tin_number.required'                   => 'Please enter your TIN.',
             'tin_number.regex'                      => 'Enter a valid TIN: 123-456-789 or 123-456-789-000.',
-            'contact_phone.regex'                   => 'Use a valid PH number: 09xxxxxxxxx or +639xxxxxxxxx.',
             'type_of_tenant_id.required'            => 'Please select a business category.',
             'business_type.required'                => 'Please select a registration type.',
             'owner_id_type.required'                => 'Please select the type of ID you will upload.',
@@ -732,7 +961,7 @@ class extends Component
             return;
         }
 
-        unset($this->completionPercent, $this->isReadyToSubmit, $this->missingRequiredDocuments);
+        $this->invalidateApplicationCaches();
 
         $this->step = min(self::TOTAL_STEPS, $this->step + 1);
         $this->dispatch('scroll-to-top');
@@ -746,6 +975,21 @@ class extends Component
         $this->saveError   = null;
         $this->submitError = null;
         $this->dispatch('scroll-to-top');
+    }
+
+    protected function invalidateApplicationCaches(): void
+    {
+        unset(
+            $this->documents,
+            $this->documentsByType,
+            $this->uploadedDocumentTypes,
+            $this->hasAllRequiredDocuments,
+            $this->completionPercent,
+            $this->isReadyToSubmit,
+            $this->uploadedRequiredCount,
+            $this->missingRequiredDocuments,
+            $this->submitBlocker,
+        );
     }
 
     protected function payloadForStep(int $step): array
@@ -775,16 +1019,34 @@ class extends Component
                 'business_registration_number' => strtoupper(trim($this->business_registration_number)),
                 'tin_number'                   => trim($this->tin_number),
             ],
-            3 => [
-                'owner_full_name' => trim($this->owner_full_name),
-                'owner_id_type'   => $this->owner_id_type ?: null,
-                'owner_id_number' => $this->owner_id_number ?: null,
-                'owner_birthdate' => $this->owner_birthdate ?: null,
-                'contact_email'   => $this->contact_email,
-                'contact_phone'   => $this->contact_phone,
-            ],
+            3 => $this->ownerPayload(),
             default => [],
         };
+    }
+
+    protected function ownerPayload(): array
+    {
+        $locked = $this->lockedOwnerData;
+
+        if ($locked !== null) {
+            return [
+                'owner_full_name' => $locked['owner_full_name'],
+                'owner_id_type'   => $locked['owner_id_type'] ?: null,
+                'owner_id_number' => $locked['owner_id_number'] ?: null,
+                'owner_birthdate' => $locked['owner_birthdate'] ?: null,
+                'contact_email'   => $locked['contact_email'],
+                'contact_phone'   => $locked['contact_phone'],
+            ];
+        }
+
+        return [
+            'owner_full_name' => trim($this->owner_full_name),
+            'owner_id_type'   => $this->owner_id_type ?: null,
+            'owner_id_number' => $this->owner_id_number ?: null,
+            'owner_birthdate' => $this->owner_birthdate ?: null,
+            'contact_email'   => $this->contact_email,
+            'contact_phone'   => $this->contact_phone,
+        ];
     }
 
     public function updated(string $name, mixed $value): void
@@ -868,14 +1130,7 @@ class extends Component
 
             unset($this->uploads[$documentType]);
 
-            unset(
-                $this->documents,
-                $this->documentsByType,
-                $this->completionPercent,
-                $this->isReadyToSubmit,
-                $this->uploadedRequiredCount,
-                $this->missingRequiredDocuments,
-            );
+            $this->invalidateApplicationCaches();
 
             $this->dispatch('toast', message: 'Uploaded and watermarked.', type: 'success');
         } catch (\Throwable $e) {
@@ -901,14 +1156,7 @@ class extends Component
         try {
             $doc->delete();
 
-            unset(
-                $this->documents,
-                $this->documentsByType,
-                $this->completionPercent,
-                $this->isReadyToSubmit,
-                $this->uploadedRequiredCount,
-                $this->missingRequiredDocuments,
-            );
+            $this->invalidateApplicationCaches();
 
             $this->dispatch('toast', message: 'Document removed.', type: 'success');
         } catch (\Throwable $e) {
@@ -936,15 +1184,27 @@ class extends Component
 
         $this->submitError = null;
 
+        if (! $this->isReadyToSubmit) {
+            $blocker = $this->submitBlocker;
+
+            $this->submitError = $blocker['message'];
+            $this->step        = max(1, min(self::TOTAL_STEPS, $blocker['step']));
+
+            $this->dispatch('toast', message: $blocker['message'], type: 'error');
+            $this->dispatch('scroll-to-top');
+
+            return null;
+        }
+
         $this->validate();
 
         $this->application->refresh();
 
-        if (!$this->application->hasAllRequiredDocuments()) {
+        if (! $this->hasAllRequiredDocuments) {
             $missing = $this->missingRequiredDocuments;
 
             $this->submitError = empty($missing)
-                ? 'Please upload all required documents before submitting.'
+                ? 'Please complete every required field before submitting.'
                 : 'Please upload the following required document(s) before submitting: '
                     . implode(', ', $missing) . '.';
 
@@ -982,7 +1242,9 @@ class extends Component
 
         session()->flash('message', 'Your business application was submitted for review.');
 
-        return redirect()->route('register_business');
+        return $this->isFollowUpApplication
+            ? redirect()->route('tenant.businesses.index')
+            : redirect()->route('register_business');
     }
 };
 ?>
@@ -1003,6 +1265,20 @@ class extends Component
         </style>
     @endonce
 @endpush
+
+@php
+    /*
+     * In the tenant layout the app already has a sticky header at top-0.
+     * This sub-header must sit below it — tenant header is 4rem mobile
+     * + safe-area, 5rem at md+ + safe-area. Otherwise the two overlap.
+     */
+    $__subHeaderOffset = $this->isFollowUpApplication
+        ? 'top-[calc(4rem+env(safe-area-inset-top))] md:top-[calc(5rem+env(safe-area-inset-top))]'
+        : 'top-0';
+
+    $__sectionEyebrow = 'inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-primary-600 dark:text-primary-400';
+    $__sectionRule    = 'h-px w-4 bg-amber-500';
+@endphp
 
 <main
     x-data="{
@@ -1050,7 +1326,6 @@ class extends Component
     "
     class="min-h-screen">
 
-    {{-- Toast container — respects safe-area insets on notched devices. --}}
     <div class="fixed z-[2000] flex flex-col gap-2 pointer-events-none
                 bottom-[max(1rem,var(--safe-bottom))]
                 right-[max(1rem,var(--safe-right))]
@@ -1078,8 +1353,7 @@ class extends Component
         </template>
     </div>
 
-    {{-- Sticky header --}}
-    <div class="sticky top-0 z-30 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md border-b border-gray-200 dark:border-gray-800">
+    <div class="sticky {{ $__subHeaderOffset }} z-20 bg-white/95 dark:bg-gray-900/95 backdrop-blur-md border-b border-gray-200 dark:border-gray-800">
         <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-4 pt-[max(1rem,env(safe-area-inset-top))]">
 
             <div class="flex items-center justify-between gap-4 mb-3">
@@ -1108,7 +1382,10 @@ class extends Component
                         </svg>
                         Draft saved
                     </span>
-                    <a href="{{ route('register_business') }}" wire:navigate
+                    <a href="{{ $this->isFollowUpApplication
+                                  ? route('tenant.businesses.index')
+                                  : route('register_business') }}"
+                       wire:navigate
                        class="shrink-0 inline-flex items-center gap-1 min-h-[44px] text-[11px] font-medium
                               text-gray-500 dark:text-gray-400 hover:text-rose-600 dark:hover:text-rose-400
                               transition-colors -mx-1 px-3 rounded
@@ -1117,17 +1394,25 @@ class extends Component
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                         </svg>
-                        <span class="hidden sm:inline">Save &amp; exit</span>
+                        <span class="hidden sm:inline">
+                            {{ $this->isFollowUpApplication ? 'Back to businesses' : 'Save & exit' }}
+                        </span>
                     </a>
                 </div>
             </div>
 
             <div class="mb-4">
                 <h1 class="text-lg sm:text-xl font-bold tracking-tight text-gray-900 dark:text-white leading-tight">
-                    Welcome back, {{ $this->applicantFirstName }}!
+                    @if($this->isFollowUpApplication)
+                        Adding a new business, {{ $this->applicantFirstName }}
+                    @else
+                        Welcome back, {{ $this->applicantFirstName }}!
+                    @endif
                 </h1>
                 <p class="mt-0.5 text-xs sm:text-sm text-gray-500 dark:text-gray-400">
-                    @if($this->completionPercent >= 100)
+                    @if($this->isFollowUpApplication)
+                        Your owner details are pre-verified and locked. Just tell us about the new business.
+                    @elseif($this->completionPercent >= 100)
                         Everything's in place. You're ready to submit for review.
                     @else
                         You're <strong class="text-gray-700 dark:text-gray-300">{{ $this->completionPercent }}%</strong> through your application.
@@ -1186,21 +1471,21 @@ class extends Component
     <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
 
         @if ($this->isRevision)
-            <div class="mb-6 rounded-2xl border border-indigo-200/80 dark:border-indigo-500/30 bg-indigo-50/60 dark:bg-indigo-500/[0.06] p-4 shadow-sm">
+            <div class="mb-6 rounded-2xl border border-amber-200/80 dark:border-amber-500/30 bg-amber-50/60 dark:bg-amber-500/[0.06] p-4 shadow-sm">
                 <div class="flex items-start gap-3">
-                    <div class="shrink-0 w-9 h-9 rounded-full bg-indigo-100 dark:bg-indigo-500/20 border border-indigo-200 dark:border-indigo-500/30 flex items-center justify-center text-indigo-700 dark:text-indigo-300">
+                    <div class="shrink-0 w-9 h-9 rounded-full bg-amber-100 dark:bg-amber-500/20 border border-amber-200 dark:border-amber-500/30 flex items-center justify-center text-amber-700 dark:text-amber-300">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
                         </svg>
                     </div>
                     <div class="min-w-0 flex-1">
-                        <p class="text-[10px] font-bold uppercase tracking-wider text-indigo-700 dark:text-indigo-300 mb-1">
+                        <p class="text-[10px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-300 mb-1">
                             Note from your reviewer
                         </p>
-                        <p class="text-sm text-indigo-950 dark:text-indigo-100 leading-relaxed italic">
+                        <p class="text-sm text-amber-950 dark:text-amber-100 leading-relaxed italic">
                             "{{ $application->revision_notes }}"
                         </p>
-                        <p class="mt-2 text-[11px] text-indigo-700/70 dark:text-indigo-300/70">
+                        <p class="mt-2 text-[11px] text-amber-700/70 dark:text-amber-300/70">
                             Fix the item(s) above, then resubmit. Your other information is saved.
                         </p>
                     </div>
@@ -1218,17 +1503,29 @@ class extends Component
             </div>
         @endif
 
-        {{-- ═══ STEP 1 — BUSINESS & LOCATION ═══ --}}
+        @if ($errors->any() && ! $saveError && ! $submitError)
+            <div role="alert" aria-live="polite"
+                 class="mb-5 rounded-xl border border-rose-200/80 dark:border-rose-500/30 bg-rose-50 dark:bg-rose-500/10 px-3.5 py-3 text-xs sm:text-sm text-rose-800 dark:text-rose-300 shadow-sm">
+                <p class="font-semibold mb-1">
+                    Please fix {{ $errors->count() }} field{{ $errors->count() === 1 ? '' : 's' }}:
+                </p>
+                <ul class="list-disc list-inside space-y-0.5">
+                    @foreach ($errors->all() as $error)
+                        <li>{{ $error }}</li>
+                    @endforeach
+                </ul>
+            </div>
+        @endif
+
         @if ($step === 1)
 
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm overflow-hidden mb-5">
                 <div class="px-6 pt-5 pb-3 flex items-center justify-between">
-                    <div class="flex items-center gap-3">
-                        <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
-                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                            Cover Photo <span class="text-[10px] font-normal normal-case text-gray-400">(optional)</span>
-                        </span>
-                    </div>
+                    <p class="{{ $__sectionEyebrow }}">
+                        <span class="{{ $__sectionRule }}" aria-hidden="true"></span>
+                        Cover Photo
+                        <span class="text-[10px] font-normal normal-case tracking-normal text-gray-400">(optional)</span>
+                    </p>
                     @if($cover_photo_path)
                         <span class="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -1313,12 +1610,11 @@ class extends Component
             </section>
 
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mb-5">
-                <div class="flex items-center gap-3 mb-5">
-                    <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
-                    <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                        Business Logo <span class="text-[10px] font-normal normal-case text-gray-400">(optional)</span>
-                    </span>
-                </div>
+                <p class="{{ $__sectionEyebrow }} mb-5">
+                    <span class="{{ $__sectionRule }}" aria-hidden="true"></span>
+                    Business Logo
+                    <span class="text-[10px] font-normal normal-case tracking-normal text-gray-400">(optional)</span>
+                </p>
 
                 <div class="flex items-center gap-5">
                     <div class="shrink-0 w-20 h-20 rounded-2xl border-2 border-dashed border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 flex items-center justify-center overflow-hidden">
@@ -1393,12 +1689,10 @@ class extends Component
             </section>
 
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6">
-                <div class="flex items-center gap-3 mb-5">
-                    <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
-                    <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                        Business Information
-                    </span>
-                </div>
+                <p class="{{ $__sectionEyebrow }} mb-5">
+                    <span class="{{ $__sectionRule }}" aria-hidden="true"></span>
+                    Business Information
+                </p>
 
                 <div class="space-y-5">
                     <div>
@@ -1460,12 +1754,10 @@ class extends Component
             </section>
 
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mt-5">
-                <div class="flex items-center gap-3 mb-4">
-                    <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
-                    <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                        Location
-                    </span>
-                </div>
+                <p class="{{ $__sectionEyebrow }} mb-4">
+                    <span class="{{ $__sectionRule }}" aria-hidden="true"></span>
+                    Location
+                </p>
 
                 <div class="flex items-center justify-between gap-3 flex-wrap mb-3">
                     <div class="flex items-center gap-2 flex-wrap">
@@ -1612,16 +1904,13 @@ class extends Component
             </section>
         @endif
 
-        {{-- ═══ STEP 2 — DOCUMENTS & VERIFICATION ═══ --}}
         @if ($step === 2)
 
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mb-5">
-                <div class="flex items-center gap-3 mb-5">
-                    <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
-                    <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                        Registration Details
-                    </span>
-                </div>
+                <p class="{{ $__sectionEyebrow }} mb-5">
+                    <span class="{{ $__sectionRule }}" aria-hidden="true"></span>
+                    Registration Details
+                </p>
 
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
@@ -1677,14 +1966,12 @@ class extends Component
 
             <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6">
                 <div class="flex items-center justify-between mb-4">
-                    <div class="flex items-center gap-3">
-                        <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
-                        <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                            Required Documents
-                        </span>
-                    </div>
+                    <p class="{{ $__sectionEyebrow }}">
+                        <span class="{{ $__sectionRule }}" aria-hidden="true"></span>
+                        Required Documents
+                    </p>
                     <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider
-                        {{ $this->uploadedRequiredCount === count($this->requiredDocuments)
+                        {{ $this->hasAllRequiredDocuments
                             ? 'bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30'
                             : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 border border-gray-200 dark:border-gray-700' }}">
                         {{ $this->uploadedRequiredCount }} / {{ count($this->requiredDocuments) }}
@@ -1742,9 +2029,10 @@ class extends Component
                                         </p>
                                         <div class="mt-1.5 flex items-center gap-3">
                                             <a href="{{ $url }}" target="_blank" rel="noopener noreferrer"
-                                               class="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline
+                                               class="relative text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline py-2.5 px-1 -mx-1 -my-2.5
+                                                      before:absolute before:content-[''] before:-inset-1 before:rounded
                                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition py-2.5 px-1 -mx-1 -my-2.5">
+                                                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition">
                                                 View
                                             </a>
                                             <span class="w-px h-3 bg-gray-300 dark:bg-gray-700" aria-hidden="true"></span>
@@ -1759,7 +2047,8 @@ class extends Component
                                                     @click="armed ? (unarm(), $wire.deleteDocument({{ $existing->id }})) : arm()"
                                                     wire:loading.attr="disabled"
                                                     wire:target="deleteDocument"
-                                                    class="text-[11px] font-semibold transition-colors py-2.5 px-1 -mx-1 -my-2.5
+                                                    class="relative text-[11px] font-semibold transition-colors py-2.5 px-1 -mx-1 -my-2.5
+                                                           before:absolute before:content-[''] before:-inset-1 before:rounded
                                                            [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
                                                            disabled:opacity-60 disabled:cursor-not-allowed"
@@ -1843,7 +2132,8 @@ class extends Component
                                                 @click="armed ? (unarm(), $wire.deleteDocument({{ $existing->id }})) : arm()"
                                                 wire:loading.attr="disabled"
                                                 wire:target="deleteDocument"
-                                                class="text-[11px] font-semibold transition-colors py-2.5 px-1.5 -mx-1.5 -my-2.5
+                                                class="relative text-[11px] font-semibold transition-colors py-2.5 px-1.5 -mx-1.5 -my-2.5
+                                                       before:absolute before:content-[''] before:-inset-1 before:rounded
                                                        [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
                                                        disabled:opacity-60 disabled:cursor-not-allowed"
@@ -1878,8 +2168,7 @@ class extends Component
 
             @if (!$this->isReadyToSubmit)
                 @php
-                    $missing = $this->missingRequiredDocuments;
-                    $missingCount = count($missing);
+                    $blocker = $this->submitBlocker;
                 @endphp
                 <div class="mt-5 rounded-xl border border-amber-200/80 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/[0.06] px-3.5 py-3 shadow-sm">
                     <div class="flex items-start gap-2.5">
@@ -1888,10 +2177,7 @@ class extends Component
                         </svg>
                         <div class="min-w-0 text-xs sm:text-sm">
                             <p class="font-semibold text-amber-900 dark:text-amber-200">
-                                {{ $missingCount }} required document{{ $missingCount === 1 ? '' : 's' }} still missing
-                            </p>
-                            <p class="mt-0.5 text-amber-800/80 dark:text-amber-300/80 leading-relaxed">
-                                {{ implode(' · ', $missing) }}
+                                {{ $blocker['message'] }}
                             </p>
                         </div>
                     </div>
@@ -1899,191 +2185,317 @@ class extends Component
             @endif
         @endif
 
-        {{-- ═══ STEP 3 — OWNER, CONTACT & REVIEW ═══ --}}
         @if ($step === 3)
 
-            <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mb-5">
-                <div class="flex items-center gap-3 mb-5">
-                    <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
-                    <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                        Owner Photo <span class="text-[10px] font-normal normal-case text-gray-400">(optional)</span>
-                    </span>
+            @if ($this->isFollowUpApplication)
+                <div class="mb-5 rounded-2xl border border-emerald-200/80 dark:border-emerald-500/30 bg-emerald-50/70 dark:bg-emerald-500/[0.06] p-4 shadow-sm">
+                    <div class="flex items-start gap-3">
+                        <div class="shrink-0 w-9 h-9 rounded-full bg-emerald-100 dark:bg-emerald-500/20 border border-emerald-200 dark:border-emerald-500/30 flex items-center justify-center text-emerald-700 dark:text-emerald-300">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+                            </svg>
+                        </div>
+                        <div class="min-w-0 flex-1">
+                            <p class="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300 mb-1">
+                                Verified owner details
+                            </p>
+                            <p class="text-sm text-emerald-950 dark:text-emerald-100 leading-relaxed">
+                                Your owner identity was verified during your earlier application. These fields are locked to that record — you cannot change them here.
+                            </p>
+                            <p class="mt-2 text-[11px] text-emerald-800/70 dark:text-emerald-300/70">
+                                If anything needs to change, contact support.
+                            </p>
+                        </div>
+                    </div>
                 </div>
 
-                <div class="flex items-center gap-5">
-                    <div class="shrink-0 w-20 h-20 rounded-full border-2 border-dashed border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 flex items-center justify-center overflow-hidden">
-                        @if($owner_avatar_path)
-                            <img src="{{ '/storage/' . ltrim($owner_avatar_path, '/') }}" alt="Owner photo" loading="lazy" decoding="async" class="w-full h-full object-cover">
-                        @else
-                            <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+                <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mb-5">
+                    <div class="flex items-center justify-between mb-5">
+                        <p class="{{ $__sectionEyebrow }}">
+                            <span class="{{ $__sectionRule }}" aria-hidden="true"></span>
+                            Owner Photo
+                        </p>
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider
+                                     bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300
+                                     border border-emerald-200 dark:border-emerald-500/30">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
                             </svg>
-                        @endif
+                            Verified
+                        </span>
                     </div>
 
-                    <div
-                        x-data="imageCropper({
-                            wireProperty: 'owner_avatar',
-                            aspect: 1,
-                            title: 'Crop owner photo',
-                            description: 'Square crop works best',
-                        })"
-                        x-init="init()"
-                        class="flex-1 min-w-0"
-                    >
-                        <div class="flex items-center gap-2 flex-wrap">
-                            <label for="avatar-upload"
-                                   class="inline-flex items-center justify-center gap-1.5 h-11 sm:h-10 px-3.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold
-                                          transition-all duration-200 active:scale-95 cursor-pointer
-                                          [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                          focus-within:ring-2 focus-within:ring-primary-500/50 focus-within:ring-offset-2 dark:focus-within:ring-offset-gray-900">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                                </svg>
-                                {{ $owner_avatar_path ? 'Replace photo' : 'Upload photo' }}
-                                <input type="file" id="avatar-upload" x-on:change="pick($event)" accept="image/jpeg,image/png,image/webp" class="sr-only">
-                            </label>
-
+                    <div class="flex items-center gap-5">
+                        <div class="shrink-0 w-20 h-20 rounded-full border-2 border-emerald-200 dark:border-emerald-500/30 bg-gray-50 dark:bg-gray-900 flex items-center justify-center overflow-hidden">
                             @if($owner_avatar_path)
-                                <button type="button"
-                                        x-data="{
-                                            armed: false,
-                                            _t: null,
-                                            arm() { this.armed = true; clearTimeout(this._t); this._t = setTimeout(() => { this.armed = false; this._t = null; }, 4000); },
-                                            unarm() { clearTimeout(this._t); this._t = null; this.armed = false; },
-                                            destroy() { clearTimeout(this._t); }
-                                        }"
-                                        @click="armed ? (unarm(), $wire.removeOwnerAvatar()) : arm()"
-                                        wire:loading.attr="disabled"
-                                        wire:target="removeOwnerAvatar"
-                                        :class="armed
-                                            ? 'border-amber-400 bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/40'
-                                            : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200'"
-                                        class="inline-flex items-center justify-center h-11 sm:h-10 px-3.5 rounded-lg border text-xs font-semibold
-                                               transition-all duration-200 active:scale-95
-                                               hover:border-rose-400 hover:text-rose-600 dark:hover:text-rose-400
-                                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
-                                               disabled:opacity-60 disabled:cursor-not-allowed">
-                                    <span x-show="!armed">Remove</span>
-                                    <span x-show="armed" x-cloak>Confirm</span>
-                                </button>
+                                <img src="{{ '/storage/' . ltrim($owner_avatar_path, '/') }}" alt="Owner photo" loading="lazy" decoding="async" class="w-full h-full object-cover">
+                            @else
+                                <span class="text-2xl font-bold text-gray-500 dark:text-gray-400">
+                                    {{ strtoupper(substr($owner_full_name ?: 'O', 0, 1)) }}
+                                </span>
                             @endif
+                        </div>
+                        <div class="min-w-0">
+                            <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">
+                                {{ $owner_full_name ?: '—' }}
+                            </p>
+                            <p class="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">
+                                Photo inherited from your verified record.
+                            </p>
+                        </div>
+                    </div>
+                </section>
 
-                            <div wire:loading wire:target="owner_avatar" class="flex items-center gap-2 text-xs text-primary-600 dark:text-primary-400">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="animate-spin w-3 h-3 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
-                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mb-5">
+                    <div class="flex items-center justify-between mb-5">
+                        <p class="{{ $__sectionEyebrow }}">
+                            <span class="{{ $__sectionRule }}" aria-hidden="true"></span>
+                            Owner Information
+                        </p>
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider
+                                     bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300
+                                     border border-emerald-200 dark:border-emerald-500/30">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
+                            </svg>
+                            Verified
+                        </span>
+                    </div>
+
+                    <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
+                        <div class="min-w-0">
+                            <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Full Name</dt>
+                            <dd class="mt-1 text-sm font-medium text-gray-900 dark:text-white truncate">{{ $owner_full_name ?: '—' }}</dd>
+                        </div>
+                        <div class="min-w-0">
+                            <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">ID Type</dt>
+                            <dd class="mt-1 text-sm font-medium text-gray-900 dark:text-white truncate">
+                                {{ $this->selectedOwnerIdLabel ?? '—' }}
+                            </dd>
+                        </div>
+                        <div class="min-w-0 sm:col-span-2">
+                            <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">ID Number</dt>
+                            <dd class="mt-1 text-sm font-medium font-mono text-gray-900 dark:text-white truncate tabular-nums">{{ $owner_id_number ?: '—' }}</dd>
+                        </div>
+                        <div class="min-w-0 sm:col-span-2">
+                            <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Date of Birth</dt>
+                            <dd class="mt-1 text-sm font-medium text-gray-900 dark:text-white">
+                                @if($owner_birthdate)
+                                    {{ \Illuminate\Support\Carbon::parse($owner_birthdate)->format('F j, Y') }}
+                                @else
+                                    <span class="text-gray-400 dark:text-gray-500 italic">Not provided</span>
+                                @endif
+                            </dd>
+                        </div>
+                    </dl>
+                </section>
+
+                <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6">
+                    <div class="flex items-center justify-between mb-5">
+                        <p class="{{ $__sectionEyebrow }}">
+                            <span class="{{ $__sectionRule }}" aria-hidden="true"></span>
+                            Contact Information
+                        </p>
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider
+                                     bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300
+                                     border border-emerald-200 dark:border-emerald-500/30">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
+                            </svg>
+                            Verified
+                        </span>
+                    </div>
+
+                    <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
+                        <div class="min-w-0">
+                            <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Email</dt>
+                            <dd class="mt-1 text-sm font-medium text-gray-900 dark:text-white truncate">{{ $contact_email ?: '—' }}</dd>
+                        </div>
+                        <div class="min-w-0">
+                            <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Phone</dt>
+                            <dd class="mt-1 text-sm font-medium font-mono text-gray-900 dark:text-white truncate tabular-nums">{{ $contact_phone ?: '—' }}</dd>
+                        </div>
+                    </dl>
+                </section>
+
+            @else
+
+                <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mb-5">
+                    <p class="{{ $__sectionEyebrow }} mb-5">
+                        <span class="{{ $__sectionRule }}" aria-hidden="true"></span>
+                        Owner Photo
+                        <span class="text-[10px] font-normal normal-case tracking-normal text-gray-400">(optional)</span>
+                    </p>
+
+                    <div class="flex items-center gap-5">
+                        <div class="shrink-0 w-20 h-20 rounded-full border-2 border-dashed border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 flex items-center justify-center overflow-hidden">
+                            @if($owner_avatar_path)
+                                <img src="{{ '/storage/' . ltrim($owner_avatar_path, '/') }}" alt="Owner photo" loading="lazy" decoding="async" class="w-full h-full object-cover">
+                            @else
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
                                 </svg>
-                                Uploading…
+                            @endif
+                        </div>
+
+                        <div
+                            x-data="imageCropper({
+                                wireProperty: 'owner_avatar',
+                                aspect: 1,
+                                title: 'Crop owner photo',
+                                description: 'Square crop works best',
+                            })"
+                            x-init="init()"
+                            class="flex-1 min-w-0"
+                        >
+                            <div class="flex items-center gap-2 flex-wrap">
+                                <label for="avatar-upload"
+                                       class="inline-flex items-center justify-center gap-1.5 h-11 sm:h-10 px-3.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white text-xs font-semibold
+                                              transition-all duration-200 active:scale-95 cursor-pointer
+                                              [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                              focus-within:ring-2 focus-within:ring-primary-500/50 focus-within:ring-offset-2 dark:focus-within:ring-offset-gray-900">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                    </svg>
+                                    {{ $owner_avatar_path ? 'Replace photo' : 'Upload photo' }}
+                                    <input type="file" id="avatar-upload" x-on:change="pick($event)" accept="image/jpeg,image/png,image/webp" class="sr-only">
+                                </label>
+
+                                @if($owner_avatar_path)
+                                    <button type="button"
+                                            x-data="{
+                                                armed: false,
+                                                _t: null,
+                                                arm() { this.armed = true; clearTimeout(this._t); this._t = setTimeout(() => { this.armed = false; this._t = null; }, 4000); },
+                                                unarm() { clearTimeout(this._t); this._t = null; this.armed = false; },
+                                                destroy() { clearTimeout(this._t); }
+                                            }"
+                                            @click="armed ? (unarm(), $wire.removeOwnerAvatar()) : arm()"
+                                            wire:loading.attr="disabled"
+                                            wire:target="removeOwnerAvatar"
+                                            :class="armed
+                                                ? 'border-amber-400 bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/40'
+                                                : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200'"
+                                            class="inline-flex items-center justify-center h-11 sm:h-10 px-3.5 rounded-lg border text-xs font-semibold
+                                                   transition-all duration-200 active:scale-95
+                                                   hover:border-rose-400 hover:text-rose-600 dark:hover:text-rose-400
+                                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50
+                                                   disabled:opacity-60 disabled:cursor-not-allowed">
+                                        <span x-show="!armed">Remove</span>
+                                        <span x-show="armed" x-cloak>Confirm</span>
+                                    </button>
+                                @endif
+
+                                <div wire:loading wire:target="owner_avatar" class="flex items-center gap-2 text-xs text-primary-600 dark:text-primary-400">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="animate-spin w-3 h-3 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                    </svg>
+                                    Uploading…
+                                </div>
                             </div>
                         </div>
                     </div>
-                </div>
-            </section>
+                </section>
 
-            <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6">
-                <div class="flex items-center gap-3 mb-5">
-                    <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
-                    <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6">
+                    <p class="{{ $__sectionEyebrow }} mb-5">
+                        <span class="{{ $__sectionRule }}" aria-hidden="true"></span>
                         Owner Information
-                    </span>
-                </div>
+                    </p>
 
-                <div class="space-y-5">
-                    <div>
-                        <label for="owner_full_name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            Full Name <span class="text-rose-500" aria-hidden="true">*</span>
-                        </label>
-                        <input type="text" id="owner_full_name" wire:model="owner_full_name"
-                               placeholder="Juan dela Cruz"
-                               autocomplete="name"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
-                        @error('owner_full_name') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
+                    <div class="space-y-5">
+                        <div>
+                            <label for="owner_full_name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                Full Name <span class="text-rose-500" aria-hidden="true">*</span>
+                            </label>
+                            <input type="text" id="owner_full_name" wire:model="owner_full_name"
+                                   placeholder="Juan dela Cruz"
+                                   autocomplete="name"
+                                   class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                            @error('owner_full_name') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
+                        </div>
+
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div class="sm:col-span-2">
+                                <label for="owner_id_type" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                    Type of Government ID <span class="text-rose-500" aria-hidden="true">*</span>
+                                </label>
+                                <select id="owner_id_type" wire:model.live="owner_id_type"
+                                        class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition
+                                               [touch-action:manipulation]">
+                                    <option value="">— Select an accepted ID —</option>
+                                    @foreach($this->ownerIdTypes as $key => $label)
+                                        <option value="{{ $key }}">{{ $label }}</option>
+                                    @endforeach
+                                </select>
+                                @error('owner_id_type') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
+                            </div>
+
+                            <div class="sm:col-span-2">
+                                <label for="owner_id_number" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                    ID Number <span class="text-rose-500" aria-hidden="true">*</span>
+                                </label>
+                                <input type="text" id="owner_id_number" wire:model="owner_id_number"
+                                       placeholder="Number as printed on your ID"
+                                       autocomplete="off"
+                                       class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                                @error('owner_id_number') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
+                            </div>
+
+                            <div class="sm:col-span-2 sm:max-w-xs">
+                                <label for="owner_birthdate" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                    Date of Birth <span class="text-[10px] font-normal text-gray-400">(optional)</span>
+                                </label>
+                                <input type="date" id="owner_birthdate" wire:model="owner_birthdate"
+                                       autocomplete="bday"
+                                       max="{{ now()->subDay()->format('Y-m-d') }}"
+                                       class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                            </div>
+                        </div>
                     </div>
+                </section>
+
+                <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mt-5">
+                    <p class="{{ $__sectionEyebrow }} mb-5">
+                        <span class="{{ $__sectionRule }}" aria-hidden="true"></span>
+                        Contact Information
+                    </p>
 
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <div class="sm:col-span-2">
-                            <label for="owner_id_type" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                                Type of Government ID <span class="text-rose-500" aria-hidden="true">*</span>
+                        <div>
+                            <label for="contact_email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                Email <span class="text-rose-500" aria-hidden="true">*</span>
                             </label>
-                            <select id="owner_id_type" wire:model.live="owner_id_type"
-                                    class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition
-                                           [touch-action:manipulation]">
-                                <option value="">— Select an accepted ID —</option>
-                                @foreach($this->ownerIdTypes as $key => $label)
-                                    <option value="{{ $key }}">{{ $label }}</option>
-                                @endforeach
-                            </select>
-                            @error('owner_id_type') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
-                        </div>
-
-                        <div class="sm:col-span-2">
-                            <label for="owner_id_number" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                                ID Number <span class="text-rose-500" aria-hidden="true">*</span>
-                            </label>
-                            <input type="text" id="owner_id_number" wire:model="owner_id_number"
-                                   placeholder="Number as printed on your ID"
-                                   autocomplete="off"
+                            <input type="email" id="contact_email" wire:model="contact_email"
+                                   autocomplete="email" inputmode="email"
                                    class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
-                            @error('owner_id_number') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
+                            @error('contact_email') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
                         </div>
 
-                        <div class="sm:col-span-2 sm:max-w-xs">
-                            <label for="owner_birthdate" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                                Date of Birth <span class="text-[10px] font-normal text-gray-400">(optional)</span>
+                        <div>
+                            <label for="contact_phone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                Phone <span class="text-rose-500" aria-hidden="true">*</span>
                             </label>
-                            <input type="date" id="owner_birthdate" wire:model="owner_birthdate"
-                                   autocomplete="bday"
-                                   max="{{ now()->subDay()->format('Y-m-d') }}"
-                                   class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                            <input type="tel" id="contact_phone" wire:model="contact_phone"
+                                   placeholder="09xxxxxxxxx"
+                                   autocomplete="tel"
+                                   inputmode="numeric"
+                                   maxlength="13"
+                                   class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                            @error('contact_phone') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
                         </div>
                     </div>
-                </div>
-            </section>
-
-            <section class="bg-white dark:bg-gray-800/90 border border-gray-200/80 dark:border-gray-700/80 rounded-2xl shadow-sm p-6 mt-5">
-                <div class="flex items-center gap-3 mb-5">
-                    <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
-                    <span class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                        Contact Information
-                    </span>
-                </div>
-
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                        <label for="contact_email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            Email <span class="text-rose-500" aria-hidden="true">*</span>
-                        </label>
-                        <input type="email" id="contact_email" wire:model="contact_email"
-                               autocomplete="email" inputmode="email"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
-                        @error('contact_email') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
-                    </div>
-
-                    <div>
-                        <label for="contact_phone" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
-                            Phone <span class="text-rose-500" aria-hidden="true">*</span>
-                        </label>
-                        <input type="tel" id="contact_phone" wire:model="contact_phone"
-                               placeholder="09xxxxxxxxx"
-                               autocomplete="tel"
-                               inputmode="numeric"
-                               maxlength="13"
-                               class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
-                        @error('contact_phone') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
-                    </div>
-                </div>
-            </section>
+                </section>
+            @endif
 
             <section class="mt-5 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 bg-white dark:bg-gray-800/90 shadow-sm overflow-hidden">
                 <div class="px-5 py-3.5 border-b border-gray-100 dark:border-gray-700/60 bg-gradient-to-r from-primary-50/60 to-transparent dark:from-primary-500/[0.06] dark:to-transparent">
-                    <div class="flex items-center gap-3">
-                        <span class="w-5 h-px bg-primary-600" aria-hidden="true"></span>
-                        <span class="text-[10px] font-bold uppercase tracking-wider text-primary-700 dark:text-primary-400">
-                            Review &amp; Submit
-                        </span>
-                    </div>
+                    <p class="{{ $__sectionEyebrow }}">
+                        <span class="{{ $__sectionRule }}" aria-hidden="true"></span>
+                        Review &amp; Submit
+                    </p>
                     <p class="mt-1.5 text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
                         One last look. Everything below will be visible to our reviewers.
                     </p>
@@ -2166,43 +2578,44 @@ class extends Component
                     </div>
                     <div class="min-w-0">
                         <dt class="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Documents</dt>
-                        <dd class="mt-0.5 text-sm font-medium tabular-nums {{ $this->isReadyToSubmit ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400' }}">
+                        <dd class="mt-0.5 text-sm font-medium tabular-nums {{ $this->hasAllRequiredDocuments ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400' }}">
                             {{ $this->uploadedRequiredCount }} / {{ count($this->requiredDocuments) }}
-                            {{ $this->isReadyToSubmit ? '✓' : '(incomplete)' }}
+                            {{ $this->hasAllRequiredDocuments ? '✓' : '(incomplete)' }}
                         </dd>
                     </div>
                 </dl>
 
                 <div class="px-5 pb-5 flex items-center gap-3 flex-wrap">
                     <button type="button" wire:click="gotoStep(1)"
-                            class="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline py-2.5 px-1 -mx-1 -my-2.5
-                                   transition-colors
+                            class="relative text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline py-2.5 px-1 -mx-1 -my-2.5
+                                   before:absolute before:content-[''] before:-inset-1 before:rounded
                                    [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition-colors">
                         ← Edit business &amp; location
                     </button>
                     <span class="text-gray-300 dark:text-gray-600" aria-hidden="true">·</span>
                     <button type="button" wire:click="gotoStep(2)"
-                            class="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline py-2.5 px-1 -mx-1 -my-2.5
-                                   transition-colors
+                            class="relative text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline py-2.5 px-1 -mx-1 -my-2.5
+                                   before:absolute before:content-[''] before:-inset-1 before:rounded
                                    [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition-colors">
                         Edit documents &amp; verification
                     </button>
-                    <span class="text-gray-300 dark:text-gray-600" aria-hidden="true">·</span>
-                    <button type="button" wire:click="gotoStep(3)"
-                            class="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline py-2.5 px-1 -mx-1 -my-2.5
-                                   transition-colors
-                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                        Edit owner &amp; contact
-                    </button>
+                    @if(!$this->isFollowUpApplication)
+                        <span class="text-gray-300 dark:text-gray-600" aria-hidden="true">·</span>
+                        <button type="button" wire:click="gotoStep(3)"
+                                class="relative text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:underline py-2.5 px-1 -mx-1 -my-2.5
+                                       before:absolute before:content-[''] before:-inset-1 before:rounded
+                                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
+                                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 transition-colors">
+                            Edit owner &amp; contact
+                        </button>
+                    @endif
                 </div>
             </section>
         @endif
 
-        {{-- Navigation --}}
-        <div class="sticky z-20 mt-5
+        <div class="sticky z-10 mt-5
                     bottom-[max(1rem,var(--safe-bottom))]">
             <div class="bg-white/95 dark:bg-gray-800/95 backdrop-blur border border-gray-200 dark:border-gray-700 rounded-2xl shadow-lg p-2.5 flex items-center justify-between gap-3">
 
@@ -2252,13 +2665,13 @@ class extends Component
                             wire:click="submit"
                             wire:loading.attr="disabled"
                             wire:target="back,next,submit"
-                            @disabled(!$this->isReadyToSubmit)
-                            title="{{ $this->isReadyToSubmit ? 'Submit your application for review' : 'Complete all required fields and upload all required documents first' }}"
+                            data-submit-ready="{{ $this->isReadyToSubmit ? '1' : '0' }}"
+                            title="{{ $this->isReadyToSubmit ? 'Submit your application for review' : 'Complete every required field and upload every required document first' }}"
                             class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold shadow-sm
                                    transition-all duration-200 active:scale-95
                                    [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
-                                   disabled:opacity-40 disabled:cursor-not-allowed">
+                                   disabled:opacity-60 disabled:cursor-wait">
                         <span wire:loading.remove wire:target="submit">Submit for Review</span>
                         <span wire:loading wire:target="submit">Submitting…</span>
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">

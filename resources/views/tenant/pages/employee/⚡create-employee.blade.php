@@ -10,6 +10,7 @@ use Livewire\Attributes\Computed;
 use App\Models\Employee;
 use App\Models\User;
 use App\Models\TenantSetting;
+use App\Traits\ChecksTenantPermissions;
 use App\Traits\HandlesImageUploads;
 use Spatie\Permission\Models\Role;
 use Spatie\Permission\Models\Permission;
@@ -29,6 +30,7 @@ new
 class extends Component {
     use WithFileUploads;
     use HandlesImageUploads;
+    use ChecksTenantPermissions;
 
     #[Validate('required|string|max:255')]
     public $name = '';
@@ -84,10 +86,11 @@ class extends Component {
 
         abort_unless($user && $user->tenant_id, 403);
 
-        $canManage = $user->hasAnyRole(['admin', 'super-admin'])
-            || $user->getAllPermissions()->contains('name', 'manage employees');
-
-        abort_unless($canManage, 403, 'You are not authorized to add employees.');
+        abort_unless(
+            $this->tenantCan('manage employees'),
+            403,
+            'You are not authorized to add employees.'
+        );
     }
 
     public function generateCode(): void
@@ -165,29 +168,20 @@ class extends Component {
         $this->search = $user->name;
         $this->existingUserResults = [];
 
-        $tenantId  = Auth::user()->tenant_id;
-        $usesTeams = (bool) config('permission.teams');
-        $teamKey   = $usesTeams
-            ? config('permission.column_names.team_foreign_key', 'team_id')
-            : null;
+        $tenantId = Auth::user()->tenant_id;
 
-        $values = [];
-        foreach ($user->roles as $role) {
-            if (in_array($role->name, ['super-admin', 'admin'], true)) {
-                continue;
-            }
+        $roleIds = DB::table('model_has_roles')
+            ->join('roles', 'roles.id', '=', 'model_has_roles.role_id')
+            ->where('model_has_roles.model_id', $user->id)
+            ->where('model_has_roles.model_type', User::class)
+            ->where('model_has_roles.team_id', $tenantId)
+            ->whereNotIn('roles.name', ['super-admin', 'admin'])
+            ->pluck('roles.id')
+            ->map(fn ($id) => 'role_' . (int) $id)
+            ->values()
+            ->all();
 
-            if ($usesTeams && $teamKey) {
-                $roleTeamId = $role->{$teamKey} ?? null;
-                if ($roleTeamId !== null && (int) $roleTeamId !== (int) $tenantId) {
-                    continue;
-                }
-            }
-
-            $values[] = 'role_' . $role->id;
-        }
-
-        $this->selectedRoles = array_values(array_unique($values));
+        $this->selectedRoles = $roleIds;
     }
 
     #[Computed]
@@ -705,7 +699,6 @@ class extends Component {
                     </h2>
                 </div>
 
-                {{-- Profile picture --}}
                 <div
                     x-data="{
                         ...imageCropper({

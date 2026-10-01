@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Carbon\CarbonPeriod;
 use Carbon\Carbon;
 
@@ -43,7 +44,7 @@ class extends Component {
     #[Validate('required|integer|min:1|max:100000')]
     public $capacity = 1;
 
-    #[Validate('required|integer|min:1|max:100000')]
+    #[Validate('required|integer|min:1|max:100')]
     public $quantity = 1;
 
     #[Validate('required|in:available,occupied,reserved,maintenance')]
@@ -51,6 +52,10 @@ class extends Component {
 
     #[Validate('boolean')]
     public $is_active = true;
+
+    public int $min_stay_days = 1;
+    public bool $unlimited_stay = true;
+    public ?int $max_stay_days = null;
 
     #[Validate('nullable|date')]
     public ?string $unavailableFrom = null;
@@ -93,6 +98,29 @@ class extends Component {
         }
     }
 
+    public function updatedUnlimitedStay(): void
+    {
+        if ($this->unlimited_stay) {
+            $this->max_stay_days = null;
+            return;
+        }
+
+        if ($this->max_stay_days === null) {
+            $this->max_stay_days = max($this->min_stay_days, 7);
+        }
+    }
+
+    public function updatedMinStayDays(): void
+    {
+        if ($this->unlimited_stay) {
+            return;
+        }
+
+        if ($this->max_stay_days !== null && $this->max_stay_days < $this->min_stay_days) {
+            $this->max_stay_days = $this->min_stay_days;
+        }
+    }
+
     protected function rules(): array
     {
         $tenantId = Auth::user()->tenant_id;
@@ -115,6 +143,27 @@ class extends Component {
             ],
 
             'image' => ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
+
+            'min_stay_days'  => ['required', 'integer', 'min:1', 'max:90'],
+            'unlimited_stay' => ['boolean'],
+            'max_stay_days'  => [
+                'nullable',
+                'integer',
+                'min:1',
+                'max:90',
+                function ($attribute, $value, $fail): void {
+                    if ($this->unlimited_stay) {
+                        return;
+                    }
+                    if ($value === null) {
+                        $fail('Enter a maximum stay or check "Unlimited".');
+                        return;
+                    }
+                    if ((int) $value < (int) $this->min_stay_days) {
+                        $fail('Maximum stay must be greater than or equal to the minimum.');
+                    }
+                },
+            ],
 
             'unavailableTo' => [
                 'nullable',
@@ -222,79 +271,132 @@ class extends Component {
 
         $tenantId = Auth::user()->tenant_id;
 
-        $storedPath = null;
-        try {
-            if ($this->image) {
-                $storedPath = $this->storeImage($this->image, 'activity-images', 'public', 'property');
+        // Quantity is a creation-time multiplier: N units → N separate
+        // Property rows, each with its own ID, booking history, and
+        // availability. Each row carries quantity = 1 so nothing
+        // double-counts.
+        $units = max(1, (int) $this->quantity);
 
-                if (! $storedPath) {
+        // Store the image once, then copy it N−1 times so every row
+        // owns its own file. Sharing one path across rows would let
+        // editing one row delete the file out from under the others.
+        $storedPaths = [];
+        if ($this->image) {
+            try {
+                $primary = $this->storeImage($this->image, 'activity-images', 'public', 'property');
+
+                if (! $primary) {
                     throw new \RuntimeException('Failed to store the uploaded image.');
                 }
+
+                $storedPaths[] = $primary;
+
+                if ($units > 1) {
+                    $disk = Storage::disk('public');
+                    $ext  = strtolower(pathinfo($primary, PATHINFO_EXTENSION)) ?: 'jpg';
+
+                    for ($i = 1; $i < $units; $i++) {
+                        $copy = 'activity-images/' . Str::random(40) . '.' . $ext;
+                        if ($disk->copy($primary, $copy)) {
+                            $storedPaths[] = $copy;
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                foreach ($storedPaths as $path) {
+                    if (Storage::disk('public')->exists($path)) {
+                        Storage::disk('public')->delete($path);
+                    }
+                }
+                Log::error('Activity image store failed: ' . $e->getMessage(), [
+                    'tenant_id' => $tenantId,
+                    'units'     => $units,
+                ]);
+                session()->flash('error', 'Failed to upload the image. Please try again.');
+                return null;
             }
-        } catch (\Throwable $e) {
-            if ($storedPath && Storage::disk('public')->exists($storedPath)) {
-                Storage::disk('public')->delete($storedPath);
-            }
-            Log::error('Activity image store failed: ' . $e->getMessage(), [
-                'tenant_id' => $tenantId,
-            ]);
-            session()->flash('error', 'Failed to upload the image. Please try again.');
-            return null;
         }
 
+        $minStay = max(1, (int) $this->min_stay_days);
+        $maxStay = $this->unlimited_stay
+            ? null
+            : max($minStay, (int) ($this->max_stay_days ?? $minStay));
+
+        // Precompute the block-out dates once. Each unit gets its own
+        // PropertyAvailability rows referencing its own property_id.
+        $blockedDates = [];
+        if ($this->unavailableFrom && $this->unavailableTo) {
+            $period = CarbonPeriod::create(
+                Carbon::parse($this->unavailableFrom),
+                Carbon::parse($this->unavailableTo)
+            );
+            foreach ($period as $date) {
+                $blockedDates[] = $date->toDateString();
+            }
+        }
+
+        $createdIds = [];
+
         try {
-            DB::transaction(function () use ($tenantId, $storedPath): void {
-                $property = Property::create([
-                    'tenant_id'        => $tenantId,
-                    'property_type_id' => $this->property_type_id,
-                    'name'             => $this->name,
-                    'description'      => $this->description ?: null,
-                    'capacity'         => $this->capacity,
-                    'quantity'         => $this->quantity,
-                    'price'            => $this->price,
-                    'status'           => $this->status,
-                    'is_active'        => $this->is_active,
-                ]);
-
-                if ($storedPath) {
-                    PropertyImage::create([
-                        'tenant_id'   => $tenantId,
-                        'property_id' => $property->id,
-                        'image_path'  => $storedPath,
+            DB::transaction(function () use (
+                $tenantId,
+                $storedPaths,
+                $minStay,
+                $maxStay,
+                $units,
+                $blockedDates,
+                &$createdIds,
+            ): void {
+                for ($i = 0; $i < $units; $i++) {
+                    $property = Property::create([
+                        'tenant_id'        => $tenantId,
+                        'property_type_id' => $this->property_type_id,
+                        'name'             => $this->name,
+                        'description'      => $this->description ?: null,
+                        'capacity'         => $this->capacity,
+                        'quantity'         => 1,
+                        'min_stay_days'    => $minStay,
+                        'max_stay_days'    => $maxStay,
+                        'price'            => $this->price,
+                        'status'           => $this->status,
+                        'is_active'        => $this->is_active,
                     ]);
-                }
 
-                if ($this->unavailableFrom && $this->unavailableTo) {
-                    $period = CarbonPeriod::create(
-                        Carbon::parse($this->unavailableFrom),
-                        Carbon::parse($this->unavailableTo)
-                    );
+                    $createdIds[] = $property->id;
 
-                    $availabilityRecords = [];
-                    foreach ($period as $date) {
-                        $availabilityRecords[] = [
+                    if (isset($storedPaths[$i])) {
+                        PropertyImage::create([
+                            'tenant_id'   => $tenantId,
+                            'property_id' => $property->id,
+                            'image_path'  => $storedPaths[$i],
+                        ]);
+                    }
+
+                    if (! empty($blockedDates)) {
+                        $records = array_map(fn (string $date): array => [
                             'tenant_id'    => $tenantId,
                             'property_id'  => $property->id,
-                            'date'         => $date->toDateString(),
+                            'date'         => $date,
                             'is_available' => false,
                             'created_at'   => now(),
                             'updated_at'   => now(),
-                        ];
-                    }
+                        ], $blockedDates);
 
-                    if (! empty($availabilityRecords)) {
-                        PropertyAvailability::insert($availabilityRecords);
+                        PropertyAvailability::insert($records);
                     }
                 }
             });
         } catch (\Throwable $e) {
-            if ($storedPath && Storage::disk('public')->exists($storedPath)) {
-                Storage::disk('public')->delete($storedPath);
+            foreach ($storedPaths as $path) {
+                if (Storage::disk('public')->exists($path)) {
+                    Storage::disk('public')->delete($path);
+                }
             }
 
             Log::error('Activity creation failed: ' . $e->getMessage(), [
                 'tenant_id' => $tenantId,
                 'name'      => $this->name,
+                'units'     => $units,
                 'file'      => $e->getFile(),
                 'line'      => $e->getLine(),
             ]);
@@ -302,7 +404,11 @@ class extends Component {
             return null;
         }
 
-        session()->flash('message', 'Activity created successfully.');
+        $count = count($createdIds);
+        session()->flash('message', $count === 1
+            ? 'Activity created successfully.'
+            : "{$count} activities created successfully.");
+
         return $this->redirectRoute('tenant.properties.index', navigate: true);
     }
 };
@@ -471,11 +577,99 @@ class extends Component {
                         </div>
                         <div>
                             <label for="field-quantity" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                Quantity (units)
+                                Number of units
                             </label>
-                            <input type="number" id="field-quantity" wire:model="quantity" min="1" class="input">
+                            <input type="number" id="field-quantity" wire:model.live="quantity" min="1" max="100" class="input">
                             @error('quantity') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                         </div>
+                    </div>
+
+                    @if((int) $quantity > 1)
+                        <div class="rounded-xl border border-sky-200 dark:border-sky-500/30 bg-sky-50 dark:bg-sky-500/10 px-3 py-2 text-xs text-sky-800 dark:text-sky-300">
+                            <p class="font-semibold">
+                                {{ (int) $quantity }} separate activities will be created
+                            </p>
+                            <p class="mt-0.5">
+                                Each unit gets its own ID, availability, and booking history. They share the same details
+                                (name, price, type, photo, stay limits) but are managed independently.
+                            </p>
+                        </div>
+                    @endif
+                </div>
+
+                {{-- ═══ Booking Duration ═══ --}}
+                <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
+                    <div class="flex items-center gap-3">
+                        <span class="w-5 h-px bg-primary-600"></span>
+                        <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                            Booking Duration
+                        </h2>
+                    </div>
+
+                    <p class="text-xs text-gray-500 dark:text-gray-400 -mt-2">
+                        Restrict how many days a single booking may span. Leave "Unlimited" checked for open-ended stays.
+                    </p>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label for="field-min-stay" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                Minimum stay (days)
+                            </label>
+                            <input type="number"
+                                   id="field-min-stay"
+                                   wire:model.live="min_stay_days"
+                                   min="1"
+                                   max="90"
+                                   step="1"
+                                   class="input">
+                            @error('min_stay_days') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        </div>
+
+                        <div>
+                            <label for="field-max-stay" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                Maximum stay (days)
+                            </label>
+                            <input type="number"
+                                   id="field-max-stay"
+                                   wire:model.live="max_stay_days"
+                                   min="1"
+                                   max="90"
+                                   step="1"
+                                   @disabled($unlimited_stay)
+                                   class="input disabled:opacity-60 disabled:cursor-not-allowed">
+                            @error('max_stay_days') <span class="text-rose-500 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        </div>
+                    </div>
+
+                    <label class="flex items-center gap-3 cursor-pointer select-none min-h-[44px]
+                                  [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
+                        <span class="relative inline-flex items-center shrink-0">
+                            <input type="checkbox" wire:model.live="unlimited_stay" class="sr-only peer">
+                            <span class="w-11 h-6 bg-gray-200 dark:bg-gray-600 rounded-full
+                                         peer peer-checked:bg-primary-600
+                                         after:content-[''] after:absolute after:top-[2px] after:left-[2px]
+                                         after:bg-white after:rounded-full after:h-5 after:w-5
+                                         after:transition-all peer-checked:after:translate-x-full"></span>
+                        </span>
+                        <span class="text-sm text-gray-700 dark:text-gray-300">
+                            Unlimited
+                            <span class="text-gray-400 dark:text-gray-500">— no maximum stay</span>
+                        </span>
+                    </label>
+
+                    <div class="rounded-xl border border-sky-200 dark:border-sky-500/30 bg-sky-50 dark:bg-sky-500/10 px-3 py-2 text-xs text-sky-800 dark:text-sky-300">
+                        <p class="font-semibold">Current rule</p>
+                        <p class="mt-0.5">
+                            @if($unlimited_stay)
+                                Guests may book stays of {{ $min_stay_days }} {{ $min_stay_days === 1 ? 'day' : 'days' }} or longer.
+                            @elseif($max_stay_days === null)
+                                Enter a maximum stay, or check "Unlimited".
+                            @elseif($min_stay_days === $max_stay_days)
+                                Guests may only book {{ $min_stay_days }} {{ $min_stay_days === 1 ? 'day' : 'days' }}.
+                            @else
+                                Guests may book stays between {{ $min_stay_days }} and {{ $max_stay_days }} days.
+                            @endif
+                        </p>
                     </div>
                 </div>
 
@@ -484,9 +678,8 @@ class extends Component {
             <div class="lg:col-span-2 space-y-6">
 
                 {{--
-                    ═══ Activity Photo ═══
-                    One Alpine scope owns both the picker and the preview URL.
-                    Two functions spread into it:
+                    Activity photo — one Alpine scope owns both the picker
+                    and the preview URL. Two functions spread into it:
                       • imageCropper({...})  — pick, crop, upload
                       • avatarPreview()      — previewUrl state + object-URL lifecycle
                 --}}
@@ -705,7 +898,9 @@ class extends Component {
                            [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                            disabled:opacity-60 disabled:cursor-not-allowed">
-                <span wire:loading.remove wire:target="save">Create Activity</span>
+                <span wire:loading.remove wire:target="save">
+                    {{ (int) $quantity > 1 ? 'Create ' . (int) $quantity . ' Activities' : 'Create Activity' }}
+                </span>
                 <span wire:loading wire:target="save" class="inline-flex items-center gap-2">
                     <svg class="animate-spin h-4 w-4 text-white motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>

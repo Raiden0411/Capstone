@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Jobs\ProcessPayMongoPayment;
+use App\Models\Booking;
+use App\Scopes\TenantScope;
 use App\Services\PayMongoService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -15,44 +17,119 @@ class PayMongoWebhookController extends Controller
         $payload         = $request->getContent();
         $signatureHeader = $request->header('Paymongo-Signature');
 
-        if (!$this->verifySignature($payload, $signatureHeader)) {
+        if (! $this->verifySignature($payload, $signatureHeader)) {
             Log::warning('PayMongo webhook signature verification failed');
             return response()->json(['error' => 'Invalid signature'], 401);
         }
 
-        // Decode once — avoid re-reading the body.
         $data      = json_decode($payload, true) ?: [];
         $eventType = $data['data']['attributes']['type'] ?? null;
-        $sessionId = $data['data']['attributes']['data']['id'] ?? null;
 
-        if ($eventType !== 'checkout_session.payment.paid' || !$sessionId) {
-            Log::info('PayMongo webhook received unsupported event', [
-                'type'       => $eventType,
-                'session_id' => $sessionId,
-            ]);
+        if ($eventType === 'checkout_session.payment.paid') {
+            $sessionId = $data['data']['attributes']['data']['id'] ?? null;
 
+            if ($sessionId) {
+                ProcessPayMongoPayment::dispatch($sessionId);
+                return response()->json(['status' => 'ok']);
+            }
+
+            Log::info('PayMongo webhook: paid event missing session ID', ['event' => $eventType]);
             return response()->json(['status' => 'ignored']);
         }
 
-        // Process off-request. The job is idempotent (lockForUpdate + status check).
-        ProcessPayMongoPayment::dispatch($sessionId);
+        // PayMongo emits BOTH `payment.refunded` (creation) and
+        // `payment.refund.updated` (status change). The older
+        // `refund.updated` is retained defensively — different API
+        // versions have historically used different names.
+        if (in_array($eventType, [
+            'payment.refunded',
+            'payment.refund.updated',
+            'refund.updated',
+        ], true)) {
+            $this->handleRefundEvent($data);
+            return response()->json(['status' => 'ok']);
+        }
 
-        return response()->json(['status' => 'ok']);
+        Log::info('PayMongo webhook received unsupported event', ['type' => $eventType]);
+        return response()->json(['status' => 'ignored']);
+    }
+
+    protected function handleRefundEvent(array $data): void
+    {
+        $payload = $data['data']['attributes']['data'] ?? null;
+
+        if (! is_array($payload)) {
+            return;
+        }
+
+        $refunds = [];
+
+        if (($payload['type'] ?? null) === 'refund') {
+            $refunds = [$payload];
+        } elseif (($payload['type'] ?? null) === 'payment') {
+            $refunds = $payload['attributes']['refunds'] ?? [];
+        }
+
+        foreach ($refunds as $refund) {
+            if (! is_array($refund)) {
+                continue;
+            }
+
+            $refundId = $refund['id'] ?? null;
+            $status   = $refund['attributes']['status'] ?? null;
+
+            if (! is_string($refundId) || $refundId === '' || ! is_string($status)) {
+                continue;
+            }
+
+            $booking = Booking::withoutGlobalScope(TenantScope::class)
+                ->where('paymongo_refund_id', $refundId)
+                ->first();
+
+            if (! $booking) {
+                continue;
+            }
+
+            $this->applyRefundStatus($booking, $status);
+        }
+    }
+
+    protected function applyRefundStatus(Booking $booking, string $status): void
+    {
+        if ($booking->refund_status === Booking::REFUND_STATUS_PROCESSED) {
+            return;
+        }
+
+        $mapped = match ($status) {
+            'succeeded' => Booking::REFUND_STATUS_PROCESSED,
+            'failed'    => Booking::REFUND_STATUS_REJECTED,
+            default     => Booking::REFUND_STATUS_PENDING,
+        };
+
+        $booking->update([
+            'refund_status'       => $mapped,
+            'refund_processed_at' => $mapped === Booking::REFUND_STATUS_PROCESSED ? now() : null,
+        ]);
+
+        Log::info('Refund status updated via webhook', [
+            'booking_id' => $booking->id,
+            'refund_id'  => $booking->paymongo_refund_id,
+            'status'     => $mapped,
+        ]);
     }
 
     protected function verifySignature(string $payload, ?string $signatureHeader): bool
     {
-        if (!$signatureHeader) {
+        if (! $signatureHeader) {
             return false;
         }
 
         $secret = config('paymongo.webhook_secret');
-        if (!$secret) {
+        if (! $secret) {
             Log::error('PayMongo webhook secret is not set.');
             return false;
         }
 
-        // Header format: "t=...,te=..." or "t=...,li=...".
         $parts = [];
         foreach (explode(',', $signatureHeader) as $part) {
             $kv = explode('=', $part, 2);
@@ -64,11 +141,10 @@ class PayMongoWebhookController extends Controller
         $timestamp = $parts['t']  ?? '';
         $signature = $parts['te'] ?? $parts['li'] ?? '';
 
-        if (!$timestamp || !$signature) {
+        if (! $timestamp || ! $signature) {
             return false;
         }
 
-        // Replay protection: 5-minute tolerance.
         if (abs(time() - (int) $timestamp) > 300) {
             return false;
         }

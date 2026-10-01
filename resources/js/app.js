@@ -5,58 +5,15 @@ import axios from 'axios';
 window.axios = axios;
 window.axios.defaults.headers.common['X-Requested-With'] = 'XMLHttpRequest';
 
-/*
-|--------------------------------------------------------------------------
-| Chart.js — bundled via Vite
-|--------------------------------------------------------------------------
-| Used by the tenant analytics page.
-|
-| Loading it from the Vite bundle instead of a CDN <script> tag means:
-|
-|   • No dependency on the tenant layout having a @stack('scripts') slot.
-|   • No CSP issues (no external script source).
-|   • No network round-trip on cold load; works offline and on local dev.
-|
-| `chart.js/auto` registers every controller, scale, and plugin, so any
-| <canvas> element works with any chart type without further imports.
-| We expose it as `window.Chart` because the analytics SFC's @script
-| block reaches for the global.
-*/
 import Chart from 'chart.js/auto';
 window.Chart = Chart;
 
-/*
-|--------------------------------------------------------------------------
-| Alpine plugins
-|--------------------------------------------------------------------------
-| Livewire v4 bundles Alpine core but does NOT bundle Collapse. We import
-| it here as an ES module value — not via a CDN <script> — and register
-| it on `alpine:init`, which fires exactly once when Livewire boots.
-*/
 import collapse from '@alpinejs/collapse';
 
 document.addEventListener('alpine:init', () => {
     window.Alpine.plugin(collapse);
 });
 
-/*
-|--------------------------------------------------------------------------
-| MapLibre instance interceptor + Apple-Maps-style camera tuning
-|--------------------------------------------------------------------------
-| The kwasii/livewire-mapcn package creates its MapLibre instance inside
-| an Alpine factory closure and never exposes it. A closure variable
-| cannot be reached from outside JavaScript. The only reliable capture
-| point is the constructor itself.
-|
-| This block does two jobs:
-|
-|   1. CAPTURE — stash the instance on window.__lastMapInstance and
-|      dispatch a `maplibre:captured` event.
-|
-|   2. TUNE — apply the platform's smoothness defaults immediately on
-|      construction. These settings are the ones that produce the
-|      "Apple Maps feel".
-*/
 (function installMapLibreInterceptor() {
     if (window.__maplibreInterceptorInstalled) return;
     window.__maplibreInterceptorInstalled = true;
@@ -146,57 +103,16 @@ document.addEventListener('alpine:init', () => {
     }
 })();
 
-/*
-|--------------------------------------------------------------------------
-| Modular JS — real-time navigation
-|--------------------------------------------------------------------------
-*/
 import { RealtimeNavigation } from './modules/realtime-navigation';
 window.RealtimeNavigation = RealtimeNavigation;
 
-/*
-|--------------------------------------------------------------------------
-| Modular JS — location picker (Alpine factory)
-|--------------------------------------------------------------------------
-*/
 import { locationPicker } from './modules/location-picker';
 window.locationPicker = locationPicker;
 
-/*
-|--------------------------------------------------------------------------
-| Modular JS — image cropper (two coordinated Alpine factories)
-|--------------------------------------------------------------------------
-*/
 import { imageCropper, cropModal, avatarPreview } from './modules/image-cropper';
 window.imageCropper   = imageCropper;
 window.cropModal      = cropModal;
 window.avatarPreview  = avatarPreview;
-
-/*
-|==========================================================================
-| EXPLORE MAP — page helper + Alpine factory
-|==========================================================================
-|
-| WHY THIS LIVES IN app.js AND NOT IN THE SFC <script> TAG:
-|
-| Livewire v4 extracts <script> tags from view-based components and
-| serves them as separate, async-loaded, cached files. By the time those
-| files execute, Alpine has already walked the DOM and evaluated
-| `x-data="mapApp()"` — producing "mapApp is not defined".
-|
-| Vite loads app.js as a module script. Module scripts run after HTML
-| parsing completes but BEFORE DOMContentLoaded — which is when Livewire
-| boots Alpine. So `window.mapApp` and the helper IIFE below are
-| guaranteed to exist before Alpine touches the DOM.
-|
-| LIVEWIRE MAGIC SCOPE NOTE:
-|
-| Inside an SFC <script> block, Livewire injects `$wire` as a bare
-| identifier. Inside app.js, it does NOT. We use `this.$wire` on the
-| Alpine reactive proxy instead.
-|
-|==========================================================================
-*/
 
 (function installExploreMapHelpers() {
     if (window.__exploreMapModule) return;
@@ -273,19 +189,21 @@ window.mapApp = function () {
         toasts:          [],
         detailMinimized: false,
 
-        _vpTimer:       null,
-        _watchId:       null,
-        _bootTimer:     null,
-        _map:           null,
-        _nav:           null,
-        _attachTries:   0,
-        _navRetryCount: 0,
-        _tornDown:      false,
-        _handlers:      [],
-        _token:         null,
+        _vpTimer:        null,
+        _watchId:        null,
+        _bootTimer:      null,
+        _map:            null,
+        _nav:            null,
+        _attachTries:    0,
+        _navRetryCount:  0,
+        _tornDown:       false,
+        _handlers:       [],
+        _token:          null,
+        _resizeObserver: null,
+        _resizeTimers:   null,
 
-        _routeHadData:  false,
-        _routeListener: null,
+        _routeHadData:   false,
+        _routeListener:  null,
         _boundsListener: null,
 
         _userMarker:     null,
@@ -375,6 +293,99 @@ window.mapApp = function () {
             }
         },
 
+        _safeMapResize() {
+            if (!this._map || typeof this._map.resize !== 'function') return;
+            try {
+                this._map.resize();
+                const container = document.getElementById('tourist-map');
+                if (container) {
+                    const canvas = container.querySelector('canvas');
+                    if (canvas) {
+                        const dpr = window.devicePixelRatio || 1;
+                        const cw = Math.round(canvas.width / dpr);
+                        const ch = Math.round(canvas.height / dpr);
+                        const ew = Math.round(container.clientWidth);
+                        const eh = Math.round(container.clientHeight);
+                        if (cw !== ew || ch !== eh) {
+                            console.debug(
+                                '[explore-map] resize mismatch:',
+                                'canvas', cw + '×' + ch,
+                                'container', ew + '×' + eh,
+                            );
+                        }
+                    }
+                }
+            } catch (e) { /* noop */ }
+        },
+
+        /**
+         * Fire a burst of resize calls at increasing delays. MapLibre
+         * re-measures the container on every call, so a burst covers the
+         * staggered moments when the flex layout settles on desktop:
+         * Alpine init → sidebar transition (300ms) → webfont swap →
+         * panel mount. Any single timeout is fragile; the burst is not.
+         */
+        _burstResize() {
+            if (this._resizeTimers) {
+                this._resizeTimers.forEach(t => clearTimeout(t));
+            }
+            this._resizeTimers = [0, 80, 200, 400, 800, 1600, 3000].map(ms =>
+                setTimeout(() => {
+                    if (!this.isActive) return;
+                    this._safeMapResize();
+                }, ms)
+            );
+        },
+
+        /**
+         * Watch the map container for size changes and re-measure the
+         * MapLibre canvas on every change.
+         *
+         * WHY THIS IS NECESSARY:
+         *   MapLibre locks its canvas width/height at instantiation.
+         *   It only re-measures when `map.resize()` is called. Any
+         *   layout-driven change after `maplibre:captured` — the flex
+         *   algorithm settling, a sibling panel mounting, a scrollbar
+         *   appearing, DevTools opening, the sidebar toggling —
+         *   leaves the canvas at its old size and the container's
+         *   background bleeds through on the right/bottom.
+         *
+         *   The ResizeObserver fires for every size change (including
+         *   the very first layout pass) which catches later changes;
+         *   `_burstResize()` covers the initial settle.
+         */
+        _installResizeObserver() {
+            if (this._resizeObserver) return;
+            if (typeof ResizeObserver === 'undefined') return;
+
+            const container = document.getElementById('tourist-map');
+            if (!container) return;
+
+            let lastW = 0;
+            let lastH = 0;
+
+            this._resizeObserver = new ResizeObserver((entries) => {
+                for (const entry of entries) {
+                    const w = Math.round(entry.contentRect.width);
+                    const h = Math.round(entry.contentRect.height);
+                    if (w === lastW && h === lastH) continue;
+                    if (w === 0 || h === 0) { lastW = w; lastH = h; continue; }
+                    lastW = w;
+                    lastH = h;
+                    if (!this.isActive) continue;
+                    this._safeMapResize();
+                }
+            });
+
+            try {
+                this._resizeObserver.observe(container);
+                const parent = container.parentElement;
+                if (parent) this._resizeObserver.observe(parent);
+            } catch (e) {
+                console.warn('[explore-map] ResizeObserver.observe failed', e);
+            }
+        },
+
         _syncUserMarker() {
             if (!this.isActive) return;
             if (!this._map) return;
@@ -400,10 +411,6 @@ window.mapApp = function () {
             }
 
             if (this._userMarker) {
-                // SELF-HEAL: if the marker's DOM element is detached (its map
-                // instance was replaced — e.g. on a satellite/theme remount)
-                // then setLngLat() updates a dead element and nothing appears.
-                // Detect that and rebuild from scratch.
                 let el = null;
                 try {
                     el = (typeof this._userMarker.getElement === 'function')
@@ -450,15 +457,6 @@ window.mapApp = function () {
             }
         },
 
-        /**
-         * Drop the current user-marker and forget it.
-         *
-         * Called whenever a NEW MapLibre Map instance is adopted — the
-         * old marker's DOM lives in the destroyed map container, so the
-         * reference becomes a stale pointer that setLngLat() cannot
-         * revive. Clearing it here forces _syncUserMarker() to build a
-         * fresh marker on the new map.
-         */
         _clearUserMarker() {
             if (!this._userMarker) return;
             try { this._userMarker.remove(); } catch (e) { /* noop */ }
@@ -470,6 +468,10 @@ window.mapApp = function () {
             if (this._userWatchers.length > 0) return;
 
             try {
+                // Livewire's JS API exposes `$watch` on the `$wire` proxy.
+                // The previous `this.wire.watch(...)` form threw a
+                // TypeError on the first push, so the second and third
+                // watchers never ran and the user marker never re-synced.
                 this._userWatchers.push(
                     this.$wire.$watch('userLat', () => this._syncUserMarker())
                 );
@@ -568,8 +570,6 @@ window.mapApp = function () {
                 this._map = map;
                 this._nav?.attach(map);
 
-                // Map instance replaced → old user marker's DOM is gone.
-                // Drop the stale pointer so _syncUserMarker() rebuilds it.
                 this._clearUserMarker();
 
                 if (window.__mapCanvasPoll) window.__mapCanvasPoll.stop();
@@ -582,15 +582,22 @@ window.mapApp = function () {
                     map.setMinZoom(5);
                 } catch (err) { /* noop */ }
 
-                const existing = Array.isArray(this.$wire.routePolyline) ? this.$wire.routePolyline : [];
-                this._updateRouteLayer(existing);
-                this._routeHadData = existing.length >= 2;
+                this._installResizeObserver();
+                this._burstResize();
 
-                if (existing.length >= 2) {
-                    setTimeout(() => {
-                        if (!this.isActive) return;
-                        this._fitRouteBounds(existing);
-                    }, 120);
+                try {
+                    const existing = Array.isArray(this.$wire.routePolyline) ? this.$wire.routePolyline : [];
+                    this._updateRouteLayer(existing);
+                    this._routeHadData = existing.length >= 2;
+
+                    if (existing.length >= 2) {
+                        setTimeout(() => {
+                            if (!this.isActive) return;
+                            this._fitRouteBounds(existing);
+                        }, 120);
+                    }
+                } catch (err) {
+                    console.warn('[explore-map] route hydrate failed', err);
                 }
 
                 this._installUserMarkerWatchers();
@@ -600,21 +607,41 @@ window.mapApp = function () {
                     this.startNavigation();
                 }
             };
+
             const onResize = () => {
                 if (!this.isActive) return;
                 if (window.innerWidth >= 1024 && this.mobileOpen) {
                     this.mobileOpen = false;
                 }
+                this._safeMapResize();
+            };
+
+            const onMapResizeEvent = () => {
+                if (!this.isActive) return;
+                this._safeMapResize();
+            };
+
+            const onWindowLoad = () => {
+                if (!this.isActive) return;
+                this._safeMapResize();
             };
 
             window.addEventListener('maplibre:captured', onCaptured);
             window.addEventListener('resize', onResize);
+            window.addEventListener('map:resize', onMapResizeEvent);
+            window.addEventListener('load', onWindowLoad);
             this._handlers.push(
                 ['maplibre:captured', onCaptured],
                 ['resize',            onResize],
+                ['map:resize',        onMapResizeEvent],
+                ['load',              onWindowLoad],
             );
 
-            this._tryAttachMap();
+            try {
+                this._tryAttachMap();
+            } catch (e) {
+                console.error('[explore-map] _tryAttachMap threw — continuing boot', e);
+            }
 
             try {
                 this._routeListener = this.$wire.$watch('routePolyline', (coords) => {
@@ -678,6 +705,7 @@ window.mapApp = function () {
                 setTimeout(() => {
                     if (!this.isActive) return;
                     try { this.$wire.dispatch('map:resize'); } catch (e) { /* noop */ }
+                    this._safeMapResize();
                 }, 320);
             });
 
@@ -686,24 +714,36 @@ window.mapApp = function () {
                 try { this.$wire.set('followMode', v, false); } catch (e) { /* noop */ }
             });
 
-            this.$watch('$wire.navigationActive', (active) => {
-                if (!this.isActive) return;
-                if (active) {
-                    if (this._nav && !this._nav.isActive) {
-                        this.enterNavigation();
+            // `$wire.$watch` is Livewire's JS-side property observer.
+            // The previous `this.watch('wire.X', cb)` form threw a
+            // TypeError — `watch` is not an Alpine magic and `'wire.X'`
+            // is not a valid path on the Alpine data object — which the
+            // catch swallowed. Net effect was that neither watcher
+            // installed: `enterNavigation()` never fired on
+            // `navigationActive` → true and the user marker never
+            // re-synced on toggle.
+            try {
+                this.$wire.$watch('navigationActive', (active) => {
+                    if (!this.isActive) return;
+                    if (active) {
+                        if (this._nav && !this._nav.isActive) {
+                            this.enterNavigation();
+                        }
+                    } else {
+                        if (this._nav?.isActive) {
+                            this._nav.stop();
+                        }
                     }
-                } else {
-                    if (this._nav?.isActive) {
-                        this._nav.stop();
-                    }
-                }
-                this._syncUserMarker();
-            });
+                    this._syncUserMarker();
+                });
 
-            this.$watch('$wire.detailTenantId', () => {
-                if (!this.isActive) return;
-                this.detailMinimized = false;
-            });
+                this.$wire.$watch('detailTenantId', () => {
+                    if (!this.isActive) return;
+                    this.detailMinimized = false;
+                });
+            } catch (e) {
+                console.warn('[explore-map] wire-property watches unavailable', e);
+            }
         },
 
         destroy() {
@@ -721,6 +761,16 @@ window.mapApp = function () {
             if (this._bootTimer) { clearTimeout(this._bootTimer); this._bootTimer = null; }
             if (this._vpTimer)   { clearTimeout(this._vpTimer);   this._vpTimer   = null; }
 
+            if (this._resizeTimers) {
+                this._resizeTimers.forEach(t => clearTimeout(t));
+                this._resizeTimers = null;
+            }
+
+            if (this._resizeObserver) {
+                try { this._resizeObserver.disconnect(); } catch (e) { /* noop */ }
+                this._resizeObserver = null;
+            }
+
             if (this._watchId) {
                 try { navigator.geolocation.clearWatch(this._watchId); } catch (e) { /* noop */ }
                 this._watchId = null;
@@ -736,7 +786,25 @@ window.mapApp = function () {
                 this._userMarker = null;
                 this._userMarkerEl = null;
             }
+
+            // Livewire's $wire.$watch() returns a cleanup function. Call
+            // every one so a wire:navigate away from the map page does
+            // not leak watchers that close over this scope. The guards
+            // make this a no-op if the return shape ever changes.
+            if (typeof this._routeListener === 'function') {
+                try { this._routeListener(); } catch (e) { /* noop */ }
+            }
+            if (typeof this._boundsListener === 'function') {
+                try { this._boundsListener(); } catch (e) { /* noop */ }
+            }
+            for (const off of this._userWatchers) {
+                if (typeof off === 'function') {
+                    try { off(); } catch (e) { /* noop */ }
+                }
+            }
             this._userWatchers = [];
+            this._routeListener = null;
+            this._boundsListener = null;
 
             if (this._nav) {
                 try { this._nav.stop();   } catch (e) { /* noop */ }
@@ -798,8 +866,6 @@ window.mapApp = function () {
                 this._map = map;
                 this._nav?.attach(map);
 
-                // Adopting a fresh map instance — clear any stale marker
-                // pointer so _syncUserMarker() rebuilds it on this map.
                 this._clearUserMarker();
 
                 console.log('[explore-map] Map attached via discovery (attempt ' + this._attachTries + ')');
@@ -807,14 +873,21 @@ window.mapApp = function () {
                 this.mapLoading = false;
                 this.mapStuck   = false;
 
-                const existing = Array.isArray(this.$wire.routePolyline) ? this.$wire.routePolyline : [];
-                this._updateRouteLayer(existing);
-                this._routeHadData = existing.length >= 2;
-                if (existing.length >= 2) {
-                    setTimeout(() => {
-                        if (!this.isActive) return;
-                        this._fitRouteBounds(existing);
-                    }, 120);
+                this._installResizeObserver();
+                this._burstResize();
+
+                try {
+                    const existing = Array.isArray(this.$wire.routePolyline) ? this.$wire.routePolyline : [];
+                    this._updateRouteLayer(existing);
+                    this._routeHadData = existing.length >= 2;
+                    if (existing.length >= 2) {
+                        setTimeout(() => {
+                            if (!this.isActive) return;
+                            this._fitRouteBounds(existing);
+                        }, 120);
+                    }
+                } catch (err) {
+                    console.warn('[explore-map] route hydrate failed', err);
                 }
 
                 this._installUserMarkerWatchers();
@@ -943,7 +1016,6 @@ window.mapApp = function () {
 
             this._map = map;
 
-            // Fresh map instance adopted — drop stale user-marker pointer.
             this._clearUserMarker();
 
             try {
@@ -957,6 +1029,9 @@ window.mapApp = function () {
             if (window.__mapCanvasPoll) window.__mapCanvasPoll.stop();
             this.mapLoading = false;
             this.mapStuck   = false;
+
+            this._installResizeObserver();
+            this._burstResize();
 
             this._installUserMarkerWatchers();
             this._syncUserMarker();
@@ -1098,7 +1173,7 @@ window.mapApp = function () {
             try {
                 this.$wire.forceReloadMap();
             } catch (e) {
-                try { this.$wire.$refresh(); } catch (e2) { /* noop */ }
+                try { this.$wire.refresh(); } catch (e2) { /* noop */ }
             }
 
             if (window.__mapCanvasPoll) window.__mapCanvasPoll.start();
@@ -1351,10 +1426,9 @@ window.mapApp = function () {
             if (!this.isActive) return;
             t.paused = false;
             const timers = toastTimers.get(t);
-            if (timers) clearTimeout(timers.timeout);
-            const timers2 = toastTimers.get(t);
-            if (timers2) {
-                timers2.timeout = setTimeout(() => this.removeToast(t.id), Math.max(t.remaining, 300));
+            if (timers) {
+                clearTimeout(timers.timeout);
+                timers.timeout = setTimeout(() => this.removeToast(t.id), Math.max(t.remaining, 300));
             }
         },
 
@@ -1375,29 +1449,6 @@ window.mapApp = function () {
     };
 };
 
-/*
-|==========================================================================
-| BOOKING — Date selector (Alpine factory)
-|==========================================================================
-|
-| Reads initial state from `data-date-data` on the wrapper element.
-|
-| Server supplies (via dateSelectorDataJson):
-|   checkIn, checkOut, bookedDates, today, maxDate, firstAvailable
-|
-| `selectDate` state machine:
-|   1. If no selection, OR the current start is itself invalid (booked,
-|      past, beyond max), OR a completed range is present → the click
-|      becomes a fresh single-day selection.
-|   2. If a valid single-day selection exists and the click is AFTER it
-|      → extend IF free. If the range spans a booked day, restart the
-|      selection at the clicked day (no dead-ends).
-|   3. If the click is BEFORE the current start → fresh selection.
-|
-| `durationLabel` and `hasRange` are PLAIN properties updated by
-| `_recomputeDerived()`, which fires from $watch on the source values.
-|==========================================================================
-*/
 window.dateSelector = function () {
     return {
         checkIn: '',
@@ -1406,12 +1457,35 @@ window.dateSelector = function () {
         today: '',
         maxDate: '',
         firstAvailable: '',
+        calendarStatus: {},
+        durationLimits: { min: 1, max: null },
         currentMonth: new Date().getMonth(),
         currentYear: new Date().getFullYear(),
         error: '',
 
         durationLabel: '',
         hasRange: false,
+
+        get minStayDays() {
+            const m = Number(this.durationLimits?.min);
+            return Number.isFinite(m) && m >= 1 ? Math.floor(m) : 1;
+        },
+
+        get maxStayDays() {
+            const m = this.durationLimits?.max;
+            if (m === null || m === undefined) return null;
+            const n = Number(m);
+            if (!Number.isFinite(n) || n < 1) return null;
+            return Math.max(this.minStayDays, Math.floor(n));
+        },
+
+        _addDays(dateStr, n) {
+            if (!dateStr) return '';
+            const d = new Date(dateStr + 'T00:00:00');
+            if (isNaN(d.getTime())) return '';
+            d.setDate(d.getDate() + n);
+            return this.toIso(d);
+        },
 
         init() {
             const raw = this.$el.dataset.dateData;
@@ -1430,6 +1504,19 @@ window.dateSelector = function () {
             this.maxDate        = data.maxDate  || '';
             this.firstAvailable = data.firstAvailable || this.today;
 
+            this.calendarStatus = (data.calendarStatus && typeof data.calendarStatus === 'object')
+                ? data.calendarStatus
+                : {};
+
+            if (data.durationLimits && typeof data.durationLimits === 'object') {
+                this.durationLimits = {
+                    min: Number(data.durationLimits.min) || 1,
+                    max: data.durationLimits.max === null || data.durationLimits.max === undefined
+                        ? null
+                        : Number(data.durationLimits.max),
+                };
+            }
+
             const anchor = this.checkIn || this.firstAvailable || this.today;
             if (anchor) {
                 const d = new Date(anchor + 'T00:00:00');
@@ -1445,10 +1532,10 @@ window.dateSelector = function () {
             this.$watch('checkOut', () => this._recomputeDerived());
 
             try {
-                this.$watch('$wire.check_in', (val) => {
+                this.$wire.$watch('check_in', (val) => {
                     if (typeof val === 'string' && val !== this.checkIn) this.checkIn = val;
                 });
-                this.$watch('$wire.check_out', (val) => {
+                this.$wire.$watch('check_out', (val) => {
                     if (typeof val === 'string' && val !== this.checkOut) this.checkOut = val;
                 });
             } catch (e) { /* noop */ }
@@ -1473,7 +1560,7 @@ window.dateSelector = function () {
                 return;
             }
 
-            const days = Math.max(1, Math.round((end - start) / 86400000));
+            const days = Math.max(1, Math.round((end - start) / 86400000) + 1);
             this.durationLabel = days === 1 ? '1 day' : days + ' days';
         },
 
@@ -1489,7 +1576,28 @@ window.dateSelector = function () {
             return this.formatDate(dateStr, { month: 'short', day: 'numeric' });
         },
 
-        isBooked(dateStr)    { return this.bookedDates.includes(dateStr); },
+        isBooked(dateStr) {
+            const s = this.calendarStatus?.[dateStr];
+            if (s && typeof s === 'object') return !!s.fully_blocked;
+            return this.bookedDates.includes(dateStr);
+        },
+
+        isPartial(dateStr) {
+            const s = this.calendarStatus?.[dateStr];
+            return !!(s && !s.fully_blocked && s.has_booking);
+        },
+
+        isBeyondStayLimit(dateStr) {
+            if (!this.checkIn) return false;
+            if (dateStr < this.checkIn) return false;
+
+            const max = this.maxStayDays;
+            if (max === null) return false;
+
+            const cap = this._addDays(this.checkIn, max - 1);
+            return dateStr > cap;
+        },
+
         isPast(dateStr)      { return dateStr < this.today; },
         isBeyondMax(dateStr) { return dateStr > this.maxDate; },
         isDisabled(dateStr)  { return this.isPast(dateStr) || this.isBeyondMax(dateStr); },
@@ -1510,7 +1618,9 @@ window.dateSelector = function () {
                     iso,
                     dayNumber: day,
                     isBooked: this.isBooked(iso),
+                    isPartial: this.isPartial(iso),
                     isDisabled: this.isDisabled(iso),
+                    isBeyondStayLimit: this.isBeyondStayLimit(iso),
                 });
             }
             return days;
@@ -1561,13 +1671,13 @@ window.dateSelector = function () {
 
         isRangeFree(startIso, endIso) {
             const start = new Date(startIso + 'T00:00:00');
-            const end   = new Date(endIso   + 'T00:00:00');
+            const end   = new Date(endIso + 'T00:00:00');
             if (isNaN(start.getTime()) || isNaN(end.getTime())) return false;
+
             for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
                 const iso = this.toIso(d);
-                if (this.isBooked(iso) || this.isPast(iso) || this.isBeyondMax(iso)) {
-                    return false;
-                }
+                if (this.isPast(iso) || this.isBeyondMax(iso)) return false;
+                if (this.isBooked(iso)) return false;
             }
             return true;
         },
@@ -1576,31 +1686,37 @@ window.dateSelector = function () {
             const base = new Date(this.today + 'T00:00:00');
             if (isNaN(base.getTime())) return;
 
+            const min = this.minStayDays;
+            const max = this.maxStayDays;
+
+            const clampSpan = (span) => {
+                let s = Math.max(min, span);
+                if (max !== null) s = Math.min(max, s);
+                return s;
+            };
+
             let start = new Date(base);
-            let end   = new Date(base);
+            let span;
 
             switch (kind) {
-                case 'today':
-                    break;
-                case 'tomorrow':
-                    start.setDate(base.getDate() + 1);
-                    end.setDate(base.getDate() + 1);
-                    break;
-                case 'three-days':
-                    end.setDate(base.getDate() + 2);
-                    break;
+                case 'today':      span = clampSpan(1); break;
+                case 'tomorrow':   start.setDate(base.getDate() + 1); span = clampSpan(1); break;
+                case 'three-days': span = clampSpan(3); break;
                 case 'weekend': {
                     const dow = base.getDay();
                     let daysToSat;
-                    if (dow === 6)      daysToSat = 7;
+                    if (dow === 6)      daysToSat = 0;
                     else if (dow === 0) daysToSat = 6;
                     else                daysToSat = 6 - dow;
                     start.setDate(base.getDate() + daysToSat);
-                    end.setDate(base.getDate() + daysToSat + 1);
+                    span = clampSpan(2);
                     break;
                 }
                 default: return;
             }
+
+            let end = new Date(start);
+            end.setDate(end.getDate() + span - 1);
 
             const s = this.toIso(start);
             const e = this.toIso(end);
@@ -1639,34 +1755,32 @@ window.dateSelector = function () {
                 return;
             }
 
-            const startInvalid = this.checkIn === ''
-                || this.isBooked(this.checkIn)
-                || this.isPast(this.checkIn)
-                || this.isBeyondMax(this.checkIn);
+            const min = this.minStayDays;
 
-            const hasCompleteRange = ! startInvalid
-                && this.checkOut !== ''
-                && this.checkOut !== this.checkIn;
+            const freshRangeEnd = this.checkIn ? this._addDays(this.checkIn, min - 1) : '';
+            const isFreshMinRange = this.checkIn !== '' && this.checkOut === freshRangeEnd;
 
-            if (startInvalid || hasCompleteRange) {
+            if (this.checkIn === '' || ! isFreshMinRange || dateStr <= this.checkIn) {
                 this.checkIn  = dateStr;
-                this.checkOut = dateStr;
+                this.checkOut = this._addDays(dateStr, min - 1);
+                this.error    = '';
+                try { this.$wire.setDates(this.checkIn, this.checkOut); } catch (err) { /* noop */ }
+                return;
+            }
+
+            if (this.isBeyondStayLimit(dateStr)) {
+                const max = this.maxStayDays;
+                this.error = `Maximum stay for this property is ${max} ${max === 1 ? 'day' : 'days'}.`;
+                return;
+            }
+
+            if (! this.isRangeFree(this.checkIn, dateStr)) {
+                this.checkIn  = dateStr;
+                this.checkOut = this._addDays(dateStr, min - 1);
                 this.error    = '';
             } else {
-                if (dateStr < this.checkIn) {
-                    this.checkIn  = dateStr;
-                    this.checkOut = dateStr;
-                    this.error    = '';
-                } else {
-                    if (! this.isRangeFree(this.checkIn, dateStr)) {
-                        this.checkIn  = dateStr;
-                        this.checkOut = dateStr;
-                        this.error    = '';
-                    } else {
-                        this.checkOut = dateStr;
-                        this.error    = '';
-                    }
-                }
+                this.checkOut = dateStr;
+                this.error    = '';
             }
 
             try { this.$wire.setDates(this.checkIn, this.checkOut); } catch (err) { /* noop */ }
@@ -1674,25 +1788,16 @@ window.dateSelector = function () {
 
         clearSelection() {
             const target = this.firstAvailable || this.today;
+            const min    = this.minStayDays;
+
             this.checkIn  = target;
-            this.checkOut = target;
+            this.checkOut = this._addDays(target, min - 1);
             this.error    = '';
-            try { this.$wire.setDates(target, target); } catch (e) { /* noop */ }
+            try { this.$wire.setDates(this.checkIn, this.checkOut); } catch (e) { /* noop */ }
         },
     };
 };
 
-/*
-|==========================================================================
-| HOMEPAGE EDITOR — Alpine factory
-|==========================================================================
-|
-| Used by the superadmin homepage editor SFC.
-|
-| NOTE: after a successful save() the SFC redirects (Rule 133), so
-| this factory is disposed and re-created on the fresh page load.
-|==========================================================================
-*/
 window.homepageEditor = function () {
     return {
         preview: {},
@@ -1706,6 +1811,8 @@ window.homepageEditor = function () {
         },
         draggingKey: null,
 
+        _resetHandler: null,
+
         init() {
             try {
                 this.preview = JSON.parse(this.$el.dataset.preview || '{}');
@@ -1713,7 +1820,7 @@ window.homepageEditor = function () {
                 this.preview = {};
             }
 
-            window.addEventListener('preview-reset', () => {
+            this._resetHandler = () => {
                 this.filePreviews = {
                     heroBackgroundImage: null,
                     heroSideImage1:      null,
@@ -1722,7 +1829,15 @@ window.homepageEditor = function () {
                     heroSideImage4:      null,
                     ctaBackgroundImage:  null,
                 };
-            });
+            };
+            window.addEventListener('preview-reset', this._resetHandler);
+        },
+
+        destroy() {
+            if (this._resetHandler) {
+                window.removeEventListener('preview-reset', this._resetHandler);
+                this._resetHandler = null;
+            }
         },
 
         handleDrop(event, key) {
@@ -1744,17 +1859,6 @@ window.homepageEditor = function () {
     };
 };
 
-/*
-|==========================================================================
-| ABOUT EDITOR — Alpine factory
-|==========================================================================
-|
-| Used by the superadmin About page editor SFC.
-|
-| NOTE: after a successful save() the SFC redirects (Rule 133), so this
-| factory is disposed and re-created on the fresh page load.
-|==========================================================================
-*/
 window.aboutEditor = function () {
     return {
         preview: {},
@@ -1770,6 +1874,8 @@ window.aboutEditor = function () {
         },
         draggingKey: null,
 
+        _resetHandler: null,
+
         init() {
             try {
                 this.preview = JSON.parse(this.$el.dataset.preview || '{}');
@@ -1777,7 +1883,7 @@ window.aboutEditor = function () {
                 this.preview = {};
             }
 
-            window.addEventListener('preview-reset', () => {
+            this._resetHandler = () => {
                 this.filePreviews = {
                     heroImage:          null,
                     storyImage1:        null,
@@ -1788,7 +1894,15 @@ window.aboutEditor = function () {
                     highlight3Image:    null,
                     ctaBackgroundImage: null,
                 };
-            });
+            };
+            window.addEventListener('preview-reset', this._resetHandler);
+        },
+
+        destroy() {
+            if (this._resetHandler) {
+                window.removeEventListener('preview-reset', this._resetHandler);
+                this._resetHandler = null;
+            }
         },
 
         handleDrop(event, key) {
@@ -1815,46 +1929,6 @@ window.aboutEditor = function () {
     };
 };
 
-/*
-|==========================================================================
-| GLOBAL SCROLL REVEALS — Alpine factory
-|==========================================================================
-|
-| Usage: on any page wrapper, add `x-data="revealOnScroll"`. Any
-| descendant marked with `data-reveal` will fade + slide up the first
-| time it enters the viewport. Optional per-element stagger via
-| `style="--reveal-delay: 100ms"`.
-|
-| FAILS OPEN — WHY THIS MATTERS:
-|
-| Nothing is hidden by default CSS. The hide class `.js-reveal-pending`
-| is added BY THIS FACTORY, on init, only for elements that are BELOW
-| the viewport. If this factory never runs (stale bundle, JS error,
-| factory not defined), the class is never added, nothing is hidden,
-| and the page renders normally. Worst case: no animation.
-|
-| This is the reverse of a CSS-hides-by-default design, which fails
-| open into a blank page. That failure mode is unacceptable for
-| content pages.
-|
-| WHY WE DON'T HIDE IN-VIEWPORT ELEMENTS:
-|
-| If we did, the user would see a flash of hidden-then-visible on
-| load. So we only hide elements the user can't see yet, and let
-| the observer reveal them as they scroll.
-|
-| PERFORMANCE:
-|
-|   • ONE IntersectionObserver per wrapper — not one per element.
-|   • ONE MutationObserver watches for morph-added [data-reveal] nodes
-|     (Livewire grid updates, @if toggles) and preps them too.
-|   • Each element is unobserved after its first reveal.
-|   • prefers-reduced-motion short-circuits: no observers, no hiding.
-|   • Only opacity + translate animated — both GPU-composited.
-|   • `translate` (not `transform`) so it composes with Tailwind's
-|     hover:-translate-y-* utilities.
-|==========================================================================
-*/
 window.revealOnScroll = function () {
     return {
         _observer: null,
@@ -1864,7 +1938,6 @@ window.revealOnScroll = function () {
         init() {
             const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
             if (prefersReduced || !('IntersectionObserver' in window)) {
-                // Don't hide anything. Skip entirely.
                 return;
             }
 
@@ -1905,9 +1978,6 @@ window.revealOnScroll = function () {
             if (this._prepped.has(el)) return;
             this._prepped.add(el);
 
-            // If the element is already in the viewport on load, DON'T
-            // hide it — the user would see a flash. Mark it visible
-            // immediately and move on.
             const rect = el.getBoundingClientRect();
             const inViewport = rect.top < window.innerHeight && rect.bottom > 0;
 

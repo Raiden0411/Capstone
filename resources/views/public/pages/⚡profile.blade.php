@@ -24,6 +24,7 @@ class extends Component
 
     public string $name  = '';
     public string $email = '';
+    public string $phone = '';
 
     /** @var \Livewire\Features\SupportFileUploads\TemporaryUploadedFile|null */
     public $avatar = null;
@@ -41,6 +42,7 @@ class extends Component
         $user = Auth::user();
         $this->name          = (string) $user->name;
         $this->email         = (string) $user->email;
+        $this->phone         = (string) ($user->phone ?? '');
         $this->currentAvatar = $user->avatar;
     }
 
@@ -91,20 +93,37 @@ class extends Component
         return strtoupper(substr($name, 0, 1));
     }
 
+    #[Computed]
+    public function hasPhone(): bool
+    {
+        return filled($this->viewer?->phone);
+    }
+
     protected function rules(): array
     {
         return [
             'name'  => 'required|string|max:255',
             'email' => ['required', 'email', 'max:255', Rule::unique('users', 'email')->ignore(Auth::id())],
+            // Phone is REQUIRED — the booking flow sends this value to
+            // PayMongo on every checkout. See ⚡create-booking.blade.php.
+            'phone' => ['required', 'string', 'max:20', 'regex:/^(09|\+639)\d{9}$/'],
             'avatar'           => 'nullable|image|mimes:jpg,jpeg,png,webp|max:5120',
             'current_password' => ['nullable', 'required_with:new_password', 'current_password'],
             'new_password'     => ['nullable|min:8|confirmed'],
         ];
     }
 
+    protected function messages(): array
+    {
+        return [
+            'phone.required' => 'A mobile number is required.',
+            'phone.regex'    => 'Use a valid PH number: 09xxxxxxxxx or +639xxxxxxxxx.',
+        ];
+    }
+
     public function updated(string $property): void
     {
-        if (in_array($property, ['name', 'email'], true)) {
+        if (in_array($property, ['name', 'email', 'phone'], true)) {
             $this->$property = trim((string) $this->$property);
         }
     }
@@ -129,7 +148,7 @@ class extends Component
         $this->currentAvatar = null;
         $this->avatar        = null;
 
-        unset($this->currentAvatarUrl, $this->userInitial);
+        unset($this->currentAvatarUrl, $this->userInitial, $this->hasPhone);
 
         $this->dispatch('avatar-cleared');
 
@@ -151,6 +170,7 @@ class extends Component
         $data = [
             'name'  => $this->name,
             'email' => $this->email,
+            'phone' => $this->phone,
         ];
 
         $newAvatarPath = null;
@@ -206,7 +226,7 @@ class extends Component
         $this->avatar        = null;
         $this->reset(['current_password', 'new_password', 'new_password_confirmation']);
 
-        unset($this->currentAvatarUrl, $this->userInitial, $this->viewer);
+        unset($this->currentAvatarUrl, $this->userInitial, $this->viewer, $this->hasPhone);
 
         $this->dispatch('avatar-cleared');
 
@@ -224,7 +244,8 @@ class extends Component
             return $path;
         }
 
-        return asset('storage/' . $path);
+        // Rule J: relative /storage path, never asset('storage/').
+        return '/storage/' . ltrim($path, '/');
     }
 };
 ?>
@@ -243,7 +264,6 @@ class extends Component
         class="max-w-2xl mx-auto space-y-6"
     >
 
-        {{-- ═══════════════ FLASH ═══════════════ --}}
         @if(session()->has('message'))
             <div role="status" aria-live="polite"
                  class="flex items-start gap-3 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 border-l-4 border-l-emerald-500 p-4 rounded-xl">
@@ -263,7 +283,27 @@ class extends Component
             </div>
         @endif
 
-        {{-- ═══════════════ HEADER ═══════════════ --}}
+        @if(! $this->hasPhone)
+            <div role="alert" aria-live="polite"
+                 class="flex items-start gap-3 bg-amber-50 dark:bg-amber-500/10
+                        border border-amber-200 dark:border-amber-500/30 border-l-4 border-l-amber-500
+                        p-4 rounded-xl">
+                <div class="shrink-0 w-9 h-9 rounded-full bg-amber-100 dark:bg-amber-500/20 flex items-center justify-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                    </svg>
+                </div>
+                <div class="min-w-0 flex-1">
+                    <p class="text-sm font-semibold text-amber-800 dark:text-amber-200">
+                        Add a mobile number to book.
+                    </p>
+                    <p class="mt-0.5 text-xs text-amber-700 dark:text-amber-300 leading-relaxed">
+                        Fill in your Mobile Number below to unlock checkout.
+                    </p>
+                </div>
+            </div>
+        @endif
+
         <div data-reveal class="flex items-center justify-between gap-4">
             <div>
                 <p class="mb-2 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-amber-600 dark:text-amber-400">
@@ -285,11 +325,9 @@ class extends Component
 
         <form wire:submit="updateProfile" class="space-y-6">
 
-            {{-- ═══════════════ PROFILE CARD ═══════════════ --}}
             <section data-reveal style="--reveal-delay: 80ms"
                      class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-sm overflow-hidden">
 
-                {{-- ── Photo ── --}}
                 <div class="p-6 border-b border-gray-100 dark:border-gray-700/60">
                     <p class="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-5">
                         Photo
@@ -362,6 +400,10 @@ class extends Component
                             <h2 class="text-xl font-semibold tracking-tight text-gray-900 dark:text-white truncate">{{ $this->viewer?->name }}</h2>
                             <p class="text-sm text-gray-500 dark:text-gray-400 truncate">{{ $this->viewer?->email }}</p>
 
+                            @if($this->hasPhone)
+                                <p class="text-sm text-gray-500 dark:text-gray-400 truncate tabular-nums">{{ $this->viewer?->phone }}</p>
+                            @endif
+
                             @if($avatar)
                                 <p class="mt-2 text-[11px] font-semibold uppercase tracking-wider text-amber-600 dark:text-amber-400">
                                     New photo selected — click Save Changes to apply.
@@ -388,30 +430,90 @@ class extends Component
                     </div>
                 </div>
 
-                {{-- ── Personal information ── --}}
                 <div class="p-6">
                     <p class="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-5">
                         Personal Information
                     </p>
 
-                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div class="space-y-4">
+
                         <div>
-                            <label for="field-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Full Name</label>
-                            <input type="text" id="field-name" wire:model="name" autocomplete="name"
-                                   class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                            <label for="field-name" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                Full Name
+                            </label>
+                            <div class="relative">
+                                <svg xmlns="http://www.w3.org/2000/svg"
+                                     class="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500"
+                                     fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.8" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"/>
+                                </svg>
+                                <input type="text"
+                                       id="field-name"
+                                       wire:model="name"
+                                       autocomplete="name"
+                                       placeholder="Juan Dela Cruz"
+                                       class="w-full bg-gray-50 dark:bg-gray-900 border {{ $errors->has('name') ? 'border-rose-400/60' : 'border-gray-300 dark:border-gray-700' }} rounded-xl py-3 pl-10 pr-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                            </div>
                             @error('name') <span class="text-rose-600 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                         </div>
+
                         <div>
-                            <label for="field-email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Email Address</label>
-                            <input type="email" id="field-email" wire:model="email" autocomplete="email" inputmode="email"
-                                   class="w-full bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-xl py-3 px-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                            <label for="field-email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                Email Address
+                            </label>
+                            <div class="relative">
+                                <svg xmlns="http://www.w3.org/2000/svg"
+                                     class="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500"
+                                     fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.8" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/>
+                                </svg>
+                                <input type="email"
+                                       id="field-email"
+                                       wire:model="email"
+                                       autocomplete="email"
+                                       inputmode="email"
+                                       placeholder="you@example.com"
+                                       class="w-full bg-gray-50 dark:bg-gray-900 border {{ $errors->has('email') ? 'border-rose-400/60' : 'border-gray-300 dark:border-gray-700' }} rounded-xl py-3 pl-10 pr-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                            </div>
                             @error('email') <span class="text-rose-600 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
+                        </div>
+
+                        <div>
+                            <label for="field-phone" class="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+                                Mobile Number
+                                <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider
+                                             bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300">
+                                    Required
+                                </span>
+                            </label>
+                            <div class="relative">
+                                <svg xmlns="http://www.w3.org/2000/svg"
+                                     class="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500"
+                                     fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.8" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 1.5H8.25A2.25 2.25 0 006 3.75v16.5a2.25 2.25 0 002.25 2.25h7.5A2.25 2.25 0 0018 20.25V3.75a2.25 2.25 0 00-2.25-2.25H13.5m-3 0V3h3V1.5m-3 0h3m-3 18.75h3"/>
+                                </svg>
+                                <input type="tel"
+                                       id="field-phone"
+                                       wire:model="phone"
+                                       inputmode="numeric"
+                                       autocomplete="tel"
+                                       maxlength="13"
+                                       placeholder="09xxxxxxxxx"
+                                       x-on:input="
+                                           const cleaned = $event.target.value.replace(/[^0-9+]/g, '');
+                                           if (cleaned !== $event.target.value) {
+                                               $event.target.value = cleaned;
+                                               $event.target.dispatchEvent(new Event('input', { bubbles: true }));
+                                           }
+                                       "
+                                       class="w-full bg-gray-50 dark:bg-gray-900 border {{ $errors->has('phone') || ! $this->hasPhone ? 'border-amber-400/70 dark:border-amber-500/50' : 'border-gray-300 dark:border-gray-700' }} rounded-xl py-3 pl-10 pr-4 text-base sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:bg-white dark:focus:bg-gray-900 focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition">
+                            </div>
+                            @error('phone') <span class="text-rose-600 dark:text-rose-400 text-xs mt-1.5 block">{{ $message }}</span> @enderror
                         </div>
                     </div>
                 </div>
             </section>
 
-            {{-- ═══════════════ PASSWORD CARD ═══════════════ --}}
             <section data-reveal style="--reveal-delay: 140ms"
                      x-data="{
                          pw: '',
@@ -465,7 +567,6 @@ class extends Component
 
                 <div class="space-y-4">
 
-                    {{-- Current password --}}
                     <div>
                         <label for="field-current-password" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Current Password</label>
                         <div class="relative">
@@ -483,6 +584,7 @@ class extends Component
                                     :aria-pressed="showCurrent ? 'true' : 'false'"
                                     class="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-9 h-9 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800
                                            transition-colors
+                                           before:absolute before:content-[''] before:-inset-1 before:rounded-lg
                                            [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                                 <svg x-show="!showCurrent" xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -506,7 +608,6 @@ class extends Component
 
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 
-                        {{-- New password --}}
                         <div>
                             <label for="field-new-password" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">New Password</label>
                             <div class="relative">
@@ -526,6 +627,7 @@ class extends Component
                                         :aria-pressed="showNew ? 'true' : 'false'"
                                         class="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-9 h-9 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800
                                                transition-colors
+                                               before:absolute before:content-[''] before:-inset-1 before:rounded-lg
                                                [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                                     <svg x-show="!showNew" xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -538,7 +640,6 @@ class extends Component
                                 </button>
                             </div>
 
-                            {{-- Strength meter --}}
                             <div x-show="pw.length > 0" x-cloak class="mt-2">
                                 <div class="flex gap-1" aria-hidden="true">
                                     <div class="h-1 flex-1 rounded-full transition-colors duration-200"
@@ -568,7 +669,6 @@ class extends Component
                             @error('new_password') <span class="text-rose-600 dark:text-rose-400 text-xs mt-1 block">{{ $message }}</span> @enderror
                         </div>
 
-                        {{-- Confirm password --}}
                         <div>
                             <label for="field-new-password-confirm" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Confirm New Password</label>
                             <div class="relative">
@@ -587,6 +687,7 @@ class extends Component
                                         :aria-pressed="showConfirm ? 'true' : 'false'"
                                         class="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-9 h-9 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800
                                                transition-colors
+                                               before:absolute before:content-[''] before:-inset-1 before:rounded-lg
                                                [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                                     <svg x-show="!showConfirm" xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -599,7 +700,6 @@ class extends Component
                                 </button>
                             </div>
 
-                            {{-- Match indicator — only shown when confirm has content --}}
                             <p x-cloak x-show="$wire.new_password_confirmation && $wire.new_password_confirmation.length > 0"
                                role="status" aria-live="polite"
                                class="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-semibold">
@@ -634,7 +734,6 @@ class extends Component
                 </div>
             </section>
 
-            {{-- ═══════════════ ACTIONS ═══════════════ --}}
             <div data-reveal style="--reveal-delay: 200ms"
                  class="pt-4 border-t border-gray-200 dark:border-gray-700 flex flex-col sm:flex-row items-stretch sm:items-center sm:justify-end gap-3">
                 <a href="{{ route('home') }}" wire:navigate
@@ -662,37 +761,45 @@ class extends Component
             </div>
         </form>
 
-        {{-- ═══════════════ DELETE ACCOUNT ═══════════════ --}}
         @if($this->canRequestDeletion)
             <section data-reveal style="--reveal-delay: 260ms"
-                     class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-sm p-6">
-                <h2 class="text-base font-semibold tracking-tight text-gray-900 dark:text-white">
-                    Delete account
-                </h2>
+                     class="rounded-2xl border border-rose-200/70 dark:border-rose-500/25
+                            bg-rose-50/40 dark:bg-rose-500/[0.04]
+                            p-5 sm:p-6">
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
 
-                <p class="mt-2 text-sm text-gray-500 dark:text-gray-400 leading-relaxed">
-                    @if($this->isBusinessOwner)
-                        You can request the deletion of your business listing or your entire account. As a business owner, requests are reviewed by a superadmin before processing.
-                    @else
-                        Permanently remove your account and all associated data. This action cannot be undone.
-                    @endif
-                </p>
+                    <div class="min-w-0">
+                        <h2 class="text-sm font-semibold tracking-tight text-gray-900 dark:text-white">
+                            Delete account
+                        </h2>
+                        <p class="mt-1 text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
+                            @if($this->isBusinessOwner)
+                                Request removal of your business listing or your entire account. Reviewed by a superadmin before processing.
+                            @else
+                                Permanently remove your account and all associated data. This cannot be undone.
+                            @endif
+                        </p>
+                    </div>
 
-                <div class="mt-5">
                     <a href="{{ route('account.delete') }}" wire:navigate
-                       class="inline-flex items-center gap-2 rounded-xl border border-rose-300 dark:border-rose-500/40 bg-white dark:bg-transparent px-5 h-11 text-sm font-semibold text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-all duration-200 active:scale-95
+                       class="shrink-0 inline-flex items-center justify-center gap-2
+                              rounded-xl border border-rose-300 dark:border-rose-500/50
+                              bg-white dark:bg-gray-900
+                              px-4 h-11
+                              text-sm font-semibold text-rose-700 dark:text-rose-300
+                              hover:bg-rose-100 dark:hover:bg-rose-500/15
+                              transition-all duration-200 active:scale-95
                               [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
-                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
+                              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-950">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
                         </svg>
-                        {{ $this->isBusinessOwner ? 'Request account deletion' : 'Delete my account' }}
+                        {{ $this->isBusinessOwner ? 'Request deletion' : 'Delete account' }}
                     </a>
                 </div>
             </section>
         @endif
 
-        {{-- Image crop modal — singleton --}}
         <x-image-crop-modal />
     </div>
 </div>

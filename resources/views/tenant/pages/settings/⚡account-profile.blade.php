@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Layout;
@@ -27,6 +28,7 @@ class extends Component
     use WithFileUploads;
     use HandlesImageUploads;
 
+    #[Locked]
     public ?User $user = null;
 
     /** KYB record ID — resolved in mount, never trusted from client. */
@@ -103,13 +105,98 @@ class extends Component
     #[Computed]
     public function avatarPreviewUrl(): ?string
     {
-        return $this->admin_avatar_path ? asset('storage/' . $this->admin_avatar_path) : null;
+        return $this->admin_avatar_path
+            ? '/storage/' . ltrim($this->admin_avatar_path, '/')
+            : null;
     }
 
     #[Computed]
     public function isAdmin(): bool
     {
         return (bool) $this->user?->hasRole('admin');
+    }
+
+    /**
+     * Spatie role names for the authenticated user.
+     *
+     * `$this->user->roles` uses the User model's `roles()` override, which
+     * pins Spatie's ambient team context to `$this->user->tenant_id` at
+     * relation-build time. Single-user path — the model's `tenant_id` is
+     * real, so the pivot query resolves correctly.
+     *
+     * @return array<int, string>
+     */
+    #[Computed]
+    public function roles(): array
+    {
+        return $this->user
+            ? $this->user->roles->pluck('name')->all()
+            : [];
+    }
+
+    /**
+     * The Employee record linked to this user, if any.
+     *
+     * Team-scoped by the `employees.tenant_id` FK. Returns null for
+     * business owners who never had an Employee row, and for tourists.
+     */
+    #[Computed]
+    public function employeeRecord(): ?Employee
+    {
+        if (! $this->user || ! $this->user->tenant_id) {
+            return null;
+        }
+
+        return Employee::query()
+            ->where('user_id', $this->user->id)
+            ->where('tenant_id', $this->user->tenant_id)
+            ->first();
+    }
+
+    #[Computed]
+    public function tenantName(): ?string
+    {
+        return $this->user?->tenant?->name;
+    }
+
+    #[Computed]
+    public function accountTypeLabel(): string
+    {
+        if ($this->user?->hasRole('super-admin')) {
+            return 'Super Administrator';
+        }
+
+        if ($this->isAdmin) {
+            return 'Business Owner';
+        }
+
+        if ($this->employeeRecord) {
+            return 'Team Member';
+        }
+
+        if ($this->user?->tenant_id) {
+            return 'Tenant User';
+        }
+
+        return 'Tourist';
+    }
+
+    #[Computed]
+    public function accountTypeClasses(): string
+    {
+        if ($this->user?->hasRole('super-admin')) {
+            return 'bg-purple-100 dark:bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-500/30';
+        }
+
+        if ($this->isAdmin) {
+            return 'bg-primary-100 dark:bg-primary-500/15 text-primary-700 dark:text-primary-300 border-primary-200 dark:border-primary-500/30';
+        }
+
+        if ($this->employeeRecord) {
+            return 'bg-blue-100 dark:bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-500/30';
+        }
+
+        return 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-600';
     }
 
     /**
@@ -410,7 +497,7 @@ class extends Component
         $this->user->refresh();
 
         // Invalidate the cached computed properties that read from $user.
-        unset($this->avatarPreviewUrl, $this->isAdmin);
+        unset($this->avatarPreviewUrl, $this->isAdmin, $this->roles, $this->employeeRecord, $this->tenantName, $this->accountTypeLabel, $this->accountTypeClasses);
 
         session()->flash('account_message', $changingPassword
             ? 'Account updated and password changed. You may need to sign in again on other devices.'
@@ -432,7 +519,7 @@ class extends Component
     x-on:profile-saved.window="window.scrollTo({ top: 0, behavior: 'smooth' });"
     class="p-4 sm:p-6 lg:p-8 max-w-5xl mx-auto space-y-6"
 >
-    {{-- ═══ Toasts ═══ --}}
+    {{-- Toasts --}}
     <div class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 w-full max-w-sm pointer-events-none no-print">
         <template x-for="toast in toasts" :key="toast.id">
             <div
@@ -448,7 +535,7 @@ class extends Component
         </template>
     </div>
 
-    {{-- ═══ Save overlay ═══ --}}
+    {{-- Save overlay --}}
     <div wire:loading.delay.longer wire:target="save"
          class="fixed inset-0 z-40 bg-white/60 dark:bg-gray-900/60 backdrop-blur-sm flex items-center justify-center pointer-events-none">
         <div class="flex items-center gap-3 bg-white dark:bg-gray-800 rounded-2xl shadow-xl px-6 py-4 pointer-events-auto">
@@ -460,7 +547,7 @@ class extends Component
         </div>
     </div>
 
-    {{-- ═══ Page header ═══ --}}
+    {{-- Page header --}}
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-6 border-b border-gray-200 dark:border-gray-800">
         <div>
             <div class="flex items-center gap-2 mb-2">
@@ -488,7 +575,7 @@ class extends Component
         @endif
     </div>
 
-    {{-- ═══ Flash + error bag ═══ --}}
+    {{-- Flash + error bag --}}
     @if(session()->has('account_message'))
         <div x-data="{ show: true }"
              x-init="setTimeout(() => show = false, 4000)"
@@ -501,7 +588,7 @@ class extends Component
                 <span>{{ session('account_message') }}</span>
             </div>
             <button type="button" @click="show = false"
-                    class="inline-flex items-center justify-center h-7 w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
+                    class="inline-flex items-center justify-center h-11 w-11 sm:h-7 sm:w-7 rounded-md text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10
                            transition-all duration-200 active:scale-95
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50"
                     aria-label="Dismiss">
@@ -523,9 +610,96 @@ class extends Component
         </div>
     @endif
 
+    {{-- ═══ ROLE & ACCESS (read-only) ═══ --}}
+    <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
+        <div class="flex items-center gap-3">
+            <span class="w-5 h-px bg-primary-600"></span>
+            <h2 class="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                Role &amp; Access
+            </h2>
+        </div>
+
+        <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-sm">
+            <div>
+                <dt class="text-[11px] text-gray-500 dark:text-gray-400">Account type</dt>
+                <dd class="mt-1.5">
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider border {{ $this->accountTypeClasses }}">
+                        <span class="w-1.5 h-1.5 rounded-full bg-current"></span>
+                        {{ $this->accountTypeLabel }}
+                    </span>
+                </dd>
+            </div>
+
+            @if($this->tenantName)
+                <div>
+                    <dt class="text-[11px] text-gray-500 dark:text-gray-400">Business</dt>
+                    <dd class="font-medium text-gray-900 dark:text-white mt-1.5 truncate">{{ $this->tenantName }}</dd>
+                </div>
+            @endif
+
+            @if(! empty($this->roles))
+                <div class="sm:col-span-2">
+                    <dt class="text-[11px] text-gray-500 dark:text-gray-400">System role{{ count($this->roles) === 1 ? '' : 's' }}</dt>
+                    <dd class="mt-2 flex flex-wrap gap-1.5">
+                        @foreach($this->roles as $roleName)
+                            <span wire:key="role-{{ $roleName }}"
+                                  class="inline-flex items-center px-2.5 py-1 rounded-md text-[11px] font-semibold
+                                         {{ in_array($roleName, ['admin', 'super-admin'], true)
+                                            ? 'bg-purple-100 dark:bg-purple-500/15 text-purple-700 dark:text-purple-300'
+                                            : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300' }}">
+                                {{ \Illuminate\Support\Str::headline($roleName) }}
+                            </span>
+                        @endforeach
+                    </dd>
+                </div>
+            @endif
+
+            @if($this->employeeRecord)
+                <div>
+                    <dt class="text-[11px] text-gray-500 dark:text-gray-400">Job title</dt>
+                    <dd class="font-medium text-gray-900 dark:text-white mt-1.5">{{ $this->employeeRecord->role ?: '—' }}</dd>
+                </div>
+                @if($this->employeeRecord->code)
+                    <div>
+                        <dt class="text-[11px] text-gray-500 dark:text-gray-400">Employee ID</dt>
+                        <dd class="font-mono text-gray-900 dark:text-white mt-1.5">{{ $this->employeeRecord->code }}</dd>
+                    </div>
+                @endif
+            @endif
+
+            <div>
+                <dt class="text-[11px] text-gray-500 dark:text-gray-400">Member since</dt>
+                <dd class="font-medium text-gray-900 dark:text-white mt-1.5 tabular-nums">
+                    {{ $this->user?->created_at?->format('M j, Y') ?? '—' }}
+                </dd>
+            </div>
+
+            <div>
+                <dt class="text-[11px] text-gray-500 dark:text-gray-400">Account status</dt>
+                <dd class="mt-1.5">
+                    @if($this->user?->is_active)
+                        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30">
+                            <span class="w-1.5 h-1.5 rounded-full bg-current"></span>
+                            Active
+                        </span>
+                    @else
+                        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider bg-rose-100 dark:bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-500/30">
+                            <span class="w-1.5 h-1.5 rounded-full bg-current"></span>
+                            Inactive
+                        </span>
+                    @endif
+                </dd>
+            </div>
+        </dl>
+
+        <p class="text-[11px] text-gray-500 dark:text-gray-400 pt-4 border-t border-gray-100 dark:border-gray-700/60 leading-relaxed">
+            Your role and job title are set by your business owner. Contact them if anything needs to change.
+        </p>
+    </div>
+
     <form wire:submit="save" class="space-y-6">
 
-        {{-- ═══════════════ PROFILE PHOTO ═══════════════ --}}
+        {{-- PROFILE PHOTO --}}
         <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
             <div class="flex items-center gap-3">
                 <span class="w-5 h-px bg-primary-600"></span>
@@ -553,7 +727,6 @@ class extends Component
                 x-on:avatar-cleared.window="clear()"
                 class="flex flex-col sm:flex-row sm:items-start gap-5"
             >
-                {{-- Avatar box (round) --}}
                 <div
                     x-on:dragover.prevent="dragging = true"
                     x-on:dragleave.prevent="dragging = false"
@@ -613,7 +786,6 @@ class extends Component
                     </div>
                 </div>
 
-                {{-- Helper + actions column --}}
                 <div class="flex-1 min-w-0 space-y-3 text-center sm:text-left">
                     <p class="text-xs text-gray-500 dark:text-gray-400">
                         PNG, JPG, or WebP · max 5 MB · auto-cropped to a square and compressed to ≤512 KB.
@@ -621,7 +793,7 @@ class extends Component
 
                     <div :class="showPreview ? 'flex' : 'hidden'" class="flex-wrap items-center justify-center sm:justify-start gap-2">
                         <label for="avatar-input"
-                               class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg
+                               class="inline-flex items-center justify-center gap-1.5 h-11 sm:h-9 px-3.5 rounded-lg
                                       border border-gray-300 dark:border-gray-600
                                       bg-white dark:bg-gray-800
                                       text-gray-700 dark:text-gray-200
@@ -637,7 +809,7 @@ class extends Component
 
                         <button type="button"
                                 x-on:click="clear(); $wire.removeAdminAvatar()"
-                                class="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-lg
+                                class="inline-flex items-center justify-center gap-1.5 h-11 sm:h-9 px-3.5 rounded-lg
                                        border border-rose-300 dark:border-rose-500/40
                                        bg-white dark:bg-gray-800
                                        text-rose-700 dark:text-rose-300
@@ -657,7 +829,7 @@ class extends Component
             @error('admin_avatar') <span class="text-rose-500 dark:text-rose-400 text-xs block" role="alert">{{ $message }}</span> @enderror
         </div>
 
-        {{-- ═══════════════ PERSONAL INFORMATION ═══════════════ --}}
+        {{-- PERSONAL INFORMATION --}}
         <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
             <div class="flex items-center gap-3">
                 <span class="w-5 h-px bg-primary-600"></span>
@@ -698,7 +870,7 @@ class extends Component
             </div>
         </div>
 
-        {{-- ═══════════════ CHANGE PASSWORD ═══════════════ --}}
+        {{-- CHANGE PASSWORD --}}
         <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
             <div class="flex items-center gap-3">
                 <span class="w-5 h-px bg-primary-600"></span>
@@ -711,11 +883,6 @@ class extends Component
                 Leave all three fields blank to keep your current password. If you change it, you may need to sign in again on other devices.
             </p>
 
-            {{--
-                Rule 89: The eye-icon toggle and the input MUST share one
-                Alpine scope. Two independent x-data blocks = the button
-                toggles a variable the input cannot read.
-            --}}
             <div x-data="{ show_current: false, show_new: false, show_confirm: false }" class="space-y-4">
                 <div>
                     <label for="field-current-password" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -727,13 +894,14 @@ class extends Component
                             id="field-current-password"
                             wire:model="current_password"
                             autocomplete="current-password"
-                            class="input pr-10"
+                            class="input pr-11"
                             placeholder="Enter your current password">
                         <button type="button"
                                 @click="show_current = !show_current"
                                 aria-label="Toggle password visibility"
-                                class="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300
-                                       active:scale-95 transition-transform rounded
+                                class="absolute inset-y-0 right-0.5 my-auto flex items-center justify-center w-8 h-8 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300
+                                       before:absolute before:content-[''] before:-inset-1.5 before:rounded-lg
+                                       active:scale-95 transition-transform
                                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
@@ -755,13 +923,14 @@ class extends Component
                                 id="field-password"
                                 wire:model="password"
                                 autocomplete="new-password"
-                                class="input pr-10"
+                                class="input pr-11"
                                 placeholder="Min. 8 characters">
                             <button type="button"
                                     @click="show_new = !show_new"
                                     aria-label="Toggle new password visibility"
-                                    class="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300
-                                           active:scale-95 transition-transform rounded
+                                    class="absolute inset-y-0 right-0.5 my-auto flex items-center justify-center w-8 h-8 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300
+                                           before:absolute before:content-[''] before:-inset-1.5 before:rounded-lg
+                                           active:scale-95 transition-transform
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
@@ -781,13 +950,14 @@ class extends Component
                                 id="field-password-confirmation"
                                 wire:model="password_confirmation"
                                 autocomplete="new-password"
-                                class="input pr-10"
+                                class="input pr-11"
                                 placeholder="Re-enter new password">
                             <button type="button"
                                     @click="show_confirm = !show_confirm"
                                     aria-label="Toggle confirm password visibility"
-                                    class="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300
-                                           active:scale-95 transition-transform rounded
+                                    class="absolute inset-y-0 right-0.5 my-auto flex items-center justify-center w-8 h-8 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300
+                                           before:absolute before:content-[''] before:-inset-1.5 before:rounded-lg
+                                           active:scale-95 transition-transform
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
@@ -801,7 +971,7 @@ class extends Component
             </div>
         </div>
 
-        {{-- ═══════════════ SAVE ═══════════════ --}}
+        {{-- SAVE --}}
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-3 pt-2">
             <button type="submit"
                     wire:loading.attr="disabled"
@@ -822,7 +992,7 @@ class extends Component
         </div>
     </form>
 
-    {{-- ═══════════════ YOUR BUSINESS APPLICATION (read-only) ═══════════════ --}}
+    {{-- YOUR BUSINESS APPLICATION (read-only) --}}
     @if($this->businessApplication)
         @php
             $app  = $this->businessApplication;
@@ -831,7 +1001,6 @@ class extends Component
 
         <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm overflow-hidden">
 
-            {{-- ─── Header ─── --}}
             <div class="px-5 sm:px-6 py-5 border-b border-gray-200 dark:border-gray-700">
                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                     <div class="flex items-center gap-3">
@@ -856,7 +1025,6 @@ class extends Component
 
             <div class="p-5 sm:p-6 space-y-6">
 
-                {{-- ─── Business details ─── --}}
                 <div>
                     <div class="flex items-center gap-2 mb-3">
                         <span class="w-3 h-px bg-primary-600"></span>
@@ -889,7 +1057,6 @@ class extends Component
                     </dl>
                 </div>
 
-                {{-- ─── Owner details ─── --}}
                 <div class="pt-5 border-t border-gray-100 dark:border-gray-700/60">
                     <div class="flex items-center gap-2 mb-3">
                         <span class="w-3 h-px bg-primary-600"></span>
@@ -920,7 +1087,6 @@ class extends Component
                     </dl>
                 </div>
 
-                {{-- ─── Contact + address ─── --}}
                 <div class="pt-5 border-t border-gray-100 dark:border-gray-700/60">
                     <div class="flex items-center gap-2 mb-3">
                         <span class="w-3 h-px bg-primary-600"></span>
@@ -955,7 +1121,6 @@ class extends Component
                     </dl>
                 </div>
 
-                {{-- ─── Documents ─── --}}
                 <div class="pt-5 border-t border-gray-100 dark:border-gray-700/60">
                     <div class="flex items-center gap-2 mb-3">
                         <span class="w-3 h-px bg-primary-600"></span>
@@ -971,7 +1136,7 @@ class extends Component
                                 $doc        = $row['doc'];
                                 $docStatus  = $this->documentStatusConfig($doc);
                                 $viewPath   = $doc?->stored_path;
-                                $viewUrl    = $viewPath ? asset('storage/' . $viewPath) : null;
+                                $viewUrl    = $viewPath ? '/storage/' . ltrim($viewPath, '/') : null;
                             @endphp
 
                             <div wire:key="doc-{{ $row['type'] }}"
@@ -980,7 +1145,6 @@ class extends Component
                                            ? 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40'
                                            : 'border-dashed border-gray-300 dark:border-gray-600 bg-transparent' }}">
 
-                                {{-- Icon --}}
                                 <div class="w-9 h-9 rounded-lg shrink-0 flex items-center justify-center
                                             {{ $doc ? 'bg-primary-50 dark:bg-primary-500/10 text-primary-600 dark:text-primary-400' : 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500' }}">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -988,7 +1152,6 @@ class extends Component
                                     </svg>
                                 </div>
 
-                                {{-- Info --}}
                                 <div class="flex-1 min-w-0">
                                     <div class="flex items-center gap-2 flex-wrap">
                                         <p class="text-sm font-semibold text-gray-900 dark:text-white truncate">
@@ -1023,15 +1186,13 @@ class extends Component
                                     @endif
                                 </div>
 
-                                {{-- Status pill --}}
                                 <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border shrink-0 {{ $docStatus['classes'] }}">
                                     {{ $docStatus['label'] }}
                                 </span>
 
-                                {{-- View link --}}
                                 @if($viewUrl)
                                     <a href="{{ $viewUrl }}" target="_blank" rel="noopener noreferrer"
-                                       class="inline-flex items-center justify-center h-8 px-3 rounded-lg shrink-0
+                                       class="inline-flex items-center justify-center h-11 sm:h-8 px-3 rounded-lg shrink-0
                                               border border-gray-300 dark:border-gray-600
                                               bg-white dark:bg-gray-800
                                               text-gray-700 dark:text-gray-200
@@ -1051,7 +1212,6 @@ class extends Component
                     </div>
                 </div>
 
-                {{-- ─── Review trail ─── --}}
                 <div class="pt-5 border-t border-gray-100 dark:border-gray-700/60">
                     <div class="flex items-center gap-2 mb-3">
                         <span class="w-3 h-px bg-primary-600"></span>
@@ -1112,7 +1272,7 @@ class extends Component
         </div>
     @endif
 
-    {{-- ═══════════════ DANGER ZONE ═══════════════ --}}
+    {{-- DANGER ZONE --}}
     <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-rose-200/80 dark:border-rose-500/30 shadow-sm p-5 sm:p-6 space-y-4">
         <div class="flex items-center gap-3">
             <span class="w-5 h-px bg-rose-500"></span>
@@ -1152,6 +1312,5 @@ class extends Component
         </div>
     </div>
 
-    {{-- Image crop modal — singleton for this page (Rule 87) --}}
     <x-image-crop-modal />
 </div>

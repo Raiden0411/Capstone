@@ -11,6 +11,7 @@ use App\Models\Employee;
 use App\Models\User;
 use App\Models\TenantSetting;
 use App\Scopes\TenantScope;
+use App\Traits\ChecksTenantPermissions;
 use App\Traits\HandlesImageUploads;
 use Spatie\Permission\Models\Role;
 use Spatie\Permission\Models\Permission;
@@ -28,6 +29,7 @@ new
 class extends Component {
     use WithFileUploads;
     use HandlesImageUploads;
+    use ChecksTenantPermissions;
 
     public Employee $employee;
 
@@ -64,9 +66,7 @@ class extends Component {
 
         $user = Auth::user();
 
-        $userRelation = fn ($q) => $q
-            ->select('id', 'tenant_id', 'name', 'email', 'phone', 'avatar')
-            ->with('roles:id,name');
+        $userRelation = fn ($q) => $q->select('id', 'tenant_id', 'name', 'email', 'phone', 'avatar');
 
         if (! $employee instanceof Employee) {
             $employee = Employee::withoutGlobalScope(TenantScope::class)
@@ -88,10 +88,15 @@ class extends Component {
         $this->code         = $employee->code ?? '';
         $this->avatar       = null;
 
-        if ($employee->user_id && $employee->user) {
-            $this->selectedRoles = $employee->user->roles
-                ->reject(fn ($r) => in_array($r->name, ['admin', 'super-admin'], true))
-                ->map(fn ($r) => 'role_' . $r->id)
+        if ($employee->user_id) {
+            $this->selectedRoles = DB::table('model_has_roles')
+                ->join('roles', 'roles.id', '=', 'model_has_roles.role_id')
+                ->where('model_has_roles.model_id', $employee->user_id)
+                ->where('model_has_roles.model_type', User::class)
+                ->where('model_has_roles.team_id', $employee->tenant_id)
+                ->whereNotIn('roles.name', ['admin', 'super-admin'])
+                ->pluck('roles.id')
+                ->map(fn ($id) => 'role_' . (int) $id)
                 ->values()
                 ->all();
         }
@@ -113,10 +118,11 @@ class extends Component {
 
         abort_unless($user && $user->tenant_id, 403);
 
-        $canManage = $user->hasAnyRole(['admin', 'super-admin'])
-            || $user->getAllPermissions()->contains('name', 'manage employees');
-
-        abort_unless($canManage, 403, 'You are not authorized to edit employees.');
+        abort_unless(
+            $this->tenantCan('manage employees'),
+            403,
+            'You are not authorized to edit employees.'
+        );
     }
 
     public function updated($field): void
@@ -507,7 +513,6 @@ class extends Component {
     <div class="p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto space-y-6
                 pb-[max(1rem,env(safe-area-inset-bottom))]">
 
-        {{-- Flash: success --}}
         @if (session()->has('message'))
             <div x-data="{ show: true }"
                  x-init="setTimeout(() => show = false, 4000)"
@@ -532,7 +537,6 @@ class extends Component {
             </div>
         @endif
 
-        {{-- Flash: error --}}
         @if (session()->has('error'))
             <div x-data="{ show: true }"
                  x-init="setTimeout(() => show = false, 5000)"
@@ -557,7 +561,6 @@ class extends Component {
             </div>
         @endif
 
-        {{-- Page header --}}
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-6 border-b border-gray-200/70 dark:border-gray-800/70">
             <div>
                 <div class="flex items-center gap-2 mb-2">
@@ -583,10 +586,8 @@ class extends Component {
             </a>
         </div>
 
-        {{-- Form --}}
         <form wire:submit="update" class="space-y-6">
 
-            {{-- Employee Details --}}
             <div class="bg-white/70 dark:bg-gray-800/40 backdrop-blur-xl
                         rounded-2xl border border-gray-200/60 dark:border-white/[0.06]
                         shadow-sm p-5 sm:p-6 space-y-5">
@@ -597,7 +598,6 @@ class extends Component {
                     </h2>
                 </div>
 
-                {{-- Profile Picture --}}
                 <div
                     x-data="{
                         ...imageCropper({
@@ -788,7 +788,6 @@ class extends Component {
                 </div>
             </div>
 
-            {{-- User Account & Roles --}}
             <div class="bg-white/70 dark:bg-gray-800/40 backdrop-blur-xl
                         rounded-2xl border border-gray-200/60 dark:border-white/[0.06]
                         shadow-sm p-5 sm:p-6 space-y-5">
@@ -1048,7 +1047,6 @@ class extends Component {
                 @endif
             </div>
 
-            {{-- Actions --}}
             <div class="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-3 pt-5 border-t border-gray-200/70 dark:border-gray-800/70">
                 <a href="{{ route('tenant.employees.index') }}" wire:navigate
                    class="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-semibold

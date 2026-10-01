@@ -15,8 +15,8 @@ class EventPolicy
     public function viewAny(User $user): bool
     {
         return $user->hasRole('admin')
-            || $user->getAllPermissions()->contains('name', 'manage events')
-            || $user->getAllPermissions()->contains('name', 'view events');
+            || $user->hasPermissionAtTenant('manage events')
+            || $user->hasPermissionAtTenant('view events');
     }
 
     public function view(User $user, Event $event): bool
@@ -27,7 +27,7 @@ class EventPolicy
     public function create(User $user): bool
     {
         return $user->hasRole('admin')
-            || $user->getAllPermissions()->contains('name', 'manage events');
+            || $user->hasPermissionAtTenant('manage events');
     }
 
     public function update(User $user, Event $event): bool

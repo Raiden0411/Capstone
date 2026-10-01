@@ -1,31 +1,13 @@
 {{-- resources/views/components/footers/public-footer.blade.php --}}
 {{--
-    Hidden on /explore/map.
-
-    The map page is a full-viewport experience: its root element already
-    sizes itself to `100dvh - header` and the map fills that space edge
-    to edge. Rendering a footer below it would push the map up (breaking
-    the height calculation), add a scrollbar, and place unrelated
-    marketing content directly under a live MapLibre canvas — visually
-    and functionally conflicting.
-
-    Everywhere else, the footer renders normally.
+    Hidden on /explore/map. That page sizes itself to `100dvh - header` and
+    fills edge-to-edge with a live MapLibre canvas; a footer below it would
+    push the map up, add a scrollbar, and place marketing content directly
+    under the canvas. Everywhere else, the footer renders normally.
 --}}
 @if(! request()->routeIs('explore.map'))
 
     @php
-        /*
-         * Cached batch read — one cache entry covers all five keys.
-         *
-         * Contact info now lives in SiteSetting with sensible fallbacks.
-         * Today there's no editor UI for these three keys, so they'll
-         * always resolve to the defaults — but the moment an editor is
-         * added, they become editable with zero Blade changes and zero
-         * extra cache reads (the batch is already being fetched).
-         *
-         * Invalidated instantly when an admin writes any of these keys
-         * via SiteSetting::setValue() (see SiteSetting::getBatch).
-         */
         $settings = \App\Models\SiteSetting::getBatch(
             [
                 'site_name',
@@ -37,17 +19,17 @@
             'footer_branding'
         );
 
-        $siteName  = $settings['site_name']  ?? config('app.name', 'Victorias City Tourism');
-        $logoPath  = $settings['site_logo']  ?? null;
+        $siteName  = $settings['site_name'] ?? config('app.name', 'Victorias City Tourism');
+        $logoPath  = $settings['site_logo'] ?? null;
 
-        // Only build a logo URL when the file actually exists on disk.
-        // Falling back to `time()` when the file was missing produced a
-        // unique URL per request and defeated browser caching entirely.
+        // Rule J: relative /storage path. Falls back to null when the file
+        // is missing — a time()-based cache-buster produced a unique URL
+        // per request and defeated browser caching entirely.
         $logoUrl = null;
         if ($logoPath) {
-            $fullPath = public_path('storage/' . $logoPath);
+            $fullPath = public_path('storage/' . ltrim($logoPath, '/'));
             if (file_exists($fullPath)) {
-                $logoUrl = asset('storage/' . $logoPath) . '?v=' . filemtime($fullPath);
+                $logoUrl = '/storage/' . ltrim($logoPath, '/') . '?v=' . filemtime($fullPath);
             }
         }
 
@@ -55,36 +37,24 @@
         $contactAddress = $settings['contact_address'] ?? "City Hall Complex,\nVictorias City, Negros Occidental, Philippines";
         $contactEmail   = $settings['contact_email']   ?? 'tourism@victoriascity.gov.ph';
 
-        // Business registration is behind auth middleware. Guests clicking
-        // these links would be silently bounced to /login with no context.
-        // Route them through account creation first, preserving
-        // /register-business as the return target.
+        // /register-business sits behind auth middleware. A guest clicking
+        // the link would be silently bounced to /login with no context —
+        // route them through account creation first, preserving the return.
         $registerBusinessUrl = Auth::check()
             ? route('register_business')
             : route('register', ['redirect' => route('register_business')]);
 
-        // Canonical link class (Rule 93 focus stack + Rule 8 press feedback).
-        // Kept as a variable so all 18 nav links stay in lockstep.
-        $linkClass = 'inline-block transition-all duration-200 active:scale-95 hover:text-primary-600 dark:hover:text-primary-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 rounded';
+        $linkClass = 'relative inline-block rounded transition-all duration-200 active:scale-95
+                      hover:text-primary-600 dark:hover:text-primary-400
+                      before:absolute before:content-[\'\'] before:-inset-2 before:rounded
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                      focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900';
+
+        $eyebrow       = 'inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em]';
+        $eyebrowPrimary = $eyebrow . ' text-primary-600 dark:text-primary-400';
+        $eyebrowAmber   = $eyebrow . ' text-amber-600 dark:text-amber-400';
     @endphp
 
-    {{-- x-data="revealOnScroll" — the footer is outside <main>, so it
-         carries its own observer. Every [data-reveal] descendant fades
-         + slides up in sequence when the footer enters the viewport.
-
-         ── SAFE-AREA ───────────────────────────────────────────────────
-         The horizontal padding matches the header nav's pattern (1rem →
-         1.5rem → 4rem) so the footer's edge columns line up with the
-         header's logo/actions. `max(...)` means on landscape notched
-         iPhones the padding grows to clear the notch zone, and on every
-         other device env() = 0 so the padding falls back to exactly the
-         previous value.
-
-         Bottom padding similarly grows for the home indicator: `pt-12`
-         stays 48px (the previous `py-12` top), `pb-[calc(3rem+env(...))]`
-         is 48px on non-notched devices and 48 + 34 ≈ 82px on iPhone X+
-         so the copyright row isn't behind the home indicator when the
-         user scrolls to the very bottom. --}}
     <footer x-data="revealOnScroll"
             class="border-t border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900
                    pt-12
@@ -97,30 +67,26 @@
                    lg:pe-[max(4rem,env(safe-area-inset-right))]">
         <div class="mx-auto max-w-[90rem]">
 
-            {{-- Top Section: Brand --}}
             <div data-reveal class="pb-10 mb-10 border-b border-gray-200 dark:border-gray-700">
                 <a href="{{ route('home') }}" wire:navigate
                    class="group mb-4 inline-flex items-center gap-3 rounded-lg
                           transition-all duration-200 active:scale-95
-                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                          focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
                     @if($logoUrl)
                         <img src="{{ $logoUrl }}" alt="{{ $siteName }} logo"
                              width="40" height="40"
                              loading="lazy" decoding="async"
-                             class="h-10 w-10 shrink-0 object-contain rounded-lg opacity-90 transition-opacity group-hover:opacity-100">
+                             class="h-10 w-10 shrink-0 rounded-full object-contain ring-1 ring-black/5 shadow-sm dark:ring-white/10
+                                    opacity-90 transition-opacity group-hover:opacity-100">
                     @endif
                     <span class="font-display text-2xl md:text-3xl font-bold tracking-tight text-gray-900 dark:text-white">
                         {{ $siteName }}
                     </span>
                 </a>
 
-                {{-- Split tagline into editorial eyebrow (amber) + supporting
-                     line — mirrors the two-tier text pattern used in every
-                     other section of the platform. --}}
-                <p class="mb-1.5 inline-flex items-center gap-2
-                          text-xs font-bold uppercase tracking-[0.2em]
-                          text-amber-600 dark:text-amber-400">
-                    <span class="h-px w-4 bg-amber-500"></span>
+                <p class="{{ $eyebrowAmber }} mb-1.5">
+                    <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
                     Discover the Sweet City of the North
                 </p>
                 <p class="text-sm text-gray-600 dark:text-gray-400 leading-relaxed max-w-2xl">
@@ -128,120 +94,53 @@
                 </p>
             </div>
 
-            {{-- Middle Section: Navigation + Contact.
-                 Each link column is wrapped in <nav aria-label="..."> so
-                 assistive tech announces the landmark properly.
-                 Column headings use the platform's eyebrow pattern —
-                 rule + label — but in primary blue to distinguish
-                 structural navigation from editorial amber. --}}
-            <div class="pb-12 mb-12 border-b border-gray-200 dark:border-gray-700 grid grid-cols-1 gap-10 sm:grid-cols-2 lg:grid-cols-4 lg:gap-8">
+            {{-- Each link column is a <nav> so assistive tech announces the
+                 landmark. Column headings use the §5.14 eyebrow pattern. --}}
+            <div class="pb-12 mb-12 border-b border-gray-200 dark:border-gray-700
+                        grid grid-cols-1 gap-10 sm:grid-cols-2 lg:grid-cols-4 lg:gap-8">
 
-                {{-- Column 1: Explore --}}
                 <nav aria-label="Explore" data-reveal>
-                    <p class="mb-4 inline-flex items-center gap-2
-                              text-xs font-bold uppercase tracking-[0.2em]
-                              text-primary-600 dark:text-primary-400">
-                        <span class="h-px w-4 bg-primary-500"></span>
+                    <p class="{{ $eyebrowPrimary }} mb-4">
+                        <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
                         Explore
                     </p>
                     <ul class="space-y-2.5 text-sm text-gray-600 dark:text-gray-300">
-                        <li>
-                            <a href="{{ route('tourist-spots.index') }}" wire:navigate class="{{ $linkClass }}">
-                                Tourist Spots &amp; Landmarks
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{{ route('explore.map') }}" wire:navigate class="{{ $linkClass }}">
-                                Dining &amp; Local Cuisine
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{{ route('about') }}" wire:navigate class="{{ $linkClass }}">
-                                Heritage &amp; Architecture
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{{ route('explore.map') }}" wire:navigate class="{{ $linkClass }}">
-                                Local Markets &amp; Shops
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{{ route('explore.map') }}" wire:navigate class="{{ $linkClass }}">
-                                Nature &amp; Escapes
-                            </a>
-                        </li>
+                        <li><a href="{{ route('tourist-spots.index') }}" wire:navigate class="{{ $linkClass }}">Tourist Spots &amp; Landmarks</a></li>
+                        <li><a href="{{ route('explore.map') }}" wire:navigate class="{{ $linkClass }}">Dining &amp; Local Cuisine</a></li>
+                        <li><a href="{{ route('about') }}" wire:navigate class="{{ $linkClass }}">Heritage &amp; Architecture</a></li>
+                        <li><a href="{{ route('explore.map') }}" wire:navigate class="{{ $linkClass }}">Local Markets &amp; Shops</a></li>
+                        <li><a href="{{ route('explore.map') }}" wire:navigate class="{{ $linkClass }}">Nature &amp; Escapes</a></li>
                     </ul>
                 </nav>
 
-                {{-- Column 2: Community --}}
                 <nav aria-label="Community" data-reveal style="--reveal-delay: 80ms">
-                    <p class="mb-4 inline-flex items-center gap-2
-                              text-xs font-bold uppercase tracking-[0.2em]
-                              text-primary-600 dark:text-primary-400">
-                        <span class="h-px w-4 bg-primary-500"></span>
+                    <p class="{{ $eyebrowPrimary }} mb-4">
+                        <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
                         Community
                     </p>
                     <ul class="space-y-2.5 text-sm text-gray-600 dark:text-gray-300">
-                        <li>
-                            <a href="{{ route('about') }}" wire:navigate class="{{ $linkClass }}">
-                                Local Artisans &amp; Makers
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{{ route('about') }}" wire:navigate class="{{ $linkClass }}">
-                                Local Stories &amp; Narratives
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{{ route('events') }}" wire:navigate class="{{ $linkClass }}">
-                                Travel Guides &amp; Bulletins
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{{ route('events') }}" wire:navigate class="{{ $linkClass }}">
-                                Festivals &amp; Events Calendar
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{{ $registerBusinessUrl }}" wire:navigate class="{{ $linkClass }}">
-                                Submit a Place
-                            </a>
-                        </li>
+                        <li><a href="{{ route('about') }}" wire:navigate class="{{ $linkClass }}">Local Artisans &amp; Makers</a></li>
+                        <li><a href="{{ route('about') }}" wire:navigate class="{{ $linkClass }}">Local Stories &amp; Narratives</a></li>
+                        <li><a href="{{ route('events') }}" wire:navigate class="{{ $linkClass }}">Travel Guides &amp; Bulletins</a></li>
+                        <li><a href="{{ route('events') }}" wire:navigate class="{{ $linkClass }}">Festivals &amp; Events Calendar</a></li>
+                        <li><a href="{{ $registerBusinessUrl }}" wire:navigate class="{{ $linkClass }}">Submit a Place</a></li>
                     </ul>
                 </nav>
 
-                {{-- Column 3: About --}}
                 <nav aria-label="About" data-reveal style="--reveal-delay: 160ms">
-                    <p class="mb-4 inline-flex items-center gap-2
-                              text-xs font-bold uppercase tracking-[0.2em]
-                              text-primary-600 dark:text-primary-400">
-                        <span class="h-px w-4 bg-primary-500"></span>
+                    <p class="{{ $eyebrowPrimary }} mb-4">
+                        <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
                         About
                     </p>
                     <ul class="space-y-2.5 text-sm text-gray-600 dark:text-gray-300">
-                        <li>
-                            <a href="{{ route('about') }}" wire:navigate class="{{ $linkClass }}">
-                                The Victorias Story
-                            </a>
-                        </li>
-                        <li>
-                            <a href="{{ $registerBusinessUrl }}" wire:navigate class="{{ $linkClass }}">
-                                Partnerships &amp; Linkages
-                            </a>
-                        </li>
+                        <li><a href="{{ route('about') }}" wire:navigate class="{{ $linkClass }}">The Victorias Story</a></li>
+                        <li><a href="{{ $registerBusinessUrl }}" wire:navigate class="{{ $linkClass }}">Partnerships &amp; Linkages</a></li>
                     </ul>
                 </nav>
 
-                {{-- Column 4: Contact.
-                     <address> is the semantically correct element for
-                     contact details — screen readers announce it as
-                     such. It's a block element by default, so layout is
-                     unchanged. --}}
                 <div data-reveal style="--reveal-delay: 240ms">
-                    <p class="mb-4 inline-flex items-center gap-2
-                              text-xs font-bold uppercase tracking-[0.2em]
-                              text-primary-600 dark:text-primary-400">
-                        <span class="h-px w-4 bg-primary-500"></span>
+                    <p class="{{ $eyebrowPrimary }} mb-4">
+                        <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
                         Contact
                     </p>
                     <address class="text-sm leading-relaxed text-gray-600 dark:text-gray-300 space-y-2.5 not-italic">
@@ -260,7 +159,6 @@
                 </div>
             </div>
 
-            {{-- Bottom Section: Copyright --}}
             <div data-reveal class="flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-gray-500 dark:text-gray-400">
                 <p class="tabular-nums">
                     &copy; {{ date('Y') }} {{ $siteName }}. All rights reserved.

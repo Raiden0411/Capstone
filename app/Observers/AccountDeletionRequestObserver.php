@@ -23,13 +23,12 @@ class AccountDeletionRequestObserver
         DB::afterCommit(function () use ($request): void {
             $request->loadMissing('user:id,name,email');
 
-            // `account_deletion_requests.user_id` is NOT NULL — Larastan
-            // reads this as a non-nullable relation. No nullsafe needed.
             $applicant     = $request->user;
             $applicantName = $applicant->name ?? 'A user';
             $scopeLabel    = $request->scopeLabel();
 
-            $superadmins = User::role('super-admin')->get();
+            // Team-agnostic super-admin lookup — see User::scopeWhereSuperAdmin.
+            $superadmins = User::whereSuperAdmin()->get();
 
             $this->userNotifications->notifyMany($superadmins, [
                 'scope'   => UserNotification::SCOPE_PLATFORM,
@@ -59,8 +58,6 @@ class AccountDeletionRequestObserver
                 return;
             }
 
-            // Scope is decided by the applicant's CURRENT identity, not
-            // by the request's own scope field.
             $scope = $applicant->tenant_id
                 ? UserNotification::SCOPE_BUSINESS
                 : UserNotification::SCOPE_TOURIST;

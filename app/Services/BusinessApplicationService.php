@@ -138,6 +138,21 @@ class BusinessApplicationService
         }
     }
 
+    /**
+     * Transition a draft/needs_revision application to pending.
+     *
+     * ── One-at-a-time contract ────────────────────────────────────
+     *
+     * A user may only have ONE application in the review pipeline at
+     * any moment. Filing a second while the first is pending makes the
+     * reviewer's queue ambiguous (which to approve first? how do we
+     * know they don't collide on TIN?) and creates a race in
+     * `approve()` if two are approved in the same session.
+     *
+     * The user's second, third, and subsequent businesses are added
+     * AFTER each prior application has reached a terminal state
+     * (approved or rejected). The guard below enforces that.
+     */
     public function submit(BusinessApplication $application): bool
     {
         $application->loadMissing('documents');
@@ -145,6 +160,26 @@ class BusinessApplicationService
         if (!$application->isReadyForSubmission()) {
             throw new RuntimeException(
                 'Please complete all required business details and upload every required document before submitting.'
+            );
+        }
+
+        // ── Guard: no other live application for this user ────────
+        // A live application is one already awaiting a decision.
+        // Drafts owned by the same user do not count — the user may
+        // have started a second draft after abandoning the first.
+        $hasLiveApplication = BusinessApplication::query()
+            ->where('user_id', $application->user_id)
+            ->whereKeyNot($application->getKey())
+            ->whereIn('status', [
+                BusinessApplication::STATUS_PENDING,
+                BusinessApplication::STATUS_UNDER_REVIEW,
+            ])
+            ->exists();
+
+        if ($hasLiveApplication) {
+            throw new RuntimeException(
+                'You already have an application awaiting review. '
+              . 'Wait for a decision on it before submitting another.'
             );
         }
 
@@ -174,8 +209,9 @@ class BusinessApplicationService
         }, 'submit-applicant', $fresh->id);
 
         $this->safeMail(function () use ($fresh) {
+            // Team-agnostic — see User::scopeWhereSuperAdmin.
             /** @var EloquentCollection<int, User> $admins */
-            $admins = User::role('super-admin')->get(['id', 'name', 'email']);
+            $admins = User::whereSuperAdmin()->get(['id', 'name', 'email']);
             foreach ($admins as $admin) {
                 Mail::to($admin->email)->send(
                     new BusinessApplicationSubmitted($fresh, forAdmin: true)
@@ -254,15 +290,6 @@ class BusinessApplicationService
 
             if ($applicant) {
                 // ── 1a: durable pivot row ────────────────────────
-                //
-                // This is the AUTHORITATIVE record that this user is
-                // an owner of this business. `users.tenant_id` below
-                // is the ACTIVE pointer — separate concern.
-                //
-                // is_active is true ONLY when this is the applicant's
-                // first business. An existing owner approving a second
-                // business does NOT get their active context switched —
-                // they keep operating wherever they were.
                 $isFirstBusiness = $applicant->businessMemberships()->count() === 0;
 
                 BusinessMembership::create([
@@ -273,7 +300,6 @@ class BusinessApplicationService
                     'joined_at' => now(),
                 ]);
 
-                // ── 1a: preserve the existing owner's active tenant ──
                 $updates = [];
 
                 if ($locked->owner_avatar_path) {
@@ -281,9 +307,6 @@ class BusinessApplicationService
                 }
 
                 if (! $applicant->tenant_id) {
-                    // First business — light up the active pointer so
-                    // every existing SFC that reads `user->tenant_id`
-                    // sees the new business immediately.
                     $updates['tenant_id']   = $tenant->id;
                     $updates['active_mode'] = User::MODE_BUSINESS;
                 }
@@ -292,12 +315,23 @@ class BusinessApplicationService
                     $applicant->update($updates);
                 }
 
-                // ── Spatie role ──────────────────────────────────
-                // Pre-1b: global role assignment. 1b replaces this with
-                // a team-scoped assignment keyed on $tenant->id.
-                if (! $applicant->hasRole('admin')) {
-                    $applicant->assignRole('admin');
-                }
+                // ── Spatie role — assigned at the NEW tenant's team ────
+                //
+                // Must use assignRoleAtTeam($tenant->id, ...) rather
+                // than assignRole(...):
+                //
+                //   • assignRole() pins the ambient team context to
+                //     $applicant->tenant_id — which for an existing
+                //     owner is their CURRENT active tenant, not the
+                //     newly approved one.
+                //   • The pivot row must be written at team_id =
+                //     $tenant->id, otherwise hasRole('admin') under
+                //     the new tenant's context returns false and the
+                //     owner is locked out of /admin/* on that business.
+                //
+                // Idempotent — Spatie skips the insert when the pivot
+                // already exists at the resolved team.
+                $applicant->assignRoleAtTeam($tenant->id, 'admin');
             }
 
             $locked->update([

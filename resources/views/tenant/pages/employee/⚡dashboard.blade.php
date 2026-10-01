@@ -24,12 +24,22 @@ class extends Component {
 
     public function mount(): void
     {
-        abort_unless(Auth::user()?->tenant_id, 403);
+        $this->authorizeDashboard();
     }
 
     public function hydrate(): void
     {
-        abort_unless(Auth::user()?->tenant_id, 403);
+        $this->authorizeDashboard();
+    }
+
+    protected function authorizeDashboard(): void
+    {
+        if (! Auth::check()) {
+            $this->redirectRoute('login', navigate: true);
+            return;
+        }
+
+        abort_unless(Auth::user()->tenant_id, 403, 'Your account is not linked to a business.');
     }
 
     #[Computed]
@@ -57,7 +67,7 @@ class extends Component {
     {
         return Booking::withoutGlobalScope(TenantScope::class)
             ->where('tenant_id', Auth::user()->tenant_id)
-            ->whereDate('check_in', today())
+            ->where('check_in', today()->toDateString())
             ->whereNotIn('status', [Booking::STATUS_CANCELLED])
             ->count();
     }
@@ -67,7 +77,7 @@ class extends Component {
     {
         return Booking::withoutGlobalScope(TenantScope::class)
             ->where('tenant_id', Auth::user()->tenant_id)
-            ->whereDate('check_out', today())
+            ->where('check_out', today()->toDateString())
             ->whereNotIn('status', [Booking::STATUS_CANCELLED])
             ->count();
     }
@@ -97,7 +107,8 @@ class extends Component {
         return Booking::withoutGlobalScope(TenantScope::class)
             ->with([
                 'user:id,name,email',
-                'items.property:id,name',
+                'items'          => fn ($q) => $q->withoutGlobalScope(TenantScope::class),
+                'items.property' => fn ($q) => $q->withoutGlobalScope(TenantScope::class)->select('id', 'name'),
             ])
             ->where('tenant_id', Auth::user()->tenant_id)
             ->latest('created_at')
@@ -268,7 +279,6 @@ class extends Component {
     <div class="p-4 sm:p-6 lg:p-8 max-w-[1440px] mx-auto space-y-6
                 pb-[max(1rem,env(safe-area-inset-bottom))]">
 
-        {{-- Header --}}
         <div class="pb-6 border-b border-gray-200/70 dark:border-gray-800/70">
             <div class="flex items-center gap-2 mb-2">
                 <span class="w-5 h-px bg-primary-600"></span>
@@ -296,7 +306,6 @@ class extends Component {
             </div>
         @else
 
-            {{-- Stat tiles --}}
             @php $tiles = $this->statTiles; @endphp
             @if(! empty($tiles))
                 <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -395,7 +404,6 @@ class extends Component {
                 </div>
             @endif
 
-            {{-- Quick actions --}}
             @php $actions = $this->quickActions; @endphp
             @if(! empty($actions))
                 <div>
@@ -471,7 +479,6 @@ class extends Component {
                 </div>
             @endif
 
-            {{-- Recent bookings --}}
             @if($this->tenantCan('view bookings'))
                 @php $recent = $this->recentBookings; @endphp
                 @if($recent->isNotEmpty())

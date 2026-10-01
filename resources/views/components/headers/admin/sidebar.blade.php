@@ -4,34 +4,24 @@
     use Illuminate\Support\Facades\Cache;
     use Illuminate\Support\Facades\Log;
 
-    // Cached site settings lookups.
     $logoPath = \App\Models\SiteSetting::getValue('site_logo');
     $siteName = \App\Models\SiteSetting::getValue('site_name', config('app.name'));
 
+    // Rule J: relative /storage path. Build the URL only when the file
+    // exists — a time()-based fallback produced a unique URL per request
+    // when the file was missing, defeating browser caching entirely.
     $logoUrl = null;
     if ($logoPath) {
-        $fullPath = public_path('storage/' . $logoPath);
-        $logoUrl  = asset('storage/' . $logoPath)
-            . '?v=' . (file_exists($fullPath) ? filemtime($fullPath) : time());
+        $fullPath = public_path('storage/' . ltrim($logoPath, '/'));
+        if (file_exists($fullPath)) {
+            $logoUrl = '/storage/' . ltrim($logoPath, '/') . '?v=' . filemtime($fullPath);
+        }
     }
 
-    /*
-     * Business-application and deletion-request badges come from the
-     * notification service — single source of truth for cache key, TTL,
-     * and count semantics.
-     */
     $notifications       = app(SuperadminNotificationService::class);
     $pendingApplications = $notifications->pendingCount();
     $pendingDeletions    = $notifications->deletionRequestCount();
 
-    /*
-     * Pending renewals are not yet exposed by the notification service,
-     * so we cache the count here directly. Short TTL (60s) means the
-     * sidebar self-heals after an approve/reject on /platform/renewals
-     * without needing a cross-component cache-bust. Wrapped in try/catch
-     * so a query failure degrades to "no badge" rather than a 500 on
-     * every superadmin page (fail-open, not closed).
-     */
     try {
         $pendingRenewals = Cache::remember(
             'superadmin.sidebar.pending_renewals',
@@ -48,11 +38,6 @@
         ]);
     }
 
-    /*
-     * Canonical nav-link class + active/inactive variants.
-     * min-h-[44px] guarantees the WCAG 2.5.5 mobile tap-target floor
-     * (Rule 156) without changing the visual weight on desktop.
-     */
     $navLinkClass = 'group relative flex items-center gap-x-3.5 rounded-lg px-3 py-2.5 text-sm '
         . 'min-h-[44px] '
         . 'transition-all duration-200 active:scale-[0.98] '
@@ -64,11 +49,6 @@
     $navLinkActive   = 'bg-primary-50 text-primary-700 dark:bg-primary-500/20 dark:text-primary-300 border-l-primary-600';
     $navLinkInactive = 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-white border-l-transparent';
 
-    /*
-     * Section eyebrow — text + fading hairline. The hairline reads as a
-     * quiet divider on both light and dark rails and disappears cleanly
-     * when the sidebar is minified (the whole <li> is lg:hidden).
-     */
     $sectionLabelClass = 'text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500';
     $sectionRuleClass  = 'h-px flex-1 bg-gradient-to-r from-gray-200 to-transparent dark:from-gray-700';
 @endphp
@@ -91,14 +71,12 @@
     @toggle-superadmin-sidebar.window="mobileOpen = !mobileOpen"
     @keydown.escape.window="mobileOpen = false"
 >
-    {{-- Mobile backdrop --}}
     <div x-cloak
          :class="mobileOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'"
          class="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm lg:hidden transition-opacity duration-300 motion-reduce:transition-none"
          @click="mobileOpen = false"
          aria-hidden="true"></div>
 
-    {{-- Sidebar --}}
     <aside
         :class="[
             minified ? 'lg:w-20' : 'lg:w-64',
@@ -110,21 +88,6 @@
     >
         <div class="relative flex h-full max-h-full flex-col">
 
-            {{-- ═══════════════════════════════════════════════════════
-                 HEADER — two-tier brand lockup
-                 ───────────────────────────────────────────────────────
-                 • Icon is a framed 40px card — reads as intentional.
-                 • Text is two-tier: amber eyebrow "PLATFORM" + wordmark.
-                 • Hover: soft amber/primary glow behind the icon.
-                 • When minified, only the icon shows (text `lg:hidden`).
-
-                 SAFE-AREA: pt-[env(safe-area-inset-top)] pushes this row
-                 below the notch on iPhone X+ so the close X stays
-                 clickable. min-h-16 md:min-h-20 (instead of h-16 md:h-20)
-                 lets the row grow when the safe area is non-zero — on
-                 devices without a notch, env() resolves to 0 and the
-                 row renders at exactly the same size as before.
-                 ═══════════════════════════════════════════════════════ --}}
             <div class="flex min-h-16 md:min-h-20 shrink-0 items-center justify-between gap-2 px-4
                         pt-[env(safe-area-inset-top)]
                         border-b border-gray-200 dark:border-gray-700"
@@ -140,7 +103,6 @@
                           [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900">
 
-                    {{-- Icon — framed, with hover glow --}}
                     <span class="relative shrink-0">
                         <span class="pointer-events-none absolute -inset-1 rounded-2xl
                                      bg-gradient-to-br from-primary-500/40 via-primary-500/10 to-amber-500/25
@@ -152,11 +114,11 @@
                             <img src="{{ $logoUrl }}" alt="{{ $siteName }}"
                                  width="40" height="40"
                                  loading="lazy" decoding="async"
-                                 class="relative h-10 w-10 rounded-xl object-contain bg-white p-1
+                                 class="relative h-10 w-10 rounded-full object-contain
                                         ring-1 ring-black/5 shadow-sm
-                                        dark:ring-white/10 dark:bg-gray-800">
+                                        dark:ring-white/10">
                         @else
-                            <span class="relative inline-flex h-10 w-10 items-center justify-center rounded-xl
+                            <span class="relative inline-flex h-10 w-10 items-center justify-center rounded-full
                                          bg-gradient-to-br from-primary-500 to-primary-700 text-white
                                          ring-1 ring-black/5 shadow-sm dark:ring-white/10">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -166,7 +128,6 @@
                         @endif
                     </span>
 
-                    {{-- Text lockup — hidden when the rail is minified --}}
                     <span x-cloak :class="minified ? 'lg:hidden' : ''"
                           class="flex min-w-0 flex-col gap-0.5 text-start">
 
@@ -186,7 +147,6 @@
                     </span>
                 </a>
 
-                {{-- Mobile Close --}}
                 <button type="button"
                         class="flex size-11 shrink-0 items-center justify-center rounded-full bg-gray-100 text-gray-500
                                transition-all duration-200 hover:bg-gray-200 hover:text-gray-800 active:scale-95
@@ -201,13 +161,11 @@
                 </button>
             </div>
 
-            {{-- Navigation --}}
             <div class="flex-1 overflow-y-auto overflow-x-hidden [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-gray-300 dark:[&::-webkit-scrollbar-thumb]:bg-gray-700">
                 <nav class="flex w-full flex-col p-3" aria-label="Platform sections">
                     <ul class="flex flex-col space-y-1"
                         :class="minified ? '[&_a]:justify-center [&_a]:px-0' : ''">
 
-                        {{-- ═══════════ 1. OVERVIEW ═══════════ --}}
                         <li class="flex items-center gap-3 px-3 pb-1 pt-0" x-cloak :class="minified ? 'lg:hidden' : ''">
                             <span class="{{ $sectionLabelClass }}">Overview</span>
                             <span class="{{ $sectionRuleClass }}" aria-hidden="true"></span>
@@ -237,13 +195,11 @@
                             </a>
                         </li>
 
-                        {{-- ═══════════ 2. REVIEW QUEUE ═══════════ --}}
                         <li class="flex items-center gap-3 px-3 pb-1 pt-4" x-cloak :class="minified ? 'lg:hidden' : ''">
                             <span class="{{ $sectionLabelClass }}">Review Queue</span>
                             <span class="{{ $sectionRuleClass }}" aria-hidden="true"></span>
                         </li>
 
-                        {{-- Business Applications --}}
                         <li>
                             <a href="{{ route('superadmin.business-applications.index') }}" wire:navigate
                                aria-current="{{ request()->routeIs('superadmin.business-applications.*') ? 'page' : 'false' }}"
@@ -266,7 +222,6 @@
                             </a>
                         </li>
 
-                        {{-- Renewals --}}
                         <li>
                             <a href="{{ route('superadmin.renewals.index') }}" wire:navigate
                                aria-current="{{ request()->routeIs('superadmin.renewals.*') ? 'page' : 'false' }}"
@@ -292,7 +247,6 @@
                             </a>
                         </li>
 
-                        {{-- Deletion Requests --}}
                         <li>
                             <a href="{{ route('superadmin.deletion-requests.index') }}" wire:navigate
                                aria-current="{{ request()->routeIs('superadmin.deletion-requests.*') ? 'page' : 'false' }}"
@@ -315,13 +269,11 @@
                             </a>
                         </li>
 
-                        {{-- ═══════════ 3. PLATFORM ═══════════ --}}
                         <li class="flex items-center gap-3 px-3 pb-1 pt-4" x-cloak :class="minified ? 'lg:hidden' : ''">
                             <span class="{{ $sectionLabelClass }}">Platform</span>
                             <span class="{{ $sectionRuleClass }}" aria-hidden="true"></span>
                         </li>
 
-                        {{-- Tenants --}}
                         <li>
                             <a href="{{ route('superadmin.tenants.index') }}" wire:navigate
                                aria-current="{{ request()->routeIs('superadmin.tenants.*') ? 'page' : 'false' }}"
@@ -334,7 +286,6 @@
                             </a>
                         </li>
 
-                        {{-- Users --}}
                         <li>
                             <a href="{{ route('superadmin.users.index') }}" wire:navigate
                                aria-current="{{ request()->routeIs('superadmin.users.*') ? 'page' : 'false' }}"
@@ -347,7 +298,6 @@
                             </a>
                         </li>
 
-                        {{-- Tenant Types --}}
                         <li>
                             <a href="{{ route('superadmin.tenant-types.index') }}" wire:navigate
                                aria-current="{{ request()->routeIs('superadmin.tenant-types.*') ? 'page' : 'false' }}"
@@ -360,7 +310,6 @@
                             </a>
                         </li>
 
-                        {{-- Roles --}}
                         <li>
                             <a href="{{ route('superadmin.roles.index') }}" wire:navigate
                                aria-current="{{ request()->routeIs('superadmin.roles.*') ? 'page' : 'false' }}"
@@ -373,7 +322,6 @@
                             </a>
                         </li>
 
-                        {{-- Events --}}
                         <li>
                             <a href="{{ route('superadmin.events.index') }}" wire:navigate
                                aria-current="{{ request()->routeIs('superadmin.events.*') ? 'page' : 'false' }}"
@@ -386,13 +334,11 @@
                             </a>
                         </li>
 
-                        {{-- ═══════════ 4. CONTENT ═══════════ --}}
                         <li class="flex items-center gap-3 px-3 pb-1 pt-4" x-cloak :class="minified ? 'lg:hidden' : ''">
                             <span class="{{ $sectionLabelClass }}">Content</span>
                             <span class="{{ $sectionRuleClass }}" aria-hidden="true"></span>
                         </li>
 
-                        {{-- Homepage Editor --}}
                         <li>
                             <a href="{{ route('superadmin.homepage.editor') }}" wire:navigate
                                aria-current="{{ request()->routeIs('superadmin.homepage.editor') ? 'page' : 'false' }}"
@@ -405,7 +351,6 @@
                             </a>
                         </li>
 
-                        {{-- About Page Editor --}}
                         <li>
                             <a href="{{ route('superadmin.about.editor') }}" wire:navigate
                                aria-current="{{ request()->routeIs('superadmin.about.editor') ? 'page' : 'false' }}"
@@ -418,7 +363,6 @@
                             </a>
                         </li>
 
-                        {{-- Map Markers --}}
                         <li>
                             <a href="{{ route('superadmin.map-markers.index') }}" wire:navigate
                                aria-current="{{ request()->routeIs('superadmin.map-markers.*') ? 'page' : 'false' }}"
@@ -431,7 +375,6 @@
                             </a>
                         </li>
 
-                        {{-- Marker Categories --}}
                         <li>
                             <a href="{{ route('superadmin.marker-categories.index') }}" wire:navigate
                                aria-current="{{ request()->routeIs('superadmin.marker-categories.*') ? 'page' : 'false' }}"
@@ -444,13 +387,11 @@
                             </a>
                         </li>
 
-                        {{-- ═══════════ 5. SYSTEM ═══════════ --}}
                         <li class="flex items-center gap-3 px-3 pb-1 pt-4" x-cloak :class="minified ? 'lg:hidden' : ''">
                             <span class="{{ $sectionLabelClass }}">System</span>
                             <span class="{{ $sectionRuleClass }}" aria-hidden="true"></span>
                         </li>
 
-                        {{-- Health — slow query dashboard --}}
                         <li>
                             <a href="{{ route('superadmin.health.queries') }}" wire:navigate
                                aria-current="{{ request()->routeIs('superadmin.health.*') ? 'page' : 'false' }}"
@@ -463,13 +404,11 @@
                             </a>
                         </li>
 
-                        {{-- ═══════════ 6. ACCOUNT ═══════════ --}}
                         <li class="flex items-center gap-3 px-3 pb-1 pt-4" x-cloak :class="minified ? 'lg:hidden' : ''">
                             <span class="{{ $sectionLabelClass }}">Account</span>
                             <span class="{{ $sectionRuleClass }}" aria-hidden="true"></span>
                         </li>
 
-                        {{-- My Profile --}}
                         <li>
                             <a href="{{ route('superadmin.profile') }}" wire:navigate
                                aria-current="{{ request()->routeIs('superadmin.profile') ? 'page' : 'false' }}"
@@ -486,7 +425,6 @@
                 </nav>
             </div>
 
-            {{-- Floating collapse/expand button --}}
             <button type="button"
                     @click="toggleMinified()"
                     class="absolute -right-3 top-1/2 z-50 hidden size-7 -translate-y-1/2 items-center justify-center rounded-full

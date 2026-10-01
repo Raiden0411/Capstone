@@ -1,10 +1,19 @@
 {{-- resources/views/components/headers/admin/superadmin-header.blade.php --}}
 @php
-    $user          = Auth::user();
-    $userAvatarUrl = $user?->avatar ? asset('storage/' . $user->avatar) : null;
-    $userInitial   = strtoupper(substr($user?->name ?? 'SA', 0, 1));
-    $userRole      = $user?->roles->first();
-    $roleLabel     = $userRole ? ucwords(str_replace(['-', '_'], ' ', $userRole->name)) : null;
+    $user = Auth::user();
+
+    // Rule J: relative /storage path. Build the URL only when the file exists.
+    $userAvatarUrl = null;
+    if ($user?->avatar) {
+        $fullPath = public_path('storage/' . ltrim($user->avatar, '/'));
+        if (file_exists($fullPath)) {
+            $userAvatarUrl = '/storage/' . ltrim($user->avatar, '/') . '?v=' . filemtime($fullPath);
+        }
+    }
+
+    $userInitial = strtoupper(substr($user?->name ?? 'SA', 0, 1));
+    $userRole    = $user?->roles->first();
+    $roleLabel   = $userRole ? ucwords(str_replace(['-', '_'], ' ', $userRole->name)) : null;
 
     /*
      * Derive a human-readable page title from the current route name.
@@ -13,29 +22,24 @@
      */
     $routeName = (string) request()->route()?->getName();
     $pageTitle = match (true) {
-        $routeName === 'superadmin.dashboard'                        => 'Dashboard',
-        $routeName === 'superadmin.analytics'                        => 'Analytics',
-        $routeName === 'superadmin.profile'                          => 'My Profile',
-        str_starts_with($routeName, 'superadmin.business-applications') => 'Business Applications',
-        str_starts_with($routeName, 'superadmin.deletion-requests')     => 'Deletion Requests',
-        str_starts_with($routeName, 'superadmin.tenants')               => 'Tenants',
-        str_starts_with($routeName, 'superadmin.users')                 => 'Users',
-        str_starts_with($routeName, 'superadmin.tenant-types')          => 'Tenant Types',
-        str_starts_with($routeName, 'superadmin.roles')                 => 'Roles',
-        str_starts_with($routeName, 'superadmin.events')                => 'Events',
-        str_starts_with($routeName, 'superadmin.homepage')              => 'Homepage Editor',
-        str_starts_with($routeName, 'superadmin.about')                 => 'About Page Editor',
-        str_starts_with($routeName, 'superadmin.map-markers')           => 'Map Markers',
-        str_starts_with($routeName, 'superadmin.marker-categories')     => 'Marker Categories',
-        str_starts_with($routeName, 'superadmin.health')                => 'Health',
-        default                                                         => 'Platform',
+        $routeName === 'superadmin.dashboard'                            => 'Dashboard',
+        $routeName === 'superadmin.analytics'                            => 'Analytics',
+        $routeName === 'superadmin.profile'                              => 'My Profile',
+        str_starts_with($routeName, 'superadmin.business-applications')  => 'Business Applications',
+        str_starts_with($routeName, 'superadmin.deletion-requests')      => 'Deletion Requests',
+        str_starts_with($routeName, 'superadmin.tenants')                => 'Tenants',
+        str_starts_with($routeName, 'superadmin.users')                  => 'Users',
+        str_starts_with($routeName, 'superadmin.tenant-types')           => 'Tenant Types',
+        str_starts_with($routeName, 'superadmin.roles')                  => 'Roles',
+        str_starts_with($routeName, 'superadmin.events')                 => 'Events',
+        str_starts_with($routeName, 'superadmin.homepage')               => 'Homepage Editor',
+        str_starts_with($routeName, 'superadmin.about')                  => 'About Page Editor',
+        str_starts_with($routeName, 'superadmin.map-markers')            => 'Map Markers',
+        str_starts_with($routeName, 'superadmin.marker-categories')      => 'Marker Categories',
+        str_starts_with($routeName, 'superadmin.health')                 => 'Health',
+        default                                                          => 'Platform',
     };
 
-    /*
-     * Canonical dropdown-link class — one source of truth for the two
-     * links inside the profile dropdown. min-h-[44px] and the mobile
-     * touch conventions (Rule 156 + §6.2) are baked in.
-     */
     $dropdownLinkClass = 'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm '
         . 'min-h-[44px] '
         . 'text-gray-700 transition-all duration-200 '
@@ -49,7 +53,6 @@
 @push('styles')
     @once
         <style>
-            /* Rule 69 replacement — CSS keyframe for the profile dropdown. */
             .superadmin-header-dropdown {
                 animation: superadminHeaderDropdownIn .15s cubic-bezier(.16,1,.3,1);
             }
@@ -68,9 +71,6 @@
     x-data="{
         minified: localStorage.getItem('sidebar_minified') === '1',
 
-        /* Theme state mirrors what the layout's applyTheme() has already
-           applied to <html>. Reading localStorage here would desync for
-           first-time visitors (hs_theme === null + system prefers dark). */
         dark: document.documentElement.classList.contains('dark'),
 
         toggleDark() {
@@ -88,7 +88,6 @@
 >
     <nav class="mx-auto flex w-full basis-full items-center justify-between gap-2 px-4 sm:px-6" aria-label="Super admin header">
 
-        {{-- Left: Mobile sidebar toggle --}}
         <div class="flex items-center gap-2 lg:hidden">
             <button type="button"
                     class="flex size-11 items-center justify-center gap-x-2 rounded-full border border-gray-300 bg-white text-gray-700
@@ -104,22 +103,16 @@
             </button>
         </div>
 
-        {{-- Center: Breadcrumb — current section title. --}}
-        {{-- Hidden on mobile (space is tight) but visible from `md` up. --}}
         <div class="hidden md:flex flex-1 items-center gap-2 px-2 min-w-0">
             <span class="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500">Platform</span>
             <span class="text-gray-300 dark:text-gray-600" aria-hidden="true">/</span>
             <span class="text-sm font-semibold text-gray-700 dark:text-gray-200 truncate">{{ $pageTitle }}</span>
         </div>
 
-        {{-- Right: Actions --}}
         <div class="ms-auto flex items-center gap-1.5 sm:gap-2">
 
-            {{-- Notifications — Livewire SFC, auto-refreshes --}}
             <livewire:superadmin::partials.notification-bell />
 
-            {{-- Dark mode toggle — Rule 69: :class swap on the icons. --}}
-            {{-- 44px on mobile (Rule 156); 36px on desktop to match the platform's compact header scale. --}}
             <button type="button"
                     @click="toggleDark()"
                     class="flex size-11 sm:size-9 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-500
@@ -136,7 +129,6 @@
                 </svg>
             </button>
 
-            {{-- Profile Dropdown --}}
             <div class="relative"
                  x-data="{ open: false }"
                  @click.outside="open = false"
@@ -145,12 +137,13 @@
                         @click="open = !open"
                         :aria-expanded="open.toString()"
                         aria-haspopup="true"
-                        class="flex items-center gap-2 min-h-[44px] rounded-full px-2 py-1.5 text-gray-600
+                        class="flex items-center gap-2 min-h-[44px] rounded-full py-1.5 ps-1.5 pe-2 text-gray-600
                                transition-all duration-200 hover:bg-gray-100 hover:text-gray-900 active:scale-95
                                [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900
                                dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-white">
-                    <div class="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary-600 text-xs font-bold text-white">
+                    <div class="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary-600 text-xs font-bold text-white
+                                ring-1 ring-black/5 shadow-sm dark:ring-white/10">
                         @if($userAvatarUrl)
                             <img src="{{ $userAvatarUrl }}" alt="{{ $user?->name }}" width="24" height="24" loading="lazy" decoding="async" class="h-full w-full object-cover">
                         @else
@@ -163,16 +156,16 @@
                     </svg>
                 </button>
 
-                {{-- Dropdown Panel — Rule 69: :class toggle + CSS keyframe. --}}
                 <div x-cloak
                      :class="open ? 'superadmin-header-dropdown' : 'hidden'"
                      class="absolute right-0 z-50 mt-2 w-60 max-w-[calc(100vw-2rem)] sm:w-64 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-800"
-                     role="menu"
+                     role="region"
                      aria-label="Account menu">
 
                     <div class="border-b border-gray-200 px-4 py-3 dark:border-gray-700">
                         <div class="flex items-center gap-3">
-                            <div class="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary-600 text-sm font-bold text-white">
+                            <div class="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary-600 text-sm font-bold text-white
+                                        ring-1 ring-black/5 shadow-sm dark:ring-white/10">
                                 @if($userAvatarUrl)
                                     <img src="{{ $userAvatarUrl }}" alt="{{ $user?->name }}" width="40" height="40" loading="lazy" decoding="async" class="h-full w-full object-cover">
                                 @else
@@ -194,7 +187,6 @@
                     <div class="space-y-0.5 p-1.5">
                         <a href="{{ route('superadmin.profile') }}" wire:navigate
                            @click="open = false"
-                           role="menuitem"
                            class="{{ $dropdownLinkClass }}">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
@@ -205,7 +197,6 @@
                         <form method="POST" action="{{ route('logout') }}" class="block">
                             @csrf
                             <button type="submit"
-                                    role="menuitem"
                                     class="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm min-h-[44px] text-rose-600
                                            transition-all duration-200 hover:bg-rose-50 active:scale-[0.98]
                                            [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]

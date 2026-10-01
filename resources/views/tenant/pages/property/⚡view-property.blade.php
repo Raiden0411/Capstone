@@ -352,6 +352,34 @@ class extends Component
             default       => ['label' => ucfirst($status), 'classes' => 'bg-gray-600 text-white', 'dot' => 'bg-white/90'],
         };
     }
+
+    /**
+     * Human-readable stay-limits summary for a property card.
+     * Returns null when the property has no limits to display.
+     */
+    public function stayLimitsLabel(Property $property): ?string
+    {
+        if (! $property->hasDurationLimits()) {
+            return null;
+        }
+
+        $min = $property->effectiveMinStayDays();
+        $max = $property->effectiveMaxStayDays();
+
+        if ($max === null) {
+            return $min === 1
+                ? 'Any stay length'
+                : "Min {$min} " . ($min === 1 ? 'day' : 'days');
+        }
+
+        if ($min === $max) {
+            return $max === 1
+                ? '1-day stays only'
+                : "{$max}-day stays only";
+        }
+
+        return "{$min}–{$max} day stays";
+    }
 };
 ?>
 
@@ -380,7 +408,6 @@ class extends Component
     <div class="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6
                 pb-[max(1rem,env(safe-area-inset-bottom))]">
 
-        {{-- ═══ Flash messages ═══ --}}
         @if (session()->has('message'))
             <div x-data="{ show: true }"
                  x-init="setTimeout(() => show = false, 4000)"
@@ -429,7 +456,6 @@ class extends Component
             </div>
         @endif
 
-        {{-- ═══ Page header ═══ --}}
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-6 border-b border-gray-200/70 dark:border-gray-800/70">
             <div>
                 <div class="flex items-center gap-2 mb-2">
@@ -457,7 +483,6 @@ class extends Component
             @endif
         </div>
 
-        {{-- ═══ Filter card ═══ --}}
         @php $s = $this->stats; @endphp
         <div class="bg-white/70 dark:bg-gray-800/40 backdrop-blur-xl
                     rounded-2xl border border-gray-200/60 dark:border-white/[0.06]
@@ -540,7 +565,6 @@ class extends Component
             </div>
         </div>
 
-        {{-- ═══ Bulk actions toolbar ═══ --}}
         @if(count($selectedProperties) > 0 && $this->tenantCan('manage properties'))
             <div class="flex flex-wrap items-center justify-between gap-3 bg-primary-50 dark:bg-primary-500/10 border border-primary-200 dark:border-primary-500/30 p-4 rounded-2xl">
                 <div class="flex items-center gap-2 text-sm text-primary-800 dark:text-primary-200">
@@ -663,7 +687,6 @@ class extends Component
 
                     <span class="w-px h-6 bg-primary-300/50 dark:bg-primary-500/30 mx-1" aria-hidden="true"></span>
 
-                    {{-- Bulk delete — two-click arm replaces wire:confirm --}}
                     <button type="button"
                             x-data="{
                                 armed: false,
@@ -713,7 +736,6 @@ class extends Component
             </div>
         @endif
 
-        {{-- ═══ Activity grid ═══ --}}
         @if($this->properties->isEmpty())
             <div class="bg-white/70 dark:bg-gray-800/40 backdrop-blur-xl
                         rounded-2xl border border-gray-200/60 dark:border-white/[0.06]
@@ -771,6 +793,7 @@ class extends Component
                         $hasActive      = $this->hasActiveBooking($property->id);
                         $cover          = $property->images->first();
                         $canManage      = $this->tenantCan('manage properties');
+                        $stayLabel      = $this->stayLimitsLabel($property);
                     @endphp
                     <article wire:key="property-{{ $property->id }}"
                              class="group bg-white/70 dark:bg-gray-800/40 backdrop-blur-xl
@@ -779,7 +802,6 @@ class extends Component
                                     hover:shadow-md hover:border-primary-300/80 dark:hover:border-primary-500/40
                                     overflow-hidden flex flex-col transition-all duration-200">
 
-                        {{-- Cover --}}
                         <div class="relative aspect-video bg-gray-100 dark:bg-gray-900 overflow-hidden">
                             @if($cover)
                                 <img src="{{ '/storage/' . ltrim($cover->image_path, '/') }}"
@@ -796,7 +818,6 @@ class extends Component
                                 </div>
                             @endif
 
-                            {{-- Selection checkbox overlay --}}
                             @if($canManage)
                                 <label class="absolute top-3 left-3 z-10 flex items-center justify-center h-11 w-11 sm:h-8 sm:w-8 rounded-lg
                                               bg-white/90 dark:bg-gray-900/90 backdrop-blur-sm
@@ -813,7 +834,6 @@ class extends Component
                                 </label>
                             @endif
 
-                            {{-- Status badge overlay --}}
                             <div class="absolute top-3 right-3 z-10">
                                 <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider shadow-sm backdrop-blur-sm {{ $statusCfg['classes'] }}">
                                     <span class="w-1.5 h-1.5 rounded-full {{ $statusCfg['dot'] }} opacity-90" aria-hidden="true"></span>
@@ -821,7 +841,6 @@ class extends Component
                                 </span>
                             </div>
 
-                            {{-- Inactive overlay badge --}}
                             @if(!$property->is_active)
                                 <div class="absolute bottom-3 left-3 z-10">
                                     <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider
@@ -835,7 +854,6 @@ class extends Component
                             @endif
                         </div>
 
-                        {{-- Content --}}
                         <div class="p-4 flex-1 flex flex-col gap-3">
 
                             <div>
@@ -861,6 +879,15 @@ class extends Component
                                     <p class="text-sm font-semibold text-gray-900 dark:text-white mt-0.5 tabular-nums">₱{{ number_format($property->price, 2) }}</p>
                                 </div>
                             </div>
+
+                            @if($stayLabel)
+                                <div class="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+                                    <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                    </svg>
+                                    <span class="truncate">{{ $stayLabel }}</span>
+                                </div>
+                            @endif
 
                             @if($hasActive)
                                 <div class="text-xs text-gray-500 dark:text-gray-400 truncate">
@@ -948,7 +975,6 @@ class extends Component
                                         </svg>
                                     </a>
 
-                                    {{-- Per-card delete — two-click arm replaces wire:confirm --}}
                                     <button type="button"
                                             x-data="{
                                                 armed: false,

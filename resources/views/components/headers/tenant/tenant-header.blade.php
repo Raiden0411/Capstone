@@ -1,23 +1,24 @@
 {{-- resources/views/components/headers/tenant/tenant-header.blade.php --}}
 @php
-    use App\Models\User;
-
     $user   = auth()->user();
     $tenant = $user?->tenant;
 
+    // Rule J: relative /storage paths. Only build a URL when the file exists.
     $tenantLogoUrl = null;
     if ($tenant && $tenant->logo) {
-        $fullPath      = public_path('storage/' . $tenant->logo);
-        $tenantLogoUrl = asset('storage/' . $tenant->logo)
-            . '?v=' . (file_exists($fullPath) ? filemtime($fullPath) : time());
+        $fullPath = public_path('storage/' . ltrim($tenant->logo, '/'));
+        if (file_exists($fullPath)) {
+            $tenantLogoUrl = '/storage/' . ltrim($tenant->logo, '/') . '?v=' . filemtime($fullPath);
+        }
     }
 
     $userAvatarPath = $user?->avatar;
     $userAvatarUrl  = null;
     if ($userAvatarPath) {
-        $fullPath      = public_path('storage/' . $userAvatarPath);
-        $userAvatarUrl = asset('storage/' . $userAvatarPath)
-            . '?v=' . (file_exists($fullPath) ? filemtime($fullPath) : time());
+        $fullPath = public_path('storage/' . ltrim($userAvatarPath, '/'));
+        if (file_exists($fullPath)) {
+            $userAvatarUrl = '/storage/' . ltrim($userAvatarPath, '/') . '?v=' . filemtime($fullPath);
+        }
     }
 
     $userName    = $user?->name ?? 'U';
@@ -32,7 +33,11 @@
         ? route('tenant.employee.dashboard')
         : route('tenant.dashboard');
 
-    $canSwitchModes = $user instanceof User && $user->canSwitchModes();
+    $canSwitchModes = $user instanceof \App\Models\User && $user->canSwitchModes();
+
+    $canAddBusiness = $user instanceof \App\Models\User
+        && $user->isBusinessOwner()
+        && $user->canRegisterBusiness();
 
     $dropdownLinkClass = 'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm '
         . 'min-h-[44px] '
@@ -61,18 +66,17 @@
     @endonce
 @endpush
 
-{{-- Sticky header.
-     Backdrop blur — matches the superadmin header for visual consistency.
-     The header sits above scrolling content with a translucent surface;
-     a fully opaque bg-white would feel heavier and less like a "chrome"
-     layer.
-     Safe-area top — env(safe-area-inset-top) keeps content below the
-     notch on notched iPhones. min-h-16 md:min-h-20 (not h-16 md:h-20)
-     lets the row grow when the safe area is non-zero. --}}
 <header
     x-data="{
         minified: localStorage.getItem('tenant_sidebar_minified') === '1',
         dark: document.documentElement.classList.contains('dark'),
+        init() {
+            const stored = localStorage.getItem('hs_theme');
+            if (stored === 'dark' || stored === 'light') {
+                this.dark = stored === 'dark';
+                document.documentElement.classList.toggle('dark', this.dark);
+            }
+        },
         toggleDark() {
             this.dark = ! this.dark;
             localStorage.setItem('hs_theme', this.dark ? 'dark' : 'light');
@@ -90,10 +94,9 @@
 >
     <nav class="px-4 sm:px-6 flex basis-full items-center w-full mx-auto justify-between gap-2" aria-label="Tenant header">
 
-        {{-- Left: Mobile sidebar toggle --}}
         <div class="flex items-center gap-2 lg:hidden">
             <button type="button"
-                    class="flex items-center justify-center size-11 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700
+                    class="flex items-center justify-center size-11 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700
                            transition-all duration-200 active:scale-95
                            [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
@@ -105,7 +108,6 @@
             </button>
         </div>
 
-        {{-- Center: Breadcrumb — "Business / <tenant name>". --}}
         <div class="hidden md:flex flex-1 items-center gap-2 px-2 min-w-0">
             <span class="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500 shrink-0">Business</span>
             <span class="text-gray-300 dark:text-gray-600 shrink-0" aria-hidden="true">/</span>
@@ -122,14 +124,12 @@
             @endif
         </div>
 
-        {{-- Right: Actions --}}
         <div class="flex items-center gap-1.5 sm:gap-2 ms-auto">
 
-            {{-- Switch to Tourist — dual-role owners only --}}
             @if($canSwitchModes)
-                <form method="POST" action="{{ route('mode.switch') }}" class="hidden sm:block">
+                <form method="POST" action="{{ route('mode.switch') }}" class="hidden sm:block shrink-0">
                     @csrf
-                    <input type="hidden" name="mode" value="{{ User::MODE_TOURIST }}">
+                    <input type="hidden" name="mode" value="{{ \App\Models\User::MODE_TOURIST }}">
                     <button type="submit"
                             class="inline-flex items-center gap-2 h-11 sm:h-9 px-3 rounded-full border border-blue-200 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300 text-xs font-semibold
                                    transition-all duration-200 hover:bg-blue-100 dark:hover:bg-blue-500/20 active:scale-95
@@ -143,14 +143,11 @@
                 </form>
             @endif
 
-            {{-- Notification bell — tenant-scoped, business-only payload.
-                 Backed by PublicNotificationService::forBusiness(). --}}
             <livewire:tenant::partials.notification-bell />
 
-            {{-- Dark mode toggle --}}
             <button type="button"
                     @click="toggleDark()"
-                    class="flex items-center justify-center size-11 sm:size-9 rounded-lg text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700
+                    class="flex items-center justify-center size-11 sm:size-10 rounded-full text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700
                            transition-all duration-200 active:scale-95
                            [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900"
@@ -163,7 +160,6 @@
                 </svg>
             </button>
 
-            {{-- Profile Dropdown --}}
             <div class="relative"
                  x-data="{ open: false }"
                  @click.outside="open = false"
@@ -171,7 +167,7 @@
 
                 <button type="button"
                         @click="open = ! open"
-                        class="flex items-center gap-2 min-h-[44px] py-1.5 px-2 rounded-lg text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700
+                        class="flex items-center gap-2 min-h-[44px] py-1.5 ps-1.5 pe-2 rounded-full text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700
                                transition-all duration-200 active:scale-95
                                [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900"
@@ -182,15 +178,15 @@
                              alt="{{ $userName }}"
                              width="24" height="24"
                              loading="lazy" decoding="async"
-                             class="size-6 rounded-full object-cover shrink-0">
+                             class="size-6 rounded-full object-cover ring-1 ring-black/5 shadow-sm dark:ring-white/10 shrink-0">
                     @elseif($tenantLogoUrl)
                         <img src="{{ $tenantLogoUrl }}"
                              alt="{{ $tenant?->name }}"
                              width="24" height="24"
                              loading="lazy" decoding="async"
-                             class="size-6 rounded-full object-cover shrink-0">
+                             class="size-6 rounded-full object-cover ring-1 ring-black/5 shadow-sm dark:ring-white/10 shrink-0">
                     @else
-                        <div class="size-6 rounded-full bg-primary-600 text-white flex items-center justify-center font-bold text-xs shrink-0">
+                        <div class="size-6 rounded-full bg-primary-600 text-white flex items-center justify-center font-bold text-xs ring-1 ring-black/5 shadow-sm dark:ring-white/10 shrink-0">
                             {{ $userInitial }}
                         </div>
                     @endif
@@ -200,11 +196,10 @@
                     </svg>
                 </button>
 
-                {{-- Dropdown Panel --}}
                 <div x-cloak
                      :class="open ? 'tenant-header-dropdown' : 'hidden'"
                      class="absolute right-0 mt-2 w-64 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl shadow-2xl z-50 overflow-hidden"
-                     role="menu"
+                     role="region"
                      aria-label="Account menu">
 
                     <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
@@ -214,15 +209,15 @@
                                      alt="{{ $userName }}"
                                      width="40" height="40"
                                      loading="lazy" decoding="async"
-                                     class="size-10 rounded-full object-cover shrink-0">
+                                     class="size-10 rounded-full object-cover ring-1 ring-black/5 shadow-sm dark:ring-white/10 shrink-0">
                             @elseif($tenantLogoUrl)
                                 <img src="{{ $tenantLogoUrl }}"
                                      alt="{{ $tenant?->name }}"
                                      width="40" height="40"
                                      loading="lazy" decoding="async"
-                                     class="size-10 rounded-full object-cover shrink-0">
+                                     class="size-10 rounded-full object-cover ring-1 ring-black/5 shadow-sm dark:ring-white/10 shrink-0">
                             @else
-                                <div class="size-10 rounded-full bg-primary-600 text-white flex items-center justify-center font-bold text-sm shrink-0">
+                                <div class="size-10 rounded-full bg-primary-600 text-white flex items-center justify-center font-bold text-sm ring-1 ring-black/5 shadow-sm dark:ring-white/10 shrink-0">
                                     {{ $userInitial }}
                                 </div>
                             @endif
@@ -249,7 +244,7 @@
                         @if($canSwitchModes)
                             <form method="POST" action="{{ route('mode.switch') }}" class="block">
                                 @csrf
-                                <input type="hidden" name="mode" value="{{ User::MODE_TOURIST }}">
+                                <input type="hidden" name="mode" value="{{ \App\Models\User::MODE_TOURIST }}">
                                 <button type="submit"
                                         class="w-full flex items-center gap-3 px-3 py-2.5 min-h-[44px] rounded-lg text-sm text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-500/10
                                                transition-all duration-200 active:scale-[0.98]
@@ -274,6 +269,19 @@
                             My Account
                         </a>
 
+                        @if($canAddBusiness)
+                            <form method="POST" action="{{ route('register_business.start') }}" class="block">
+                                @csrf
+                                <button type="submit"
+                                        class="w-full {{ $dropdownLinkClass }}">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="size-4 text-gray-400 dark:text-gray-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                    </svg>
+                                    <span class="text-start">Add another business</span>
+                                </button>
+                            </form>
+                        @endif
+
                         @if($tenant && $isAdmin)
                             <a href="{{ route('tenant.settings.index') }}" wire:navigate
                                @click="open = false"
@@ -285,8 +293,6 @@
                                 Business Settings
                             </a>
 
-                            {{-- Photo Gallery — admin-only. Manage the images
-                                 shown on the public offerings page. --}}
                             <a href="{{ route('tenant.gallery.index') }}" wire:navigate
                                @click="open = false"
                                class="{{ $dropdownLinkClass }}">

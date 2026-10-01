@@ -95,6 +95,17 @@ class extends Component
         return redirect()->to($this->roleBasedFallback());
     }
 
+    /**
+     * Post-login landing page.
+     *
+     * The tenant-employee branch uses `roles()->exists()` — NOT
+     * `getAllPermissions()->count() > 0`. Spatie's getAllPermissions()
+     * reads getPermissionsTeamId(), which is still 0 in this request
+     * (SetPermissionsTeamId ran before Auth::attempt() promoted the
+     * visitor to a user). User::roles() is overridden in the User model
+     * to pin the relation to $this->tenant_id at build time, so its
+     * result does not depend on the ambient team context.
+     */
     protected function roleBasedFallback(): string
     {
         $user = Auth::user();
@@ -111,7 +122,7 @@ class extends Component
             return route('tenant.dashboard');
         }
 
-        if ($user->tenant_id && $user->getAllPermissions()->count() > 0) {
+        if ($user->tenant_id && $user->roles()->exists()) {
             return route('tenant.employee.dashboard');
         }
 
@@ -137,8 +148,6 @@ class extends Component
         return (string) SiteSetting::getValue('site_name', config('app.name'));
     }
 
-    // Rule J: relative /storage paths — asset() prefixes APP_URL,
-    // which may not match the current host.
     #[Computed]
     public function logoUrl(): ?string
     {
@@ -154,7 +163,7 @@ class extends Component
 
         return $path
             ? '/storage/' . ltrim($path, '/')
-            : 'https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1600&q=80';
+            : 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1600&q=80';
     }
 
     /**
@@ -177,7 +186,6 @@ class extends Component
                 'name' => (string) $tenant->name,
                 'slug' => (string) $tenant->slug,
                 'type' => (string) ($tenant->typeOfTenant?->type ?? 'Destination'),
-                // Rule J: relative path
                 'logo' => '/storage/' . ltrim($tenant->logo, '/'),
                 'url'  => route('business.offerings', $tenant->slug),
             ])
@@ -244,7 +252,6 @@ class extends Component
 
 <div class="min-h-screen flex flex-col md:flex-row bg-white dark:bg-gray-900">
 
-    {{-- ═══════════════ HERO ═══════════════ --}}
     <div class="relative w-full md:w-1/2 min-h-[200px] sm:min-h-[260px] md:min-h-screen md:h-screen md:sticky md:top-0 overflow-hidden">
 
         <img src="{{ $this->heroUrl }}"
@@ -290,9 +297,9 @@ class extends Component
                 @if(!empty($this->featuredTenants))
                     <div class="hidden md:block mt-6 md:mt-7">
                         <p class="mb-2.5 inline-flex items-center gap-2
-                                  text-[10px] font-bold uppercase tracking-[0.22em]
-                                  text-amber-300/90">
-                            <span class="h-px w-4 bg-amber-400/70" aria-hidden="true"></span>
+                                  text-xs font-semibold uppercase tracking-[0.18em]
+                                  text-amber-400">
+                            <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
                             Featured Spots
                         </p>
 
@@ -331,14 +338,11 @@ class extends Component
         </div>
     </div>
 
-    {{-- ═══════════════ FORM ═══════════════ --}}
     <div class="auth-form-panel flex items-center justify-center w-full min-w-0
                 px-5 sm:px-8 md:px-10 lg:px-16 py-10 md:py-12
                 bg-white dark:bg-gray-900 md:w-1/2">
         <div class="w-full max-w-md min-w-0">
 
-            {{-- Back link — Rule M: before:-inset-2 expands 28px visual
-                 to 44px effective tap area on mobile. --}}
             <a href="{{ route('home') }}" wire:navigate
                class="relative inline-flex items-center gap-1.5 text-sm font-medium
                       text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400
@@ -352,16 +356,15 @@ class extends Component
                 Back to Home
             </a>
 
-            {{-- Brand row --}}
             <div class="flex items-center gap-3 mb-8 min-w-0">
                 @if($this->logoUrl)
                     <img src="{{ $this->logoUrl }}"
                          alt="{{ $this->siteName }} logo"
                          width="40" height="40"
                          decoding="async"
-                         class="w-10 h-10 object-contain rounded-lg shrink-0">
+                         class="w-10 h-10 rounded-full object-contain ring-1 ring-black/5 shadow-sm dark:ring-white/10 shrink-0">
                 @else
-                    <div class="w-10 h-10 rounded-xl bg-primary-600 flex items-center justify-center text-white shrink-0 font-bold text-lg"
+                    <div class="w-10 h-10 rounded-full bg-primary-600 flex items-center justify-center text-white shrink-0 font-bold text-lg ring-1 ring-black/5 shadow-sm dark:ring-white/10"
                          aria-hidden="true">
                         {{ strtoupper(substr($this->siteName, 0, 1)) }}
                     </div>
@@ -371,10 +374,9 @@ class extends Component
                 </span>
             </div>
 
-            {{-- Eyebrow --}}
             <p class="mb-2 inline-flex items-center gap-2
-                      text-[10px] font-bold uppercase tracking-[0.22em]
-                      text-amber-600 dark:text-amber-400">
+                      text-xs font-semibold uppercase tracking-[0.18em]
+                      text-primary-600 dark:text-primary-400">
                 <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
                 Sign in
             </p>
@@ -387,7 +389,6 @@ class extends Component
                 Sign in to manage your bookings, saved spots, and account.
             </p>
 
-            {{-- Errors --}}
             @if ($errors->any())
                 <div role="alert" aria-live="polite"
                      class="mb-5 flex items-start gap-3
@@ -405,11 +406,9 @@ class extends Component
                 </div>
             @endif
 
-            {{-- Form --}}
             <form wire:submit="login" class="space-y-5"
                   x-data="{ showPassword: false, capsLock: false }">
 
-                {{-- Email --}}
                 <div>
                     <label for="email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         Email address
@@ -434,13 +433,11 @@ class extends Component
                     @enderror
                 </div>
 
-                {{-- Password --}}
                 <div>
                     <div class="flex items-center justify-between gap-3 mb-1.5">
                         <label for="password" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
                             Password
                         </label>
-                        {{-- Rule M: -inset-2.5 expands 24px visual to 44px effective tap area. --}}
                         <a href="{{ route('password.request') }}" wire:navigate
                            class="relative text-xs font-semibold
                                   text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300
@@ -506,8 +503,6 @@ class extends Component
                     @enderror
                 </div>
 
-                {{-- Remember me — Rule M: min-h-[44px] on the label so the
-                     whole row is a 44px tap target, not just the 16px box. --}}
                 <div class="flex items-center pt-1">
                     <label class="flex items-center min-h-[44px] text-sm text-gray-600 dark:text-gray-300 cursor-pointer select-none
                                   [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]">
@@ -523,7 +518,6 @@ class extends Component
                     </label>
                 </div>
 
-                {{-- Submit --}}
                 <button type="submit"
                         wire:loading.attr="disabled"
                         wire:target="login"
@@ -547,10 +541,6 @@ class extends Component
                 </button>
             </form>
 
-            {{-- Rule M note: "Create an account", "Register your business",
-                 and "Continue browsing" are inline text links / inline
-                 buttons inside prose. WCAG 2.5.5 exempts them, and the
-                 design language §7.9 echoes that exemption. --}}
             <div class="mt-8 pt-6 border-t border-gray-100 dark:border-gray-800 space-y-2.5"
                  x-data="{ showBusinessNotice: false }">
 
@@ -628,7 +618,6 @@ class extends Component
                 </div>
             </div>
 
-            {{-- Footer row --}}
             <div class="mt-10 pt-5 border-t border-gray-100 dark:border-gray-800
                         flex items-center justify-between gap-3
                         text-[11px] text-gray-400 dark:text-gray-600">

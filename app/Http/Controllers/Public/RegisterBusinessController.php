@@ -19,11 +19,40 @@ class RegisterBusinessController extends Controller
         protected BusinessApplicationService $service,
     ) {}
 
+    /**
+     * Entry point for the business-application flow.
+     *
+     * Behaviour:
+     *   • Existing DRAFT or NEEDS_REVISION app   → resume it
+     *   • Existing PENDING / UNDER_REVIEW app    → reject with an error
+     *   • No live app                            → create a new draft
+     *
+     * The PENDING/UNDER_REVIEW branch is the one-at-a-time guard: a
+     * user cannot have two applications in the review pipeline. They
+     * can, however, abandon a draft and start a fresh one — that is
+     * the DRAFT branch.
+     */
     public function store(Request $request)
     {
         $user = Auth::user();
         abort_if(! $user, 403);
 
+        // ── Guard: block if a submission is already under review ──
+        $hasLiveApplication = $user->businessApplications()
+            ->whereIn('status', [
+                BusinessApplication::STATUS_PENDING,
+                BusinessApplication::STATUS_UNDER_REVIEW,
+            ])
+            ->exists();
+
+        if ($hasLiveApplication) {
+            return redirect()
+                ->route('profile')
+                ->with('error', 'You already have an application awaiting review. '
+                              . 'Wait for a decision before starting another.');
+        }
+
+        // ── Resume an editable draft if one exists ────────────────
         /** @var BusinessApplication|null $application */
         $application = $user->businessApplications()
             ->whereIn('status', [
@@ -100,25 +129,10 @@ class RegisterBusinessController extends Controller
             'expires_at'      => 'nullable|date|after:issued_at',
         ]);
 
-        // Paths of any replaced documents, collected inside the transaction
-        // and drained AFTER commit. Filesystem operations are not
-        // transactional: deleting files inside the transaction would leave
-        // a soft-deleted row pointing at a missing file if the transaction
-        // rolled back (which it does whenever attachDocument throws — e.g.
-        // a storage failure). Deferring to post-commit means we only ever
-        // delete files whose replacement actually succeeded.
         $replacedPaths = [];
 
         try {
             DB::transaction(function () use ($application, $validated, $request, &$replacedPaths): void {
-                // Soft-delete previous versions of this doc type. The rows
-                // are retained (SoftDeletes on BusinessDocument) so the
-                // audit trail shows "document_type X was replaced on date Y"
-                // — the model metadata (document_number, issued_at,
-                // expires_at, verification_status, timestamps) survives.
-                //
-                // Uses ->where() instead of ->ofType() so PHPStan can
-                // resolve the call chain without a custom scope annotation.
                 $application->documents()
                     ->where('document_type', $validated['document_type'])
                     ->get()
@@ -157,11 +171,6 @@ class RegisterBusinessController extends Controller
             return back()->with('error', 'Document upload failed. Please try again.');
         }
 
-        // Post-commit file cleanup. Runs only if the transaction
-        // succeeded. A failure here is logged but does NOT roll back the
-        // upload — the new version is already committed to DB + disk; a
-        // leftover old file is a bounded disk-usage concern, not a
-        // data-integrity one.
         if (!empty($replacedPaths)) {
             $disk = Storage::disk('public');
 

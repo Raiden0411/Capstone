@@ -172,9 +172,6 @@ new class extends Component
         open: false,
         toggle() {
             this.open = ! this.open;
-            if (this.open && $wire.unreadCount > 0) {
-                $wire.markAllRead();
-            }
         }
     }"
     @click.outside="open = false"
@@ -198,7 +195,7 @@ new class extends Component
         </svg>
 
         @if($this->unreadCount > 0)
-            <span class="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center min-w-4.5 h-4.5 px-1 rounded-full
+            <span class="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full
                          bg-rose-500 text-white text-[10px] font-bold ring-2 ring-white dark:ring-gray-900 tabular-nums"
                   aria-hidden="true">
                 {{ $this->unreadCount > 99 ? '99+' : $this->unreadCount }}
@@ -215,7 +212,7 @@ new class extends Component
                 sm:absolute sm:inset-auto sm:right-0 sm:mt-2 sm:w-80 md:w-96
                 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700
                 rounded-2xl shadow-2xl overflow-hidden"
-         role="menu"
+         role="region"
          aria-label="Notifications">
 
         <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between gap-3">
@@ -228,17 +225,35 @@ new class extends Component
                     </span>
                 @endif
             </div>
-            <button type="button"
-                    @click="open = false"
-                    aria-label="Close notifications"
-                    class="inline-flex items-center justify-center size-11 sm:size-9 shrink-0 rounded-md text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700
-                           transition-all duration-200 touch-manipulation
-                           [-webkit-tap-highlight-color:transparent]
-                           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
-                <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                    <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
-                </svg>
-            </button>
+            <div class="flex items-center gap-1 shrink-0">
+                @if($this->unreadCount > 0)
+                    <button type="button"
+                            wire:click="markAllRead"
+                            wire:loading.attr="disabled"
+                            wire:target="markAllRead"
+                            class="inline-flex items-center gap-1.5 h-11 sm:h-9 px-2.5 rounded-md text-xs font-semibold text-primary-600 dark:text-primary-400
+                                   hover:bg-primary-50 dark:hover:bg-primary-500/10
+                                   transition-all duration-200 touch-manipulation [-webkit-tap-highlight-color:transparent]
+                                   focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50
+                                   disabled:opacity-60 disabled:cursor-not-allowed">
+                        <svg class="size-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                        </svg>
+                        <span>Mark all read</span>
+                    </button>
+                @endif
+                <button type="button"
+                        @click="open = false"
+                        aria-label="Close notifications"
+                        class="inline-flex items-center justify-center size-11 sm:size-9 shrink-0 rounded-md text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-700
+                               transition-all duration-200 touch-manipulation
+                               [-webkit-tap-highlight-color:transparent]
+                               focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+                    </svg>
+                </button>
+            </div>
         </div>
 
         @if(!empty($this->liveAlerts))
@@ -248,7 +263,6 @@ new class extends Component
                        wire:key="live-{{ $alert['id'] }}"
                        wire:navigate
                        @click="open = false"
-                       role="menuitem"
                        class="flex items-start gap-3 px-4 py-3 min-h-[44px] border-b border-gray-100 dark:border-gray-700/60 last:border-b-0
                               hover:bg-amber-50 dark:hover:bg-amber-500/10 transition-colors
                               touch-manipulation [-webkit-tap-highlight-color:transparent]
@@ -282,7 +296,6 @@ new class extends Component
                    wire:key="notif-{{ $item->id }}"
                    wire:click.prevent="open({{ $item->id }})"
                    @click="open = false"
-                   role="menuitem"
                    class="flex items-start gap-3 px-4 py-3 min-h-[44px] border-b border-gray-100 dark:border-gray-700/60 last:border-b-0
                           {{ $isUnread ? 'bg-primary-50/40 dark:bg-primary-500/5' : '' }}
                           hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors touch-manipulation
@@ -315,7 +328,7 @@ new class extends Component
                     </svg>
                 </a>
             @empty
-                <div class="px-5 py-10 text-center">
+                <div class="px-5 py-10 text-center" role="status" aria-live="polite">
                     <div class="inline-flex items-center justify-center size-12 rounded-2xl bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 mb-3">
                         <svg class="size-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>

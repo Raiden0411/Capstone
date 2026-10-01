@@ -5,6 +5,7 @@ namespace App\Observers;
 use App\Mail\BookingCancelled;
 use App\Mail\BookingConfirmed;
 use App\Mail\BookingReceived;
+use App\Mail\BookingRefundProcessed;
 use App\Mail\BookingReserved;
 use App\Mail\NewBookingAlert;
 use App\Models\Booking;
@@ -32,13 +33,15 @@ class BookingObserver
 
     public function updated(Booking $booking): void
     {
-        if (! $booking->wasChanged('status')) {
-            return;
+        if ($booking->wasChanged('status')) {
+            $this->flushStakeholders($booking);
+            $this->sendStatusChangeMail($booking);
+            $this->createBookingStatusChangeNotifications($booking);
         }
 
-        $this->flushStakeholders($booking);
-        $this->sendStatusChangeMail($booking);
-        $this->createBookingStatusChangeNotifications($booking);
+        if ($booking->wasChanged('refund_status')) {
+            $this->sendRefundStatusMail($booking);
+        }
     }
 
     public function deleted(Booking $booking): void
@@ -57,8 +60,6 @@ class BookingObserver
 
             $property = $booking->items->first()?->property;
 
-            // `bookings.tenant_id` is NOT NULL — Larastan reads the
-            // `tenant` relation as non-nullable. Same for `user`.
             $place = $property->name
                 ?? $booking->tenant->name
                 ?? 'your booking';
@@ -80,8 +81,9 @@ class BookingObserver
             }
 
             $admins = $booking->tenant->users()
-                ->whereHas('roles', fn ($q) => $q->where('name', 'admin'))
-                ->get();
+                ->select('id', 'tenant_id', 'name', 'email')
+                ->get()
+                ->filter(fn ($u) => $u->hasRole('admin'));
 
             if ($admins->isEmpty()) {
                 return;
@@ -135,7 +137,9 @@ class BookingObserver
                 Booking::STATUS_CANCELLED => [
                     'type'    => 'booking',
                     'title'   => 'Booking cancelled',
-                    'message' => "Your booking at {$place} has been cancelled.",
+                    'message' => $booking->hasRefund()
+                        ? "Your booking at {$place} was cancelled. A refund of ₱" . number_format((float) $booking->refund_amount, 2) . " is being processed."
+                        : "Your booking at {$place} has been cancelled.",
                     'icon'    => 'alert',
                     'color'   => 'rose',
                 ],
@@ -197,8 +201,9 @@ class BookingObserver
             }
 
             $admins = $tenant->users()
-                ->whereHas('roles', fn ($q) => $q->where('name', 'admin'))
-                ->get(['id', 'name', 'email']);
+                ->select('id', 'tenant_id', 'name', 'email')
+                ->get()
+                ->filter(fn ($u) => $u->hasRole('admin'));
 
             foreach ($admins as $admin) {
                 if (! $admin->email) {
@@ -238,6 +243,31 @@ class BookingObserver
             $this->safeMail(
                 fn () => Mail::to($to)->queue($mailable),
                 'booking-status-' . $booking->status,
+                $booking->id,
+            );
+        });
+    }
+
+    private function sendRefundStatusMail(Booking $booking): void
+    {
+        DB::afterCommit(function () use ($booking): void {
+            $to = $booking->user?->email;
+            if (! $to) {
+                return;
+            }
+
+            $mailable = match ($booking->refund_status) {
+                Booking::REFUND_STATUS_PROCESSED => new BookingRefundProcessed($booking),
+                default                          => null,
+            };
+
+            if (! $mailable) {
+                return;
+            }
+
+            $this->safeMail(
+                fn () => Mail::to($to)->queue($mailable),
+                'refund-status-' . $booking->refund_status,
                 $booking->id,
             );
         });

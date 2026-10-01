@@ -118,7 +118,7 @@ class extends Component
     {
         $path = SiteSetting::getValue('site_logo');
 
-        return $path ? asset('storage/' . $path) : null;
+        return $path ? '/storage/' . ltrim($path, '/') : null;
     }
 
     #[Computed]
@@ -127,8 +127,8 @@ class extends Component
         $path = SiteSetting::getValue('hero_background_image');
 
         return $path
-            ? asset('storage/' . $path)
-            : 'https://images.unsplash.com/photo-1506748686214-e9df14d4d9d0?auto=format&fit=crop&w=1600&q=80';
+            ? '/storage/' . ltrim($path, '/')
+            : 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1600&q=80';
     }
 
     /**
@@ -151,7 +151,7 @@ class extends Component
                 'name' => (string) $tenant->name,
                 'slug' => (string) $tenant->slug,
                 'type' => (string) ($tenant->typeOfTenant?->type ?? 'Destination'),
-                'logo' => asset('storage/' . $tenant->logo),
+                'logo' => '/storage/' . ltrim($tenant->logo, '/'),
                 'url'  => route('business.offerings', $tenant->slug),
             ])
             ->all();
@@ -192,7 +192,6 @@ class extends Component
 
 <div class="min-h-screen flex flex-col md:flex-row bg-white dark:bg-gray-900">
 
-    {{-- ═══════════════ HERO ═══════════════ --}}
     <div class="relative w-full md:w-1/2 min-h-[200px] sm:min-h-[260px] md:min-h-screen md:h-screen md:sticky md:top-0 overflow-hidden">
 
         <img src="{{ $this->heroUrl }}"
@@ -233,9 +232,9 @@ class extends Component
                 @if(!empty($this->featuredTenants))
                     <div class="hidden md:block mt-6 md:mt-7">
                         <p class="mb-2.5 inline-flex items-center gap-2
-                                  text-[10px] font-bold uppercase tracking-[0.22em]
-                                  text-amber-300/90">
-                            <span class="h-px w-4 bg-amber-400/70" aria-hidden="true"></span>
+                                  text-xs font-semibold uppercase tracking-[0.18em]
+                                  text-amber-400">
+                            <span class="h-px w-4 bg-amber-500" aria-hidden="true"></span>
                             Featured Spots
                         </p>
                         <div class="flex gap-2 flex-wrap">
@@ -266,16 +265,16 @@ class extends Component
         </div>
     </div>
 
-    {{-- ═══════════════ FORM ═══════════════ --}}
     <div class="auth-form-panel flex items-start md:items-center justify-center w-full min-w-0
                 px-5 sm:px-8 md:px-10 lg:px-16 py-10 md:py-12
                 bg-white dark:bg-gray-900 md:w-1/2">
         <div class="w-full max-w-md min-w-0">
 
             <a href="{{ route('login') }}" wire:navigate
-               class="inline-flex items-center gap-1.5 text-sm font-medium
+               class="relative inline-flex items-center gap-1.5 text-sm font-medium
                       text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400
                       transition-colors mb-8 -mx-1 px-1 py-1 rounded
+                      before:absolute before:content-[''] before:-inset-2 before:rounded
                       [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50">
                 <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -288,9 +287,9 @@ class extends Component
                 @if($this->logoUrl)
                     <img src="{{ $this->logoUrl }}" alt="{{ $this->siteName }} logo"
                          width="40" height="40" decoding="async"
-                         class="w-10 h-10 object-contain rounded-lg shrink-0">
+                         class="w-10 h-10 rounded-full object-contain ring-1 ring-black/5 shadow-sm dark:ring-white/10 shrink-0">
                 @else
-                    <div class="w-10 h-10 rounded-xl bg-primary-600 flex items-center justify-center text-white shrink-0 font-bold text-lg"
+                    <div class="w-10 h-10 rounded-full bg-primary-600 flex items-center justify-center text-white shrink-0 font-bold text-lg ring-1 ring-black/5 shadow-sm dark:ring-white/10"
                          aria-hidden="true">
                         {{ strtoupper(substr($this->siteName, 0, 1)) }}
                     </div>
@@ -300,7 +299,6 @@ class extends Component
 
             @if($submitted)
 
-                {{-- Success state --}}
                 <div class="flex items-center justify-center w-14 h-14 rounded-2xl
                             bg-emerald-100 dark:bg-emerald-500/15
                             text-emerald-600 dark:text-emerald-400 mb-6">

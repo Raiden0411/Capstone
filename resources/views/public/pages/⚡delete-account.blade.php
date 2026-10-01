@@ -197,7 +197,6 @@ class extends Component
 <div class="py-10 sm:py-14 px-4 sm:px-6" x-data="revealOnScroll">
     <div class="mx-auto w-full max-w-2xl space-y-6">
 
-        {{-- ═══ Back link ═══ --}}
         <a href="{{ route('profile') }}" wire:navigate
            class="inline-flex items-center gap-1.5 text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400
                   transition-colors rounded px-1 -mx-1 py-1
@@ -209,7 +208,6 @@ class extends Component
             Back to Profile
         </a>
 
-        {{-- ═══ Page header ═══ --}}
         <div data-reveal class="pb-6 border-b border-gray-200 dark:border-gray-800">
             <p class="mb-2 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.2em] text-rose-600 dark:text-rose-400">
                 <span class="h-px w-4 bg-rose-500" aria-hidden="true"></span>
@@ -224,7 +222,6 @@ class extends Component
         </div>
 
         @if($this->pendingRequest)
-            {{-- ═══ PENDING STATE ═══ --}}
             <div data-reveal style="--reveal-delay: 80ms"
                  class="bg-white dark:bg-gray-800/90 rounded-2xl border border-amber-200/80 dark:border-amber-500/30 shadow-sm overflow-hidden">
 
@@ -286,14 +283,6 @@ class extends Component
                         View pending page
                     </a>
 
-                    {{--
-                        Two-click arm pattern instead of wire:confirm.
-                        Native browser dialogs are visually jarring at the
-                        most anxiety-inducing moment on the site. First
-                        click arms the button (label changes, color shifts),
-                        second click within 4s fires the request; if the
-                        user does nothing, the button resets.
-                    --}}
                     <button type="button"
                             x-data="{
                                 armed: false,
@@ -347,7 +336,6 @@ class extends Component
             </div>
         @else
 
-            {{-- ═══ WARNING BOX ═══ --}}
             <div data-reveal style="--reveal-delay: 80ms"
                  class="bg-rose-50 dark:bg-rose-500/[0.06] rounded-2xl border border-rose-200/80 dark:border-rose-500/30 shadow-sm p-5 sm:p-6">
                 <div class="flex items-start gap-3">
@@ -361,8 +349,6 @@ class extends Component
                             {{ $this->isBusinessOwner ? 'What gets deleted' : 'This will permanently delete' }}
                         </h2>
 
-                        {{-- Which account is being deleted — removes
-                             ambiguity if the user has multiple sessions. --}}
                         <p class="mt-2 text-xs text-rose-800 dark:text-rose-300">
                             Account: <span class="font-semibold">{{ $this->viewer?->email }}</span>
                         </p>
@@ -412,7 +398,6 @@ class extends Component
             <form wire:submit="submit" class="space-y-6">
 
                 @if($this->isBusinessOwner)
-                    {{-- ═══ SCOPE ═══ --}}
                     <div data-reveal style="--reveal-delay: 140ms"
                          class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-4">
                         <p class="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500">
@@ -479,7 +464,6 @@ class extends Component
                         </div>
                     </div>
 
-                    {{-- ═══ REASON ═══ --}}
                     <div data-reveal style="--reveal-delay: 200ms"
                          class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-4">
                         <p class="text-[10px] font-bold uppercase tracking-widest text-gray-400 dark:text-gray-500">
@@ -498,7 +482,6 @@ class extends Component
                     </div>
                 @endif
 
-                {{-- ═══ CONFIRMATION ═══ --}}
                 <div data-reveal style="--reveal-delay: {{ $this->isBusinessOwner ? '260ms' : '140ms' }}"
                      x-data="{ caps: false, showPassword: false }"
                      class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6 space-y-5">
@@ -507,7 +490,6 @@ class extends Component
                         Confirm
                     </p>
 
-                    {{-- Password --}}
                     <div>
                         <label for="password" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             Your password <span class="text-rose-500" aria-hidden="true">*</span>
@@ -530,6 +512,7 @@ class extends Component
                                     :aria-pressed="showPassword ? 'true' : 'false'"
                                     class="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-9 h-9 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800
                                            transition-colors
+                                           before:absolute before:content-[''] before:-inset-1 before:rounded-lg
                                            [touch-action:manipulation] [-webkit-tap-highlight-color:transparent]
                                            focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50">
                                 <svg x-show="!showPassword" xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -551,7 +534,6 @@ class extends Component
                         @error('password') <p class="mt-1 text-xs text-rose-500">{{ $message }}</p> @enderror
                     </div>
 
-                    {{-- Type DELETE --}}
                     <div x-data="{ matches: false }">
                         <label for="confirmation" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                             Type
@@ -585,7 +567,6 @@ class extends Component
                     </div>
                 </div>
 
-                {{-- ═══ ACTIONS ═══ --}}
                 <div data-reveal style="--reveal-delay: {{ $this->isBusinessOwner ? '320ms' : '200ms' }}"
                      class="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-3 pt-2">
                     <a href="{{ route('profile') }}" wire:navigate

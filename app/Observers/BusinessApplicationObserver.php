@@ -104,15 +104,14 @@ class BusinessApplicationObserver
         }
 
         DB::afterCommit(function () use ($application): void {
-            $superadmins = User::role('super-admin')->get();
+            // Team-agnostic — see User::scopeWhereSuperAdmin.
+            $superadmins = User::whereSuperAdmin()->get();
             if ($superadmins->isEmpty()) {
                 return;
             }
 
             $name = $application->business_name ?? 'Untitled application';
 
-            // `business_applications.user_id` is NOT NULL — Larastan
-            // reads the `user` relation as non-nullable.
             $applicantName = $application->owner_full_name
                 ?? $application->user->name
                 ?? 'An applicant';

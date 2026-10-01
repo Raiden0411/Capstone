@@ -13,7 +13,7 @@ class BookingController extends Controller
 
     public function destroy(Booking $booking)
     {
-        $this->authorize('delete', $booking);
+        $this->authorize('forceDelete', $booking);
 
         DB::transaction(function () use ($booking): void {
             $booking->forceDelete();

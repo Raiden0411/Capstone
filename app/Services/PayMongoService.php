@@ -14,8 +14,12 @@ use Throwable;
 
 class PayMongoService
 {
-    private const API_BASE = 'https://api.paymongo.com/v1';
+    private const API_BASE      = 'https://api.paymongo.com/v1';
     private const PAID_STATUSES = ['paid', 'succeeded'];
+
+    public const ALLOWED_PAYMENT_METHODS = ['gcash', 'paymaya', 'card'];
+
+    private const DEFAULT_PAYMENT_METHODS = ['gcash', 'paymaya', 'card'];
 
     public function __construct(
         protected Paymongo $paymongo,
@@ -25,14 +29,6 @@ class PayMongoService
     //  Hosted Checkout Sessions
     // ═════════════════════════════════════════════════════════
 
-    /**
-     * Create a hosted checkout session.
-     *
-     * IMPORTANT: `line_items[].amount` is passed through the package as-is and
-     * must be in CENTAVOS. Do not remove the `* 100` here.
-     *
-     * @return array{id: string, checkout_url: string, status: ?string}|null
-     */
     public function createCheckoutSession(array $data): ?array
     {
         try {
@@ -40,20 +36,21 @@ class PayMongoService
                 'billing' => [
                     'name'  => $data['customer_name'],
                     'email' => $data['customer_email'],
-                    'phone' => $data['customer_phone'] ?? null,
+                    'phone' => $this->normalizePhone($data['customer_phone'] ?? null),
                 ],
                 'line_items' => [[
                     'currency'    => 'PHP',
-                    'amount'      => (int) round($data['amount'] * 100), // centavos
+                    'amount'      => (int) round($data['amount'] * 100),
                     'description' => $data['description'],
                     'name'        => $data['item_name'] ?? 'Booking Payment',
                     'quantity'    => 1,
                 ]],
-                'payment_method_types' => $data['payment_method_types']
-                    ?? ['card', 'gcash', 'paymaya', 'qrph'],
-                'success_url'          => $data['success_url'],
-                'cancel_url'           => $data['cancel_url'],
-                'metadata'             => $data['metadata'] ?? [],
+                'payment_method_types' => $this->resolvePaymentMethods(
+                    $data['payment_method_types'] ?? null
+                ),
+                'success_url' => $data['success_url'],
+                'cancel_url'  => $data['cancel_url'],
+                'metadata'    => $data['metadata'] ?? [],
             ]);
 
             $checkoutData = $checkout->getData();
@@ -62,7 +59,7 @@ class PayMongoService
             $checkoutUrl = data_get($checkoutData, 'checkout_url');
             $status      = data_get($checkoutData, 'status');
 
-            if (!$checkoutId || !$checkoutUrl) {
+            if (! $checkoutId || ! $checkoutUrl) {
                 Log::error('PayMongo Checkout missing ID or URL', ['object' => $checkoutData]);
                 return null;
             }
@@ -76,6 +73,52 @@ class PayMongoService
             Log::error('PayMongo Checkout Error: ' . $e->getMessage());
             return null;
         }
+    }
+
+    private function resolvePaymentMethods(mixed $requested): array
+    {
+        if (! is_array($requested) || $requested === []) {
+            return self::DEFAULT_PAYMENT_METHODS;
+        }
+
+        $filtered = array_values(array_intersect(
+            array_map('strval', $requested),
+            self::ALLOWED_PAYMENT_METHODS,
+        ));
+
+        return $filtered !== [] ? $filtered : self::DEFAULT_PAYMENT_METHODS;
+    }
+
+    private function normalizePhone(?string $phone): ?string
+    {
+        if (! is_string($phone)) {
+            return null;
+        }
+
+        $phone = trim($phone);
+        if ($phone === '') {
+            return null;
+        }
+
+        $digits = preg_replace('/\D+/', '', $phone);
+
+        if (! is_string($digits) || $digits === '') {
+            return null;
+        }
+
+        if (strlen($digits) === 11 && str_starts_with($digits, '0')) {
+            return substr($digits, 1);
+        }
+
+        if (strlen($digits) === 12 && str_starts_with($digits, '63')) {
+            return substr($digits, 2);
+        }
+
+        if (strlen($digits) === 10 && str_starts_with($digits, '9')) {
+            return $digits;
+        }
+
+        return $digits;
     }
 
     public function fetchCheckoutSessionRaw(string $sessionId): ?array
@@ -115,8 +158,34 @@ class PayMongoService
         }
     }
 
+    /**
+     * Resolve the successful PayMongo payment ID (pay_xxx) for a
+     * checkout session, fetching from the REST API if necessary.
+     *
+     * Called by the refund job when a booking's payment row has a
+     * session ID but no payment ID (webhook arrived before the
+     * payment array was populated). Returns null if PayMongo has no
+     * successful payment attached to the session.
+     */
+    public function resolvePaymentIdFromSession(string $sessionId): ?string
+    {
+        if ($sessionId === '') {
+            return null;
+        }
+
+        $raw = $this->fetchCheckoutSessionRaw($sessionId);
+
+        if (! $raw) {
+            return null;
+        }
+
+        $payments = $raw['attributes']['payments'] ?? [];
+
+        return $this->extractPaymongoPaymentId(is_array($payments) ? $payments : []);
+    }
+
     // ═════════════════════════════════════════════════════════
-    //  Payment lookup (bypasses TenantScope for tourists)
+    //  Payment lookup
     // ═════════════════════════════════════════════════════════
 
     public function findPaymentForBooking(int $bookingId): ?Payment
@@ -140,21 +209,115 @@ class PayMongoService
     }
 
     // ═════════════════════════════════════════════════════════
-    //  QR Ph (Payment Intent workflow)
+    //  Refunds
     // ═════════════════════════════════════════════════════════
 
-    /**
-     * Create a Payment Intent that allows only the QR Ph payment method.
-     *
-     * NOTE ON AMOUNT UNITS: `luigel/laravel-paymongo` converts pesos to
-     * centavos internally for Payment Intents. We pass pesos and let the
-     * package handle the conversion. (Sending centavos here causes a 100×
-     * over-charge on the generated QR.) This differs from
-     * `checkout()->create()`, whose `line_items[].amount` is passed through
-     * verbatim — hence the `* 100` in `createCheckoutSession()`.
-     *
-     * @return array{id: string, client_key: string, status: ?string}|null
-     */
+    public function refundPayment(
+        string $paymentId,
+        float $amount,
+        string $notes,
+        string $bookingId,
+    ): ?array {
+        $secret = (string) config('paymongo.secret_key');
+
+        if ($secret === '') {
+            Log::error('PayMongo refund: secret key not configured.');
+            return null;
+        }
+
+        if ($paymentId === '' || $amount <= 0) {
+            Log::error('PayMongo refund: invalid arguments', [
+                'payment_id' => $paymentId,
+                'amount'     => $amount,
+            ]);
+            return null;
+        }
+
+        try {
+            $response = Http::withBasicAuth($secret, '')
+                ->acceptJson()
+                ->asJson()
+                ->timeout(20)
+                ->post(self::API_BASE . '/refunds', [
+                    'data' => [
+                        'attributes' => [
+                            'amount'     => (int) round($amount * 100),
+                            'payment_id' => $paymentId,
+                            'reason'     => 'requested_by_customer',
+                            'notes'      => $notes,
+                            'metadata'   => ['booking_id' => $bookingId],
+                        ],
+                    ],
+                ]);
+
+            if ($response->failed()) {
+                Log::error('PayMongo refund API rejected request', [
+                    'payment_id' => $paymentId,
+                    'http'       => $response->status(),
+                    'body'       => $response->json() ?? $response->body(),
+                ]);
+                return null;
+            }
+
+            $data   = $response->json('data');
+            $refId  = $data['id'] ?? null;
+            $status = $data['attributes']['status'] ?? null;
+
+            if (! $refId) {
+                Log::error('PayMongo refund response missing refund ID', ['response' => $data]);
+                return null;
+            }
+
+            return [
+                'id'     => (string) $refId,
+                'status' => (string) ($status ?? 'pending'),
+            ];
+        } catch (Throwable $e) {
+            Log::error('PayMongo refund threw', [
+                'payment_id' => $paymentId,
+                'error'      => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
+
+    public function findRefund(string $refundId): ?array
+    {
+        $secret = (string) config('paymongo.secret_key');
+
+        if ($secret === '') {
+            return null;
+        }
+
+        try {
+            $response = Http::withBasicAuth($secret, '')
+                ->acceptJson()
+                ->timeout(10)
+                ->get(self::API_BASE . "/refunds/{$refundId}");
+
+            if ($response->failed()) {
+                return null;
+            }
+
+            $data = $response->json('data');
+
+            return [
+                'id'     => $data['id'] ?? null,
+                'status' => $data['attributes']['status'] ?? null,
+            ];
+        } catch (Throwable $e) {
+            Log::warning('PayMongo refund lookup threw', [
+                'refund_id' => $refundId,
+                'error'     => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════
+    //  QR Ph (deprecated, retained)
+    // ═════════════════════════════════════════════════════════
+
     public function createQrPhPaymentIntent(
         float $amount,
         string $description,
@@ -162,7 +325,7 @@ class PayMongoService
     ): ?array {
         try {
             $intent = $this->paymongo->paymentIntent()->create([
-                'amount'                 => (int) round($amount), // pesos — package converts
+                'amount'                 => (int) round($amount),
                 'currency'               => 'PHP',
                 'payment_method_allowed' => ['qrph'],
                 'description'            => $description,
@@ -175,7 +338,7 @@ class PayMongoService
             $id        = data_get($data, 'id');
             $clientKey = data_get($data, 'client_key');
 
-            if (!$id || !$clientKey) {
+            if (! $id || ! $clientKey) {
                 Log::error('PayMongo Payment Intent missing ID or client_key', [
                     'object' => $data,
                 ]);
@@ -209,7 +372,7 @@ class PayMongoService
 
             $methodId = data_get($method->getData(), 'id');
 
-            if (!$methodId) {
+            if (! $methodId) {
                 Log::error('PayMongo: QR Ph payment method creation returned no ID');
                 return null;
             }
@@ -248,7 +411,7 @@ class PayMongoService
                 ?? data_get($attachedData, 'next_action.qr_code.image_url')
                 ?? data_get($attachedData, 'next_action.code.data');
 
-            if (!$qrImage) {
+            if (! $qrImage) {
                 Log::error('PayMongo: no QR image in attach response', [
                     'intent_id' => $paymentIntentId,
                     'response'  => $attachedData,
@@ -256,7 +419,7 @@ class PayMongoService
                 return null;
             }
 
-            if (!str_starts_with($qrImage, 'data:')) {
+            if (! str_starts_with($qrImage, 'data:')) {
                 $qrImage = 'data:image/png;base64,' . $qrImage;
             }
 
@@ -288,7 +451,7 @@ class PayMongoService
     }
 
     // ═════════════════════════════════════════════════════════
-    //  Payment finalization (idempotent)
+    //  Payment finalization
     // ═════════════════════════════════════════════════════════
 
     public function processPayment(string $sessionId): void
@@ -322,7 +485,9 @@ class PayMongoService
                 'payment_count' => is_array($payments) ? count($payments) : 0,
             ]);
 
-            $this->finalizePayment($sessionId, $checkoutId);
+            $paymongoPaymentId = $this->extractPaymongoPaymentId($payments);
+
+            $this->finalizePayment($sessionId, $checkoutId, $paymongoPaymentId);
             return;
         }
 
@@ -343,7 +508,7 @@ class PayMongoService
         try {
             $payment = $this->findPaymentBySession($sessionId);
 
-            if (!$payment) {
+            if (! $payment) {
                 Log::warning('finalizeCheckoutSession: no Payment row for session', [
                     'session_id' => $sessionId,
                 ]);
@@ -354,7 +519,13 @@ class PayMongoService
                 return true;
             }
 
-            $this->finalizePayment($sessionId, $sessionId);
+            // Resolve the payment ID from PayMongo before finalizing.
+            // Without this, the payment row's paymongo_payment_id stays
+            // null and refunds cannot be issued against it.
+            $paymongoPaymentId = $payment->paymongo_payment_id
+                ?: $this->resolvePaymentIdFromSession($sessionId);
+
+            $this->finalizePayment($sessionId, $sessionId, $paymongoPaymentId);
 
             return true;
         } catch (Throwable $e) {
@@ -379,9 +550,19 @@ class PayMongoService
         return true;
     }
 
-    protected function finalizePayment(string $reference, ?string $externalId = null): void
-    {
-        DB::transaction(function () use ($reference, $externalId): void {
+    protected function finalizePayment(
+        string $reference,
+        ?string $externalId = null,
+        ?string $paymongoPaymentId = null,
+    ): void {
+        // Backfill the payment ID if the caller didn't provide one.
+        // The webhook fires before the payments array is always
+        // populated; this closes that gap.
+        if ($paymongoPaymentId === null && str_starts_with($reference, 'cs_')) {
+            $paymongoPaymentId = $this->resolvePaymentIdFromSession($reference);
+        }
+
+        DB::transaction(function () use ($reference, $externalId, $paymongoPaymentId): void {
             $payment = Payment::withoutGlobalScope(TenantScope::class)
                 ->where(function ($q) use ($reference): void {
                     $q->where('paymongo_session_id', $reference)
@@ -390,7 +571,7 @@ class PayMongoService
                 ->lockForUpdate()
                 ->first();
 
-            if (!$payment) {
+            if (! $payment) {
                 Log::warning('Payment record not found for reference', [
                     'reference' => $reference,
                 ]);
@@ -398,13 +579,18 @@ class PayMongoService
             }
 
             if ($payment->payment_status === 'paid') {
+                // Still backfill the payment ID if it's missing
+                if ($paymongoPaymentId !== null && $payment->paymongo_payment_id === null) {
+                    $payment->update(['paymongo_payment_id' => $paymongoPaymentId]);
+                }
                 return;
             }
 
             $payment->update([
-                'payment_status'   => 'paid',
-                'paid_at'          => now(),
-                'reference_number' => $externalId ?? $payment->reference_number,
+                'payment_status'      => 'paid',
+                'paid_at'             => now(),
+                'reference_number'    => $externalId ?? $payment->reference_number,
+                'paymongo_payment_id' => $paymongoPaymentId ?? $payment->paymongo_payment_id,
             ]);
 
             Transaction::create([
@@ -421,7 +607,7 @@ class PayMongoService
                 ->lockForUpdate()
                 ->first();
 
-            if (!$booking) {
+            if (! $booking) {
                 return;
             }
 
@@ -439,8 +625,31 @@ class PayMongoService
     }
 
     // ═════════════════════════════════════════════════════════
-    //  Paid-detection helpers
+    //  Helpers
     // ═════════════════════════════════════════════════════════
+
+    protected function extractPaymongoPaymentId(array $payments): ?string
+    {
+        foreach ($payments as $payment) {
+            if (! is_array($payment)) {
+                continue;
+            }
+
+            $status = $payment['attributes']['status'] ?? $payment['status'] ?? null;
+
+            if (! is_string($status) || ! in_array($status, self::PAID_STATUSES, true)) {
+                continue;
+            }
+
+            $id = $payment['id'] ?? null;
+
+            if (is_string($id) && $id !== '') {
+                return $id;
+            }
+        }
+
+        return null;
+    }
 
     protected function checkoutSessionIsPaid(?string $status, array $payments): bool
     {
@@ -475,10 +684,6 @@ class PayMongoService
 
         return $out;
     }
-
-    // ═════════════════════════════════════════════════════════
-    //  Retry + polling helpers
-    // ═════════════════════════════════════════════════════════
 
     public function handlePaymentPaid(
         string $sessionId,

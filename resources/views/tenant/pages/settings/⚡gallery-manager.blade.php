@@ -3,6 +3,7 @@
 
 use App\Models\TenantSetting;
 use App\Services\ImageCompressionService;
+use App\Traits\ChecksTenantPermissions;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -17,6 +18,7 @@ new
 class extends Component
 {
     use WithFileUploads;
+    use ChecksTenantPermissions;
 
     /** Existing gallery paths (relative to storage/app/public). */
     public array $galleryImages = [];
@@ -40,6 +42,8 @@ class extends Component
 
     public function mount(): void
     {
+        $this->authorizeManageGallery();
+
         $tenant = Auth::user()?->tenant;
         abort_unless($tenant, 403);
 
@@ -73,6 +77,24 @@ class extends Component
         $this->gallerySubtitle = (string) ($settings['gallery_subtitle'] ?? '');
         $this->draftTitle      = $this->galleryTitle;
         $this->draftSubtitle   = $this->gallerySubtitle;
+    }
+
+    public function hydrate(): void
+    {
+        $this->authorizeManageGallery();
+    }
+
+    /**
+     * Gallery edits require `manage properties`. The route-level
+     * `role:admin|super-admin` gate covers the initial GET, but Livewire
+     * update requests bypass route middleware — this guard re-verifies on
+     * every subsequent request.
+     */
+    protected function authorizeManageGallery(): void
+    {
+        abort_unless(Auth::user()?->tenant_id, 403, 'No business is linked to your account.');
+
+        $this->requirePermission('manage properties');
     }
 
     public function updatedNewUploads(): void
@@ -268,17 +290,12 @@ class extends Component
             ['tenant_id' => $tenant->id, 'key' => $key],
             ['value' => $value],
         );
-
-        // SiteSetting::forget uses a version token, but TenantSetting does
-        // not have a cache layer — the business-offerings page reads it
-        // live from the DB on mount, so no cache flush is needed here.
     }
 };
 ?>
 
 <div class="space-y-6">
 
-    {{-- ═══ HEADER ═══ --}}
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
             <div class="flex items-center gap-2 mb-1">
@@ -307,7 +324,6 @@ class extends Component
         </a>
     </div>
 
-    {{-- ═══ FLASH ═══ --}}
     @if(session('message'))
         <div class="rounded-xl border border-emerald-200 dark:border-emerald-500/30 bg-emerald-50 dark:bg-emerald-500/10 px-4 py-3 text-sm text-emerald-800 dark:text-emerald-300 flex items-center gap-2"
              role="status">
@@ -318,7 +334,7 @@ class extends Component
         </div>
     @endif
 
-    {{-- ═══ GALLERY COPY (title + subtitle) ═══ --}}
+    {{-- GALLERY COPY --}}
     <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6">
         <div class="mb-4">
             <h2 class="text-sm font-bold text-gray-900 dark:text-white">Gallery Copy</h2>
@@ -381,7 +397,7 @@ class extends Component
         </form>
     </div>
 
-    {{-- ═══ UPLOAD ZONE ═══ --}}
+    {{-- UPLOAD ZONE --}}
     <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6">
         <div class="mb-4">
             <h2 class="text-sm font-bold text-gray-900 dark:text-white">Add Photos</h2>
@@ -427,7 +443,6 @@ class extends Component
             </label>
         </div>
 
-        {{-- Upload progress + file previews --}}
         <div wire:loading wire:target="newUploads" class="mt-4">
             <div class="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
                 <svg class="animate-spin h-3.5 w-3.5 motion-reduce:animate-none" fill="none" viewBox="0 0 24 24" aria-hidden="true">
@@ -497,7 +512,7 @@ class extends Component
         @endif
     </div>
 
-    {{-- ═══ CURRENT GALLERY ═══ --}}
+    {{-- CURRENT GALLERY --}}
     <div class="bg-white dark:bg-gray-800/90 rounded-2xl border border-gray-200/80 dark:border-gray-700/80 shadow-sm p-5 sm:p-6">
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5">
             <div>
@@ -553,12 +568,11 @@ class extends Component
                                 transition-all duration-200
                                 {{ $isCover ? 'ring-2 ring-emerald-500 dark:ring-emerald-400' : '' }}">
 
-                        <img src="{{ asset('storage/'.$path) }}"
+                        <img src="{{ '/storage/' . ltrim($path, '/') }}"
                              class="w-full h-full object-cover"
                              alt="Gallery photo {{ $index + 1 }}"
                              loading="lazy" decoding="async">
 
-                        {{-- Cover badge --}}
                         @if($isCover)
                             <span class="absolute top-2 left-2 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500 text-white text-[10px] font-bold uppercase tracking-wider shadow-lg">
                                 <svg xmlns="http://www.w3.org/2000/svg" class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -568,19 +582,15 @@ class extends Component
                             </span>
                         @endif
 
-                        {{-- Position badge --}}
                         <span class="absolute top-2 right-2 inline-flex items-center justify-center min-w-[22px] h-6 px-1.5 rounded-full bg-black/65 backdrop-blur text-white text-[10px] font-bold tabular-nums shadow-lg">
                             {{ $index + 1 }}
                         </span>
 
-                        {{-- Dark gradient on hover --}}
                         <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-200 pointer-events-none"></div>
 
-                        {{-- Actions (revealed on hover/focus-within) --}}
                         <div class="absolute inset-x-2 bottom-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-200
                                     flex items-center justify-center gap-1.5">
 
-                            {{-- Move up --}}
                             <button type="button"
                                     wire:click="moveUp({{ $index }})"
                                     @disabled($index === 0)
@@ -595,7 +605,6 @@ class extends Component
                                 </svg>
                             </button>
 
-                            {{-- Move down --}}
                             <button type="button"
                                     wire:click="moveDown({{ $index }})"
                                     @disabled($index === count($galleryImages) - 1)
@@ -610,7 +619,6 @@ class extends Component
                                 </svg>
                             </button>
 
-                            {{-- Set as cover --}}
                             @if(! $isCover)
                                 <button type="button"
                                         wire:click="setAsCover('{{ $path }}')"
@@ -626,7 +634,6 @@ class extends Component
                                 </button>
                             @endif
 
-                            {{-- Delete — two-click arm pattern --}}
                             @if($isArmed)
                                 <button type="button"
                                         wire:click="deleteImage('{{ $path }}')"

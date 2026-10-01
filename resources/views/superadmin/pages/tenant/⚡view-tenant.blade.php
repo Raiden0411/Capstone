@@ -211,10 +211,26 @@ class extends Component
         return Tenant::query()
             ->with([
                 'typeOfTenant:id,type',
-                // Eager-loaded so `hasRole('admin')` doesn't trigger an
-                // N+1 — the admin resolver below hits every row.
+                // NOTE: 'users.roles' is deliberately NOT eager-loaded.
+                //
+                // Under Spatie teams, roles() filters by the ambient team
+                // context via wherePivot('team_id', getPermissionsTeamId()).
+                // Eager loading calls roles() on a FRESH prototype User
+                // whose tenant_id is null, so the ambient context resolves
+                // to 0 (platform level) and the eager-loaded roles
+                // collection comes back EMPTY for every tenant user.
+                //
+                // hasRole('admin') then sees a loaded-but-empty collection
+                // and returns false — resolveAdmin() falls through to
+                // $tenant->users->first(), which on seeded data is often
+                // an employee, not the admin. Silent misattribution.
+                //
+                // The fix: let hasRole('admin') lazy-load. The User::roles()
+                // override pins the ambient context to each user's OWN
+                // tenant_id, so the pivot query filters correctly.
+                // Cost: one query per distinct admin lookup on this page
+                // (~12 per paginated load). Acceptable for an admin panel.
                 'users:id,tenant_id,name,email,is_active',
-                'users.roles:id,name',
                 // KYB record for the compliance badge + button. Nullable —
                 // legacy tenants created before the flow have no record.
                 'businessApplication:id,approved_tenant_id,status,source,reviewed_at',
@@ -247,6 +263,11 @@ class extends Component
      * Prefers a user with the explicit `admin` role; falls back to the
      * first user only for tenants that were created before role tagging
      * existed.
+     *
+     * NOTE: this iterates `$tenant->users` — the eagerly loaded
+     * collection. Each `$u->hasRole('admin')` lazy-loads that user's
+     * roles through the User::roles() override, which pins the ambient
+     * team context to that user's tenant_id. Correct under Spatie teams.
      */
     public function resolveAdmin(Tenant $tenant): ?User
     {
@@ -267,7 +288,13 @@ class extends Component
         $this->processingId = $id;
 
         try {
-            $tenant = Tenant::with(['users.roles'])->find($id);
+            // NOTE: NO ->with(['users.roles']) here. See the comment on
+            // getBaseQuery() above — eager-loading roles under Spatie
+            // teams produces an empty collection for tenant users, and
+            // resolveAdmin() then silently falls through to the first
+            // user (often an employee). Lazy-loading through the
+            // User::roles() override resolves correctly.
+            $tenant = Tenant::find($id);
 
             if (! $tenant) {
                 $this->dispatch('toast', message: 'That tenant no longer exists.', type: 'error');
@@ -368,9 +395,11 @@ class extends Component
             $count = 0;
 
             DB::transaction(function () use (&$count): void {
-                $tenants = Tenant::with(['users.roles'])
-                    ->whereIn('id', $this->selected)
-                    ->get();
+                // NOTE: NO ->with(['users.roles']) here — same reason
+                // as approve(). Lazy-loading roles through the
+                // User::roles() override is what makes resolveAdmin()
+                // return the actual admin.
+                $tenants = Tenant::whereIn('id', $this->selected)->get();
 
                 foreach ($tenants as $tenant) {
                     $tenant->update(['is_active' => true]);
